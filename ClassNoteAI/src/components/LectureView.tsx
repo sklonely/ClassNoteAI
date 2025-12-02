@@ -1,16 +1,15 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 import { Mic, MicOff, Pause, Square, FolderOpen } from "lucide-react";
 import { RecordingStatus } from "../types";
 import PDFViewer from "./PDFViewer";
 import { selectPDFFile } from "../services/fileService";
+import DragDropZone from "./DragDropZone";
 
 export default function LectureView() {
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>("idle");
   const [volume] = useState(0);
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [, setCurrentPageText] = useState<string>("");
-  const [isDragging, setIsDragging] = useState(false);
-  const dragCounter = useRef(0); // 用於追蹤拖放進入次數，防止子元素觸發 dragLeave
 
   const handleSelectPDF = async () => {
     const path = await selectPDFFile();
@@ -24,90 +23,18 @@ export default function LectureView() {
     // 這裡可以將文本用於 AI 助教的上下文
   };
 
-  // 處理拖放事件
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounter.current++;
-    if (e.dataTransfer.types.includes('Files')) {
-      setIsDragging(true);
-    }
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounter.current--;
-    // 只有當完全離開拖放區域時才取消拖放狀態
-    if (dragCounter.current === 0) {
-      setIsDragging(false);
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    // 設置拖放效果
-    if (e.dataTransfer.types.includes('Files')) {
-      e.dataTransfer.dropEffect = 'copy';
-    }
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    dragCounter.current = 0;
-
-    console.log("拖放事件觸發", e.dataTransfer);
-
-    const files = e.dataTransfer.files;
-    console.log("文件列表:", files.length, Array.from(files).map(f => f.name));
-
-    if (files.length === 0) {
-      console.log("沒有文件，檢查 items");
-      // 檢查是否有 items（可能包含文件路徑信息）
-      const items = e.dataTransfer.items;
-      if (items && items.length > 0) {
-        console.log("Items:", items.length);
-        // 嘗試從 items 獲取文件
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i];
-          console.log("Item:", item.kind, item.type);
-          if (item.kind === 'file') {
-            const file = item.getAsFile();
-            if (file) {
-              console.log("從 item 獲取文件:", file.name);
-              handleFile(file);
-              return;
-            }
-            // 嘗試使用 webkitGetAsEntry
-            const entry = (item as any).webkitGetAsEntry?.();
-            if (entry && entry.isFile) {
-              entry.file((file: File) => {
-                console.log("從 entry 獲取文件:", file.name);
-                handleFile(file);
-              });
-              return;
-            }
-          }
-        }
-      }
-      console.log("無法獲取文件");
-      return;
-    }
-
-    const file = files[0];
-    console.log("處理文件:", file.name, file.type, file.size);
-    handleFile(file);
-  };
-
-  const handleFile = async (file: File) => {
-    console.log("處理文件:", file.name, file.type, file.size);
+  const handleFileDrop = async (file: File) => {
+    console.log("=== 文件拖放處理 ===");
+    console.log("文件信息:", {
+      name: file.name,
+      type: file.type,
+      size: file.size,
+      lastModified: new Date(file.lastModified).toISOString(),
+    });
     
     // 驗證文件類型
     const fileName = file.name.toLowerCase();
-    const isValidPDF = fileName.endsWith('.pdf') || file.type === 'application/pdf';
+    const isValidPDF = fileName.endsWith('.pdf') || file.type === 'application/pdf' || file.type === '';
     
     if (!isValidPDF) {
       console.warn("不是 PDF 文件:", file.name, file.type);
@@ -192,25 +119,10 @@ export default function LectureView() {
           )}
           
           {/* PDF 查看器 */}
-          <div
-            className={`flex-1 overflow-hidden relative ${
-              isDragging ? "bg-blue-50 dark:bg-blue-900/20 border-2 border-blue-500 border-dashed" : ""
-            }`}
-            onDragEnter={handleDragEnter}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
+          <DragDropZone
+            onFileDrop={handleFileDrop}
+            className="flex-1 overflow-hidden"
           >
-            {isDragging && (
-              <div className="absolute inset-0 flex items-center justify-center bg-blue-50/80 dark:bg-blue-900/40 z-10">
-                <div className="text-center">
-                  <FolderOpen size={64} className="mx-auto mb-4 text-blue-500 animate-bounce" />
-                  <p className="text-lg text-blue-600 dark:text-blue-400 font-semibold">
-                    放開以打開 PDF 文件
-                  </p>
-                </div>
-              </div>
-            )}
             {pdfPath ? (
               <PDFViewer filePath={pdfPath} onTextExtract={handleTextExtract} />
             ) : (
@@ -232,7 +144,7 @@ export default function LectureView() {
                 </div>
               </div>
             )}
-          </div>
+          </DragDropZone>
         </div>
 
         {/* 右側面板：字幕和 AI 助教 */}
