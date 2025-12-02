@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Mic, MicOff, Pause, Square, FolderOpen } from "lucide-react";
 import { RecordingStatus } from "../types";
 import PDFViewer from "./PDFViewer";
@@ -10,6 +10,7 @@ export default function LectureView() {
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [, setCurrentPageText] = useState<string>("");
   const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0); // 用於追蹤拖放進入次數，防止子元素觸發 dragLeave
 
   const handleSelectPDF = async () => {
     const path = await selectPDFFile();
@@ -27,37 +28,64 @@ export default function LectureView() {
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(true);
+    dragCounter.current++;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragging(true);
+    }
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setIsDragging(false);
+    dragCounter.current--;
+    // 只有當完全離開拖放區域時才取消拖放狀態
+    if (dragCounter.current === 0) {
+      setIsDragging(false);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // 設置拖放效果
+    if (e.dataTransfer.types.includes('Files')) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
   };
 
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
+    dragCounter.current = 0;
+
+    console.log("拖放事件觸發", e.dataTransfer);
 
     const files = e.dataTransfer.files;
+    console.log("文件列表:", files.length, Array.from(files).map(f => f.name));
+
     if (files.length === 0) {
+      console.log("沒有文件，檢查 items");
       // 檢查是否有 items（可能包含文件路徑信息）
       const items = e.dataTransfer.items;
       if (items && items.length > 0) {
-        // 嘗試從 items 獲取文件路徑（Tauri 可能會提供）
+        console.log("Items:", items.length);
+        // 嘗試從 items 獲取文件
         for (let i = 0; i < items.length; i++) {
           const item = items[i];
+          console.log("Item:", item.kind, item.type);
           if (item.kind === 'file') {
+            const file = item.getAsFile();
+            if (file) {
+              console.log("從 item 獲取文件:", file.name);
+              handleFile(file);
+              return;
+            }
+            // 嘗試使用 webkitGetAsEntry
             const entry = (item as any).webkitGetAsEntry?.();
             if (entry && entry.isFile) {
               entry.file((file: File) => {
+                console.log("從 entry 獲取文件:", file.name);
                 handleFile(file);
               });
               return;
@@ -65,40 +93,61 @@ export default function LectureView() {
           }
         }
       }
+      console.log("無法獲取文件");
       return;
     }
 
     const file = files[0];
+    console.log("處理文件:", file.name, file.type, file.size);
     handleFile(file);
   };
 
   const handleFile = async (file: File) => {
+    console.log("處理文件:", file.name, file.type, file.size);
+    
     // 驗證文件類型
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+    const fileName = file.name.toLowerCase();
+    const isValidPDF = fileName.endsWith('.pdf') || file.type === 'application/pdf';
+    
+    if (!isValidPDF) {
+      console.warn("不是 PDF 文件:", file.name, file.type);
       alert('請拖放 PDF 文件');
       return;
     }
+
+    console.log("文件驗證通過，開始處理");
 
     // 在 Tauri 中，嘗試獲取文件路徑
     // 檢查是否有 path 屬性（Tauri 可能會提供）
     const filePath = (file as any).path;
     
     if (filePath && typeof filePath === 'string') {
+      console.log("使用文件路徑:", filePath);
       // 如果 Tauri 提供了文件路徑，直接使用
       setPdfPath(filePath);
     } else {
+      console.log("使用 FileReader 讀取文件");
       // 否則，使用 FileReader 讀取文件並創建 blob URL
       const reader = new FileReader();
       reader.onload = async (event) => {
         if (event.target?.result) {
+          console.log("文件讀取成功，創建 blob URL");
           // 創建 blob URL
           const blob = new Blob([event.target.result as ArrayBuffer], { type: 'application/pdf' });
           const url = URL.createObjectURL(blob);
+          console.log("Blob URL 創建:", url);
           setPdfPath(url);
         }
       };
-      reader.onerror = () => {
+      reader.onerror = (error) => {
+        console.error("文件讀取失敗:", error);
         alert('文件讀取失敗，請重試');
+      };
+      reader.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percentLoaded = Math.round((e.loaded / e.total) * 100);
+          console.log(`文件讀取進度: ${percentLoaded}%`);
+        }
       };
       reader.readAsArrayBuffer(file);
     }
