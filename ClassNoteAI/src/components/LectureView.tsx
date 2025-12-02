@@ -1,10 +1,26 @@
 import { useState } from "react";
-import { Mic, MicOff, Pause, Square } from "lucide-react";
+import { Mic, MicOff, Pause, Square, FolderOpen } from "lucide-react";
 import { RecordingStatus } from "../types";
+import PDFViewer from "./PDFViewer";
+import { selectPDFFile } from "../services/fileService";
 
 export default function LectureView() {
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>("idle");
-  const [volume, setVolume] = useState(0);
+  const [volume] = useState(0);
+  const [pdfPath, setPdfPath] = useState<string | null>(null);
+  const [, setCurrentPageText] = useState<string>("");
+
+  const handleSelectPDF = async () => {
+    const path = await selectPDFFile();
+    if (path) {
+      setPdfPath(path);
+    }
+  };
+
+  const handleTextExtract = (text: string) => {
+    setCurrentPageText(text);
+    // 這裡可以將文本用於 AI 助教的上下文
+  };
 
   const handleStartRecording = () => {
     setRecordingStatus("recording");
@@ -27,33 +43,41 @@ export default function LectureView() {
       <div className="flex flex-1 overflow-hidden">
         {/* PDF 查看器區域 */}
         <div className="flex-1 flex flex-col border-r border-gray-200 dark:border-gray-700">
-          <div className="flex-1 p-4 overflow-auto">
-            <div className="max-w-4xl mx-auto bg-white dark:bg-slate-800 rounded-lg shadow-lg p-8">
-              <div className="text-center text-gray-500 dark:text-gray-400">
-                <p className="text-lg mb-2">PDF 查看器</p>
-                <p className="text-sm">請選擇或拖放 PDF 文件</p>
+          {/* PDF 工具欄 */}
+          {pdfPath && (
+            <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
+                  {pdfPath.split("/").pop()}
+                </span>
               </div>
+              <button
+                onClick={handleSelectPDF}
+                className="px-3 py-1 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                更換文件
+              </button>
             </div>
-          </div>
+          )}
           
-          {/* PDF 控制欄 */}
-          <div className="px-4 py-2 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <button className="px-3 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
-                上一頁
-              </button>
-              <span className="text-sm text-gray-600 dark:text-gray-400">
-                第 1 / 10 頁
-              </span>
-              <button className="px-3 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
-                下一頁
-              </button>
-            </div>
-            <div className="flex items-center gap-2">
-              <button className="px-3 py-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800">
-                縮放
-              </button>
-            </div>
+          {/* PDF 查看器 */}
+          <div className="flex-1 overflow-hidden">
+            {pdfPath ? (
+              <PDFViewer filePath={pdfPath} onTextExtract={handleTextExtract} />
+            ) : (
+              <div className="flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900">
+                <div className="text-center">
+                  <FolderOpen size={64} className="mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                  <p className="text-lg text-gray-600 dark:text-gray-400 mb-2">尚未選擇 PDF 文件</p>
+                  <button
+                    onClick={handleSelectPDF}
+                    className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                  >
+                    選擇 PDF 文件
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
