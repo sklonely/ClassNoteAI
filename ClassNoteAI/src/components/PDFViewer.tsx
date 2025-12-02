@@ -59,6 +59,13 @@ export default function PDFViewer({ filePath, onTextExtract }: PDFViewerProps) {
     };
 
     loadPDF();
+
+    // 清理 blob URL（如果使用）
+    return () => {
+      if (filePath && filePath.startsWith('blob:')) {
+        URL.revokeObjectURL(filePath);
+      }
+    };
   }, [filePath]);
 
   // 渲染當前頁面
