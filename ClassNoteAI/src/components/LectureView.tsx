@@ -9,6 +9,7 @@ export default function LectureView() {
   const [volume] = useState(0);
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [, setCurrentPageText] = useState<string>("");
+  const [isDragging, setIsDragging] = useState(false);
 
   const handleSelectPDF = async () => {
     const path = await selectPDFFile();
@@ -20,6 +21,87 @@ export default function LectureView() {
   const handleTextExtract = (text: string) => {
     setCurrentPageText(text);
     // 這裡可以將文本用於 AI 助教的上下文
+  };
+
+  // 處理拖放事件
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (files.length === 0) {
+      // 檢查是否有 items（可能包含文件路徑信息）
+      const items = e.dataTransfer.items;
+      if (items && items.length > 0) {
+        // 嘗試從 items 獲取文件路徑（Tauri 可能會提供）
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.kind === 'file') {
+            const entry = (item as any).webkitGetAsEntry?.();
+            if (entry && entry.isFile) {
+              entry.file((file: File) => {
+                handleFile(file);
+              });
+              return;
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    const file = files[0];
+    handleFile(file);
+  };
+
+  const handleFile = async (file: File) => {
+    // 驗證文件類型
+    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+      alert('請拖放 PDF 文件');
+      return;
+    }
+
+    // 在 Tauri 中，嘗試獲取文件路徑
+    // 檢查是否有 path 屬性（Tauri 可能會提供）
+    const filePath = (file as any).path;
+    
+    if (filePath && typeof filePath === 'string') {
+      // 如果 Tauri 提供了文件路徑，直接使用
+      setPdfPath(filePath);
+    } else {
+      // 否則，使用 FileReader 讀取文件並創建 blob URL
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        if (event.target?.result) {
+          // 創建 blob URL
+          const blob = new Blob([event.target.result as ArrayBuffer], { type: 'application/pdf' });
+          const url = URL.createObjectURL(blob);
+          setPdfPath(url);
+        }
+      };
+      reader.onerror = () => {
+        alert('文件讀取失敗，請重試');
+      };
+      reader.readAsArrayBuffer(file);
+    }
   };
 
   const handleStartRecording = () => {
@@ -48,7 +130,7 @@ export default function LectureView() {
             <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
-                  {pdfPath.split("/").pop()}
+                  {pdfPath.startsWith('blob:') ? '拖放的文件' : pdfPath.split("/").pop()}
                 </span>
               </div>
               <button
@@ -61,14 +143,37 @@ export default function LectureView() {
           )}
           
           {/* PDF 查看器 */}
-          <div className="flex-1 overflow-hidden">
+          <div
+            className={`flex-1 overflow-hidden relative ${
+              isDragging ? "bg-blue-50 dark:bg-blue-900/20 border-2 border-blue-500 border-dashed" : ""
+            }`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
+            {isDragging && (
+              <div className="absolute inset-0 flex items-center justify-center bg-blue-50/80 dark:bg-blue-900/40 z-10">
+                <div className="text-center">
+                  <FolderOpen size={64} className="mx-auto mb-4 text-blue-500 animate-bounce" />
+                  <p className="text-lg text-blue-600 dark:text-blue-400 font-semibold">
+                    放開以打開 PDF 文件
+                  </p>
+                </div>
+              </div>
+            )}
             {pdfPath ? (
               <PDFViewer filePath={pdfPath} onTextExtract={handleTextExtract} />
             ) : (
               <div className="flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900">
                 <div className="text-center">
                   <FolderOpen size={64} className="mx-auto mb-4 text-gray-400 dark:text-gray-600" />
-                  <p className="text-lg text-gray-600 dark:text-gray-400 mb-2">尚未選擇 PDF 文件</p>
+                  <p className="text-lg text-gray-600 dark:text-gray-400 mb-2">
+                    尚未選擇 PDF 文件
+                  </p>
+                  <p className="text-sm text-gray-500 dark:text-gray-500 mb-4">
+                    拖放 PDF 文件到此處，或點擊按鈕選擇文件
+                  </p>
                   <button
                     onClick={handleSelectPDF}
                     className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"

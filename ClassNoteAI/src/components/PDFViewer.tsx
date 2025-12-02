@@ -33,7 +33,18 @@ export default function PDFViewer({ filePath, onTextExtract }: PDFViewerProps) {
       setLoading(true);
       setError(null);
       try {
-        const loadingTask = pdfjsLib.getDocument(filePath);
+        // 支持文件路徑和 blob URL
+        let loadingTask;
+        if (filePath.startsWith('blob:') || filePath.startsWith('http://') || filePath.startsWith('https://')) {
+          // 對於 blob URL 或 HTTP URL，直接使用
+          loadingTask = pdfjsLib.getDocument(filePath);
+        } else {
+          // 對於本地文件路徑，使用 file:// 前綴（如果需要）
+          loadingTask = pdfjsLib.getDocument({
+            url: filePath,
+            withCredentials: false,
+          });
+        }
         const pdf = await loadingTask.promise;
         setPdfDoc(pdf);
         setTotalPages(pdf.numPages);
