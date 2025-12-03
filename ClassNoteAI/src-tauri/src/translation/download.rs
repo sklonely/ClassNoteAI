@@ -57,18 +57,18 @@ pub fn get_translation_model_config(model_type: TranslationModelType) -> Transla
         TranslationModelType::OpusMtEnZh => TranslationModelConfig {
             // GitHub Releases 格式（需要替換為實際的倉庫和版本）
             // 格式：https://github.com/USERNAME/REPO/releases/download/VERSION/model-name.zip
-            url: "https://github.com/your-username/classnote-ai-models/releases/download/v1.0/opus-mt-en-zh-onnx.zip".to_string(),
+            url: "https://github.com/sklonely/ClassNoteAI/releases/download/v1.0/opus-mt-en-zh-onnx.zip".to_string(),
             model_name: "opus-mt-en-zh-onnx".to_string(),
             expected_size: Some(550_000_000), // 約 550MB（實際約 512MB，留一些餘量）
         },
         // 大模型已排除，以確保快速響應
         // TranslationModelType::Nllb200Distilled600M => TranslationModelConfig {
-        //     url: "https://github.com/your-username/classnote-ai-models/releases/download/v1.0/nllb-200-distilled-600M-onnx.zip".to_string(),
+        //     url: "https://github.com/sklonely/ClassNoteAI/releases/download/v1.0/nllb-200-distilled-600M-onnx.zip".to_string(),
         //     model_name: "nllb-200-distilled-600M-onnx".to_string(),
         //     expected_size: Some(600_000_000),
         // },
         // TranslationModelType::MBartLarge50 => TranslationModelConfig {
-        //     url: "https://github.com/your-username/classnote-ai-models/releases/download/v1.0/mbart-large-50-onnx.zip".to_string(),
+        //     url: "https://github.com/sklonely/ClassNoteAI/releases/download/v1.0/mbart-large-50-onnx.zip".to_string(),
         //     model_name: "mbart-large-50-onnx".to_string(),
         //     expected_size: Some(1_200_000_000),
         // },
