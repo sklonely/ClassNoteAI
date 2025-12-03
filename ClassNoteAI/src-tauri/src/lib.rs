@@ -163,10 +163,12 @@ async fn download_translation_model(
     let output_path = Path::new(&output_dir);
     
     // 下載模型（帶進度回調）
-    let progress_callback: Option<Box<dyn Fn(u64, u64) + Send + Sync>> = Some(Box::new(|downloaded, total| {
+    // 克隆 model_name 以便在閉包中使用（閉包需要 'static 生命週期）
+    let model_name_clone = model_name.clone();
+    let progress_callback: Option<Box<dyn Fn(u64, u64) + Send + Sync>> = Some(Box::new(move |downloaded, total| {
         let percent = (downloaded as f64 / total as f64) * 100.0;
         if downloaded % 5_000_000 == 0 || downloaded == total {
-            println!("[下載翻譯模型] {} 進度: {:.1}%", model_name, percent);
+            println!("[下載翻譯模型] {} 進度: {:.1}%", model_name_clone, percent);
         }
     }));
     
