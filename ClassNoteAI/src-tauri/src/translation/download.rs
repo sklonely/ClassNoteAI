@@ -90,7 +90,6 @@ pub async fn download_translation_model(
     progress_callback: Option<Box<dyn Fn(u64, u64) + Send + Sync>>,
 ) -> Result<PathBuf, String> {
     use std::fs;
-    use std::io::Write;
     
     // 確保輸出目錄存在
     std::fs::create_dir_all(output_dir)
@@ -162,8 +161,7 @@ pub async fn download_translation_model(
     while let Some(item) = stream.next().await {
         let chunk = item.map_err(|e| format!("讀取數據失敗: {}", e))?;
         
-        // 使用阻塞方式寫入（tokio::fs::File 的 write_all 是異步的）
-        use tokio::io::AsyncWriteExt;
+        // 使用異步寫入
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("寫入文件失敗: {}", e))?;
@@ -199,7 +197,7 @@ pub async fn download_translation_model(
 /// 解壓模型 ZIP 文件
 fn extract_model_zip(zip_path: &Path, output_dir: &Path) -> Result<PathBuf, String> {
     use std::fs::File;
-    use std::io::{Read, Write};
+    use std::io::Read;
     use zip::ZipArchive;
     
     println!("[下載翻譯模型] 開始解壓 ZIP 文件: {:?}", zip_path);
