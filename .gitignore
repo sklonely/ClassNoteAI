@@ -43,3 +43,14 @@ desktop.ini
 *.tmp
 *.temp
 .cache/
+
+# Model files (too large for git)
+models/
+model_packages/
+*.wav
+*.zip
+
+# Test files
+test_translation*.py
+test_translation*.ts
+test_translation*.sh

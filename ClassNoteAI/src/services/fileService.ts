@@ -1,10 +1,11 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 
 /**
- * 選擇 PDF 文件
- * @returns 選中的文件路徑，如果取消則返回 null
+ * 選擇 PDF 文件並讀取其內容
+ * @returns 包含文件路徑和 ArrayBuffer 的對象，如果取消則返回 null
  */
-export async function selectPDFFile(): Promise<string | null> {
+export async function selectPDFFile(): Promise<{ path: string; data: ArrayBuffer } | null> {
   try {
     const selected = await open({
       multiple: false,
@@ -18,7 +19,11 @@ export async function selectPDFFile(): Promise<string | null> {
     });
 
     if (selected && typeof selected === "string") {
-      return selected;
+      // 使用 Tauri 命令讀取文件內容
+      const fileData = await invoke<number[]>("read_binary_file", { path: selected });
+      // 將 Vec<u8> 轉換為 ArrayBuffer
+      const arrayBuffer = new Uint8Array(fileData).buffer;
+      return { path: selected, data: arrayBuffer };
     }
 
     return null;

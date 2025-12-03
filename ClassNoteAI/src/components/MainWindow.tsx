@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { BookOpen, FileText, Settings, Moon, Sun } from "lucide-react";
+import { BookOpen, FileText, Settings, Moon, Sun, FlaskConical } from "lucide-react";
 import { applyTheme, getSystemTheme } from "../utils/theme";
 
 export default function MainWindow({ children }: { children: React.ReactNode }) {
@@ -21,6 +21,8 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
     { path: "/", label: "上課", icon: BookOpen },
     { path: "/notes", label: "筆記", icon: FileText },
     { path: "/settings", label: "設置", icon: Settings },
+        { path: "/test", label: "測試", icon: FlaskConical },
+        { path: "/test-translation", label: "翻譯測試", icon: FlaskConical },
   ];
 
   return (

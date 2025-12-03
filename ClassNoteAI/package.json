@@ -7,7 +7,10 @@
     "dev": "vite --debug",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:build": "npm run build && npm run tauri build && ./fix_bundle.sh",
+    "tauri:build:debug": "npm run build && npm run tauri build -- --debug && ./fix_bundle.sh",
+    "tauri:dev": "tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
