@@ -22,3 +22,42 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ===================
+# AI Models (Large Files)
+# ===================
+# Whisper models
+*.ggml
+*.bin
+!scripts/*.py
+
+# CTranslate2 models
+scripts/m2m100-*/
+scripts/opus-*/
+scripts/nllb-*/
+
+# ===================
+# Python Virtual Environment
+# ===================
+scripts/.venv/
+scripts/__pycache__/
+*.pyc
+
+# ===================
+# Rust Build Output
+# ===================
+src-tauri/target/
+
+# ===================
+# Build Bundles (Release)
+# ===================
+*.dmg
+*.zip
+*.app
+
+# ===================
+# Temporary Files
+# ===================
+*.tmp
+*.temp
+.cache/

@@ -106,12 +106,12 @@ export class AudioProcessor {
     inputSampleRate: number,
     inputChannels: number = 1
   ): Int16Array {
-    console.log('[AudioProcessor] 開始格式轉換:', {
-      inputSampleRate,
-      inputChannels,
-      inputLength: inputData.length,
-      targetSampleRate: this.targetSampleRate,
-    });
+    // console.log('[AudioProcessor] 開始格式轉換:', {
+    //   inputSampleRate,
+    //   inputChannels,
+    //   inputLength: inputData.length,
+    //   targetSampleRate: this.targetSampleRate,
+    // });
 
     // 步驟 1: 轉換為 Float32Array（如果需要）
     let floatData: Float32Array;
@@ -128,37 +128,37 @@ export class AudioProcessor {
     let monoData = floatData;
     if (inputChannels > 1) {
       monoData = this.toMono(floatData, inputChannels);
-      console.log('[AudioProcessor] 聲道轉換完成:', {
-        before: floatData.length,
-        after: monoData.length,
-      });
+      // console.log('[AudioProcessor] 聲道轉換完成:', {
+      //   before: floatData.length,
+      //   after: monoData.length,
+      // });
     }
 
     // 步驟 3: 採樣率轉換
     let resampledData = monoData;
     if (inputSampleRate !== this.targetSampleRate) {
       resampledData = this.resample(monoData, inputSampleRate, this.targetSampleRate);
-      console.log('[AudioProcessor] 採樣率轉換完成:', {
-        before: monoData.length,
-        after: resampledData.length,
-        beforeRate: inputSampleRate,
-        afterRate: this.targetSampleRate,
-      });
+      // console.log('[AudioProcessor] 採樣率轉換完成:', {
+      //   before: monoData.length,
+      //   after: resampledData.length,
+      //   beforeRate: inputSampleRate,
+      //   afterRate: this.targetSampleRate,
+      // });
     }
 
     // 步驟 4: 位深度轉換（Float32 -> Int16）
     const int16Data = this.toInt16(resampledData);
-    console.log('[AudioProcessor] 位深度轉換完成:', {
-      before: resampledData.length,
-      after: int16Data.length,
-    });
+    // console.log('[AudioProcessor] 位深度轉換完成:', {
+    //   before: resampledData.length,
+    //   after: int16Data.length,
+    // });
 
-    console.log('[AudioProcessor] 格式轉換完成:', {
-      finalLength: int16Data.length,
-      finalSampleRate: this.targetSampleRate,
-      finalChannels: 1,
-      finalBitDepth: 16,
-    });
+    // console.log('[AudioProcessor] 格式轉換完成:', {
+    //   finalLength: int16Data.length,
+    //   finalSampleRate: this.targetSampleRate,
+    //   finalChannels: 1,
+    //   finalBitDepth: 16,
+    // });
 
     return int16Data;
   }

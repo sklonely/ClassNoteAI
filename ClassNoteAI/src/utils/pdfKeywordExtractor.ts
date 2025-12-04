@@ -70,3 +70,4 @@ export function extractKeywordsFromPDF(text: string): string {
   return generateInitialPrompt(keywords);
 }
 
+

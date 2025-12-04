@@ -8,6 +8,7 @@ use whisper_rs::{WhisperContext, WhisperContextParameters};
 /// Whisper 模型封裝
 pub struct WhisperModel {
     context: WhisperContext,
+    #[allow(dead_code)]
     model_path: String,
 }
 
@@ -42,8 +43,10 @@ impl WhisperModel {
     }
 
     /// 獲取模型路徑
+    #[allow(dead_code)]
     pub fn get_model_path(&self) -> &str {
         &self.model_path
     }
 }
+
 

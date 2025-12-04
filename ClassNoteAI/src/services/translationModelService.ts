@@ -18,6 +18,8 @@ export async function getAvailableTranslationModels(): Promise<string[]> {
   }
 }
 
+let currentModel: string | null = null;
+
 /**
  * 根據模型名稱加載翻譯模型
  * @param modelName 模型名稱（例如 "opus-mt-en-zh-onnx"）
@@ -28,6 +30,13 @@ export async function loadTranslationModelByName(modelName: string): Promise<str
       modelName: modelName,
     });
     console.log('[TranslationModelService] 模型加載成功:', result);
+
+    currentModel = modelName;
+    // 觸發模型變更事件
+    window.dispatchEvent(new CustomEvent('classnote-translation-model-changed', {
+      detail: { model: modelName }
+    }));
+
     return result;
   } catch (error) {
     console.error('[TranslationModelService] 模型加載失敗:', error);
@@ -36,16 +45,21 @@ export async function loadTranslationModelByName(modelName: string): Promise<str
 }
 
 /**
+ * 獲取當前加載的模型
+ */
+export function getCurrentModel(): string | null {
+  return currentModel;
+}
+
+/**
  * 獲取模型的顯示名稱
  */
 export function getModelDisplayName(modelName: string): string {
   const displayNames: Record<string, string> = {
-    'opus-mt-en-zh-onnx': 'Opus-MT (英文→中文) - 推薦',
-    // 大模型已排除
-    // 'nllb-200-distilled-600M-onnx': 'NLLB-200 (多語言)',
-    // 'mbart-large-50-onnx': 'MBart-Large-50 (多語言)',
+    'm2m100-418M-ct2-int8': 'M2M100 (多語言翻譯, CT2) - 推薦',
+    'opus-mt-en-zh-onnx': 'Opus-MT (英文→中文) - 已棄用',
   };
-  
+
   return displayNames[modelName] || modelName;
 }
 
@@ -62,15 +76,20 @@ export async function downloadTranslationModel(
 ): Promise<string> {
   try {
     // 模擬進度更新（實際進度需要通過 Tauri 事件系統獲取）
+    let currentProgress = 0;
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+
     if (onProgress) {
-      const progressInterval = setInterval(() => {
-        onProgress((prev) => {
-          if (prev >= 95) {
+      progressInterval = setInterval(() => {
+        if (currentProgress >= 95) {
+          if (progressInterval) {
             clearInterval(progressInterval);
-            return 95;
           }
-          return prev + 5;
-        } as any);
+          currentProgress = 95;
+        } else {
+          currentProgress += 5;
+        }
+        onProgress(currentProgress);
       }, 500);
     }
 
@@ -78,6 +97,14 @@ export async function downloadTranslationModel(
       modelName: modelName,
       outputDir: outputDir,
     });
+
+    // 清理進度更新
+    if (progressInterval) {
+      clearInterval(progressInterval);
+    }
+    if (onProgress) {
+      onProgress(100); // 完成
+    }
 
     console.log('[TranslationModelService] 模型下載成功:', result);
     return result;

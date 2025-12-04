@@ -3,7 +3,10 @@
  * 用於排查拖放問題
  */
 
-export function logDragEvent(event: string, e: React.DragEvent | DragEvent) {
+export function logDragEvent(_event: string, _e: React.DragEvent | DragEvent) {
+  // 拖放診斷已禁用
+  // 如果需要重新啟用，取消下面的註釋
+  /*
   if (!e.dataTransfer) {
     console.warn(`[拖放診斷] ${event}: dataTransfer 為 null`);
     return;
@@ -35,12 +38,14 @@ export function logDragEvent(event: string, e: React.DragEvent | DragEvent) {
       type: item.type,
     })));
   }
+  */
 }
 
 export function testDragDropSupport(): boolean {
   const div = document.createElement('div');
   const hasDragDrop = 'draggable' in div || ('ondragstart' in div && 'ondrop' in div);
-  console.log('[拖放診斷] 瀏覽器支持拖放:', hasDragDrop);
+  // 拖放診斷已禁用
+  // console.log('[拖放診斷] 瀏覽器支持拖放:', hasDragDrop);
   return hasDragDrop;
 }
 

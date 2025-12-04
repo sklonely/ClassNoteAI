@@ -14,11 +14,11 @@ class SubtitleService {
   /**
    * 添加字幕片段
    */
-  addSegment(segment: Omit<SubtitleSegment, 'id'>): void {
+  addSegment(segment: Omit<SubtitleSegment, 'id'> & { id?: string }): void {
     // 確保必要字段存在
     const newSegment: SubtitleSegment = {
       ...segment,
-      id: `subtitle-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      id: segment.id || `subtitle-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       // 設置顯示文本（優先使用 displayText，否則使用 roughText）
       displayText: segment.displayText || segment.roughText || segment.text || '',
       displayTranslation: segment.displayTranslation || segment.roughTranslation || segment.translatedText,
@@ -31,8 +31,10 @@ class SubtitleService {
     };
 
     this.segments.push(newSegment);
-    this.currentText = newSegment.displayText;
-    this.currentTranslation = newSegment.displayTranslation;
+    // 注意：不要在這裡設置 currentText/currentTranslation
+    // currentText 只用於顯示「正在轉錄中」的臨時文本，提交後應該清空
+    this.currentText = '';
+    this.currentTranslation = undefined;
     this.notifyListeners();
   }
 
@@ -47,7 +49,7 @@ class SubtitleService {
     }
 
     const segment = this.segments[index];
-    
+
     // 更新字段
     const updatedSegment: SubtitleSegment = {
       ...segment,
@@ -64,12 +66,12 @@ class SubtitleService {
     };
 
     this.segments[index] = updatedSegment;
-    
+
     // 如果是當前顯示的片段，更新當前文本
     if (segment.id === this.segments[this.segments.length - 1]?.id) {
       this.currentText = updatedSegment.displayText;
     }
-    
+
     this.notifyListeners();
   }
 

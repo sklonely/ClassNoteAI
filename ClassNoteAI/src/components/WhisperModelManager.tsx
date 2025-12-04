@@ -12,6 +12,7 @@ import {
   getModelDisplayName,
   type ModelType,
 } from '../services/whisperService';
+import { storageService } from '../services/storageService';
 
 interface WhisperModelManagerProps {
   onModelLoaded?: () => void;
@@ -24,19 +25,96 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [statusMessage, setStatusMessage] = useState<string>('檢查模型狀態...');
 
+  // 加載保存的模型選擇
+  useEffect(() => {
+    loadSavedModel();
+  }, []);
+
   // 檢查模型文件是否存在
   useEffect(() => {
-    checkModelStatus();
+    if (selectedModel) {
+      checkModelStatus();
+      // 如果模型已保存且文件存在，自動加載
+      autoLoadModelIfSaved();
+    }
   }, [selectedModel]);
+
+  // 加載保存的模型選擇
+  const loadSavedModel = async () => {
+    try {
+      const settings = await storageService.getAppSettings();
+      if (settings?.models?.whisper) {
+        setSelectedModel(settings.models.whisper as ModelType);
+        console.log('[WhisperModelManager] 加載保存的模型選擇:', settings.models.whisper);
+      }
+    } catch (error) {
+      console.error('[WhisperModelManager] 加載保存的模型選擇失敗:', error);
+    }
+  };
+
+  // 自動加載保存的模型
+  const autoLoadModelIfSaved = async () => {
+    if (!selectedModel) return;
+
+    try {
+      const settings = await storageService.getAppSettings();
+      const isSavedModel = settings?.models?.whisper === selectedModel;
+
+      if (isSavedModel) {
+        // 檢查模型文件是否存在
+        const exists = await checkModelFile(selectedModel);
+
+        if (exists) {
+          console.log('[WhisperModelManager] 自動加載保存的模型:', selectedModel);
+          try {
+            await loadModel(selectedModel);
+            setModelStatus('loaded');
+            setStatusMessage('模型已自動加載');
+            if (onModelLoaded) {
+              onModelLoaded();
+            }
+          } catch (error) {
+            console.error('[WhisperModelManager] 自動加載模型失敗:', error);
+            // 自動加載失敗不影響用戶手動加載
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[WhisperModelManager] 檢查自動加載失敗:', error);
+    }
+  };
+
+  // 保存模型選擇到設置
+  const saveModelSelection = async (modelType: ModelType) => {
+    try {
+      const settings = await storageService.getAppSettings();
+      const updatedSettings = {
+        ...settings,
+        models: {
+          ...settings?.models,
+          whisper: modelType,
+        },
+      };
+      await storageService.saveAppSettings(updatedSettings as any);
+      console.log('[WhisperModelManager] 保存模型選擇:', modelType);
+    } catch (error) {
+      console.error('[WhisperModelManager] 保存模型選擇失敗:', error);
+    }
+  };
 
   const checkModelStatus = async () => {
     try {
       setModelStatus('checking');
       setStatusMessage('檢查模型文件...');
       setErrorMessage('');
-      
+
+      // 等待一小段時間確保文件系統更新
+      await new Promise(resolve => setTimeout(resolve, 200));
+
       const exists = await checkModelFile(selectedModel);
-      
+
+      console.log('[WhisperModelManager] 模型文件檢查結果:', exists, '模型:', selectedModel);
+
       if (exists) {
         setModelStatus('found');
         setStatusMessage('模型文件已存在');
@@ -45,6 +123,7 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
         setStatusMessage('模型文件不存在');
       }
     } catch (error) {
+      console.error('[WhisperModelManager] 檢查模型狀態失敗:', error);
       setModelStatus('error');
       setErrorMessage(`檢查失敗: ${error instanceof Error ? error.message : String(error)}`);
       setStatusMessage('檢查失敗');
@@ -57,28 +136,44 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
       setDownloadProgress(0);
       setStatusMessage('開始下載模型...');
       setErrorMessage('');
-      
-      // 模擬進度更新（實際進度需要通過 Tauri 事件系統獲取）
-      const progressInterval = setInterval(() => {
-        setDownloadProgress((prev) => {
-          if (prev >= 95) {
-            clearInterval(progressInterval);
-            return 95;
-          }
-          return prev + 5;
-        });
-      }, 500);
-      
-      await downloadModel(selectedModel);
-      
-      clearInterval(progressInterval);
+
+      // 監聽下載完成事件
+      const { listen } = await import('@tauri-apps/api/event');
+      const completedEventName = `download-completed-${selectedModel}`;
+      const unlistenCompleted = await listen(completedEventName, async () => {
+        console.log('[WhisperModelManager] 下載完成事件收到，重新檢查狀態');
+        // 等待文件完全寫入
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        // 重新檢查狀態
+        await checkModelStatus();
+      });
+
+      // 使用真實的下載進度
+      await downloadModel(selectedModel, (progress) => {
+        // 更新進度條
+        setDownloadProgress(Math.round(progress.percent));
+
+        // 更新狀態訊息（包含速度和剩餘時間）
+        let statusMsg = `下載中: ${Math.round(progress.percent)}%`;
+        if (progress.speed_mbps > 0) {
+          statusMsg += ` (${progress.speed_mbps.toFixed(2)} MB/s)`;
+        }
+        if (progress.eta_seconds !== null && progress.eta_seconds > 0) {
+          const etaMin = Math.floor(progress.eta_seconds / 60);
+          const etaSec = progress.eta_seconds % 60;
+          statusMsg += ` - 剩餘: ${etaMin}分${etaSec}秒`;
+        }
+        setStatusMessage(statusMsg);
+      });
+
       setDownloadProgress(100);
-      setStatusMessage('下載完成');
-      
-      // 等待一小段時間確保文件寫入完成
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // 重新檢查狀態
+      setStatusMessage('下載完成，正在驗證文件...');
+
+      // 清理事件監聽器
+      unlistenCompleted();
+
+      // 等待文件完全寫入並重新檢查狀態
+      await new Promise(resolve => setTimeout(resolve, 1000));
       await checkModelStatus();
     } catch (error) {
       setModelStatus('error');
@@ -92,12 +187,15 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
       setModelStatus('loading');
       setStatusMessage('加載模型中...');
       setErrorMessage('');
-      
+
       await loadModel(selectedModel);
-      
+
+      // 保存模型選擇
+      await saveModelSelection(selectedModel);
+
       setModelStatus('loaded');
       setStatusMessage('模型加載成功');
-      
+
       if (onModelLoaded) {
         onModelLoaded();
       }
@@ -163,7 +261,11 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
         >
           <option value="tiny">Tiny (75MB) - 最快，準確度較低</option>
           <option value="base">Base (142MB) - 推薦，平衡速度和準確度</option>
+          <option value="small-q5">Small Quantized (180MB) - 🚀 推薦 (快且準)</option>
+          <option value="medium-q5">Medium Quantized (530MB) - 🎯 最佳平衡</option>
           <option value="small">Small (466MB) - 更準確，較慢</option>
+          <option value="medium">Medium (1.5GB) - 高準確度，較慢</option>
+          <option value="large">Large (2.9GB) - 最高準確度，很慢</option>
         </select>
         <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
           {getModelDisplayName(selectedModel)}

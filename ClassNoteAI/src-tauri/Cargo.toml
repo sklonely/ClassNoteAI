@@ -1,6 +1,6 @@
 [package]
 name = "classnoteai"
-version = "0.1.0"
+version = "0.1.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -17,6 +17,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = []
+# Embedding feature - disabled by default due to protobuf conflict with ct2rs
+# Enable with: cargo build --features embedding
+embedding = ["ort", "ndarray"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -29,13 +35,12 @@ anyhow = "1.0"
 num_cpus = "1.0"
 reqwest = { version = "0.12", features = ["stream", "json"] }
 futures-util = "0.3"
-# ONNX Runtime for translation models
-# 使用 ort (onnxruntime-rs) 進行本地翻譯
-# 注意：ort 需要系統依賴，首次編譯可能需要較長時間
-ort = "2.0.0-rc.10"
-ndarray = "0.15"
+# ONNX Runtime for embedding models (optional due to protobuf conflict)
+# WARNING: Cannot use simultaneously with ct2rs on same process due to protobuf version conflict
+ort = { version = "2.0.0-rc.10", features = ["ndarray"], optional = true }
+ndarray = { version = "0.16", optional = true }
 # Tokenizer for text preprocessing
-tokenizers = "0.19"
+tokenizers = "0.21"
 # Random number generation for sampling
 rand = "0.8"
 # SQLite database for data storage
@@ -46,7 +51,17 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 # ZIP file extraction for model downloads
 zip = "0.6"
+# Regular expressions for text preprocessing
+regex = "1.10"
+# URL encoding for Google Translate unofficial API
+urlencoding = "2.1"
+# CTranslate2 for efficient neural machine translation
+# ct2rs provides Rust bindings to CTranslate2
+# Note: Requires CMake and C++ compiler for first-time build
+ct2rs = { version = "0.9", features = ["default"] }
+# File system utilities
+walkdir = "2"
+dirs = "5"
 
 [dev-dependencies]
 tempfile = "3.8"
-

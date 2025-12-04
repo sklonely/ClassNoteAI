@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import { ZoomIn, ZoomOut, Maximize2, FileText } from "lucide-react";
 
@@ -9,13 +9,17 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
+export interface PDFViewerHandle {
+  scrollToPage: (pageNumber: number) => void;
+}
+
 interface PDFViewerProps {
   filePath?: string;
   pdfData?: ArrayBuffer;
   onTextExtract?: (text: string) => void;
 }
 
-export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewerProps) {
+const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfData, onTextExtract }, ref) => {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
@@ -24,6 +28,16 @@ export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewe
   const [error, setError] = useState<string | null>(null);
   const canvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    scrollToPage: (pageNumber: number) => {
+      const canvas = canvasRefs.current.get(pageNumber);
+      if (canvas) {
+        canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setCurrentPage(pageNumber);
+      }
+    }
+  }));
 
   // 加載 PDF 文檔
   useEffect(() => {
@@ -40,7 +54,7 @@ export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewe
       setError(null);
       try {
         let loadingTask;
-        
+
         // 優先使用直接傳遞的 ArrayBuffer
         if (pdfData) {
           console.log("[PDFViewer] 使用直接傳遞的 ArrayBuffer，大小:", pdfData.byteLength);
@@ -55,20 +69,20 @@ export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewe
           });
         } else if (filePath) {
           console.log("[PDFViewer] 開始加載 PDF，路徑:", filePath);
-          
+
           if (filePath.startsWith('blob:')) {
             // 對於 blob URL，使用 fetch 獲取數據
             console.log("[PDFViewer] 檢測到 blob URL，開始獲取數據");
             try {
               const response = await fetch(filePath);
-              
+
               if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
               }
-              
+
               const arrayBuffer = await response.arrayBuffer();
               console.log("[PDFViewer] 獲取到 ArrayBuffer，大小:", arrayBuffer.byteLength);
-              
+
               loadingTask = pdfjsLib.getDocument({
                 data: arrayBuffer,
               });
@@ -89,11 +103,11 @@ export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewe
             });
           }
         }
-        
+
         if (!loadingTask) {
           throw new Error("無法創建 PDF 加載任務");
         }
-        
+
         const pdf = await loadingTask.promise;
         console.log("[PDFViewer] PDF 加載成功，頁數:", pdf.numPages);
         setPdfDoc(pdf);
@@ -368,7 +382,7 @@ export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewe
       style={{ pointerEvents: 'auto' }}
     >
       {/* PDF 內容區域 - 連續滾動 */}
-      <div 
+      <div
         className="flex-1 overflow-y-auto overflow-x-hidden p-4"
         onWheel={handleWheel}
       >
@@ -422,5 +436,6 @@ export default function PDFViewer({ filePath, pdfData, onTextExtract }: PDFViewe
       </div>
     </div>
   );
-}
+});
 
+export default PDFViewer;
