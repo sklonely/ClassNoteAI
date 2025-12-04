@@ -25,12 +25,21 @@ pub struct TranscriptionSegment {
     pub end_ms: u64,
 }
 
+/// 轉錄選項
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptionOptions {
+    pub strategy: String, // "greedy" | "beam_search"
+    pub beam_size: Option<i32>,
+    pub patience: Option<f32>,
+}
+
 /// 轉錄音頻數據
 pub async fn transcribe_audio(
     model: &WhisperModel,
     audio_data: &[i16],
     sample_rate: u32,
     initial_prompt: Option<&str>,
+    options: Option<TranscriptionOptions>,
 ) -> Result<TranscriptionResult> {
     println!(
         "[Whisper] 開始轉錄: 樣本數={}, 採樣率={}Hz",
@@ -45,10 +54,28 @@ pub async fn transcribe_audio(
         .map_err(|e| anyhow::anyhow!("創建轉錄狀態失敗: {:?}", e))?;
 
     // 配置轉錄參數
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    let mut params = if let Some(opts) = options {
+        if opts.strategy == "beam_search" {
+            let beam_size = opts.beam_size.unwrap_or(5);
+            println!("[Whisper] 使用 Beam Search 策略 (beam_size={})", beam_size);
+            let p = FullParams::new(SamplingStrategy::BeamSearch { 
+                beam_size: beam_size, 
+                patience: opts.patience.unwrap_or(1.0) 
+            });
+            p
+        } else {
+            println!("[Whisper] 使用 Greedy 策略");
+            FullParams::new(SamplingStrategy::Greedy { best_of: 1 })
+        }
+    } else {
+        // 默認使用 Greedy
+        println!("[Whisper] 使用默認 Greedy 策略");
+        FullParams::new(SamplingStrategy::Greedy { best_of: 1 })
+    };
 
     // 基本參數設置
-    params.set_n_threads((num_cpus::get().min(4)) as i32); // 限制線程數，避免過度使用 CPU
+    // 允許更多線程以提高性能（但不超過 8 個，避免過度使用 CPU）
+    params.set_n_threads((num_cpus::get().min(8)) as i32);
     params.set_translate(false); // 不翻譯，只轉錄
     let language_str = "en"; // 設置語言為英文
     params.set_language(Some(language_str));
@@ -67,10 +94,36 @@ pub async fn transcribe_audio(
     // 將 i16 音頻數據轉換為 f32（Whisper 需要的格式）
     // i16 範圍: -32768 到 32767
     // f32 範圍: -1.0 到 1.0
-    let audio_f32: Vec<f32> = audio_data
+    // 使用 32768.0 進行正規化以確保對稱性
+    let mut audio_f32: Vec<f32> = audio_data
         .iter()
         .map(|&sample| sample as f32 / 32768.0)
         .collect();
+    
+    // 音頻正規化：確保音量在合適範圍內
+    // 計算 RMS（均方根）來檢測音量
+    let rms: f32 = audio_f32.iter()
+        .map(|&x| x * x)
+        .sum::<f32>() / audio_f32.len() as f32;
+    let rms = rms.sqrt();
+    
+    // 如果音量太低（RMS < 0.01），進行增益調整
+    // 目標 RMS 約為 0.1-0.3（合適的語音音量）
+    if rms > 0.0 && rms < 0.01 {
+        let gain = 0.2 / rms; // 目標 RMS 為 0.2
+        let max_gain = 3.0; // 最大增益限制，避免過度放大噪音
+        let gain = gain.min(max_gain);
+        
+        println!("[Whisper] 音頻音量過低 (RMS={:.4})，應用增益: {:.2}x", rms, gain);
+        audio_f32 = audio_f32.iter().map(|&x| (x * gain).clamp(-1.0, 1.0)).collect();
+    } else if rms > 0.5 {
+        // 如果音量太高，進行衰減
+        let gain = 0.3 / rms;
+        println!("[Whisper] 音頻音量過高 (RMS={:.4})，應用衰減: {:.2}x", rms, gain);
+        audio_f32 = audio_f32.iter().map(|&x| (x * gain).clamp(-1.0, 1.0)).collect();
+    } else {
+        println!("[Whisper] 音頻音量正常 (RMS={:.4})", rms);
+    }
 
     // 執行轉錄
     let start_time = std::time::Instant::now();

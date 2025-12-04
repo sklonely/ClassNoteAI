@@ -2,7 +2,7 @@ pub mod database;
 pub mod models;
 
 pub use database::Database;
-pub use models::{Lecture, Subtitle, Note, Setting};
+pub use models::{Course, Lecture, Subtitle, Note, Setting};
 
 use std::path::PathBuf;
 use tauri::Manager;

@@ -31,11 +31,11 @@ export class AudioRecorder {
   private onStatusChangeCallback: ((status: AudioRecorderStatus) => void) | null = null;
   private onErrorCallback: ((error: Error) => void) | null = null;
   private startTime: number = 0;
-  
+
   // 測試用途：存儲錄製的音頻數據
   private recordedChunks: Int16Array[] = [];
   private recordingSampleRate: number = 0;
-  
+
   // 音頻處理器（用於格式轉換）
   private audioProcessor!: AudioProcessor;
 
@@ -45,7 +45,7 @@ export class AudioRecorder {
       channelCount: config.channelCount || 1,
       deviceId: config.deviceId || '',
     };
-    
+
     // 初始化音頻處理器（目標採樣率：16kHz）
     this.audioProcessor = new AudioProcessor(16000);
   }
@@ -89,9 +89,14 @@ export class AudioRecorder {
 
     try {
       console.log('[AudioRecorder] 請求麥克風權限...');
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('瀏覽器不支持音頻錄製 API (navigator.mediaDevices.getUserMedia)');
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       console.log('[AudioRecorder] 麥克風權限獲取成功');
-      
+
       // 獲取實際的音頻軌道信息
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length > 0) {
@@ -108,7 +113,7 @@ export class AudioRecorder {
       return stream;
     } catch (error) {
       console.error('[AudioRecorder] 麥克風權限獲取失敗:', error);
-      
+
       if (error instanceof Error) {
         if (error.name === 'NotAllowedError') {
           throw new Error('麥克風權限被拒絕，請在瀏覽器設置中允許麥克風訪問');
@@ -118,7 +123,7 @@ export class AudioRecorder {
           throw new Error('麥克風設備無法訪問，可能被其他應用佔用');
         }
       }
-      
+
       throw error;
     }
   }
@@ -266,7 +271,7 @@ export class AudioRecorder {
     } catch (error) {
       console.error('[AudioRecorder] 錄製啟動失敗:', error);
       this.setStatus('error');
-      
+
       if (this.onErrorCallback && error instanceof Error) {
         this.onErrorCallback(error);
       } else if (this.onErrorCallback) {
@@ -498,7 +503,7 @@ export class AudioRecorder {
    */
   async destroy(): Promise<void> {
     await this.stop();
-    
+
     if (this.audioContext && this.audioContext.state !== 'closed') {
       await this.audioContext.close();
       this.audioContext = null;

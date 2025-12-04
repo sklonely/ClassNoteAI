@@ -21,7 +21,9 @@ pub struct WhisperService {
 impl WhisperService {
     /// 創建新的 Whisper 服務實例
     pub fn new() -> Self {
-        Self { model: None }
+        Self { 
+            model: None,
+        }
     }
 
     /// 加載 Whisper 模型
@@ -37,13 +39,14 @@ impl WhisperService {
         audio_data: &[i16],
         sample_rate: u32,
         initial_prompt: Option<&str>,
-    ) -> Result<TranscriptionResult> {
+        options: Option<transcribe::TranscriptionOptions>,
+    ) -> Result<transcribe::TranscriptionResult> {
         let model = self
             .model
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("模型未加載"))?;
 
-        transcribe::transcribe_audio(model, audio_data, sample_rate, initial_prompt).await
+        transcribe::transcribe_audio(model, audio_data, sample_rate, initial_prompt, options).await
     }
 
     /// 檢查模型是否已加載

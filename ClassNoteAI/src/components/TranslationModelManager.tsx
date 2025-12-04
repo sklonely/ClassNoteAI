@@ -7,10 +7,9 @@ import { useState, useEffect } from 'react';
 import { 
   getAvailableTranslationModels, 
   loadTranslationModelByName, 
-  getModelDisplayName,
   downloadTranslationModel
 } from '../services/translationModelService';
-import { invoke } from '@tauri-apps/api/core';
+import { storageService } from '../services/storageService';
 import { Download, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 
 interface TranslationModelInfo {
@@ -43,7 +42,6 @@ const TRANSLATION_MODELS: TranslationModelInfo[] = [
 ];
 
 export default function TranslationModelManager() {
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [modelStatus, setModelStatus] = useState<'checking' | 'not_found' | 'found' | 'downloading' | 'loading' | 'loaded' | 'error'>('checking');
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
@@ -51,8 +49,9 @@ export default function TranslationModelManager() {
   const [statusMessage, setStatusMessage] = useState<string>('檢查模型狀態...');
   const [isLoadingModels, setIsLoadingModels] = useState(false);
 
-  // 加載可用模型列表
+  // 加載可用模型列表和保存的選擇
   useEffect(() => {
+    loadSavedModel();
     loadAvailableModels();
   }, []);
 
@@ -63,14 +62,33 @@ export default function TranslationModelManager() {
     }
   }, [selectedModel]);
 
+  // 自動加載保存的模型（在模型狀態檢查完成後）
+  useEffect(() => {
+    if (selectedModel && modelStatus === 'found') {
+      autoLoadModelIfSaved();
+    }
+  }, [selectedModel, modelStatus]);
+
+  // 加載保存的模型選擇
+  const loadSavedModel = async () => {
+    try {
+      const settings = await storageService.getAppSettings();
+      if (settings?.models?.translation) {
+        setSelectedModel(settings.models.translation);
+        console.log('[TranslationModelManager] 加載保存的模型選擇:', settings.models.translation);
+      }
+    } catch (error) {
+      console.error('[TranslationModelManager] 加載保存的模型選擇失敗:', error);
+    }
+  };
+
   const loadAvailableModels = async () => {
     setIsLoadingModels(true);
     try {
       const models = await getAvailableTranslationModels();
-      setAvailableModels(models);
       console.log('[TranslationModelManager] 找到的可用模型:', models);
       
-      // 如果有可用模型，自動選擇第一個
+      // 如果有可用模型且沒有保存的選擇，自動選擇第一個
       if (models.length > 0 && !selectedModel) {
         setSelectedModel(models[0]);
       }
@@ -105,6 +123,30 @@ export default function TranslationModelManager() {
       setModelStatus('error');
       setErrorMessage(`檢查失敗: ${error instanceof Error ? error.message : String(error)}`);
       setStatusMessage('檢查失敗');
+    }
+  };
+
+  // 自動加載保存的模型
+  const autoLoadModelIfSaved = async () => {
+    if (!selectedModel) return;
+    
+    try {
+      const settings = await storageService.getAppSettings();
+      const isSavedModel = settings?.models?.translation === selectedModel;
+      
+      if (isSavedModel && modelStatus === 'found') {
+        console.log('[TranslationModelManager] 自動加載保存的模型:', selectedModel);
+        try {
+          await loadTranslationModelByName(selectedModel);
+          setModelStatus('loaded');
+          setStatusMessage('模型已自動加載');
+        } catch (error) {
+          console.error('[TranslationModelManager] 自動加載模型失敗:', error);
+          // 自動加載失敗不影響用戶手動加載
+        }
+      }
+    } catch (error) {
+      console.error('[TranslationModelManager] 檢查自動加載失敗:', error);
     }
   };
 
@@ -168,6 +210,24 @@ export default function TranslationModelManager() {
     }
   };
 
+  // 保存模型選擇到設置
+  const saveModelSelection = async (modelName: string) => {
+    try {
+      const settings = await storageService.getAppSettings();
+      const updatedSettings = {
+        ...settings,
+        models: {
+          ...settings?.models,
+          translation: modelName,
+        },
+      };
+      await storageService.saveAppSettings(updatedSettings as any);
+      console.log('[TranslationModelManager] 保存模型選擇:', modelName);
+    } catch (error) {
+      console.error('[TranslationModelManager] 保存模型選擇失敗:', error);
+    }
+  };
+
   const handleLoadModel = async () => {
     if (!selectedModel) {
       setErrorMessage('請先選擇一個模型');
@@ -180,6 +240,9 @@ export default function TranslationModelManager() {
       setErrorMessage('');
       
       await loadTranslationModelByName(selectedModel);
+      
+      // 保存模型選擇
+      await saveModelSelection(selectedModel);
       
       setModelStatus('loaded');
       setStatusMessage('模型加載成功');

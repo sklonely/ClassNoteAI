@@ -7,6 +7,7 @@ pub mod rough;
 pub mod fine;
 pub mod model;
 pub mod download;
+pub mod google;
 
 use serde::{Deserialize, Serialize};
 

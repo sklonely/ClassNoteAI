@@ -19,7 +19,7 @@ export interface TranscriptionSegment {
   end_ms: number;
 }
 
-export type ModelType = 'base' | 'small' | 'tiny';
+export type ModelType = 'tiny' | 'base' | 'small' | 'medium' | 'large' | 'small-q5' | 'medium-q5';
 
 /**
  * 獲取應用數據目錄
@@ -40,7 +40,14 @@ async function getAppDataDir(): Promise<string> {
  */
 async function getModelPath(modelType: ModelType = 'base'): Promise<string> {
   const appDataDir = await getAppDataDir();
-  const modelFileName = `ggml-${modelType}.bin`;
+  // 處理量化模型的文件名
+  let modelFileName = `ggml-${modelType}.bin`;
+  if (modelType === 'small-q5') {
+    modelFileName = 'ggml-small-q5.bin';
+  } else if (modelType === 'medium-q5') {
+    modelFileName = 'ggml-medium-q5.bin';
+  }
+
   return await path.join(appDataDir, 'models', modelFileName);
 }
 
@@ -63,31 +70,74 @@ export async function checkModelFile(modelType: ModelType = 'base'): Promise<boo
 }
 
 /**
- * 下載 Whisper 模型
+ * 下載進度信息
+ */
+export interface DownloadProgress {
+  downloaded: number;
+  total: number;
+  percent: number;
+  speed_mbps: number;
+  eta_seconds: number | null;
+}
+
+/**
+ * 下載 Whisper 模型（支持真實進度顯示和斷點續傳）
  * @param modelType 模型類型
- * @param onProgress 進度回調（可選，目前未實現實時進度）
+ * @param onProgress 進度回調（可選，接收真實下載進度）
  * @returns 下載結果消息
  */
 export async function downloadModel(
   modelType: ModelType = 'base',
-  _onProgress?: (progress: number) => void
+  onProgress?: (progress: DownloadProgress) => void
 ): Promise<string> {
   try {
+    const { listen } = await import('@tauri-apps/api/event');
+
     const appDataDir = await getAppDataDir();
     const modelsDir = await path.join(appDataDir, 'models');
-    
+
     console.log('[WhisperService] 開始下載模型:', modelType);
     console.log('[WhisperService] 保存目錄:', modelsDir);
-    
-    // 注意：目前的實現中，進度回調是在 Rust 後端通過 println 輸出的
-    // 如果需要實時進度更新，需要使用 Tauri 事件系統（後續實現）
-    const result = await invoke<string>('download_whisper_model', {
-      modelType: modelType,
-      outputDir: modelsDir,
+
+    // 監聽下載進度事件
+    const progressEventName = `download-progress-${modelType}`;
+    const unlistenProgress = onProgress ? await listen<DownloadProgress>(
+      progressEventName,
+      (event) => {
+        if (onProgress) {
+          onProgress(event.payload);
+        }
+      }
+    ) : null;
+
+    // 監聽下載完成事件
+    const completedEventName = `download-completed-${modelType}`;
+    const unlistenCompleted = await listen(completedEventName, () => {
+      console.log('[WhisperService] 下載完成事件收到');
     });
-    
-    console.log('[WhisperService] 下載完成:', result);
-    return result;
+
+    // 監聽下載錯誤事件
+    const errorEventName = `download-error-${modelType}`;
+    const unlistenError = await listen<string>(errorEventName, (event) => {
+      console.error('[WhisperService] 下載錯誤事件:', event.payload);
+    });
+
+    try {
+      const result = await invoke<string>('download_whisper_model', {
+        modelType: modelType,
+        outputDir: modelsDir,
+      });
+
+      console.log('[WhisperService] 下載完成:', result);
+      return result;
+    } finally {
+      // 清理事件監聽器
+      if (unlistenProgress) {
+        unlistenProgress();
+      }
+      unlistenCompleted();
+      unlistenError();
+    }
   } catch (error) {
     console.error('[WhisperService] 下載失敗:', error);
     throw error;
@@ -101,11 +151,11 @@ export async function loadModel(modelType: ModelType = 'base'): Promise<string> 
   try {
     const modelPath = await getModelPath(modelType);
     console.log('[WhisperService] 加載模型:', modelPath);
-    
+
     const result = await invoke<string>('load_whisper_model', {
       modelPath: modelPath,
     });
-    
+
     console.log('[WhisperService] 模型加載成功');
     return result;
   } catch (error) {
@@ -117,24 +167,32 @@ export async function loadModel(modelType: ModelType = 'base'): Promise<string> 
 /**
  * 轉錄音頻數據
  */
+export interface TranscriptionOptions {
+  strategy: 'greedy' | 'beam_search';
+  beam_size?: number;
+  patience?: number;
+}
+
 export async function transcribeAudio(
   audioData: Int16Array,
   sampleRate: number,
-  initialPrompt?: string
-): Promise<TranscriptionResult> {
+  initialPrompt?: string,
+  options?: TranscriptionOptions
+): Promise<any> {
   try {
-    // 將 Int16Array 轉換為 number[]
+    // 將 Int16Array 轉換為普通數組傳遞給 Rust
     const audioArray = Array.from(audioData);
-    
-    const result = await invoke<TranscriptionResult>('transcribe_audio', {
+
+    const result = await invoke('transcribe_audio', {
       audioData: audioArray,
-      sampleRate: sampleRate,
-      initialPrompt: initialPrompt || null,
+      sampleRate,
+      initialPrompt,
+      options,
     });
-    
+
     return result;
   } catch (error) {
-    console.error('[WhisperService] 轉錄失敗:', error);
+    console.error('轉錄失敗:', error);
     throw error;
   }
 }
@@ -147,6 +205,10 @@ export function getModelSize(modelType: ModelType): number {
     tiny: 75,
     base: 142,
     small: 466,
+    medium: 1500,
+    large: 2900,
+    'small-q5': 180,
+    'medium-q5': 530,
   };
   return sizes[modelType] || 142;
 }
@@ -159,6 +221,10 @@ export function getModelDisplayName(modelType: ModelType): string {
     tiny: 'Tiny (75MB) - 最快，準確度較低',
     base: 'Base (142MB) - 推薦，平衡速度和準確度',
     small: 'Small (466MB) - 更準確，較慢',
+    medium: 'Medium (1.5GB) - 高準確度，較慢',
+    large: 'Large (2.9GB) - 最高準確度，很慢',
+    'small-q5': 'Small Quantized (180MB) - 🚀 推薦 (快且準)',
+    'medium-q5': 'Medium Quantized (530MB) - 🎯 最佳平衡',
   };
   return names[modelType] || 'Base';
 }

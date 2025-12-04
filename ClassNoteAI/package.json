@@ -1,16 +1,16 @@
 {
   "name": "classnoteai",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite --debug",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build": "npm run build && npm run tauri build && ./fix_bundle.sh",
-    "tauri:build:debug": "npm run build && npm run tauri build -- --debug && ./fix_bundle.sh",
-    "tauri:dev": "tauri dev"
+    "tauri:build": "npm run build && bash -c 'source ~/.cargo/env 2>/dev/null || true; export PATH=\"$HOME/.cargo/bin:$PATH\"; npm run tauri build' && ./fix_bundle.sh",
+    "tauri:build:debug": "npm run build && bash -c 'source ~/.cargo/env 2>/dev/null || true; export PATH=\"$HOME/.cargo/bin:$PATH\"; npm run tauri build -- --debug' && ./fix_bundle.sh",
+    "tauri:dev": "bash -c 'source ~/.cargo/env 2>/dev/null || true; export PATH=\"$HOME/.cargo/bin:$PATH\"; tauri dev'"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

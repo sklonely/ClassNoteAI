@@ -62,15 +62,20 @@ export async function downloadTranslationModel(
 ): Promise<string> {
   try {
     // 模擬進度更新（實際進度需要通過 Tauri 事件系統獲取）
+    let currentProgress = 0;
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+    
     if (onProgress) {
-      const progressInterval = setInterval(() => {
-        onProgress((prev) => {
-          if (prev >= 95) {
+      progressInterval = setInterval(() => {
+        if (currentProgress >= 95) {
+          if (progressInterval) {
             clearInterval(progressInterval);
-            return 95;
           }
-          return prev + 5;
-        } as any);
+          currentProgress = 95;
+        } else {
+          currentProgress += 5;
+        }
+        onProgress(currentProgress);
       }, 500);
     }
 
@@ -78,6 +83,14 @@ export async function downloadTranslationModel(
       modelName: modelName,
       outputDir: outputDir,
     });
+
+    // 清理進度更新
+    if (progressInterval) {
+      clearInterval(progressInterval);
+    }
+    if (onProgress) {
+      onProgress(100); // 完成
+    }
 
     console.log('[TranslationModelService] 模型下載成功:', result);
     return result;

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { Lecture, Subtitle, Note, AppSettings } from '../types';
+import type { Course, Lecture, Subtitle, Note, AppSettings } from '../types';
 import { save, open } from '@tauri-apps/plugin-dialog';
 
 /**
@@ -7,6 +7,41 @@ import { save, open } from '@tauri-apps/plugin-dialog';
  * 封裝所有與數據庫相關的 Tauri Commands
  */
 class StorageService {
+  /**
+   * 保存科目
+   */
+  async saveCourse(course: Course): Promise<void> {
+    await invoke('save_course', { course });
+  }
+
+  /**
+   * 獲取科目
+   */
+  async getCourse(id: string): Promise<Course | null> {
+    return await invoke<Course | null>('get_course', { id });
+  }
+
+  /**
+   * 列出所有科目
+   */
+  async listCourses(): Promise<Course[]> {
+    return await invoke<Course[]>('list_courses');
+  }
+
+  /**
+   * 刪除科目
+   */
+  async deleteCourse(id: string): Promise<void> {
+    await invoke('delete_course', { id });
+  }
+
+  /**
+   * 列出特定科目的所有課堂
+   */
+  async listLecturesByCourse(courseId: string): Promise<Lecture[]> {
+    return await invoke<Lecture[]>('list_lectures_by_course', { courseId });
+  }
+
   /**
    * 保存課程
    */
@@ -143,7 +178,7 @@ class StorageService {
   async exportAllData(): Promise<string> {
     try {
       const lectures = await this.listLectures();
-      
+
       // 為每個課程獲取字幕和筆記
       const exportData = {
         version: '1.0',
@@ -187,8 +222,23 @@ class StorageService {
       // 導入課程
       for (const lecture of data.lectures) {
         try {
+          // 確保所有必需字段都存在
+          const now = new Date().toISOString();
+          const lectureToSave: Lecture = {
+            id: lecture.id || crypto.randomUUID(),
+            course_id: lecture.course_id || 'default-course', // 暫時使用默認值，實際遷移時會處理
+            title: lecture.title || '未命名課程',
+            date: lecture.date || now,
+            duration: lecture.duration || 0,
+            pdf_path: lecture.pdf_path,
+            status: lecture.status || 'completed',
+            created_at: lecture.created_at || now, // 如果沒有，使用當前時間
+            updated_at: lecture.updated_at || now, // 如果沒有，使用當前時間
+            // subtitles 和 notes 不需要包含在保存對象中，會單獨保存
+          };
+
           // 保存課程
-          await this.saveLecture(lecture);
+          await this.saveLecture(lectureToSave);
 
           // 保存字幕
           if (lecture.subtitles && Array.isArray(lecture.subtitles)) {
@@ -208,6 +258,7 @@ class StorageService {
               if ('sections' in lecture.note || 'qa_records' in lecture.note) {
                 // 標準 Note 格式
                 noteContent = JSON.stringify({
+                  summary: (lecture.note as Note).summary,
                   sections: (lecture.note as Note).sections || [],
                   qa_records: (lecture.note as Note).qa_records || [],
                 });
@@ -291,13 +342,14 @@ class StorageService {
     if (!dbNote) {
       return null;
     }
-    
+
     // 將 content JSON 字符串轉換為 Note 格式
     try {
       const content = JSON.parse(dbNote.content);
       return {
         lecture_id: dbNote.lecture_id,
         title: dbNote.title,
+        summary: content.summary,
         sections: content.sections || [],
         qa_records: content.qa_records || [],
         generated_at: dbNote.generated_at,
@@ -320,7 +372,7 @@ class StorageService {
   async exportDataToFile(): Promise<void> {
     try {
       const jsonData = await this.exportAllData();
-      
+
       const filePath = await save({
         filters: [
           {

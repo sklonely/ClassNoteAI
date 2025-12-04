@@ -21,8 +21,8 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
     { path: "/", label: "上課", icon: BookOpen },
     { path: "/notes", label: "筆記", icon: FileText },
     { path: "/settings", label: "設置", icon: Settings },
-        { path: "/test", label: "測試", icon: FlaskConical },
-        { path: "/test-translation", label: "翻譯測試", icon: FlaskConical },
+    { path: "/test", label: "測試", icon: FlaskConical },
+    { path: "/test-translation", label: "翻譯測試", icon: FlaskConical },
   ];
 
   return (
@@ -32,7 +32,7 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-semibold">ClassNote AI</h1>
         </div>
-        
+
         <nav className="flex items-center gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -41,11 +41,10 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
               <Link
                 key={item.path}
                 to={item.path}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                  isActive
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${isActive
                     ? "bg-blue-500 text-white"
                     : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-                }`}
+                  }`}
               >
                 <Icon size={18} />
                 <span>{item.label}</span>
