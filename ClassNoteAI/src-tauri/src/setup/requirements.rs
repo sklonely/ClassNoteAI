@@ -55,74 +55,10 @@ pub struct Requirement {
     pub install_source: Option<String>,
 }
 
-/// Check if a command exists in PATH
-fn command_exists(cmd: &str) -> bool {
-    Command::new("which")
-        .arg(cmd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Check if Homebrew is installed
-pub fn check_homebrew() -> RequirementStatus {
-    if command_exists("brew") {
-        // Get version
-        match Command::new("brew").arg("--version").output() {
-            Ok(output) => {
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout);
-                    println!("[Setup] Homebrew detected: {}", version.lines().next().unwrap_or("unknown"));
-                    RequirementStatus::Installed
-                } else {
-                    RequirementStatus::Error("Homebrew found but version check failed".to_string())
-                }
-            }
-            Err(e) => RequirementStatus::Error(format!("Failed to check Homebrew version: {}", e)),
-        }
-    } else {
-        RequirementStatus::NotInstalled
-    }
-}
-
-/// Check if CMake is installed
-pub fn check_cmake() -> RequirementStatus {
-    if command_exists("cmake") {
-        match Command::new("cmake").arg("--version").output() {
-            Ok(output) => {
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout);
-                    println!("[Setup] CMake detected: {}", version.lines().next().unwrap_or("unknown"));
-                    RequirementStatus::Installed
-                } else {
-                    RequirementStatus::Error("CMake found but version check failed".to_string())
-                }
-            }
-            Err(e) => RequirementStatus::Error(format!("Failed to check CMake version: {}", e)),
-        }
-    } else {
-        RequirementStatus::NotInstalled
-    }
-}
-
-/// Check if FFmpeg is installed (optional)
-pub fn check_ffmpeg() -> RequirementStatus {
-    if command_exists("ffmpeg") {
-        match Command::new("ffmpeg").arg("-version").output() {
-            Ok(output) => {
-                if output.status.success() {
-                    println!("[Setup] FFmpeg detected");
-                    RequirementStatus::Installed
-                } else {
-                    RequirementStatus::Error("FFmpeg found but version check failed".to_string())
-                }
-            }
-            Err(e) => RequirementStatus::Error(format!("Failed to check FFmpeg version: {}", e)),
-        }
-    } else {
-        RequirementStatus::NotInstalled
-    }
-}
+// NOTE: Removed unused system dependency check functions:
+// - command_exists(), get_brew_path(), check_homebrew(), check_cmake(), check_ffmpeg()
+// These were for development-time dependencies that end users don't need.
+// The app is self-contained after packaging.
 
 /// Check macOS version
 pub fn check_macos_version() -> RequirementStatus {
@@ -248,38 +184,10 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         install_source: None,
     });
     
-    requirements.push(Requirement {
-        id: "homebrew".to_string(),
-        name: "Homebrew".to_string(),
-        description: "macOS 套件管理器，用於安裝系統依賴".to_string(),
-        category: RequirementCategory::System,
-        status: check_homebrew(),
-        is_optional: false,
-        install_size_mb: 50,
-        install_source: Some("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh".to_string()),
-    });
-    
-    requirements.push(Requirement {
-        id: "cmake".to_string(),
-        name: "CMake".to_string(),
-        description: "編譯工具，用於編譯 CTranslate2".to_string(),
-        category: RequirementCategory::System,
-        status: check_cmake(),
-        is_optional: false,
-        install_size_mb: 100,
-        install_source: Some("brew install cmake".to_string()),
-    });
-    
-    requirements.push(Requirement {
-        id: "ffmpeg".to_string(),
-        name: "FFmpeg".to_string(),
-        description: "音頻處理工具（可選）".to_string(),
-        category: RequirementCategory::System,
-        status: check_ffmpeg(),
-        is_optional: true,
-        install_size_mb: 80,
-        install_source: Some("brew install ffmpeg".to_string()),
-    });
+    // NOTE: Removed system dependencies (Homebrew, CMake, FFmpeg)
+    // These are only needed at development/compile time, not for end users.
+    // The app is self-contained after packaging - whisper-rs and ct2rs
+    // statically link their native dependencies.
     
     // Model requirements - check multiple possible whisper models
     // Models are stored directly in models_dir (e.g. models/ggml-base.bin)

@@ -33,87 +33,10 @@ fn is_cancelled() -> bool {
     CANCEL_FLAG.load(Ordering::SeqCst)
 }
 
-/// Install Homebrew on macOS
-pub async fn install_homebrew(
-    progress_tx: mpsc::Sender<Progress>
-) -> Result<(), String> {
-    let task_id = "homebrew";
-    let task_name = "安裝 Homebrew";
-    
-    progress_tx.send(Progress::pending(task_id, task_name)).await.ok();
-    
-    if is_cancelled() {
-        return Err("Installation cancelled".to_string());
-    }
-    
-    progress_tx.send(
-        Progress::in_progress(task_id, task_name, 10, 100)
-            .with_message("正在下載 Homebrew 安裝腳本...")
-    ).await.ok();
-    
-    // Download and run Homebrew install script
-    // Note: In a real implementation, this would need to handle the interactive nature
-    // of the Homebrew installer. For now, we'll use a non-interactive approach.
-    
-    let output = Command::new("bash")
-        .args([
-            "-c",
-            r#"NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)""#
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run Homebrew installer: {}", e))?;
-    
-    if is_cancelled() {
-        return Err("Installation cancelled".to_string());
-    }
-    
-    if output.status.success() {
-        progress_tx.send(Progress::completed(task_id, task_name)).await.ok();
-        Ok(())
-    } else {
-        let error = String::from_utf8_lossy(&output.stderr).to_string();
-        progress_tx.send(Progress::failed(task_id, task_name, &error)).await.ok();
-        Err(format!("Homebrew installation failed: {}", error))
-    }
-}
-
-/// Install a package using Homebrew
-pub async fn install_with_brew(
-    package: &str,
-    progress_tx: mpsc::Sender<Progress>
-) -> Result<(), String> {
-    let task_id = package;
-    let task_name = format!("安裝 {}", package);
-    
-    progress_tx.send(Progress::pending(task_id, &task_name)).await.ok();
-    
-    if is_cancelled() {
-        return Err("Installation cancelled".to_string());
-    }
-    
-    progress_tx.send(
-        Progress::in_progress(task_id, &task_name, 10, 100)
-            .with_message(&format!("正在安裝 {}...", package))
-    ).await.ok();
-    
-    let output = Command::new("brew")
-        .args(["install", package])
-        .output()
-        .map_err(|e| format!("Failed to run brew install: {}", e))?;
-    
-    if is_cancelled() {
-        return Err("Installation cancelled".to_string());
-    }
-    
-    if output.status.success() {
-        progress_tx.send(Progress::completed(task_id, &task_name)).await.ok();
-        Ok(())
-    } else {
-        let error = String::from_utf8_lossy(&output.stderr).to_string();
-        progress_tx.send(Progress::failed(task_id, &task_name, &error)).await.ok();
-        Err(format!("{} installation failed: {}", package, error))
-    }
-}
+// NOTE: Removed unused install functions:
+// - install_homebrew() and install_with_brew()
+// These were for development-time dependencies (Homebrew, CMake, FFmpeg)
+// that end users don't need. The app is self-contained after packaging.
 
 /// Download a file with progress reporting
 pub async fn download_file(
@@ -271,15 +194,8 @@ pub async fn install_requirements(
         }
         
         match req_id.as_str() {
-            "homebrew" => {
-                install_homebrew(tx.clone()).await?;
-            }
-            "cmake" => {
-                install_with_brew("cmake", tx.clone()).await?;
-            }
-            "ffmpeg" => {
-                install_with_brew("ffmpeg", tx.clone()).await?;
-            }
+            // NOTE: Removed homebrew, cmake, ffmpeg install handlers
+            // These are development dependencies, not needed for end users
             "whisper_model" => {
                 let dest = models_dir.join("whisper");
                 download_and_extract_model(
