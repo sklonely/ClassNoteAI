@@ -197,19 +197,25 @@ pub async fn install_requirements(
             // NOTE: Removed homebrew, cmake, ffmpeg install handlers
             // These are development dependencies, not needed for end users
             "whisper_model" => {
-                let dest = models_dir.join("whisper");
-                download_and_extract_model(
-                    "https://github.com/YOUR_ORG/ClassNoteAI-Models/releases/download/v1.0.0/whisper-base-ggml.zip",
-                    &dest,
+                // Whisper models are single .bin files from Hugging Face
+                let whisper_dir = models_dir.join("whisper");
+                std::fs::create_dir_all(&whisper_dir)
+                    .map_err(|e| format!("創建目錄失敗: {}", e))?;
+                
+                let dest_file = whisper_dir.join("ggml-base.bin");
+                download_file(
+                    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+                    &dest_file,
                     "whisper_model",
                     "下載 Whisper 模型",
                     tx.clone()
                 ).await?;
             }
             "translation_model" => {
-                let dest = models_dir.join("ct2").join("opus-mt-en-zh");
+                // Translation model from GitHub Releases (ZIP file to extract)
+                let dest = models_dir.join("ct2").join("m2m100-418M-ct2-int8");
                 download_and_extract_model(
-                    "https://github.com/YOUR_ORG/ClassNoteAI-Models/releases/download/v1.0.0/opus-mt-en-zh-ct2.zip",
+                    "https://github.com/sklonely/ClassNoteAI/releases/download/v0.1.2-models/m2m100-418M-ct2-int8.zip",
                     &dest,
                     "translation_model",
                     "下載翻譯模型",

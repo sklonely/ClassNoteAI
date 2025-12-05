@@ -205,21 +205,20 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         install_source: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin".to_string()),
     });
     
-    // Translation model - for now mark as optional since we're still using ONNX
-    // This will be required once we migrate to CTranslate2
-    let translation_path = models_dir.join("ct2").join("opus-mt-en-zh");
+    // Translation model - M2M100 for multilingual translation
+    let translation_path = models_dir.join("ct2").join("m2m100-418M-ct2-int8");
     let translation_status = check_model(&translation_path, &["model.bin", "shared_vocabulary.json"]);
     println!("[Setup] Translation model status: {:?}", translation_status);
     
     requirements.push(Requirement {
         id: "translation_model".to_string(),
-        name: "英中翻譯模型 (CTranslate2)".to_string(),
-        description: "CTranslate2 格式的本地翻譯模型（尚未啟用）".to_string(),
+        name: "M2M100 翻譯模型".to_string(),
+        description: "多語言翻譯模型 (CTranslate2 格式, ~440MB)".to_string(),
         category: RequirementCategory::Model,
         status: translation_status,
-        is_optional: true, // Mark as optional for now since CT2 not yet integrated
-        install_size_mb: 300,
-        install_source: Some("https://github.com/YOUR_ORG/ClassNoteAI-Models/releases/download/v1.0.0/opus-mt-en-zh-ct2.zip".to_string()),
+        is_optional: false, // Required for translation feature
+        install_size_mb: 440,
+        install_source: Some("https://github.com/sklonely/ClassNoteAI/releases/download/v0.1.2-models/m2m100-418M-ct2-int8.zip".to_string()),
     });
     
     Ok(requirements)
