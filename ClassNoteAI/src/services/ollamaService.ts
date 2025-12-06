@@ -1,4 +1,5 @@
 import { storageService } from './storageService';
+import { fetch } from '@tauri-apps/plugin-http';
 
 export interface OllamaModel {
     name: string;

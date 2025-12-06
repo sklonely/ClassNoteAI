@@ -743,7 +743,7 @@ export default function SettingsView() {
               <div className="p-6 space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-600 dark:text-gray-400">版本</span>
-                  <span className="font-mono">0.2.0</span>
+                  <span className="font-mono">0.2.1</span>
                 </div>
                 <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
                   <button

@@ -1,6 +1,6 @@
 [package]
 name = "classnoteai"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -63,6 +63,7 @@ ct2rs = { version = "0.9", features = ["default"] }
 # File system utilities
 walkdir = "2"
 dirs = "5"
+tauri-plugin-http = "2"
 
 [dev-dependencies]
 tempfile = "3.8"
