@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2 } from "lucide-react";
+import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { storageService } from "../services/storageService";
 import { ollamaService } from "../services/ollamaService";
@@ -18,6 +18,7 @@ import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
 import { embeddingService } from "../services/embeddingService";
 import { pdfService } from "../services/pdfService";
+import AIChatPanel from "./AIChatPanel";
 
 type ViewMode = 'recording' | 'review';
 
@@ -43,6 +44,10 @@ export default function NotesView() {
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
   const [isConverting, setIsConverting] = useState(false);
+  const [isAIChatOpen, setIsAIChatOpen] = useState(false);
+  const [ollamaConnected, setOllamaConnected] = useState(false);
+  const [pdfTextContent, setPdfTextContent] = useState<string>('');
+  const [transcriptContent, setTranscriptContent] = useState<string>('');
 
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const pdfViewerRef = useRef<PDFViewerHandle>(null);
@@ -143,6 +148,30 @@ export default function NotesView() {
 
     checkAndLoadModels();
   }, []);
+
+  // Check Ollama Connection
+  useEffect(() => {
+    const checkOllama = async () => {
+      try {
+        const connected = await ollamaService.checkConnection();
+        setOllamaConnected(connected);
+      } catch {
+        setOllamaConnected(false);
+      }
+    };
+    checkOllama();
+    // Re-check every 30 seconds
+    const interval = setInterval(checkOllama, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Update transcript content when note changes
+  useEffect(() => {
+    if (selectedNote?.sections) {
+      const content = selectedNote.sections.map(s => s.content).join('\n\n');
+      setTranscriptContent(content);
+    }
+  }, [selectedNote]);
 
   // Initialize Audio Recorder
   useEffect(() => {
@@ -557,22 +586,12 @@ export default function NotesView() {
     }
   };
 
-  const handleTextExtract = (_text: string) => {
-    // Only extract keywords from PDF if we don't have course keywords
-    // or if the text is substantial.
-    // But to avoid overwriting good keywords with generic ones, we should be careful.
-
-    // For now, if we already have a prompt set (from course keywords), let's NOT overwrite it
-    // with the simple regex extractor results, as they tend to be generic.
-    // We only use this if the prompt is empty.
-
-    // Check if transcriptionService already has keywords
-    // Since we can't easily check private state, we'll rely on our local knowledge
-    // that loadLectureData runs first.
-
-    // If we want to merge, we need to be smarter.
-    // For now, disabling the auto-overwrite from PDF text to fix the user's issue.
-    console.log('[NotesView] PDF text extracted, skipping auto-keyword update to preserve course context.');
+  const handleTextExtract = (text: string) => {
+    // Save PDF text for AI Chat context
+    if (text && text.trim().length > 0) {
+      setPdfTextContent(text);
+    }
+    console.log('[NotesView] PDF text extracted for AI context.');
 
     /* 
     if (text && text.trim().length > 0) {
@@ -792,6 +811,21 @@ export default function NotesView() {
               </button>
             </>
           )}
+
+          {/* AI Chat Toggle Button */}
+          <button
+            onClick={() => setIsAIChatOpen(!isAIChatOpen)}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isAIChatOpen
+              ? 'bg-purple-500 text-white'
+              : ollamaConnected
+                ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 hover:bg-purple-100'
+                : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
+              }`}
+            title={ollamaConnected ? 'AI 助教' : 'Ollama 未連線'}
+          >
+            <Bot size={18} />
+            <span className="hidden sm:inline">AI 助教</span>
+          </button>
         </div>
       </div>
 
@@ -962,6 +996,20 @@ export default function NotesView() {
           />
         )
       }
+
+      {/* AI Chat Panel */}
+      {lectureId && (
+        <AIChatPanel
+          lectureId={lectureId}
+          isOpen={isAIChatOpen}
+          onClose={() => setIsAIChatOpen(false)}
+          context={{
+            pdfText: pdfTextContent,
+            transcriptText: transcriptContent,
+          }}
+          ollamaConnected={ollamaConnected}
+        />
+      )}
     </div >
   );
 }

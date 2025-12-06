@@ -109,6 +109,12 @@ class OllamaService {
             const model = options?.model || await this.getModel();
 
             console.log(`[OllamaService] 生成中... 模型: ${model}, Host: ${host}`);
+            console.log('[OllamaService] === 輸入詳情 ===');
+            console.log('[OllamaService] System Prompt 長度:', options?.system?.length || 0, '字元');
+            console.log('[OllamaService] System Prompt:', options?.system?.slice(0, 500), options?.system && options.system.length > 500 ? '...(截斷)' : '');
+            console.log('[OllamaService] User Prompt 長度:', prompt.length, '字元');
+            console.log('[OllamaService] User Prompt:', prompt.slice(0, 500), prompt.length > 500 ? '...(截斷)' : '');
+            console.log('[OllamaService] === 輸入詳情結束 ===');
 
             const response = await fetch(`${host}/api/generate`, {
                 method: 'POST',
@@ -131,6 +137,7 @@ class OllamaService {
             }
 
             const data = await response.json() as OllamaResponse;
+            console.log('[OllamaService] 回應長度:', data.response?.length || 0, '字元');
             return data.response;
         } catch (error) {
             console.error('[OllamaService] 生成失敗:', error);

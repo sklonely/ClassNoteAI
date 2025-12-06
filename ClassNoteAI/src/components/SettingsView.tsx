@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Save, CheckCircle, RefreshCw, Download, Upload, AlertCircle, Mic, Languages, Type, Database, Cpu, ChevronRight, Info } from "lucide-react";
 import { AppSettings } from "../types";
+import { getVersion } from "@tauri-apps/api/app";
 
 import WhisperModelManager from './WhisperModelManager';
 import TranslationModelManager from './TranslationModelManager';
@@ -26,6 +27,7 @@ export default function SettingsView() {
   const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
 
   const [activeTab, setActiveTab] = useState<string>('transcription-translation');
+  const [appVersion, setAppVersion] = useState<string>('...');
 
   // 更新相關狀態
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
@@ -58,6 +60,11 @@ export default function SettingsView() {
       enabled: false
     }
   });
+
+  // 讀取應用版本號
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion('unknown'));
+  }, []);
 
   // 加載音頻設備
   useEffect(() => {
@@ -743,7 +750,7 @@ export default function SettingsView() {
               <div className="p-6 space-y-4">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-600 dark:text-gray-400">版本</span>
-                  <span className="font-mono">0.2.2</span>
+                  <span className="font-mono">{appVersion}</span>
                 </div>
                 <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
                   <button

@@ -113,6 +113,26 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
         setPdfDoc(pdf);
         setTotalPages(pdf.numPages);
         setCurrentPage(1);
+
+        // 提取所有頁面的文字供 AI 使用
+        if (onTextExtract) {
+          try {
+            const allTexts: string[] = [];
+            for (let i = 1; i <= pdf.numPages; i++) {
+              const page = await pdf.getPage(i);
+              const textContent = await page.getTextContent();
+              const pageText = textContent.items
+                .map((item: any) => item.str)
+                .join(" ");
+              allTexts.push(pageText);
+            }
+            const fullText = allTexts.join("\n\n");
+            console.log("[PDFViewer] 提取完整文本，長度:", fullText.length, "字元");
+            onTextExtract(fullText);
+          } catch (textErr) {
+            console.error("[PDFViewer] 文本提取失敗:", textErr);
+          }
+        }
       } catch (err) {
         console.error("PDF 加載失敗:", err);
         setError(err instanceof Error ? err.message : "PDF 加載失敗");
@@ -176,15 +196,6 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
           };
 
           await page.render(renderContext).promise;
-
-          // 提取第一頁文本（用於 AI 助教上下文）
-          if (pageNum === 1 && onTextExtract) {
-            const textContent = await page.getTextContent();
-            const text = textContent.items
-              .map((item: any) => item.str)
-              .join(" ");
-            onTextExtract(text);
-          }
         } catch (err) {
           console.error(`[PDFViewer] 頁面 ${pageNum} 渲染失敗:`, err);
           // 不設置全局錯誤，只記錄單個頁面的錯誤
@@ -241,7 +252,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
       // 取消所有進行中的渲染任務
       renderTasks.clear();
     };
-  }, [pdfDoc, totalPages, scale, onTextExtract]);
+  }, [pdfDoc, totalPages, scale]);
 
   // 上一頁
   const goToPreviousPage = () => {

@@ -9,8 +9,25 @@
     "core:default",
     "opener:default",
     "dialog:default",
-    "http:default",
     "process:default",
-    "updater:default"
+    "updater:default",
+    "http:default",
+    {
+      "identifier": "http:allow-fetch",
+      "allow": [
+        {
+          "url": "http://127.0.0.1:*/**"
+        },
+        {
+          "url": "http://localhost:*/**"
+        },
+        {
+          "url": "http://100.*:*/**"
+        },
+        {
+          "url": "https://**"
+        }
+      ]
+    }
   ]
 }

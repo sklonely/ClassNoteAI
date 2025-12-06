@@ -367,6 +367,30 @@ class StorageService {
   }
 
   /**
+   * 保存對話歷史
+   * 使用 settings 表儲存，key 為 chat_history_{lectureId}
+   */
+  async saveChatHistory(lectureId: string, messages: Array<{ id: string; role: string; content: string; timestamp: string }>): Promise<void> {
+    const key = `chat_history_${lectureId}`;
+    await this.saveSetting(key, JSON.stringify(messages));
+  }
+
+  /**
+   * 獲取對話歷史
+   */
+  async getChatHistory(lectureId: string): Promise<Array<{ id: string; role: 'user' | 'assistant'; content: string; timestamp: string }>> {
+    const key = `chat_history_${lectureId}`;
+    const data = await this.getSetting(key);
+    if (!data) return [];
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.error('解析對話歷史失敗:', e);
+      return [];
+    }
+  }
+
+  /**
    * 導出數據到文件
    */
   async exportDataToFile(): Promise<void> {
