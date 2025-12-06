@@ -52,8 +52,10 @@ jobs:
       - name: Build Tauri (Apple Silicon)
         run: npm run tauri build -- --target aarch64-apple-darwin
 
-      - name: Build Tauri (Intel)
-        run: npm run tauri build -- --target x86_64-apple-darwin
+      # Intel x86_64 暫時禁用 - GitHub Actions macOS runner 不支持 AVX-512
+      # ct2rs 需要 AVX-512 指令集，但 GitHub Actions 的 Xcode 工具鏈不支援
+      # - name: Build Tauri (Intel)
+      #   run: npm run tauri build -- --target x86_64-apple-darwin
 
       - name: Get version from tag
         id: get_version
@@ -72,10 +74,6 @@ jobs:
               "darwin-aarch64": {
                 "signature": "$(cat src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ClassNoteAI.app.tar.gz.sig)",
                 "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/ClassNoteAI_${VERSION}_aarch64.app.tar.gz"
-              },
-              "darwin-x86_64": {
-                "signature": "$(cat src-tauri/target/x86_64-apple-darwin/release/bundle/macos/ClassNoteAI.app.tar.gz.sig)",
-                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/ClassNoteAI_${VERSION}_x64.app.tar.gz"
               }
             }
           }
@@ -89,10 +87,6 @@ jobs:
           # Apple Silicon
           cp src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg "release-assets/ClassNoteAI_${VERSION}_aarch64.dmg" || true
           cp src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz "release-assets/ClassNoteAI_${VERSION}_aarch64.app.tar.gz" || true
-          
-          # Intel
-          cp src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg "release-assets/ClassNoteAI_${VERSION}_x64.dmg" || true
-          cp src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz "release-assets/ClassNoteAI_${VERSION}_x64.app.tar.gz" || true
           
           # latest.json
           cp latest.json release-assets/
@@ -109,7 +103,6 @@ jobs:
             
             ### 下載
             - **macOS (Apple Silicon)**: ClassNoteAI_${{ steps.get_version.outputs.VERSION }}_aarch64.dmg
-            - **macOS (Intel)**: ClassNoteAI_${{ steps.get_version.outputs.VERSION }}_x64.dmg
             
             ### 自動更新
             已安裝用戶可透過應用內「設定 → 關於與更新」檢查更新。
