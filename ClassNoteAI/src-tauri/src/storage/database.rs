@@ -1,7 +1,7 @@
+use crate::storage::models::{Course, Lecture, Note, Setting, Subtitle};
+use chrono::Utc;
 use rusqlite::{Connection, Result as SqlResult};
 use std::path::PathBuf;
-use crate::storage::models::{Course, Lecture, Subtitle, Note, Setting};
-use chrono::Utc;
 
 /// 數據庫管理器
 pub struct Database {
@@ -21,18 +21,21 @@ impl Database {
     fn init_tables(&self) -> SqlResult<()> {
         // 開啟外鍵約束（SQLite 默認關閉）
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
-        
+
         // 檢查並修復 subtitles 表的 FK 約束（遷移：lectures_old -> lectures）
         if let Ok(sql) = self.conn.query_row::<String, _, _>(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='subtitles'",
             [],
-            |row| row.get(0)
+            |row| row.get(0),
         ) {
             if sql.contains("lectures_old") {
                 println!("[Database] 修復 subtitles 表 FK 約束...");
-                
+
                 // 備份 -> 刪除 -> 重建 -> 恢復
-                self.conn.execute("CREATE TABLE IF NOT EXISTS subtitles_backup AS SELECT * FROM subtitles", [])?;
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS subtitles_backup AS SELECT * FROM subtitles",
+                    [],
+                )?;
                 self.conn.execute("DROP TABLE subtitles", [])?;
                 self.conn.execute(
                     "CREATE TABLE subtitles (
@@ -56,7 +59,7 @@ impl Database {
                 println!("[Database] FK 修復完成");
             }
         }
-        
+
         // 清理孤立的 subtitles 記錄（FK 違規）
         if let Ok(count) = self.conn.execute(
             "DELETE FROM subtitles WHERE lecture_id NOT IN (SELECT id FROM lectures)",
@@ -66,7 +69,7 @@ impl Database {
                 println!("[Database] 已清理 {} 條孤立字幕記錄", count);
             }
         }
-        
+
         // 1. 創建 courses 表
         // 1. 創建 courses 表
         self.conn.execute(
@@ -83,29 +86,34 @@ impl Database {
 
         // 1.1 檢查 courses 表是否有 keywords 列 (遷移)
         let mut stmt = self.conn.prepare("PRAGMA table_info(courses)")?;
-        let has_keywords = stmt.query_map([], |row| row.get::<_, String>(1))?
+        let has_keywords = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
             .any(|name| name.unwrap_or_default() == "keywords");
         drop(stmt);
 
         if !has_keywords {
             println!("Migrating courses table: adding keywords column");
-            self.conn.execute("ALTER TABLE courses ADD COLUMN keywords TEXT", [])?;
+            self.conn
+                .execute("ALTER TABLE courses ADD COLUMN keywords TEXT", [])?;
         }
 
         // 1.2 檢查 courses 表是否有 syllabus_info 列 (遷移)
         let mut stmt = self.conn.prepare("PRAGMA table_info(courses)")?;
-        let has_syllabus_info = stmt.query_map([], |row| row.get::<_, String>(1))?
+        let has_syllabus_info = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
             .any(|name| name.unwrap_or_default() == "syllabus_info");
         drop(stmt);
 
         if !has_syllabus_info {
             println!("Migrating courses table: adding syllabus_info column");
-            self.conn.execute("ALTER TABLE courses ADD COLUMN syllabus_info TEXT", [])?;
+            self.conn
+                .execute("ALTER TABLE courses ADD COLUMN syllabus_info TEXT", [])?;
         }
 
         // 2. 檢查 lectures 表是否需要遷移
         let mut stmt = self.conn.prepare("PRAGMA table_info(lectures)")?;
-        let has_course_id = stmt.query_map([], |row| row.get::<_, String>(1))?
+        let has_course_id = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
             .any(|name| name.unwrap_or_default() == "course_id");
         drop(stmt); // 釋放語句
 
@@ -113,7 +121,8 @@ impl Database {
             println!("Migrating lectures table...");
             // 遷移邏輯
             // A. 重命名舊表
-            self.conn.execute("ALTER TABLE lectures RENAME TO lectures_old", [])?;
+            self.conn
+                .execute("ALTER TABLE lectures RENAME TO lectures_old", [])?;
 
             // B. 創建新表
             self.conn.execute(
@@ -136,20 +145,21 @@ impl Database {
             let mut stmt = self.conn.prepare("SELECT id, title, date, duration, pdf_path, status, created_at, updated_at FROM lectures_old")?;
             let lectures_iter = stmt.query_map([], |row| {
                 Ok((
-                    row.get::<_, String>(0)?, // id
-                    row.get::<_, String>(1)?, // title
-                    row.get::<_, String>(2)?, // date
-                    row.get::<_, i64>(3)?,    // duration
+                    row.get::<_, String>(0)?,         // id
+                    row.get::<_, String>(1)?,         // title
+                    row.get::<_, String>(2)?,         // date
+                    row.get::<_, i64>(3)?,            // duration
                     row.get::<_, Option<String>>(4)?, // pdf_path
-                    row.get::<_, String>(5)?, // status
-                    row.get::<_, String>(6)?, // created_at
-                    row.get::<_, String>(7)?, // updated_at
+                    row.get::<_, String>(5)?,         // status
+                    row.get::<_, String>(6)?,         // created_at
+                    row.get::<_, String>(7)?,         // updated_at
                 ))
             })?;
 
             for lecture in lectures_iter {
-                let (id, title, date, duration, pdf_path, status, created_at, updated_at) = lecture?;
-                
+                let (id, title, date, duration, pdf_path, status, created_at, updated_at) =
+                    lecture?;
+
                 // 為每個舊課程創建一個新的科目
                 let course = Course::new(title.clone(), None, None, None);
                 self.save_course(&course)?;
@@ -177,7 +187,7 @@ impl Database {
             println!("Migration completed.");
         } else {
             // 確保表存在 (如果已遷移過或全新安裝)
-             self.conn.execute(
+            self.conn.execute(
                 "CREATE TABLE IF NOT EXISTS lectures (
                     id TEXT PRIMARY KEY,
                     course_id TEXT NOT NULL,
@@ -270,9 +280,9 @@ impl Database {
     pub fn get_course(&self, id: &str) -> SqlResult<Option<Course>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, description, keywords, syllabus_info, created_at, updated_at
-             FROM courses WHERE id = ?1"
+             FROM courses WHERE id = ?1",
         )?;
-        
+
         match stmt.query_row([id], |row| Course::try_from(row)) {
             Ok(course) => Ok(Some(course)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -284,10 +294,11 @@ impl Database {
     pub fn list_courses(&self) -> SqlResult<Vec<Course>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, description, keywords, syllabus_info, created_at, updated_at
-             FROM courses ORDER BY created_at DESC"
+             FROM courses ORDER BY created_at DESC",
         )?;
-        
-        let courses = stmt.query_map([], |row| Course::try_from(row))?
+
+        let courses = stmt
+            .query_map([], |row| Course::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(courses)
     }
@@ -297,7 +308,8 @@ impl Database {
         // 由於設置了 ON DELETE CASCADE，刪除科目會自動刪除關聯的課堂
         // 但 SQLite 默認不開啟外鍵約束，需要啟用
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
-        self.conn.execute("DELETE FROM courses WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM courses WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -306,11 +318,14 @@ impl Database {
     /// 保存課程
     pub fn save_lecture(&self, lecture: &Lecture) -> SqlResult<()> {
         // 預先檢查 course 是否存在
-        let course_exists: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM courses WHERE id = ?1)",
-            [&lecture.course_id],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let course_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM courses WHERE id = ?1)",
+                [&lecture.course_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if !course_exists {
             println!(
@@ -356,9 +371,9 @@ impl Database {
     pub fn get_lecture(&self, id: &str) -> SqlResult<Option<Lecture>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, course_id, title, date, duration, pdf_path, status, created_at, updated_at
-             FROM lectures WHERE id = ?1"
+             FROM lectures WHERE id = ?1",
         )?;
-        
+
         match stmt.query_row([id], |row| Lecture::try_from(row)) {
             Ok(lecture) => Ok(Some(lecture)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -370,10 +385,11 @@ impl Database {
     pub fn list_lectures(&self) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, course_id, title, date, duration, pdf_path, status, created_at, updated_at
-             FROM lectures ORDER BY created_at DESC"
+             FROM lectures ORDER BY created_at DESC",
         )?;
-        
-        let lectures = stmt.query_map([], |row| Lecture::try_from(row))?
+
+        let lectures = stmt
+            .query_map([], |row| Lecture::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(lectures)
     }
@@ -382,17 +398,19 @@ impl Database {
     pub fn list_lectures_by_course(&self, course_id: &str) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, course_id, title, date, duration, pdf_path, status, created_at, updated_at
-             FROM lectures WHERE course_id = ?1 ORDER BY created_at DESC"
+             FROM lectures WHERE course_id = ?1 ORDER BY created_at DESC",
         )?;
-        
-        let lectures = stmt.query_map([course_id], |row| Lecture::try_from(row))?
+
+        let lectures = stmt
+            .query_map([course_id], |row| Lecture::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(lectures)
     }
 
     /// 刪除課程
     pub fn delete_lecture(&self, id: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM lectures WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM lectures WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -442,13 +460,16 @@ impl Database {
         }
 
         let lecture_id = &subtitles[0].lecture_id;
-        
+
         // 驗證 Lecture 存在
-        let lecture_exists: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = ?1)",
-            [lecture_id],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let lecture_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = ?1)",
+                [lecture_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if !lecture_exists {
             return Err(rusqlite::Error::QueryReturnedNoRows);
@@ -460,13 +481,16 @@ impl Database {
             [lecture_id],
             |row| row.get(0),
         )?;
-        
-        let course_exists: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM courses WHERE id = ?1)",
-            [&course_id],
-            |row| row.get(0),
-        ).unwrap_or(false);
-        
+
+        let course_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM courses WHERE id = ?1)",
+                [&course_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+
         if !course_exists {
             // 自動創建缺失的 Course
             let now = chrono::Utc::now().to_rfc3339();
@@ -495,17 +519,19 @@ impl Database {
     pub fn get_subtitles(&self, lecture_id: &str) -> SqlResult<Vec<Subtitle>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at
-             FROM subtitles WHERE lecture_id = ?1 ORDER BY timestamp ASC"
+             FROM subtitles WHERE lecture_id = ?1 ORDER BY timestamp ASC",
         )?;
-        
-        let subtitles = stmt.query_map([lecture_id], |row| Subtitle::try_from(row))?
+
+        let subtitles = stmt
+            .query_map([lecture_id], |row| Subtitle::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(subtitles)
     }
 
     /// 刪除課程的所有字幕
     pub fn delete_subtitles(&self, lecture_id: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM subtitles WHERE lecture_id = ?1", [lecture_id])?;
+        self.conn
+            .execute("DELETE FROM subtitles WHERE lecture_id = ?1", [lecture_id])?;
         Ok(())
     }
 
@@ -514,12 +540,7 @@ impl Database {
         self.conn.execute(
             "INSERT OR REPLACE INTO notes (lecture_id, title, content, generated_at)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                note.lecture_id,
-                note.title,
-                note.content,
-                note.generated_at
-            ],
+            rusqlite::params![note.lecture_id, note.title, note.content, note.generated_at],
         )?;
         Ok(())
     }
@@ -528,9 +549,9 @@ impl Database {
     pub fn get_note(&self, lecture_id: &str) -> SqlResult<Option<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT lecture_id, title, content, generated_at
-             FROM notes WHERE lecture_id = ?1"
+             FROM notes WHERE lecture_id = ?1",
         )?;
-        
+
         match stmt.query_row([lecture_id], |row| Note::try_from(row)) {
             Ok(note) => Ok(Some(note)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -540,7 +561,8 @@ impl Database {
 
     /// 刪除筆記
     pub fn delete_note(&self, lecture_id: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM notes WHERE lecture_id = ?1", [lecture_id])?;
+        self.conn
+            .execute("DELETE FROM notes WHERE lecture_id = ?1", [lecture_id])?;
         Ok(())
     }
 
@@ -557,8 +579,10 @@ impl Database {
 
     /// 獲取設置
     pub fn get_setting(&self, key: &str) -> SqlResult<Option<String>> {
-        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
-        
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
+
         match stmt.query_row([key], |row| row.get::<_, String>(0)) {
             Ok(value) => Ok(Some(value)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -568,20 +592,20 @@ impl Database {
 
     /// 獲取所有設置
     pub fn get_all_settings(&self) -> SqlResult<Vec<Setting>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value, updated_at FROM settings"
-        )?;
-        
-        let settings = stmt.query_map([], |row| Setting::try_from(row))?
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value, updated_at FROM settings")?;
+
+        let settings = stmt
+            .query_map([], |row| Setting::try_from(row))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(settings)
     }
 
     /// 刪除設置
     pub fn delete_setting(&self, key: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", [key])?;
         Ok(())
     }
 }
-
-

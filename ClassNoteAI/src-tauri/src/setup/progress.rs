@@ -1,9 +1,8 @@
 /**
  * Progress Reporting Module
- * 
+ *
  * Handles progress tracking and reporting for installations and downloads.
  */
-
 use serde::{Deserialize, Serialize};
 
 /// Progress status
@@ -56,7 +55,7 @@ impl Progress {
             message: None,
         }
     }
-    
+
     /// Create a new in-progress progress
     pub fn in_progress(task_id: &str, task_name: &str, current: u64, total: u64) -> Self {
         Self {
@@ -70,7 +69,7 @@ impl Progress {
             message: None,
         }
     }
-    
+
     /// Create a completed progress
     pub fn completed(task_id: &str, task_name: &str) -> Self {
         Self {
@@ -84,7 +83,7 @@ impl Progress {
             message: None,
         }
     }
-    
+
     /// Create a failed progress
     pub fn failed(task_id: &str, task_name: &str, error: &str) -> Self {
         Self {
@@ -98,7 +97,7 @@ impl Progress {
             message: Some(error.to_string()),
         }
     }
-    
+
     /// Get progress percentage (0-100)
     #[allow(dead_code)]
     pub fn percentage(&self) -> f32 {
@@ -108,7 +107,7 @@ impl Progress {
             (self.current as f32 / self.total as f32) * 100.0
         }
     }
-    
+
     /// Update with speed and ETA calculation
     pub fn with_speed(mut self, speed_bps: u64) -> Self {
         self.speed_bps = Some(speed_bps);
@@ -117,7 +116,7 @@ impl Progress {
         }
         self
     }
-    
+
     /// Add a message
     pub fn with_message(mut self, message: &str) -> Self {
         self.message = Some(message.to_string());
@@ -152,22 +151,26 @@ impl OverallProgress {
             error: None,
         }
     }
-    
+
     /// Get overall percentage
     pub fn overall_percentage(&self) -> f32 {
         if self.tasks.is_empty() {
             return 0.0;
         }
-        
+
         let total_tasks = self.tasks.len() as f32;
-        let completed_tasks = self.tasks.iter()
+        let completed_tasks = self
+            .tasks
+            .iter()
             .filter(|t| matches!(t.status, ProgressStatus::Completed))
             .count() as f32;
-        
-        let current_task_progress = self.tasks.get(self.current_task_index)
+
+        let current_task_progress = self
+            .tasks
+            .get(self.current_task_index)
             .map(|t| t.percentage() / 100.0)
             .unwrap_or(0.0);
-        
+
         ((completed_tasks + current_task_progress) / total_tasks) * 100.0
     }
 }

@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize Translator
     let mut translator = CT2Translator::new();
-    
+
     // Load Model
     println!("Loading model...");
     translator.load_model(abs_model_dir.to_str().unwrap())?;
@@ -23,13 +23,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Hello world",
         "This is a test sentence.",
         "Machine learning is fascinating.",
-        "How are you doing today?"
+        "How are you doing today?",
     ];
 
     println!("\nTranslating {} sentences...", texts.len());
 
     // Translate
-    let results = translator.translate_batch(&texts.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
+    let results =
+        translator.translate_batch(&texts.iter().map(|s| s.to_string()).collect::<Vec<_>>())?;
 
     for (i, (text, translation)) in texts.iter().zip(results.iter()).enumerate() {
         println!("\nTest {}:", i + 1);

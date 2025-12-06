@@ -1,11 +1,10 @@
 /**
  * Requirements Detection Module
- * 
+ *
  * Handles detection of all system and application requirements:
  * - System: Homebrew, CMake, FFmpeg
  * - Models: Whisper, CTranslate2 translation model
  */
-
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
@@ -69,10 +68,12 @@ pub fn check_macos_version() -> RequirementStatus {
                 if output.status.success() {
                     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
                     // Parse major version
-                    let major: u32 = version.split('.').next()
+                    let major: u32 = version
+                        .split('.')
+                        .next()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0);
-                    
+
                     if major >= 11 {
                         println!("[Setup] macOS version: {} (OK)", version);
                         RequirementStatus::Installed
@@ -89,7 +90,7 @@ pub fn check_macos_version() -> RequirementStatus {
             Err(e) => RequirementStatus::Error(format!("Failed to check macOS version: {}", e)),
         }
     }
-    
+
     #[cfg(not(target_os = "macos"))]
     {
         RequirementStatus::Installed // Not applicable on other platforms
@@ -110,7 +111,10 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
                         if parts.len() >= 4 {
                             if let Ok(available_mb) = parts[3].parse::<u64>() {
                                 if available_mb >= required_mb {
-                                    println!("[Setup] Disk space: {}MB available (need {}MB)", available_mb, required_mb);
+                                    println!(
+                                        "[Setup] Disk space: {}MB available (need {}MB)",
+                                        available_mb, required_mb
+                                    );
                                     return RequirementStatus::Installed;
                                 } else {
                                     return RequirementStatus::Outdated {
@@ -129,7 +133,7 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
             Err(e) => RequirementStatus::Error(format!("Failed to check disk space: {}", e)),
         }
     }
-    
+
     #[cfg(not(target_os = "macos"))]
     {
         RequirementStatus::Installed // Simplified check for other platforms
@@ -141,7 +145,7 @@ pub fn check_model(model_path: &Path, expected_files: &[&str]) -> RequirementSta
     if !model_path.exists() {
         return RequirementStatus::NotInstalled;
     }
-    
+
     // Check for expected files
     for file in expected_files {
         let file_path = model_path.join(file);
@@ -149,18 +153,18 @@ pub fn check_model(model_path: &Path, expected_files: &[&str]) -> RequirementSta
             return RequirementStatus::NotInstalled;
         }
     }
-    
+
     RequirementStatus::Installed
 }
 
 /// Check all requirements and return their status
 pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
     let models_dir = super::get_models_dir()?;
-    
+
     println!("[Setup] Models directory: {:?}", models_dir);
-    
+
     let mut requirements = Vec::new();
-    
+
     // System requirements
     requirements.push(Requirement {
         id: "macos_version".to_string(),
@@ -172,7 +176,7 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         install_size_mb: 0,
         install_source: None,
     });
-    
+
     requirements.push(Requirement {
         id: "disk_space".to_string(),
         name: "磁碟空間".to_string(),
@@ -183,17 +187,18 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         install_size_mb: 0,
         install_source: None,
     });
-    
+
     // NOTE: Removed system dependencies (Homebrew, CMake, FFmpeg)
     // These are only needed at development/compile time, not for end users.
     // The app is self-contained after packaging - whisper-rs and ct2rs
     // statically link their native dependencies.
-    
+
     // Model requirements - check multiple possible whisper models
-    // Models are stored directly in models_dir (e.g. models/ggml-base.bin)
-    let whisper_status = check_whisper_model(&models_dir);
+    // 使用統一路徑: {app_data}/models/whisper/
+    let whisper_dir = crate::paths::get_whisper_models_dir()?;
+    let whisper_status = check_whisper_model(&whisper_dir);
     println!("[Setup] Whisper model status: {:?}", whisper_status);
-    
+
     requirements.push(Requirement {
         id: "whisper_model".to_string(),
         name: "Whisper 語音識別模型".to_string(),
@@ -202,14 +207,19 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         status: whisper_status,
         is_optional: false,
         install_size_mb: 150,
-        install_source: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin".to_string()),
+        install_source: Some(
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin".to_string(),
+        ),
     });
-    
+
     // Translation model - M2M100 for multilingual translation
-    let translation_path = models_dir.join("ct2").join("m2m100-418M-ct2-int8");
-    let translation_status = check_model(&translation_path, &["model.bin", "shared_vocabulary.json"]);
+    // 使用統一路徑: {app_data}/models/translation/
+    let translation_dir = crate::paths::get_translation_models_dir()?;
+    let translation_path = translation_dir.join("m2m100-418M-ct2-int8");
+    let translation_status =
+        check_model(&translation_path, &["model.bin", "shared_vocabulary.json"]);
     println!("[Setup] Translation model status: {:?}", translation_status);
-    
+
     requirements.push(Requirement {
         id: "translation_model".to_string(),
         name: "M2M100 翻譯模型".to_string(),
@@ -220,7 +230,28 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         install_size_mb: 440,
         install_source: Some("https://github.com/sklonely/ClassNoteAI/releases/download/v0.1.2-models/m2m100-418M-ct2-int8.zip".to_string()),
     });
-    
+
+    // Embedding model - nomic-embed-text-v1 for PDF auto-alignment
+    // 使用統一路徑: {app_data}/models/embedding/
+    let embedding_dir = crate::paths::get_embedding_models_dir()?;
+    let embedding_path = embedding_dir.join("nomic-embed-text-v1");
+    let embedding_status = check_model(
+        &embedding_path,
+        &["model.safetensors", "tokenizer.json", "config.json"],
+    );
+    println!("[Setup] Embedding model status: {:?}", embedding_status);
+
+    requirements.push(Requirement {
+        id: "embedding_model".to_string(),
+        name: "Nomic Embedding 模型".to_string(),
+        description: "文本嵌入模型，用於 PDF 自動對齊功能 (~137MB)".to_string(),
+        category: RequirementCategory::Model,
+        status: embedding_status,
+        is_optional: true, // Optional - PDF alignment feature
+        install_size_mb: 137,
+        install_source: Some("https://huggingface.co/nomic-ai/nomic-embed-text-v1".to_string()),
+    });
+
     Ok(requirements)
 }
 
@@ -236,7 +267,7 @@ fn check_whisper_model(models_dir: &Path) -> RequirementStatus {
         "ggml-small-q5.bin",
         "ggml-medium-q5.bin",
     ];
-    
+
     for model in &possible_models {
         let model_path = models_dir.join(model);
         if model_path.exists() {
@@ -244,7 +275,7 @@ fn check_whisper_model(models_dir: &Path) -> RequirementStatus {
             return RequirementStatus::Installed;
         }
     }
-    
+
     println!("[Setup] No Whisper model found in {:?}", models_dir);
     RequirementStatus::NotInstalled
 }
@@ -252,22 +283,16 @@ fn check_whisper_model(models_dir: &Path) -> RequirementStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    #[test]
-    fn test_check_homebrew() {
-        let status = check_homebrew();
-        println!("Homebrew status: {:?}", status);
-    }
-    
-    #[test]
-    fn test_check_cmake() {
-        let status = check_cmake();
-        println!("CMake status: {:?}", status);
-    }
-    
+
     #[test]
     fn test_check_disk_space() {
         let status = check_disk_space(1024);
         println!("Disk space status: {:?}", status);
+    }
+
+    #[test]
+    fn test_check_macos_version() {
+        let status = check_macos_version();
+        println!("macOS version status: {:?}", status);
     }
 }

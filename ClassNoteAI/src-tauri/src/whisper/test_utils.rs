@@ -2,8 +2,7 @@
  * Whisper 測試工具
  * 用於測試轉錄功能
  */
-
-use crate::whisper::{WhisperModel, transcribe};
+use crate::whisper::{transcribe, WhisperModel};
 use anyhow::Result;
 
 /// 測試轉錄功能
@@ -15,14 +14,19 @@ pub async fn test_transcription(
 ) -> Result<()> {
     println!("[測試] 開始測試轉錄功能");
     println!("[測試] 模型路徑: {}", model_path);
-    println!("[測試] 音頻樣本數: {}, 採樣率: {}Hz", audio_data.len(), sample_rate);
+    println!(
+        "[測試] 音頻樣本數: {}, 採樣率: {}Hz",
+        audio_data.len(),
+        sample_rate
+    );
 
     // 加載模型
     let model = WhisperModel::load(model_path).await?;
     println!("[測試] 模型加載成功");
 
     // 執行轉錄
-    let result = transcribe::transcribe_audio(&model, audio_data, sample_rate, initial_prompt).await?;
+    let result =
+        transcribe::transcribe_audio(&model, audio_data, sample_rate, initial_prompt, None).await?;
 
     // 輸出結果
     println!("[測試] 轉錄完成");
@@ -69,5 +73,3 @@ pub fn generate_sine_wave(
 
     samples
 }
-
-

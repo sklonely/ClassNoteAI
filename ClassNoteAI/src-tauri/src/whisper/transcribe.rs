@@ -1,7 +1,6 @@
 /**
  * Whisper 轉錄邏輯
  */
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use whisper_rs::{FullParams, SamplingStrategy};
@@ -58,9 +57,9 @@ pub async fn transcribe_audio(
         if opts.strategy == "beam_search" {
             let beam_size = opts.beam_size.unwrap_or(5);
             println!("[Whisper] 使用 Beam Search 策略 (beam_size={})", beam_size);
-            let p = FullParams::new(SamplingStrategy::BeamSearch { 
-                beam_size: beam_size, 
-                patience: opts.patience.unwrap_or(1.0) 
+            let p = FullParams::new(SamplingStrategy::BeamSearch {
+                beam_size: beam_size,
+                patience: opts.patience.unwrap_or(1.0),
             });
             p
         } else {
@@ -99,28 +98,38 @@ pub async fn transcribe_audio(
         .iter()
         .map(|&sample| sample as f32 / 32768.0)
         .collect();
-    
+
     // 音頻正規化：確保音量在合適範圍內
     // 計算 RMS（均方根）來檢測音量
-    let rms: f32 = audio_f32.iter()
-        .map(|&x| x * x)
-        .sum::<f32>() / audio_f32.len() as f32;
+    let rms: f32 = audio_f32.iter().map(|&x| x * x).sum::<f32>() / audio_f32.len() as f32;
     let rms = rms.sqrt();
-    
+
     // 如果音量太低（RMS < 0.01），進行增益調整
     // 目標 RMS 約為 0.1-0.3（合適的語音音量）
     if rms > 0.0 && rms < 0.01 {
         let gain = 0.2 / rms; // 目標 RMS 為 0.2
         let max_gain = 3.0; // 最大增益限制，避免過度放大噪音
         let gain = gain.min(max_gain);
-        
-        println!("[Whisper] 音頻音量過低 (RMS={:.4})，應用增益: {:.2}x", rms, gain);
-        audio_f32 = audio_f32.iter().map(|&x| (x * gain).clamp(-1.0, 1.0)).collect();
+
+        println!(
+            "[Whisper] 音頻音量過低 (RMS={:.4})，應用增益: {:.2}x",
+            rms, gain
+        );
+        audio_f32 = audio_f32
+            .iter()
+            .map(|&x| (x * gain).clamp(-1.0, 1.0))
+            .collect();
     } else if rms > 0.5 {
         // 如果音量太高，進行衰減
         let gain = 0.3 / rms;
-        println!("[Whisper] 音頻音量過高 (RMS={:.4})，應用衰減: {:.2}x", rms, gain);
-        audio_f32 = audio_f32.iter().map(|&x| (x * gain).clamp(-1.0, 1.0)).collect();
+        println!(
+            "[Whisper] 音頻音量過高 (RMS={:.4})，應用衰減: {:.2}x",
+            rms, gain
+        );
+        audio_f32 = audio_f32
+            .iter()
+            .map(|&x| (x * gain).clamp(-1.0, 1.0))
+            .collect();
     } else {
         println!("[Whisper] 音頻音量正常 (RMS={:.4})", rms);
     }
@@ -188,4 +197,3 @@ pub async fn transcribe_audio(
         duration_ms,
     })
 }
-

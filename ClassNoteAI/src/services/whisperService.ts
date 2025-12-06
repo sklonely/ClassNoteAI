@@ -22,24 +22,12 @@ export interface TranscriptionSegment {
 export type ModelType = 'tiny' | 'base' | 'small' | 'medium' | 'large' | 'small-q5' | 'medium-q5';
 
 /**
- * 獲取應用數據目錄
- */
-async function getAppDataDir(): Promise<string> {
-  try {
-    const appDataDir = await path.appDataDir();
-    return appDataDir;
-  } catch (error) {
-    console.error('[WhisperService] 獲取應用數據目錄失敗:', error);
-    // 回退到當前目錄
-    return './models';
-  }
-}
-
-/**
- * 獲取模型文件路徑
+ * 獲取模型文件路徑（使用後端統一路徑 API）
  */
 async function getModelPath(modelType: ModelType = 'base'): Promise<string> {
-  const appDataDir = await getAppDataDir();
+  // 使用後端統一路徑: {app_data}/models/whisper/
+  const whisperDir = await invoke<string>('get_whisper_models_dir');
+
   // 處理量化模型的文件名
   let modelFileName = `ggml-${modelType}.bin`;
   if (modelType === 'small-q5') {
@@ -48,7 +36,7 @@ async function getModelPath(modelType: ModelType = 'base'): Promise<string> {
     modelFileName = 'ggml-medium-q5.bin';
   }
 
-  return await path.join(appDataDir, 'models', modelFileName);
+  return await path.join(whisperDir, modelFileName);
 }
 
 /**
@@ -93,11 +81,11 @@ export async function downloadModel(
   try {
     const { listen } = await import('@tauri-apps/api/event');
 
-    const appDataDir = await getAppDataDir();
-    const modelsDir = await path.join(appDataDir, 'models');
+    // 使用後端統一路徑
+    const whisperDir = await invoke<string>('get_whisper_models_dir');
 
     console.log('[WhisperService] 開始下載模型:', modelType);
-    console.log('[WhisperService] 保存目錄:', modelsDir);
+    console.log('[WhisperService] 保存目錄:', whisperDir);
 
     // 監聽下載進度事件
     const progressEventName = `download-progress-${modelType}`;
@@ -125,7 +113,7 @@ export async function downloadModel(
     try {
       const result = await invoke<string>('download_whisper_model', {
         modelType: modelType,
-        outputDir: modelsDir,
+        outputDir: whisperDir,
       });
 
       console.log('[WhisperService] 下載完成:', result);

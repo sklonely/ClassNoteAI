@@ -1,11 +1,10 @@
+use classnoteai_lib::translation::model;
 /**
  * 翻譯功能綜合測試
  * 測試多個模型和多個測試案例
  * 可以直接運行：cargo test --test test_translation_comprehensive
  */
-
 use std::path::Path;
-use classnoteai_lib::translation::model;
 
 // 測試案例（包括之前失敗的案例）
 const TEST_CASES: &[&str] = &[
@@ -57,7 +56,8 @@ const MODELS: &[ModelConfig] = &[
     ModelConfig {
         name: "opus-mt-en-zh",
         model_dir: "/Users/remote_sklonely/eduTranslate/models/opus-mt-en-zh-onnx",
-        tokenizer_path: "/Users/remote_sklonely/eduTranslate/models/opus-mt-en-zh-onnx/tokenizer.json",
+        tokenizer_path:
+            "/Users/remote_sklonely/eduTranslate/models/opus-mt-en-zh-onnx/tokenizer.json",
         src_lang: "en",
         tgt_lang: "zh",
         tgt_lang_token_id: 0, // opus-mt 不需要語言代碼
@@ -67,7 +67,8 @@ const MODELS: &[ModelConfig] = &[
     ModelConfig {
         name: "NLLB-200-distilled-600M",
         model_dir: "/Users/remote_sklonely/eduTranslate/models/nllb-200-distilled-600M-onnx",
-        tokenizer_path: "/Users/remote_sklonely/eduTranslate/models/nllb-200-distilled-600M-onnx/tokenizer.json",
+        tokenizer_path:
+            "/Users/remote_sklonely/eduTranslate/models/nllb-200-distilled-600M-onnx/tokenizer.json",
         src_lang: "eng_Latn",
         tgt_lang: "zho_Hans",
         tgt_lang_token_id: 256200, // zho_Hans token ID
@@ -77,7 +78,8 @@ const MODELS: &[ModelConfig] = &[
     ModelConfig {
         name: "MBart-Large-50",
         model_dir: "/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx",
-        tokenizer_path: "/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx/tokenizer.json",
+        tokenizer_path:
+            "/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx/tokenizer.json",
         src_lang: "en_XX",
         tgt_lang: "zh_CN",
         tgt_lang_token_id: 250025, // zh_CN token ID
@@ -136,17 +138,24 @@ async fn test_all_models_comprehensive() {
             total_count += 1;
             println!("\n測試案例 {}: \"{}\"", idx + 1, text);
 
-            match model.translate(text, model_config.src_lang, model_config.tgt_lang).await {
+            match model
+                .translate(text, model_config.src_lang, model_config.tgt_lang)
+                .await
+            {
                 Ok(translated) => {
                     // 檢查是否包含中文字符
-                    let has_chinese = translated.chars().any(|c| '\u{4e00}' <= c && c <= '\u{9fff}');
+                    let has_chinese = translated
+                        .chars()
+                        .any(|c| '\u{4e00}' <= c && c <= '\u{9fff}');
                     let is_different = translated.to_lowercase() != text.to_lowercase();
                     let is_empty = translated.trim().is_empty();
-                    
+
                     // 檢查是否重複（簡單檢查：唯一詞彙數 < 總詞彙數的 30%）
                     let words: Vec<&str> = translated.split_whitespace().collect();
-                    let unique_words: std::collections::HashSet<&str> = words.iter().cloned().collect();
-                    let is_repetitive = !words.is_empty() && (unique_words.len() as f32 / words.len() as f32) < 0.3;
+                    let unique_words: std::collections::HashSet<&str> =
+                        words.iter().cloned().collect();
+                    let is_repetitive =
+                        !words.is_empty() && (unique_words.len() as f32 / words.len() as f32) < 0.3;
 
                     if has_chinese {
                         chinese_count += 1;
@@ -192,16 +201,34 @@ async fn test_all_models_comprehensive() {
         println!("\n{}", "=".repeat(60));
         println!("統計結果:");
         println!("  總測試數: {}", total_count);
-        println!("  成功翻譯 (含中文且非空非重複): {}/{} ({:.1}%)", 
-                 success_count, total_count, success_count as f32 / total_count as f32 * 100.0);
-        println!("  包含中文: {}/{} ({:.1}%)", 
-                 chinese_count, total_count, chinese_count as f32 / total_count as f32 * 100.0);
-        println!("  空輸出: {}/{} ({:.1}%)", 
-                 empty_count, total_count, empty_count as f32 / total_count as f32 * 100.0);
-        println!("  重複輸出: {}/{} ({:.1}%)", 
-                 repetitive_count, total_count, repetitive_count as f32 / total_count as f32 * 100.0);
-        println!("  質量評分: {:.1}%", 
-                 (chinese_count as f32 / total_count as f32 * 100.0));
+        println!(
+            "  成功翻譯 (含中文且非空非重複): {}/{} ({:.1}%)",
+            success_count,
+            total_count,
+            success_count as f32 / total_count as f32 * 100.0
+        );
+        println!(
+            "  包含中文: {}/{} ({:.1}%)",
+            chinese_count,
+            total_count,
+            chinese_count as f32 / total_count as f32 * 100.0
+        );
+        println!(
+            "  空輸出: {}/{} ({:.1}%)",
+            empty_count,
+            total_count,
+            empty_count as f32 / total_count as f32 * 100.0
+        );
+        println!(
+            "  重複輸出: {}/{} ({:.1}%)",
+            repetitive_count,
+            total_count,
+            repetitive_count as f32 / total_count as f32 * 100.0
+        );
+        println!(
+            "  質量評分: {:.1}%",
+            (chinese_count as f32 / total_count as f32 * 100.0)
+        );
         println!("{}", "=".repeat(60));
     }
 }
@@ -239,10 +266,15 @@ async fn test_nllb_model_specific() {
     for text in TEST_CASES {
         println!("\n{}", "-".repeat(60));
         println!("測試: \"{}\"", text);
-        
-        match model.translate(text, model_config.src_lang, model_config.tgt_lang).await {
+
+        match model
+            .translate(text, model_config.src_lang, model_config.tgt_lang)
+            .await
+        {
             Ok(translated) => {
-                let has_chinese = translated.chars().any(|c| '\u{4e00}' <= c && c <= '\u{9fff}');
+                let has_chinese = translated
+                    .chars()
+                    .any(|c| '\u{4e00}' <= c && c <= '\u{9fff}');
                 println!("  結果: \"{}\"", translated);
                 println!("  包含中文: {}", has_chinese);
             }
@@ -252,5 +284,3 @@ async fn test_nllb_model_specific() {
         }
     }
 }
-
-

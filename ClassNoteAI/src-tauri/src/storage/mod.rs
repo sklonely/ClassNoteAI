@@ -2,12 +2,12 @@ pub mod database;
 pub mod models;
 
 pub use database::Database;
-pub use models::{Course, Lecture, Subtitle, Note, Setting};
+pub use models::{Course, Lecture, Note, Setting, Subtitle};
 
-use std::path::PathBuf;
-use tauri::Manager;
 use rusqlite::Result as SqlResult;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::Manager;
 use tokio::sync::Mutex;
 
 /// 數據庫路徑管理器
@@ -20,20 +20,21 @@ pub struct DatabaseManager {
 impl DatabaseManager {
     /// 初始化數據庫管理器
     pub fn new(app: &tauri::AppHandle) -> SqlResult<Self> {
-        let app_data_dir = app.path()
+        let app_data_dir = app
+            .path()
             .app_data_dir()
             .map_err(|e| rusqlite::Error::InvalidPath(PathBuf::from(e.to_string())))?;
-        
+
         // 確保目錄存在
         std::fs::create_dir_all(&app_data_dir)
             .map_err(|e| rusqlite::Error::InvalidPath(PathBuf::from(e.to_string())))?;
-        
+
         let db_path = app_data_dir.join("classnoteai.db");
-        
+
         // 初始化數據庫表結構
         let db = Database::new(&db_path)?;
         drop(db); // 關閉連接
-        
+
         Ok(Self {
             db_path: Arc::new(db_path),
         })
@@ -60,8 +61,8 @@ pub async fn init_db(app: &tauri::AppHandle) -> SqlResult<()> {
 /// 獲取數據庫管理器
 pub async fn get_db_manager() -> SqlResult<DatabaseManager> {
     let instance = DB_MANAGER.lock().await;
-    instance.as_ref()
+    instance
+        .as_ref()
         .ok_or_else(|| rusqlite::Error::InvalidPath(PathBuf::from("數據庫未初始化")))
         .cloned()
 }
-

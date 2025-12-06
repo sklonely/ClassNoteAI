@@ -1,13 +1,12 @@
+pub mod download;
 /**
  * Whisper ASR 服務模塊
  * 提供語音轉文字功能
  */
-
 pub mod model;
-pub mod transcribe;
-pub mod download;
 #[cfg(test)]
 pub mod test_utils;
+pub mod transcribe;
 
 use anyhow::Result;
 pub use model::WhisperModel;
@@ -20,9 +19,7 @@ pub struct WhisperService {
 impl WhisperService {
     /// 創建新的 Whisper 服務實例
     pub fn new() -> Self {
-        Self { 
-            model: None,
-        }
+        Self { model: None }
     }
 
     /// 加載 Whisper 模型
@@ -49,7 +46,7 @@ impl WhisperService {
     }
 
     /// 檢查模型是否已加載
-    #[allow(dead_code)]  // Available for future use
+    #[allow(dead_code)] // Available for future use
     pub fn is_model_loaded(&self) -> bool {
         self.model.is_some()
     }
@@ -60,4 +57,3 @@ impl Default for WhisperService {
         Self::new()
     }
 }
-

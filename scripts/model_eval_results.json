@@ -1,0 +1,198 @@
+{
+  "Helsinki-NLP/opus-mt-en-zh": [
+    {
+      "text": "Hello",
+      "category": "問候",
+      "translation": "你好 你好",
+      "time_ms": 540.2359962463379
+    },
+    {
+      "text": "Good morning",
+      "category": "問候",
+      "translation": "早上好,早早",
+      "time_ms": 119.22216415405273
+    },
+    {
+      "text": "Thank you",
+      "category": "日常",
+      "translation": "谢谢",
+      "time_ms": 47.251224517822266
+    },
+    {
+      "text": "I love you",
+      "category": "日常",
+      "translation": "我爱你",
+      "time_ms": 82.68404006958008
+    },
+    {
+      "text": "Let's look at this equation.",
+      "category": "教學",
+      "translation": "让我们来看看这个方程。",
+      "time_ms": 119.69304084777832
+    },
+    {
+      "text": "Can everyone see the screen?",
+      "category": "教學",
+      "translation": "大家都能看到屏幕吗?",
+      "time_ms": 104.51793670654297
+    },
+    {
+      "text": "Today we are going to discuss neural networks.",
+      "category": "教學",
+      "translation": "今天我们将讨论神经网络。",
+      "time_ms": 110.30983924865723
+    },
+    {
+      "text": "Please turn to page 42.",
+      "category": "教學",
+      "translation": "请翻到第42页。",
+      "time_ms": 133.56900215148926
+    },
+    {
+      "text": "The function returns a promise that resolves to an object.",
+      "category": "技術",
+      "translation": "函数返回对对象解析的承诺。",
+      "time_ms": 233.6418628692627
+    },
+    {
+      "text": "We need to install the dependencies using npm.",
+      "category": "技術",
+      "translation": "我们需要使用 npm 安装附属系统 。",
+      "time_ms": 198.7447738647461
+    },
+    {
+      "text": "Rust guarantees memory safety without a garbage collector.",
+      "category": "技術",
+      "translation": "没有垃圾收集器,路透路面保证记忆安全。",
+      "time_ms": 183.52103233337402
+    },
+    {
+      "text": "The latency is too high for real-time applications.",
+      "category": "技術",
+      "translation": "延迟时间太高,无法实时申请。",
+      "time_ms": 130.11980056762695
+    },
+    {
+      "text": "Although the model is small, it performs surprisingly well on specific tasks if fine-tuned correctly.",
+      "category": "長句",
+      "translation": "虽然该模式很小,但如果调整正确,在具体任务方面表现得令人惊讶地好。",
+      "time_ms": 433.5927963256836
+    },
+    {
+      "text": "In this lecture, we will explore how transformers revolutionized natural language processing by using attention mechanisms.",
+      "category": "長句",
+      "translation": "在这次演讲中,我们将探讨变压器如何利用关注机制使自然语言处理发生革命。",
+      "time_ms": 431.26606941223145
+    },
+    {
+      "text": "So, um, basically...",
+      "category": "口語",
+      "translation": "所以,嗯,基本上... ...",
+      "time_ms": 118.52097511291504
+    },
+    {
+      "text": "If we... you know, try to run this...",
+      "category": "口語",
+      "translation": "如果我们... 你知道,尝试运行这个...",
+      "time_ms": 137.8490924835205
+    }
+  ],
+  "facebook/nllb-200-distilled-600M": [
+    {
+      "text": "Hello",
+      "category": "問候",
+      "translation": "您好.",
+      "time_ms": 212.22877502441406
+    },
+    {
+      "text": "Good morning",
+      "category": "問候",
+      "translation": "您好.",
+      "time_ms": 145.2198028564453
+    },
+    {
+      "text": "Thank you",
+      "category": "日常",
+      "translation": "谢谢你.",
+      "time_ms": 110.87608337402344
+    },
+    {
+      "text": "I love you",
+      "category": "日常",
+      "translation": "我爱你.",
+      "time_ms": 117.92516708374023
+    },
+    {
+      "text": "Let's look at this equation.",
+      "category": "教學",
+      "translation": "让我们看看这个方程.",
+      "time_ms": 214.34593200683594
+    },
+    {
+      "text": "Can everyone see the screen?",
+      "category": "教學",
+      "translation": "每个人都能看到屏幕吗?",
+      "time_ms": 188.42601776123047
+    },
+    {
+      "text": "Today we are going to discuss neural networks.",
+      "category": "教學",
+      "translation": "今天我们将讨论神经网络.",
+      "time_ms": 215.32320976257324
+    },
+    {
+      "text": "Please turn to page 42.",
+      "category": "教學",
+      "translation": "请转向第42页.",
+      "time_ms": 159.88612174987793
+    },
+    {
+      "text": "The function returns a promise that resolves to an object.",
+      "category": "技術",
+      "translation": "函数返回一个对象解决的承诺.",
+      "time_ms": 266.7198181152344
+    },
+    {
+      "text": "We need to install the dependencies using npm.",
+      "category": "技術",
+      "translation": "我们需要使用npm安装依赖.",
+      "time_ms": 219.1779613494873
+    },
+    {
+      "text": "Rust guarantees memory safety without a garbage collector.",
+      "category": "技術",
+      "translation": "腐蚀保证没有垃圾收集器的记忆安全性.",
+      "time_ms": 299.3597984313965
+    },
+    {
+      "text": "The latency is too high for real-time applications.",
+      "category": "技術",
+      "translation": "对于实时应用来说,延迟太高了.",
+      "time_ms": 308.75515937805176
+    },
+    {
+      "text": "Although the model is small, it performs surprisingly well on specific tasks if fine-tuned correctly.",
+      "category": "長句",
+      "translation": "虽然模型很小,但如果正确调整,它在特定任务上表现得令人惊.",
+      "time_ms": 545.1850891113281
+    },
+    {
+      "text": "In this lecture, we will explore how transformers revolutionized natural language processing by using attention mechanisms.",
+      "category": "長句",
+      "translation": "在本讲座中,我们将探讨变革者如何通过注意力机制改变自然语言处理.",
+      "time_ms": 457.9300880432129
+    },
+    {
+      "text": "So, um, basically...",
+      "category": "口語",
+      "translation": "所以,基本上...",
+      "time_ms": 149.45411682128906
+    },
+    {
+      "text": "If we... you know, try to run this...",
+      "category": "口語",
+      "translation": "如果我们...你知道的,试着运行这个...",
+      "time_ms": 253.46708297729492
+    }
+  ]
+}

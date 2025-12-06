@@ -1,7 +1,61 @@
-# Tauri + React + Typescript
+# ClassNote AI
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+即時課堂轉錄與翻譯應用，幫助學生理解英文授課內容。
 
-## Recommended IDE Setup
+## ✨ 功能特色
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- 🎙️ **本地語音識別** - 使用 Whisper 模型進行即時轉錄
+- 🌐 **本地翻譯** - M2M100 模型英中翻譯，無需網路
+- 📄 **PDF 瀏覽** - 支援課程投影片同步顯示
+- 📝 **筆記導出** - 課後匯出 Markdown 格式筆記
+
+## 💻 系統需求
+
+- **macOS**: 11.0 (Big Sur) 或更高版本
+- **架構**: Apple Silicon (M1/M2/M3) 或 Intel
+- **儲存空間**: 2GB+ (用於 AI 模型)
+
+## 🚀 快速開始
+
+### 開發環境
+
+```bash
+# 安裝依賴
+npm install
+
+# 啟動開發模式
+npm run tauri dev
+```
+
+### 建置發行版
+
+```bash
+npm run tauri build
+```
+
+## 📁 專案結構
+
+```
+ClassNoteAI/
+├── src/                 # React 前端
+├── src-tauri/           # Tauri Rust 後端
+│   ├── src/
+│   │   ├── whisper/     # 語音識別模組
+│   │   ├── translation/ # 翻譯模組
+│   │   ├── storage/     # 資料存儲
+│   │   └── paths/       # 路徑管理
+│   └── Cargo.toml
+└── package.json
+```
+
+## 🛠️ 技術棧
+
+- **前端**: React + TypeScript + Tailwind CSS
+- **後端**: Rust (Tauri v2)
+- **ASR**: whisper-rs (whisper.cpp)
+- **翻譯**: ct2rs (CTranslate2)
+- **資料庫**: SQLite (rusqlite)
+
+## 📝 授權
+
+MIT License

@@ -125,3 +125,4 @@ if __name__ == '__main__':
     success = fix_tokenizer_json(model_dir)
     sys.exit(0 if success else 1)
 
+

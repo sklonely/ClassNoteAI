@@ -1,0 +1,92 @@
+[
+  {
+    "text": "Hello",
+    "python_result": "你好你好",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "Hello world",
+    "python_result": "喜好世界",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "Hello, how are you?",
+    "python_result": "你好,你好吗?",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "Good morning",
+    "python_result": "早上好,早",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "Thank you",
+    "python_result": "谢谢",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "I love you",
+    "python_result": "我爱你",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "What is your name?",
+    "python_result": "你叫什么名字? 名字吗?",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "How are you doing today?",
+    "python_result": "你今天怎么样?",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "The weather is nice today.",
+    "python_result": "今天天气不错",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  },
+  {
+    "text": "This is a test sentence for translation comparison.",
+    "python_result": "这是用于翻译比较的测试句 。",
+    "python_success": true,
+    "python_has_chinese": true,
+    "rust_result": null,
+    "rust_success": false,
+    "rust_has_chinese": false
+  }
+]

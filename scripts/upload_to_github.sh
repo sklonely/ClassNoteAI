@@ -117,3 +117,4 @@ echo "3. 運行以下命令更新配置："
 echo "   ./scripts/update_download_urls.sh $GITHUB_USERNAME $REPO_NAME $RELEASE_VERSION"
 echo ""
 
+

@@ -1,7 +1,6 @@
 /**
  * Whisper 模型管理
  */
-
 use anyhow::Result;
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
@@ -48,5 +47,3 @@ impl WhisperModel {
         &self.model_path
     }
 }
-
-

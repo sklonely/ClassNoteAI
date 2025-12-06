@@ -1,0 +1,62 @@
+[
+  {
+    "text": "Hello",
+    "result": "你好你好",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "Hello world",
+    "result": "喜好世界",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "Hello, how are you?",
+    "result": "你好,你好吗?",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "Good morning",
+    "result": "早上好,早",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "Thank you",
+    "result": "谢谢",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "I love you",
+    "result": "我爱你",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "What is your name?",
+    "result": "你叫什么名字? 名字吗?",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "How are you doing today?",
+    "result": "你今天怎么样?",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "The weather is nice today.",
+    "result": "今天天气不错",
+    "success": true,
+    "has_chinese": true
+  },
+  {
+    "text": "This is a test sentence for translation comparison.",
+    "result": "这是用于翻译比较的测试句 。",
+    "success": true,
+    "has_chinese": true
+  }
+]

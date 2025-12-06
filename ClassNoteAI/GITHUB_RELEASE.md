@@ -22,7 +22,7 @@
 
 ## 系統需求 Requirements
 
-- **macOS**: 12.0 (Monterey) 或更高版本
+- **macOS**: 11.0 (Big Sur) 或更高版本
 - **架構**: Apple Silicon (M1/M2/M3) 或 Intel
 
 ## 安裝說明 Installation

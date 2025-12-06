@@ -50,6 +50,31 @@ function App() {
     initTheme();
   }, []);
 
+  // 啟動時靜默檢查更新
+  useEffect(() => {
+    const checkForUpdates = async () => {
+      if (appState !== 'ready') return;
+
+      try {
+        // 動態導入避免阻塞啟動
+        const { updateService } = await import('./services/updateService');
+        const result = await updateService.checkForUpdates();
+
+        if (result.available) {
+          console.log(`[App] 發現新版本: ${result.version}`);
+          // TODO: 可以在這裡顯示更新通知 Toast
+        }
+      } catch (error) {
+        // 靜默失敗，不影響應用使用
+        console.warn('[App] 檢查更新失敗:', error);
+      }
+    };
+
+    // 延遲檢查，確保應用已完全載入
+    const timer = setTimeout(checkForUpdates, 3000);
+    return () => clearTimeout(timer);
+  }, [appState]);
+
   const handleSelectCourse = (courseId: string) => {
     navigate(`/course/${courseId}`);
   };

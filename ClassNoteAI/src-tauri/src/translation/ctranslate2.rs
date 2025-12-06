@@ -1,16 +1,15 @@
+use ct2rs::tokenizers::sentencepiece::Tokenizer as SentencePieceTokenizer;
 /**
  * CTranslate2 Translation Module
- * 
+ *
  * Provides translation functionality using CTranslate2 models via ct2rs.
  * Supports various translation models like Marian-MT and M2M100.
- * 
+ *
  * Note: For M2M100 multilingual models, the tokenizer in the model directory
  * needs to be configured with the correct source/target languages via
  * tokenizer_config.json or the source.spm/target.spm files.
  */
-
-use ct2rs::{Config, Translator, TranslationOptions, BatchType};
-use ct2rs::tokenizers::sentencepiece::Tokenizer as SentencePieceTokenizer;
+use ct2rs::{BatchType, Config, TranslationOptions, Translator};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -33,70 +32,79 @@ impl CT2Translator {
             target_lang: "zh".to_string(),
         }
     }
-    
+
     /// Load a CTranslate2 model from the given path
     pub fn load_model(&mut self, model_path: &str) -> Result<(), String> {
         println!("[CT2] Loading model from: {}", model_path);
-        
+
         if !Path::new(model_path).exists() {
             return Err(format!("Model path does not exist: {}", model_path));
         }
-        
+
         // Create translator with default config
         let config: Config = Default::default();
-        
+
         // Find SentencePiece model file
         let sp_model_path = Path::new(model_path).join("sentencepiece.bpe.model");
         if !sp_model_path.exists() {
-             return Err(format!("SentencePiece model not found at: {:?}", sp_model_path));
+            return Err(format!(
+                "SentencePiece model not found at: {:?}",
+                sp_model_path
+            ));
         }
-        
+
         // Initialize Tokenizer
         // Note: SentencePieceTokenizer::from_file expects (model_path, vocab_path).
         // For M2M100, we pass the model path for both as the vocab is typically embedded or handled by the model file.
         let tokenizer = SentencePieceTokenizer::from_file(&sp_model_path, &sp_model_path)
             .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
-            
+
         // Initialize Translator with tokenizer
         let translator = Translator::with_tokenizer(&model_path, tokenizer, &config)
             .map_err(|e| format!("Failed to load CT2 model: {}", e))?;
-        
+
         self.translator = Some(Arc::new(translator));
         self.model_path = Some(model_path.to_string());
-        
+
         println!("[CT2] Model loaded successfully");
         Ok(())
     }
-    
+
     /// Set source language (for future M2M100 support)
     #[allow(dead_code)]
     pub fn set_source_lang(&mut self, lang: &str) {
         self.source_lang = lang.to_string();
     }
-    
+
     /// Set target language (for future M2M100 support)
     #[allow(dead_code)]
     pub fn set_target_lang(&mut self, lang: &str) {
         self.target_lang = lang.to_string();
     }
-    
+
     /// Check if the translator is loaded
     pub fn is_loaded(&self) -> bool {
         self.translator.is_some()
     }
-    
+
     /// Translate a batch of texts with optional target language override
-    pub fn translate_batch(&self, texts: &[String], target_lang_override: Option<&str>) -> Result<Vec<String>, String> {
-        let translator = self.translator.as_ref()
+    pub fn translate_batch(
+        &self,
+        texts: &[String],
+        target_lang_override: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let translator = self
+            .translator
+            .as_ref()
             .ok_or_else(|| "Translator not loaded".to_string())?;
-        
+
         if texts.is_empty() {
             return Ok(vec![]);
         }
-        
+
         // Convert to Vec<&str> for the API
         let sources: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        
+
         // TranslationOptions with good defaults
         let options = TranslationOptions::<String, String> {
             beam_size: 4,
@@ -127,13 +135,13 @@ impl CT2Translator {
             max_batch_size: 0,
             return_logits_vocab: false,
             // Try adding target_prefix here?
-            // target_prefix: Some(vec![lang_token.to_string()]), 
+            // target_prefix: Some(vec![lang_token.to_string()]),
             // If this fails, we know it's not in options.
         };
-        
+
         // Determine target language
         let target_lang = target_lang_override.unwrap_or(&self.target_lang);
-        
+
         // Prepare target prefix (language token)
         // M2M100 requires the target language token as the first token
         // Map common codes to M2M100 tokens
@@ -148,30 +156,30 @@ impl CT2Translator {
             "ru" => "__ru__",
             _ => "__en__", // Default to English if unknown
         };
-        
+
         // Prepare target prefix (language token)
         let target_prefix = vec![vec![lang_token.to_string()]; sources.len()];
 
         // Translate using translate_batch_with_target_prefix
-        let results = translator.translate_batch_with_target_prefix(
-            &sources,
-            &target_prefix,
-            &options,
-            None
-        ).map_err(|e| format!("Translation failed: {}", e))?;
-        
+        let results = translator
+            .translate_batch_with_target_prefix(&sources, &target_prefix, &options, None)
+            .map_err(|e| format!("Translation failed: {}", e))?;
+
         // Extract translations from results
-        let translations: Vec<String> = results.into_iter()
+        let translations: Vec<String> = results
+            .into_iter()
             .map(|(translation, _score)| translation)
             .collect();
-        
+
         Ok(translations)
     }
-    
+
     /// Translate a single text
     pub fn translate(&self, text: &str) -> Result<String, String> {
         let results = self.translate_batch(&[text.to_string()], None)?;
-        results.into_iter().next()
+        results
+            .into_iter()
+            .next()
             .ok_or_else(|| "No translation result".to_string())
     }
 }
@@ -183,13 +191,14 @@ impl Default for CT2Translator {
 }
 
 /// Global CT2 translator instance
-static CT2_TRANSLATOR: tokio::sync::OnceCell<RwLock<CT2Translator>> = tokio::sync::OnceCell::const_new();
+static CT2_TRANSLATOR: tokio::sync::OnceCell<RwLock<CT2Translator>> =
+    tokio::sync::OnceCell::const_new();
 
 /// Get or initialize the CT2 translator
 async fn get_translator() -> &'static RwLock<CT2Translator> {
-    CT2_TRANSLATOR.get_or_init(|| async {
-        RwLock::new(CT2Translator::new())
-    }).await
+    CT2_TRANSLATOR
+        .get_or_init(|| async { RwLock::new(CT2Translator::new()) })
+        .await
 }
 
 /// Load CT2 model
@@ -228,20 +237,26 @@ pub async fn is_loaded() -> bool {
 }
 
 /// Translate text with language parameters (uses configured languages)
-pub async fn translate_text(text: &str, _source_lang: &str, target_lang: &str) -> Result<String, String> {
+pub async fn translate_text(
+    text: &str,
+    _source_lang: &str,
+    target_lang: &str,
+) -> Result<String, String> {
     // Use the provided target_lang instead of the default
     let translator = get_translator().await;
     let guard = translator.read().await;
-    
+
     let results = guard.translate_batch(&[text.to_string()], Some(target_lang))?;
-    results.into_iter().next()
+    results
+        .into_iter()
+        .next()
         .ok_or_else(|| "No translation result".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_translator_creation() {
         let translator = CT2Translator::new();

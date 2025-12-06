@@ -2,7 +2,6 @@
  * 翻譯功能測試
  * 可以直接運行：cargo test --test test_translation
  */
-
 use std::path::Path;
 
 // 導入翻譯模塊
@@ -17,7 +16,9 @@ async fn test_translation_basic() {
 
     // 使用新的 mbart-large-50 模型
     let model_dir = Path::new("/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx");
-    let tokenizer_path = Some(Path::new("/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx/tokenizer.json"));
+    let tokenizer_path = Some(Path::new(
+        "/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx/tokenizer.json",
+    ));
 
     // 檢查模型目錄是否存在
     if !model_dir.exists() {
@@ -44,11 +45,7 @@ async fn test_translation_basic() {
     }
 
     // 2. 測試翻譯
-    let test_texts = vec![
-        "Hello, how are you?",
-        "Hello",
-        "Hello world",
-    ];
+    let test_texts = vec!["Hello, how are you?", "Hello", "Hello world"];
 
     for text in test_texts {
         println!("\n{}", "=".repeat(60));
@@ -100,7 +97,9 @@ async fn test_translation_tokenization() {
 
     // 使用新的 mbart-large-50 模型
     let model_dir = Path::new("/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx");
-    let tokenizer_path = Some(Path::new("/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx/tokenizer.json"));
+    let tokenizer_path = Some(Path::new(
+        "/Users/remote_sklonely/eduTranslate/models/mbart-large-50-onnx/tokenizer.json",
+    ));
 
     if !model_dir.exists() {
         eprintln!("❌ 模型目錄不存在，跳過測試");
@@ -132,4 +131,3 @@ async fn test_translation_tokenization() {
     // 執行翻譯以觸發 tokenization
     let _ = model.translate(test_text, "en", "zh").await;
 }
-

@@ -1,9 +1,35 @@
 # ClassNote AI - Tauri 版本產品需求文檔 (PRD)
 
-**版本**: v1.0  
-**日期**: 2025-12-01  
-**技術棧**: Tauri (Rust + Web) - 純 Rust 實現  
-**狀態**: 規劃階段
+**版本**: v1.1
+**日期**: 2025-12-03
+**技術棧**: Tauri (Rust + React) - 純 Rust 本地實現
+**狀態**: 開發中
+
+---
+
+## ⚠️ 實現狀態 (v0.1.3)
+
+> 本章節標示 PRD 需求與實際程式碼的對應狀態
+
+### ✅ 已實現
+- 本地 Whisper ASR (whisper-rs)
+- 本地翻譯 (CTranslate2 + M2M100)
+- PDF 查看器 (PDF.js)
+- 音頻錄製 (Web Audio API)
+- SQLite 數據存儲
+- 筆記導出 (Markdown)
+- 深色/淺色主題
+
+### ❌ 未實現
+- **AI 助教對話** - PRD 第 86 行，需 LLM 整合
+- **精翻譯 (Fine)** - PRD 第 193 行，需 LLM 優化
+
+### ⚠️ 需修復
+- **PDF 自動對齊** - Embedding 功能有 Bug
+- **環境精靈** - 流程待完整測試
+
+### 📝 PRD 過時內容
+- 第 249-376 行描述的 Python/FastAPI 架構已棄用，現為純 Rust 架構
 
 ---
 
@@ -22,8 +48,6 @@
 - [11. 安全性與隱私](#11-安全性與隱私)
 - [12. MVP 範圍](#12-mvp-範圍)
 - [13. 未來增強功能](#13-未來增強功能)
-- [14. 成功指標](#14-成功指標)
-- [15. 遷移計劃](#15-遷移計劃)
 
 ---
 
@@ -38,17 +62,17 @@ ClassNote AI 是一款基於 Tauri 框架開發的跨平台桌面應用程式，
 - **即時理解**：提供低延遲的雙語字幕，幫助學生即時理解課堂內容
 - **智能輔助**：AI 助教隨時解答疑問，解釋概念
 - **自動整理**：課後自動生成結構化筆記，節省整理時間
-- **本地優先**：支持本地模式，保護隱私，減少網絡依賴
+- **本地優先**：支持完全本地模式（Whisper + Local Translation），保護隱私，無需網絡
 - **輕量高效**：應用體積小，啟動快速，資源占用低
 
 ### 1.3 技術優勢（Tauri 版本）
 
-- **輕量級**：應用體積小（前端 3-10MB），啟動快速
-- **現代化 UI**：使用 Web 技術（React/Vue），UI 靈活豐富
-- **高性能**：Rust 後端提供高性能，WebView 渲染流暢
+- **輕量級**：應用體積小（前端 < 10MB），啟動快速
+- **現代化 UI**：使用 React + Tailwind CSS，UI 靈活豐富
+- **高性能**：Rust 後端提供高性能計算，WebView 渲染流暢
 - **跨平台**：支持 macOS、Windows、Linux
 - **安全性**：Tauri 提供精細的權限控制和安全機制
-- **Python 生態**：後端服務繼續使用 Python，充分利用 AI/ML 庫
+- **純 Rust 架構**：移除 Python 依賴，簡化部署與分發
 
 ---
 
@@ -75,17 +99,17 @@ ClassNote AI 是一款基於 Tauri 框架開發的跨平台桌面應用程式，
 ### 3.1 產品目標（Goals）
 
 #### 核心目標
-1. **低延遲字幕**：提供 < 2 秒的即時字幕響應（粗字幕）
+1. **低延遲字幕**：提供 < 1 秒的即時字幕響應（Rolling Buffer + Greedy Decoding）
 2. **高準確度**：ASR 準確度 > 90%，翻譯品質 > 85%
 3. **穩定可靠**：支持離線降級模式，確保課堂不中斷
 4. **用戶友好**：直觀的 UI/UX，無需複雜設置即可使用
-5. **輕量高效**：應用體積 < 30MB，啟動時間 < 1 秒
+5. **輕量高效**：應用體積 < 50MB（不含模型），啟動時間 < 1 秒
 
 #### 功能目標
-- 即時語音識別（雙層 ASR：粗 → 精）
-- 中英雙語字幕實時顯示
+- 即時語音識別（Whisper-rs）
+- 中英雙語字幕實時顯示（Local/Remote Translation）
 - PDF/PPT 課程材料瀏覽
-- AI 助教即時問答
+- AI 助教即時問答（可選遠程 LLM）
 - 課後自動生成結構化筆記
 - 筆記導出（Markdown / PDF）
 
@@ -103,701 +127,151 @@ ClassNote AI 是一款基於 Tauri 框架開發的跨平台桌面應用程式，
 
 ### 4.1 整體架構
 
-產品採用**純 Rust 架構**，所有功能在 Tauri 應用內實現，無需 Python：
+產品採用**純 Rust 架構**，所有核心功能在 Tauri 應用內實現：
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│         Tauri 前端 (Rust + Web) - 輕量級 UI             │
+│         Tauri 前端 (React + TypeScript)                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │   UI 層       │  │  前端邏輯     │  │  系統 API    │  │
-│  │  (React/Vue) │  │  (TypeScript) │  │  (Rust)      │  │
+│  │   UI 層       │  │  前端邏輯     │  │  音頻採集    │  │
+│  │  (React)     │  │  (Services)  │  │ (Web Audio)  │  │
 │  └──────────────┘  └──────────────┘  └──────────────┘  │
 │         │                  │                  │          │
+│         │         Tauri Commands (IPC)        │          │
 │         │                  │                  │          │
-│         │         Web Audio API (音頻錄製)               │
-│         │                                              │
 │         └──────────────────┴──────────────────┘          │
-│                          │                              │
-│              HTTP REST API / WebSocket                  │
-│                          │                              │
-└──────────────────────────┼──────────────────────────────┘
-                           │
-                           │  (本地通信)
-                           │
-┌──────────────────────────┼──────────────────────────────┐
-│                          │  Python 後端服務 (FastAPI)   │
+│                            │                            │
+└────────────────────────────┼────────────────────────────┘
+                             │
+┌────────────────────────────┼────────────────────────────┐
+│         Tauri 後端 (Rust) - 高性能核心                   │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │  Whisper     │  │  音頻處理    │  │  其他服務    │  │
-│  │  ASR 服務    │  │  服務        │  │  (PDF/存儲)  │  │
+│  │  Whisper ASR │  │  翻譯服務    │  │  系統服務    │  │
+│  │ (whisper-rs) │  │ (ort/Remote) │  │ (FS/System)  │  │
 │  └──────────────┘  └──────────────┘  └──────────────┘  │
 │                                                         │
-│  ⭐ faster-whisper (完全本地處理，無需網絡)            │
-│  ⭐ 實時音頻轉錄，延遲 < 2 秒                           │
+│  ⭐ 本地推理：whisper-rs (C++ Core)                    │
+│  ⭐ 本地翻譯：ort (ONNX Runtime)                        │
+│  ⭐ 數據存儲：SQLite (rusqlite)                         │
 └─────────────────────────────────────────────────────────┘
-                           │
-                           │  (可選連接)
-                           │
-┌──────────────────────────┼──────────────────────────────┐
-│                          │  Server (FastAPI) - 可選增強   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │  API 層      │  │  AI 服務層    │  │  數據層      │  │
-│  │  (FastAPI)   │  │  (Whisper/   │  │  (SQLite/    │  │
-│  │              │  │   LLM/翻譯)  │  │  向量DB)     │  │
-│  └──────────────┘  └──────────────┘  └──────────────┘  │
-│                                                         │
-│  ⚠️ 提供：精字幕、翻譯、AI問答、筆記生成（可選）         │
-└─────────────────────────────────────────────────────────┘
-
-關鍵說明：
-⭐ = 必須功能（完全本地）
-⚠️ = 可選功能（需要服務端）
 ```
 
 **架構特點**：
-- **前端輕量級**：Tauri 前端體積小（3-10MB），啟動快速
-- **後端 Python 服務**：繼續使用 faster-whisper，保持性能
-- **前後端分離**：通過 HTTP/WebSocket 通信
-- **離線優先**：Python 後端服務本地運行，無需網絡
+- **前端驅動**：前端負責音頻採集、VAD 判斷、滾動緩衝區管理。
+- **後端計算**：Rust 負責重型計算（ASR 推理、本地翻譯）。
+- **零依賴**：無需安裝 Python 或其他運行時，單一可執行文件。
 
-### 4.2 前端架構（Tauri）
+### 4.2 前端架構（React）
 
-#### 4.2.1 模塊劃分
+#### 4.2.1 核心模塊
+- **AudioRecorder**: Web Audio API 錄音，Worklet 處理音頻流。
+- **TranscriptionService**: 管理 Rolling Buffer，調用後端 ASR。
+- **SubtitleService**: 管理字幕狀態、穩定性（Local Agreement）。
+- **LectureView**: 主界面，集成 PDF Viewer 和字幕顯示。
 
-```
-Frontend/
-├── src/                    # 前端源代碼
-│   ├── components/        # React/Vue 組件
-│   │   ├── MainWindow.tsx
-│   │   ├── LectureView.tsx
-│   │   ├── NotesView.tsx
-│   │   ├── SettingsView.tsx
-│   │   ├── PDFViewer.tsx
-│   │   ├── SubtitleWidget.tsx
-│   │   └── AIChatWidget.tsx
-│   ├── services/          # 前端服務
-│   │   ├── api.ts         # API 調用
-│   │   ├── audio.ts       # 音頻錄製（Web Audio API）
-│   │   └── storage.ts     # 本地存儲（IndexedDB）
-│   ├── hooks/             # React Hooks（如使用 React）
-│   ├── utils/             # 工具函數
-│   └── types/             # TypeScript 類型定義
-│
-├── src-tauri/             # Tauri 後端（Rust）
-│   ├── src/
-│   │   ├── main.rs        # 主入口
-│   │   ├── commands.rs    # Tauri 命令
-│   │   ├── audio.rs       # 音頻處理（如需要）
-│   │   └── system.rs      # 系統 API 調用
-│   └── Cargo.toml         # Rust 依賴
-│
-├── public/                # 靜態資源
-└── package.json          # Node.js 依賴
-```
+### 4.3 Rust 後端架構
 
-#### 4.2.2 核心組件
+#### 4.3.1 核心模塊
+- **whisper**: 封裝 `whisper-rs`，管理模型加載與推理上下文。
+- **translation**: 封裝 `ort` 進行本地神經機器翻譯，或調用遠程 API。
+- **commands**: 暴露給前端的 Tauri 命令接口。
+- **storage**: SQLite 數據庫管理。
 
-**主窗口（MainWindow）**
-- 使用 React/Vue 組件
-- 包含導航欄、內容區域
-- 管理多個視圖（上課、筆記、設置）
-
-**上課視圖（LectureView）**
-- PDF 查看器區域（PDF.js）
-- 字幕顯示區域
-- 控制面板（開始/停止錄音、連接狀態）
-- AI 助教面板
-
-**筆記視圖（NotesView）**
-- 課程列表側邊欄
-- 筆記內容顯示區
-- 導出功能按鈕
-
-**設置視圖（SettingsView）**
-- 服務器連接設置
-- 音頻設備選擇
-- 模型選擇（Whisper 大小）
-- 字幕顯示設置
-- 隱私設置
-
-### 4.3 Rust 後端架構（純 Rust 實現）
-
-**重要說明**：
-- **所有功能在 Rust 中實現**，無需 Python
-- **同進程調用**：前端通過 Tauri Commands 直接調用 Rust 後端
-- **零 IPC 開銷**：無需 HTTP/WebSocket 通信
-- **用戶體驗**：用戶只需雙擊應用圖標，應用完全自動化
-
-#### 4.3.1 Rust 服務模塊
-
-```
-src-tauri/src/
-├── main.rs                 # Tauri 應用入口
-├── commands.rs            # Tauri Commands（API 接口）
-├── whisper/               # Whisper ASR 服務
-│   ├── mod.rs
-│   ├── model.rs           # 模型管理
-│   └── transcribe.rs      # 轉錄邏輯
-├── audio/                 # 音頻處理
-│   ├── mod.rs
-│   ├── recorder.rs        # 音頻錄製（cpal）
-│   ├── processor.rs       # 音頻處理
-│   └── vad.rs             # 語音活動檢測
-├── storage/               # 數據存儲
-│   ├── mod.rs
-│   ├── database.rs        # SQLite 數據庫
-│   └── models.rs          # 數據模型
-├── pdf/                   # PDF 處理（可選）
-│   ├── mod.rs
-│   └── viewer.rs          # PDF 解析
-└── utils/                 # 工具函數
-    ├── config.rs          # 配置管理
-    └── error.rs           # 錯誤處理
-```
-
-#### 4.3.2 Tauri Commands API
-
-**直接調用，無 HTTP 開銷**：
-
-```rust
-// src-tauri/src/commands.rs
-
-#[tauri::command]
-async fn transcribe_audio(
-    audio_data: Vec<u8>,
-    sample_rate: u32,
-    language: Option<String>,
-) -> Result<TranscriptionResult, String> {
-    // 直接調用 Rust Whisper 服務
-    whisper::transcribe(audio_data, sample_rate, language)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn start_recording(device_id: Option<u32>) -> Result<(), String> {
-    audio::recorder::start(device_id)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn stop_recording() -> Result<Vec<u8>, String> {
-    audio::recorder::stop()
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn save_lecture(lecture: Lecture) -> Result<(), String> {
-    storage::save_lecture(lecture)
-        .map_err(|e| e.to_string())
-}
-```
-
-**前端調用示例**：
-```typescript
-// 前端直接調用，無 HTTP 開銷
-import { invoke } from '@tauri-apps/api/tauri';
-
-const result = await invoke('transcribe_audio', {
-  audioData: audioBuffer,
-  sampleRate: 16000,
-  language: 'en'
-});
-```
-
-#### 4.3.3 核心 Rust 庫
-
-**Whisper ASR**：
-- `whisper-rs`：Rust 綁定的 Whisper
-- 或 `whisper.cpp`：C++ 實現，通過 Rust FFI 調用
-
-**音頻處理**：
-- `cpal`：跨平台音頻錄製
-- `webrtc-vad-rs`：語音活動檢測
-- `rubato`：音頻重採樣
-
-**數據存儲**：
-- `rusqlite`：SQLite 數據庫
-- `serde`：序列化/反序列化
-
-**PDF 處理**（可選）：
-- `pdf` 或 `lopdf`：PDF 解析
-- 或使用前端 PDF.js（推薦）
-
-### 4.4 遠程服務端（可選增強）
-
-**重要說明**：遠程服務端為可選增強功能，用於提供高品質的精字幕和翻譯。本地 Rust 服務提供粗字幕，完全獨立運行。
-
-遠程服務端可以使用任何技術棧（FastAPI + Python 或其他），提供：
-- Whisper Large ASR（精字幕，可選）
-- 翻譯服務（中英翻譯，可選）
-- LLM 問答（AI 助教，可選）
-- 課後筆記生成（可選）
-- 向量索引（未來）
-
-**離線模式**：
-- 本地 Rust 服務無遠程服務端連接時，仍可正常使用
-- 僅顯示粗字幕（英文），無翻譯
-- AI 助教功能不可用（如需要）
-- 課後筆記生成功能不可用（如需要）
-
-### 4.4 遠程服務端（可選增強）
-
-**重要說明**：遠程服務端為可選增強功能，用於提供高品質的精字幕和翻譯。本地 Python 服務提供粗字幕，完全獨立運行。
-
-遠程服務端繼續使用 FastAPI + Python，提供：
-- Whisper Large ASR（精字幕，可選）
-- 翻譯服務（中英翻譯，可選）
-- LLM 問答（AI 助教，可選）
-- 課後筆記生成（可選）
-- 向量索引（未來）
-
-**離線模式**：
-- 本地 Python 服務無遠程服務端連接時，仍可正常使用
-- 僅顯示粗字幕（英文），無翻譯
-- AI 助教功能不可用（如需要）
-- 課後筆記生成功能不可用（如需要）
+#### 4.3.2 性能優化
+- **Whisper**: 使用 `whisper.cpp` 綁定，支持 CoreML/AVX2 加速。
+- **Decoding**: 實時模式使用 Greedy Decoding (`best_of: 1`)。
+- **Model**: 支持 Quantized Models (q5_0, q8_0) 和 Distil-Whisper。
 
 ---
 
 ## 5. 核心功能需求
 
-### 5.1 課程材料瀏覽（PDF Viewer）
+### 5.1 語音輸入與即時字幕
 
 #### 功能描述
-提供課程材料的瀏覽功能，支持 PDF。
-
-#### 詳細需求
-
-**PDF 查看器**
-- ✅ 支持 PDF 文件打開和顯示（PDF.js）
-- ✅ 頁面導航（上一頁/下一頁/跳轉）
-- ✅ 縮放功能（放大/縮小/適應窗口）
-- ✅ 文本選擇和複製
-- ✅ 當前頁面文本提取（供 LLM 上下文使用）
-- ⏸️ 高亮和註記（未來版本）
-
-**PPT 支持**
-- ✅ 自動轉換 PPT 為 PDF（後端處理）
-- ✅ 轉換後按 PDF 方式顯示
-
-**UI 要求**
-- 清晰的頁面指示器（當前頁/總頁數）
-- 快捷鍵支持（方向鍵翻頁、Ctrl+滾輪縮放）
-- 響應式布局，適應窗口大小
-
-### 5.2 語音輸入與即時字幕
-
-#### 功能描述
-實現雙層 ASR 系統：**本地 Rust 服務快速識別（粗字幕）** + **遠程服務端精細識別（精字幕）**。
-
-**重要說明**：粗字幕完全在本地 Rust 服務處理，不依賴遠程服務端。遠程服務端僅用於生成高品質的精字幕和翻譯。
+實現低延遲、高準確度的實時語音轉錄。
 
 #### 詳細需求
 
 **音頻錄製（前端）**
-- ✅ 使用 Web Audio API 錄製麥克風
-- ✅ 麥克風設備選擇
-- ✅ 音頻格式：16kHz, 16-bit, Mono（Whisper 標準）
-- ✅ 實時音頻流處理
-- ✅ 音量監控和可視化
+- ✅ 使用 Web Audio API 錄製
+- ✅ 格式：16kHz, 16-bit, Mono
+- ✅ 前端 VAD：檢測靜音以觸發 Commit
 
-**語音活動檢測（VAD）**
-- ✅ 前端或後端自動檢測語音活動
-- ✅ 過濾靜音片段，避免發送空白音頻
-- ✅ 可配置靈敏度
+**ASR 服務（Rust）**
+- ✅ **引擎**：`whisper-rs` (基於 whisper.cpp)
+- ✅ **模型**：支持 Base, Small, Distil-Small, Distil-Medium
+- ✅ **延遲**：< 1 秒（Rolling Buffer 機制）
+- ✅ **策略**：
+    - **Streaming**: 前端維護 10s 緩衝區，每 800ms 請求一次轉錄。
+    - **Stabilization**: 基於 VAD 和文本重疊算法確定 "Stable" 文本。
 
-**本地 Rust 服務 ASR（粗字幕）** ⭐ **完全本地處理**
-- ✅ 使用 whisper-rs 或 whisper.cpp（Rust 實現）
-- ✅ 音頻切片（2-4 秒）
-- ✅ **在本地 Rust 服務實時轉錄，延遲 < 2 秒**
-- ✅ **粗字幕立即顯示，不等待遠程服務端**
-- ✅ 字幕緩存（最近 2-5 分鐘）
-- ✅ **支持完全離線模式**（無遠程服務端連接時仍可工作）
-
-**通信方式**
-- ✅ Tauri Commands（直接調用，零 IPC 開銷）
-- ✅ 同進程調用，無需 HTTP/WebSocket
-
-**延遲優勢**
-- ✅ **零 IPC 開銷**：直接函數調用
-- ✅ **總延遲僅為處理時間**：< 2 秒（無通信延遲）
-
-**遠程服務端 ASR（精字幕）** - 可選增強功能
-- ✅ 將音頻切片**並行**發送到遠程服務端（不阻塞粗字幕顯示）
-- ✅ 遠程服務端使用 Whisper Large 模型處理
-- ✅ 接收精細 transcript 和中文翻譯
-- ✅ 自動替換粗字幕為精字幕（當遠程服務端響應到達時）
-- ⚠️ **網絡異常時不影響粗字幕顯示**（自動降級到純本地模式）
-- ⚠️ **遠程服務端為可選**：無遠程服務端時，應用仍可正常使用（僅顯示粗字幕）
-
-**字幕顯示**
-- ✅ 實時更新字幕內容
-- ✅ 粗字幕 → 精字幕自動覆蓋
-- ✅ 時間戳顯示
-- ✅ 字幕歷史記錄（可滾動查看）
-
-**網絡處理**
-- ✅ 自動重連機制（僅影響精字幕和翻譯功能）
-- ✅ 網絡異常時顯示提示，但不影響粗字幕顯示
-- ✅ **完全支持離線模式**：無遠程服務端連接時，僅顯示粗字幕（英文），仍可正常使用
-- ✅ 遠程服務端連接恢復後，自動恢復精字幕和翻譯功能
-
-### 5.3 中英雙語字幕
+### 5.2 中英雙語字幕
 
 #### 功能描述
-顯示中英文對照字幕，幫助用戶理解內容。
+實時顯示英文原文和中文翻譯。
 
 #### 詳細需求
+- ✅ **粗翻譯 (Rough)**：
+    - 本地：使用 `ort` 運行量化 NMT 模型（如 Opus-MT）。
+    - 遠程：Google Translate (Unofficial) 或其他 API。
+- ✅ **精翻譯 (Fine)**：
+    - 課後或段落結束後，調用 LLM 進行優化（可選）。
+- ✅ **顯示**：雙行顯示，支持自定義樣式。
 
-**字幕格式**
-- ✅ 英文原文（上方）
-- ✅ 中文翻譯（下方）
-- ✅ 可切換顯示模式：
-  - 僅英文
-  - 僅中文
-  - 中英對照（默認）
-
-**字幕樣式**
-- ✅ 字體大小可調（12pt - 24pt）
-- ✅ 字體顏色可自定義
-- ✅ 背景透明度可調
-- ✅ 字幕位置可調整（底部/頂部/浮動）
-
-**字幕功能**
-- ✅ 每句字幕帶時間戳
-- ✅ 字幕歷史記錄（可查看完整記錄）
-- ✅ 字幕搜索功能
-- ✅ 字幕導出（文本文件）
-
-### 5.4 AI 助教（LLM Floating Assistant）
+### 5.3 課程材料與筆記
 
 #### 功能描述
-提供對話面板，用戶可以隨時提問，AI 基於上下文回答。
+集成 PDF 閱讀與自動筆記。
 
 #### 詳細需求
-
-**對話窗口**
-- ✅ 固定面板（可調整大小）
-- ✅ 對話歷史顯示
-- ✅ 輸入框和發送按鈕
-- ✅ 加載狀態指示
-
-**提問類型**
-- ✅ 解釋剛剛那句字幕
-- ✅ 總結最近 1-5 分鐘內容
-- ✅ 解釋 PDF 當前頁面內容
-- ✅ 自由提問（基於課堂上下文）
-
-**上下文提供**
-- ✅ 最近 N 秒字幕（可配置）
-- ✅ 當前 PDF 頁面文本
-- ✅ 課程主題和元數據
-
-**回答顯示**
-- ✅ Markdown 格式支持
-- ✅ 代碼高亮（如適用）
-- ✅ 複製回答功能
-- ✅ 導出對話記錄
-
-### 5.5 課後筆記生成
-
-#### 功能描述
-課程結束後，自動生成結構化的課堂筆記。
-
-#### 詳細需求
-
-**筆記內容**
-- ✅ 全堂課 transcript（中英對照）
-- ✅ 主題分段與摘要
-- ✅ 關鍵詞表（含解釋）
-- ✅ 所有 LLM Q&A 記錄
-- ✅ 課程元數據（日期、時長、PDF 文件名）
-
-**筆記格式**
-- ✅ Markdown 格式
-- ✅ 結構化章節
-- ✅ 時間軸標記
-- ✅ 關鍵詞高亮
-
-**筆記管理**
-- ✅ 課程列表顯示
-- ✅ 筆記預覽
-- ✅ 筆記搜索
-- ✅ 筆記導出（Markdown / PDF）
-
-**生成流程**
-- ✅ 課程結束後自動觸發
-- ✅ 生成進度顯示
-- ✅ 生成完成通知
-- ✅ 支持手動重新生成
-
-### 5.6 設置與配置
-
-#### 功能描述
-提供完整的應用設置界面。
-
-#### 詳細需求
-
-**服務器設置**
-- ✅ 遠程服務器 URL 和端口配置
-- ✅ 連接測試功能
-- ✅ 本地模式開關
-- ✅ 自動重連設置
-
-**音頻設置**
-- ✅ 麥克風設備選擇
-- ✅ 採樣率設置
-- ✅ 音頻切片時長
-- ✅ VAD 靈敏度
-
-**模型設置**
-- ✅ Whisper 模型選擇（Tiny/Base/Small）
-- ✅ 語言選擇（自動/英文/中文）
-- ✅ 模型下載和管理
-
-**字幕設置**
-- ✅ 字體大小和顏色
-- ✅ 顯示模式（僅英文/僅中文/對照）
-- ✅ 字幕位置
-- ✅ 背景透明度
-
-**隱私設置**
-- ✅ 本地模式開關
-- ✅ 數據清除功能
-- ✅ 錄音權限管理
+- ✅ **PDF Viewer**: 基於 PDF.js，支持翻頁、縮放。
+- ✅ **筆記生成**: 課後將 Transcript 整理為 Markdown 筆記。
+- ✅ **導出**: 支持導出為 Markdown 或 PDF。
 
 ---
 
-## 6. 用戶流程
+## 6. 技術規格
 
-### 6.1 首次啟動流程
+### 6.1 前端技術棧
+- **Framework**: React 18 + TypeScript
+- **Build Tool**: Vite
+- **Styling**: Tailwind CSS
+- **State Management**: React Context / Hooks
+- **Audio**: Web Audio API (AudioWorklet)
 
-1. **啟動應用**
-   - 用戶雙擊應用圖標（`ClassNote AI.app` / `ClassNote AI.exe`）
-   - Tauri 應用啟動（< 1 秒）
-   - Rust 後端就緒（同進程，零啟動時間）
-   - 檢查系統權限（麥克風、文件訪問）
-   - 顯示主窗口
-   - **用戶無需任何額外操作**，應用完全自動化
+### 6.2 後端技術棧
+- **Core**: Rust (Tauri v2)
+- **ASR**: `whisper-rs` (v0.11+)
+- **Translation**: `ort` (ONNX Runtime)
+- **Database**: `rusqlite`
+- **HTTP**: `reqwest`
 
-2. **初始設置**
-   - 選擇麥克風設備
-   - 配置遠程服務器連接（或選擇本地模式）
-   - 下載 Whisper 模型（如需要）
-   - 完成設置嚮導
-
-### 6.2 上課流程（Live Lecture Flow）
-
-1. **準備階段**
-   - 打開應用
-   - 載入 PDF/PPT 課程材料
-   - 檢查 Whisper 模型是否就緒
-   - 檢查遠程服務器連接（如使用）
-
-2. **開始上課**
-   - 點擊「開始上課」按鈕
-   - 輸入課程信息（課程名、日期等）
-   - 點擊「開始錄音」
-
-3. **實時處理**
-   - 前端開始錄音（Web Audio API）
-   - 音頻數據通過 Tauri Commands 發送到 Rust 後端（直接調用）
-   - **本地 Rust 服務 Whisper 立即處理音頻，生成粗字幕（< 2 秒延遲）**
-   - **粗字幕立即顯示在界面上（完全本地，無需等待遠程服務端）**
-   - **同時**，音頻切片並行發送到遠程服務端（不阻塞粗字幕顯示）
-   - 遠程服務端處理後返回精字幕和中文翻譯
-   - 當遠程服務端響應到達時，精字幕自動替換粗字幕
-   - ⚠️ **即使遠程服務端無響應，粗字幕仍持續顯示**（離線模式）
-
-4. **互動功能**
-   - 用戶可隨時打開 AI 助教面板
-   - 提問關於當前內容的問題
-   - 查看 PDF 當前頁面
-   - 調整字幕顯示設置
-
-5. **結束課程**
-   - 點擊「停止錄音」
-   - 點擊「結束課程」
-   - 確認後觸發筆記生成
-
-### 6.3 課後流程（Post-Lecture Flow）
-
-1. **筆記生成**
-   - 系統自動開始生成筆記
-   - 顯示生成進度
-   - 生成完成後通知用戶
-
-2. **查看筆記**
-   - 切換到「筆記」視圖
-   - 選擇課程
-   - 查看完整筆記內容
-
-3. **導出筆記**
-   - 點擊「導出 Markdown」
-   - 或點擊「導出 PDF」
-   - 選擇保存位置
-   - 完成導出
-
-### 6.4 設置流程
-
-1. **打開設置**
-   - 從導航欄打開設置
-   - 或使用快捷鍵（Ctrl+,）
-
-2. **修改設置**
-   - 在各個分類中修改設置
-   - 實時預覽效果（如字幕樣式）
-
-3. **保存設置**
-   - 點擊「保存」按鈕
-   - 設置立即生效
-   - 部分設置需要重啟應用
+### 6.3 模型規格
+- **ASR 模型**:
+    - 格式: GGML / GGUF
+    - 推薦: `distil-whisper-small.en` (速度快，準度高)
+    - 備選: `base.en`, `small.en`
+- **翻譯模型**:
+    - 格式: ONNX (Quantized)
+    - 模型: Helsinki-NLP/opus-mt-en-zh (Int8)
 
 ---
 
-## 7. 技術規格
+## 7. 性能要求
 
-### 7.1 前端技術棧（Tauri）
+1.  **啟動時間**: < 1 秒
+2.  **ASR 延遲**: < 1 秒 (從說話結束到字幕上屏)
+3.  **內存佔用**: < 500MB (加載 Small 模型時)
+4.  **CPU 佔用**: < 30% (M1/M2 Mac)
 
-#### 核心框架
-- **UI 框架**: React 18+ / Vue 3+ / Svelte（推薦 React）
-- **語言**: TypeScript
-- **樣式**: Tailwind CSS / CSS Modules
-- **狀態管理**: Zustand / Pinia（如使用 Vue）
-- **路由**: React Router / Vue Router
-- **PDF 渲染**: PDF.js
-- **音頻錄製**: Web Audio API
+---
 
-#### 依賴庫
-```json
-{
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.0",
-    "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-fs": "^2.0.0",
-    "pdfjs-dist": "^4.0.0",
-    "tailwindcss": "^3.4.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.3.0",
-    "vite": "^5.0.0",
-    "@tauri-apps/cli": "^2.0.0"
-  }
-}
-```
+## 8. 未來增強功能
 
-#### Rust 後端（Tauri）
-```toml
-[dependencies]
-tauri = { version = "2.0", features = ["shell-open"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1.35", features = ["full"] }
-```
-
-### 7.2 後端技術棧（Python FastAPI）
-
-#### 核心框架
-- **Web 框架**: FastAPI
-- **Python 版本**: Python 3.12+
-- **ASR**: faster-whisper
-- **音頻處理**: sounddevice, numpy
-- **PDF 處理**: PyMuPDF（可選）
-
-#### 依賴庫
-```python
-# Web 框架
-fastapi>=0.104.0
-uvicorn>=0.24.0
-
-# 音頻
-sounddevice>=0.4.6
-webrtcvad>=2.0.10
-numpy>=2.3.5
-
-# AI/ML
-faster-whisper>=1.0.0
-
-# PDF（可選）
-PyMuPDF>=1.23.0
-
-# 工具
-pydantic>=2.5.0
-python-dotenv>=1.0.0
-```
-
-### 7.3 通信方式（Tauri Commands）
-
-**無需 HTTP/WebSocket**：前端直接調用 Rust 後端，零 IPC 開銷
-
-#### Tauri Commands API
-
-**轉錄音頻**:
-```typescript
-// 前端調用
-const result = await invoke('transcribe_audio', {
-  audioData: Array.from(audioBuffer),  // Vec<u8>
-  sampleRate: 16000,
-  language: 'en'  // 可選
-});
-
-// Rust 實現
-#[tauri::command]
-async fn transcribe_audio(
-    audio_data: Vec<u8>,
-    sample_rate: u32,
-    language: Option<String>,
-) -> Result<TranscriptionResult, String> {
-    whisper::transcribe(audio_data, sample_rate, language).await
-}
-```
-
-**音頻錄製**:
-```typescript
-// 前端調用
-await invoke('start_recording', { deviceId: null });
-const audioData = await invoke('stop_recording');
-
-// Rust 實現
-#[tauri::command]
-async fn start_recording(device_id: Option<u32>) -> Result<(), String> {
-    audio::recorder::start(device_id)
-}
-```
-
-**數據存儲**:
-```typescript
-// 前端調用
-await invoke('save_lecture', { lecture: lectureData });
-const lecture = await invoke('load_lecture', { id: 'lecture_001' });
-
-// Rust 實現
-#[tauri::command]
-async fn save_lecture(lecture: Lecture) -> Result<(), String> {
-    storage::save_lecture(lecture)
-}
-```
-
-**優勢**：
-- ✅ **零 IPC 開銷**：直接函數調用
-- ✅ **類型安全**：TypeScript ↔ Rust 類型對應
-- ✅ **異步支持**：支持 async/await
-- ✅ **錯誤處理**：統一的錯誤處理機制
-
-### 7.4 項目結構
-
-```
-classnote-ai-tauri/
-├── frontend/               # Tauri 前端
-│   ├── src/
-│   │   ├── components/    # React/Vue 組件
-│   │   ├── services/      # API 服務
-│   │   ├── hooks/         # React Hooks
-│   │   ├── utils/         # 工具函數
-│   │   └── types/         # TypeScript 類型
+- **向量檢索 (RAG)**: 基於本地筆記庫的問答。
+- **多語言支持**: 支持更多源語言和目標語言。
+- **雲端同步**: 可選的雲端備份功能。
 │   ├── public/            # 靜態資源
 │   ├── package.json
 │   └── vite.config.ts
@@ -934,69 +408,77 @@ ClassNote AI/
 
 - **現代化設計**：採用現代 UI 設計語言，簡潔優雅
 - **簡潔明了**：界面簡潔，重點突出，減少視覺噪音
-- **響應迅速**：操作反饋及時，流暢的動畫過渡
+- **響應迅速**：操作反饋及時
 - **易於使用**：符合用戶習慣，學習成本低
-- **視覺舒適**：支持深色/淺色主題，護眼設計
-- **一致性**：統一的設計語言和交互模式
-- **可訪問性**：支持鍵盤導航，符合無障礙標準
+- **視覺舒適**：支持深色/淺色主題
 
 ### 8.2 設計系統
 
-#### 8.2.1 設計語言
+#### 8.2.1 技術棧
 
-採用 **Material Design 3** 或 **shadcn/ui** 設計系統：
+- **樣式框架**：Tailwind CSS
+- **圖標**：Lucide React
+- **路由**：React Router v7
 
-- **組件庫**：shadcn/ui（基於 Radix UI + Tailwind CSS）
-- **設計風格**：現代化、扁平化、微擬物化
-- **動畫**：流暢的過渡動畫（Framer Motion）
-- **圖標**：Lucide React / Heroicons（現代化線條圖標）
-
-#### 8.2.2 主窗口布局（現代化設計）
+#### 8.2.2 應用架構
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  ClassNote AI                    [🔍] [⚙️] [🌙] [●] [─] [×] │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  [📚 上課]  [📝 筆記]  [⚙️ 設置]     [已連接] [模型就緒]    │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │                                                               │  │
-│  │  ┌──────────────────────┐  ┌─────────────────────────────┐ │  │
-│  │  │                      │  │                             │ │  │
-│  │  │                      │  │    ┌─────────────────────┐ │ │  │
-│  │  │   PDF 查看器         │  │    │   即時字幕           │ │ │  │
-│  │  │                      │  │    │                     │ │ │  │
-│  │  │   [📄 第 1/10 頁]    │  │    │   English Text       │ │ │  │
-│  │  │                      │  │    │   中文翻譯           │ │ │  │
-│  │  │   [◀] [▶] [🔍] [📏]  │  │    │                     │ │ │  │
-│  │  │                      │  │    │   ───────────────── │ │ │  │
-│  │  │                      │  │    │   字幕歷史           │ │ │  │
-│  │  │                      │  │    │   • 00:15 Hello...  │ │ │  │
-│  │  │                      │  │    │   • 00:20 World...  │ │ │  │
-│  │  └──────────────────────┘  │    └─────────────────────┘ │ │  │
-│  │                             │                             │ │  │
-│  │                             │    ┌─────────────────────┐ │ │  │
-│  │                             │    │   AI 助教           │ │ │  │
-│  │                             │    │   ┌───────────────┐ │ │  │
-│  │                             │    │   │ 對話歷史       │ │ │  │
-│  │                             │    │   └───────────────┘ │ │  │
-│  │                             │    │   [💬 輸入問題...]  │ │ │  │
-│  │                             │    │   [📤 發送]        │ │ │  │
-│  │                             │    └─────────────────────┘ │ │  │
-│  │                             └─────────────────────────────┘ │  │
-│  │                                                               │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-│  ┌─────────────────────────────────────────────────────────────┐  │
-│  │  [⏺️ 開始錄音]  [⏸️ 暫停]  [⏹️ 停止]  [📊 音量: ████░░] │  │
-│  └─────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
+App.tsx
+├── SetupWizard          # 首次啟動環境精靈
+└── MainWindow           # 主框架（導航欄 + 狀態列）
+    ├── CourseListView   # 首頁：課程列表
+    ├── CourseDetailView # 課程：講座列表
+    ├── NotesView        # 筆記：PDF + 字幕 + 錄音
+    └── SettingsView     # 設置頁面
 ```
 
-### 8.3 現代化顏色方案
+#### 8.2.3 頁面流程
 
-#### 8.3.1 淺色主題（Light Mode）
+```
+[首次啟動] → SetupWizard → 下載模型 → 完成
+                                        ↓
+[正常啟動] → CourseListView ─────────────┘
+                    │ 選擇課程
+                    ↓
+             CourseDetailView
+                    │ 選擇講座
+                    ↓
+               NotesView
+            ┌─────────────────────────────────────┐
+            │  ┌──────────┐  ┌─────────────────┐ │
+            │  │   PDF    │  │    字幕顯示     │ │
+            │  │  查看器  │  │  ─────────────  │ │
+            │  │          │  │  (待實現)       │ │
+            │  │          │  │  AI 助教面板    │ │
+            │  └──────────┘  └─────────────────┘ │
+            │  [⏺ 錄音] [⏸ 暫停] [📊 音量]       │
+            └─────────────────────────────────────┘
+```
+
+### 8.3 核心組件
+
+| 組件 | 檔案 | 說明 |
+|-----|-----|-----|
+| MainWindow | MainWindow.tsx | 導航欄、狀態列、主題切換 |
+| SetupWizard | SetupWizard.tsx | 環境精靈、模型下載 |
+| CourseListView | CourseListView.tsx | 課程卡片列表 |
+| CourseDetailView | CourseDetailView.tsx | 講座列表、新增講座 |
+| NotesView | NotesView.tsx | PDF + 字幕 + 錄音 + 筆記 |
+| SettingsView | SettingsView.tsx | 模型管理、主題設置 |
+| PDFViewer | PDFViewer.tsx | PDF.js 封裝 |
+| SubtitleDisplay | SubtitleDisplay.tsx | 雙語字幕顯示 |
+
+### 8.4 待實現功能
+
+> ⚠️ 以下功能在 UI 中預留位置，待後續實現
+
+- **AI 助教面板**：在 NotesView 右側，提供即時問答
+- **PDF 自動對齊**：根據字幕內容自動翻頁（需修復 Bug）
+
+
+### 8.5 顏色方案
+
+#### 8.5.1 淺色主題（Light Mode）
 
 **主色調**
 - 主色（Primary）：`#3B82F6`（現代藍色）
@@ -1021,7 +503,7 @@ ClassNote AI/
 - 邊框：`#E5E7EB`（淺灰）
 - 分割線：`#F3F4F6`（極淺灰）
 
-#### 8.3.2 深色主題（Dark Mode）
+#### 8.5.2 深色主題（Dark Mode）
 
 **主色調**
 - 主色（Primary）：`#60A5FA`（淺藍）
@@ -1046,7 +528,7 @@ ClassNote AI/
 - 邊框：`#334155`（深灰藍）
 - 分割線：`#1E293B`（深灰藍）
 
-#### 8.3.3 漸變和陰影
+#### 8.5.3 漸變和陰影
 
 **漸變**
 - 主漸變：`linear-gradient(135deg, #667eea 0%, #764ba2 100%)`
@@ -1059,9 +541,9 @@ ClassNote AI/
 - 大陰影：`0 10px 15px -3px rgba(0, 0, 0, 0.1)`
 - 深色模式：使用發光效果替代陰影
 
-### 8.4 現代化字體系統
+### 8.6 字體系統
 
-#### 8.4.1 字體族
+#### 8.6.1 字體族
 
 **界面字體**（系統字體棧）
 - macOS：`-apple-system, BlinkMacSystemFont, "SF Pro Display"`
@@ -1078,7 +560,7 @@ ClassNote AI/
 **標題字體**（可選）
 - 使用 `Inter` 或 `SF Pro Display` 的 Medium/Bold 字重
 
-#### 8.4.2 字體大小系統
+#### 8.6.2 字體大小系統
 
 採用 **4px 基準**的字體大小系統：
 
@@ -1090,7 +572,7 @@ ClassNote AI/
 - **極小文字**：`12px` (0.75rem) - 標籤、時間戳
 - **字幕**：`18px - 24px`（可配置）
 
-#### 8.4.3 字體字重
+#### 8.6.3 字體字重
 
 - **Light**：300 - 大標題
 - **Regular**：400 - 正文
@@ -1098,9 +580,9 @@ ClassNote AI/
 - **Semibold**：600 - 小標題
 - **Bold**：700 - 強調文字
 
-### 8.5 現代化組件設計
+### 8.7 組件設計
 
-#### 8.5.1 按鈕（Button）
+#### 8.7.1 按鈕（Button）
 
 **主要按鈕**
 - 背景：主色漸變
@@ -1121,7 +603,7 @@ ClassNote AI/
 - 背景：表面色
 - 懸停：背景主色，圖標白色
 
-#### 8.5.2 輸入框（Input）
+#### 8.7.2 輸入框（Input）
 
 - 背景：表面色
 - 邊框：`1px solid` 邊框色
@@ -1130,7 +612,7 @@ ClassNote AI/
 - 聚焦：邊框主色，外發光效果
 - 錯誤：邊框錯誤色，紅色提示文字
 
-#### 8.5.3 卡片（Card）
+#### 8.7.3 卡片（Card）
 
 - 背景：卡片色
 - 圓角：`12px`
@@ -1138,7 +620,7 @@ ClassNote AI/
 - 內邊距：`24px`
 - 懸停：提升陰影（可選）
 
-#### 8.5.4 標籤（Badge）
+#### 8.7.4 標籤（Badge）
 
 - 背景：主色（10% 透明度）
 - 文字：主色
@@ -1146,7 +628,7 @@ ClassNote AI/
 - 內邊距：`4px 8px`
 - 字體：極小文字，Medium 字重
 
-#### 8.5.5 進度條（Progress）
+#### 8.7.5 進度條（Progress）
 
 - 背景：表面色
 - 進度：主色漸變
@@ -1154,23 +636,23 @@ ClassNote AI/
 - 高度：`8px`
 - 動畫：流暢的過渡動畫
 
-#### 8.5.6 開關（Switch）
+#### 8.7.6 開關（Switch）
 
 - 現代化滑動開關
 - 背景：禁用時淺灰，啟用時主色
 - 滑塊：白色圓形
 - 動畫：流暢的滑動動畫
 
-### 8.6 動畫和過渡
+### 8.8 動畫和過渡
 
-#### 8.6.1 過渡動畫
+#### 8.8.1 過渡動畫
 
 - **淡入淡出**：`opacity 0.2s ease-in-out`
 - **滑動**：`transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)`
 - **縮放**：`transform 0.2s ease-in-out`
 - **顏色變化**：`color 0.2s ease-in-out`
 
-#### 8.6.2 微交互
+#### 8.8.2 微交互
 
 - **按鈕懸停**：輕微提升（translateY -2px）
 - **按鈕點擊**：輕微縮小（scale 0.95）
@@ -1178,21 +660,21 @@ ClassNote AI/
 - **輸入框聚焦**：外發光效果
 - **頁面切換**：淡入淡出 + 滑動
 
-#### 8.6.3 加載動畫
+#### 8.8.3 加載動畫
 
 - **骨架屏**：內容加載時顯示骨架屏
 - **旋轉加載**：使用現代化的旋轉動畫
 - **進度指示**：流暢的進度條動畫
 
-### 8.7 響應式設計
+### 8.9 響應式設計
 
-#### 8.7.1 斷點系統
+#### 8.9.1 斷點系統
 
 - **小屏幕**：`< 1280px` - 單列布局
 - **中屏幕**：`1280px - 1920px` - 雙列布局
 - **大屏幕**：`> 1920px` - 三列布局
 
-#### 8.7.2 自適應布局
+#### 8.9.2 自適應布局
 
 - 窗口可調整大小
 - 組件自動適應窗口大小
@@ -1200,9 +682,9 @@ ClassNote AI/
 - 支持全屏模式
 - 響應式字體大小（可選）
 
-### 8.8 現代化 UI 組件庫
+### 8.10 UI 組件庫（參考）
 
-#### 8.8.1 推薦組件庫
+#### 8.10.1 推薦組件庫
 
 **shadcn/ui**（推薦）
 - 基於 Radix UI + Tailwind CSS
@@ -1215,7 +697,7 @@ ClassNote AI/
 - **Chakra UI**：簡潔現代的組件庫
 - **Material-UI (MUI)**：Material Design 實現
 
-#### 8.8.2 圖標庫
+#### 8.10.2 圖標庫
 
 **Lucide React**（推薦）
 - 現代化線條圖標
@@ -1226,9 +708,9 @@ ClassNote AI/
 - **Heroicons**：Tailwind 官方圖標
 - **React Icons**：多個圖標庫集合
 
-### 8.9 視覺層次
+### 8.11 視覺層次
 
-#### 8.9.1 間距系統
+#### 8.11.1 間距系統
 
 採用 **4px 基準**的間距系統：
 
@@ -1239,7 +721,7 @@ ClassNote AI/
 - **xl**：`32px` (2rem)
 - **2xl**：`48px` (3rem)
 
-#### 8.9.2 層級系統
+#### 8.11.2 層級系統
 
 - **Level 1**：背景層（z-index: 0）
 - **Level 2**：內容層（z-index: 1）
@@ -1248,7 +730,7 @@ ClassNote AI/
 - **Level 5**：模態框（z-index: 1000）
 - **Level 6**：通知（z-index: 2000）
 
-### 8.10 可訪問性（Accessibility）
+### 8.12 可訪問性
 
 - **鍵盤導航**：所有交互元素支持鍵盤操作
 - **焦點指示**：清晰的焦點指示器
@@ -1257,15 +739,15 @@ ClassNote AI/
 - **屏幕閱讀器**：支持屏幕閱讀器
 - **動畫控制**：支持減少動畫選項（prefers-reduced-motion）
 
-### 8.11 設計工具和資源
+### 8.13 設計工具和資源
 
-#### 8.11.1 設計工具
+#### 8.13.1 設計工具
 
 - **Figma**：UI 設計和原型
 - **Tailwind CSS**：樣式框架
 - **Framer Motion**：動畫庫
 
-#### 8.11.2 設計資源
+#### 8.13.2 設計資源
 
 - **設計系統文檔**：內部設計系統文檔
 - **組件庫文檔**：shadcn/ui 文檔

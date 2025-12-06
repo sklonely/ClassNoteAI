@@ -2,7 +2,6 @@
  * 精翻譯模塊（遠程）
  * 通過 HTTP API 調用遠程翻譯服務
  */
-
 use super::{TranslationError, TranslationResult, TranslationSource};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -33,7 +32,7 @@ pub async fn translate_fine(
         .map_err(|e| TranslationError::RemoteError(format!("創建 HTTP 客戶端失敗: {}", e)))?;
 
     let url = format!("{}/api/translate", service_url.trim_end_matches('/'));
-    
+
     let request = TranslationRequest {
         text: text.to_string(),
         source_lang: source_lang.to_string(),
@@ -67,14 +66,14 @@ pub async fn translate_fine(
 }
 
 /// 檢查遠程服務是否可用
-/// 
+///
 /// 注意：當前版本中，遠程服務功能尚未實現
 /// 此函數保留接口定義，供未來實現使用
 pub async fn check_remote_service(_service_url: &str) -> bool {
     // TODO: 實現遠程服務健康檢查
     // API 規範：GET /health
     // 詳細文檔：docs/REMOTE_SERVICE_API.md
-    
+
     // 當前版本：始終返回 false（服務未實現）
     false
 }
@@ -90,4 +89,3 @@ mod tests {
         assert!(!available);
     }
 }
-

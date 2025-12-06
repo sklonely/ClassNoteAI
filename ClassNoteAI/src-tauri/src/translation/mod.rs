@@ -1,15 +1,14 @@
+pub mod ctranslate2;
+pub mod fine;
+pub mod google;
 /**
  * 翻譯模塊
  * 實現粗翻譯（本地）和精翻譯（遠程）
- * 
+ *
  * 使用 CTranslate2 引擎進行本地翻譯 (ctranslate2.rs)
  * 下載功能已整合到 crate::downloads 模組
  */
-
-pub mod rough;
-pub mod fine;
-pub mod google;
-pub mod ctranslate2;  // CTranslate2 translation backend
+pub mod rough; // CTranslate2 translation backend
 
 use serde::{Deserialize, Serialize};
 

@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use rusqlite::Row;
+use serde::{Deserialize, Serialize};
 
 /// 科目數據模型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8,14 +8,19 @@ pub struct Course {
     pub id: String,
     pub title: String,
     pub description: Option<String>,
-    pub keywords: Option<String>, // 全域關鍵詞
+    pub keywords: Option<String>,                 // 全域關鍵詞
     pub syllabus_info: Option<serde_json::Value>, // 結構化課程大綱
     pub created_at: String,
     pub updated_at: String,
 }
 
 impl Course {
-    pub fn new(title: String, description: Option<String>, keywords: Option<String>, syllabus_info: Option<serde_json::Value>) -> Self {
+    pub fn new(
+        title: String,
+        description: Option<String>,
+        keywords: Option<String>,
+        syllabus_info: Option<serde_json::Value>,
+    ) -> Self {
         let now = Utc::now().to_rfc3339();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -54,7 +59,7 @@ pub struct Lecture {
     pub id: String,
     pub course_id: String, // 關聯的科目 ID
     pub title: String,
-    pub date: String, // ISO 8601
+    pub date: String,  // ISO 8601
     pub duration: i64, // 秒
     pub pdf_path: Option<String>,
     pub status: String, // "recording" | "completed"
@@ -212,4 +217,3 @@ impl TryFrom<&Row<'_>> for Setting {
         })
     }
 }
-

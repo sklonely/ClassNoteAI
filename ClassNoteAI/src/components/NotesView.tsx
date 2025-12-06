@@ -90,10 +90,10 @@ export default function NotesView() {
         // Load Embedding Model for Auto Alignment
         try {
           console.log('[NotesView] Loading Embedding model for auto-alignment...');
-          // Model files should be in app data directory
-          const appDataDir = await invoke<string>('get_app_data_dir');
-          const modelPath = `${appDataDir}/models/all-MiniLM-L6-v2.onnx`;
-          const tokenizerPath = `${appDataDir}/models/all-MiniLM-L6-v2-tokenizer.json`;
+          // 使用後端統一路徑 API
+          const embeddingDir = await invoke<string>('get_embedding_models_dir');
+          const modelPath = `${embeddingDir}/all-MiniLM-L6-v2.onnx`;
+          const tokenizerPath = `${embeddingDir}/all-MiniLM-L6-v2-tokenizer.json`;
 
           await embeddingService.loadModel(modelPath, tokenizerPath);
           console.log('[NotesView] Embedding model loaded successfully');
@@ -107,9 +107,9 @@ export default function NotesView() {
             console.log('[NotesView] Embedding model downloaded successfully');
 
             // Try loading again
-            const appDataDir = await invoke<string>('get_app_data_dir');
-            const modelPath = `${appDataDir}/models/all-MiniLM-L6-v2.onnx`;
-            const tokenizerPath = `${appDataDir}/models/all-MiniLM-L6-v2-tokenizer.json`;
+            const embeddingDir = await invoke<string>('get_embedding_models_dir');
+            const modelPath = `${embeddingDir}/all-MiniLM-L6-v2.onnx`;
+            const tokenizerPath = `${embeddingDir}/all-MiniLM-L6-v2-tokenizer.json`;
             await embeddingService.loadModel(modelPath, tokenizerPath);
             console.log('[NotesView] Embedding model loaded successfully after download');
           } catch (downloadErr) {

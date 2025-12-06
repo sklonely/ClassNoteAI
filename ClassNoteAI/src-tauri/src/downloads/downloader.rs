@@ -1,14 +1,13 @@
+use futures_util::StreamExt;
+use reqwest::Client;
 /**
  * Unified Downloader
- * 
+ *
  * Provides common download functionality with progress reporting.
  * Used by model_manager for all model downloads.
  */
-
 use std::path::{Path, PathBuf};
-use reqwest::Client;
 use tokio::io::AsyncWriteExt;
-use futures_util::StreamExt;
 
 /// Download progress information
 #[derive(Debug, Clone, serde::Serialize)]
@@ -30,8 +29,7 @@ where
 {
     // Ensure parent directory exists
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("無法創建目錄: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("無法創建目錄: {}", e))?;
     }
 
     println!("[Downloader] 開始下載: {} -> {:?}", url, dest);
@@ -66,7 +64,7 @@ where
 
     while let Some(item) = stream.next().await {
         let chunk = item.map_err(|e| format!("讀取數據失敗: {}", e))?;
-        
+
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("寫入文件失敗: {}", e))?;
@@ -77,7 +75,7 @@ where
         let now = std::time::Instant::now();
         if now.duration_since(last_progress_time).as_millis() >= 100 || downloaded == total_size {
             last_progress_time = now;
-            
+
             let elapsed = start_time.elapsed().as_secs_f64();
             let speed_mbps = if elapsed > 0.0 {
                 (downloaded as f64 / elapsed) / 1_000_000.0
@@ -116,63 +114,56 @@ where
 
     // Create temp file for ZIP
     let zip_path = dest_dir.with_extension("zip");
-    
+
     // Download the ZIP
     download_file(url, &zip_path, progress_callback).await?;
-    
+
     println!("[Downloader] 開始解壓: {:?}", zip_path);
-    
+
     // Ensure output directory exists
-    std::fs::create_dir_all(dest_dir)
-        .map_err(|e| format!("創建目錄失敗: {}", e))?;
-    
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("創建目錄失敗: {}", e))?;
+
     // Extract ZIP
-    let file = File::open(&zip_path)
-        .map_err(|e| format!("打開 ZIP 文件失敗: {}", e))?;
-    
-    let mut archive = ZipArchive::new(file)
-        .map_err(|e| format!("讀取 ZIP 文件失敗: {}", e))?;
-    
+    let file = File::open(&zip_path).map_err(|e| format!("打開 ZIP 文件失敗: {}", e))?;
+
+    let mut archive = ZipArchive::new(file).map_err(|e| format!("讀取 ZIP 文件失敗: {}", e))?;
+
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)
+        let mut file = archive
+            .by_index(i)
             .map_err(|e| format!("讀取 ZIP 條目失敗: {}", e))?;
-        
+
         // Get relative path, skipping top-level directory if present
         let raw_name = file.name().to_string();
         let path_parts: Vec<&str> = raw_name.split('/').collect();
-        
+
         let relative_path = if path_parts.len() > 1 {
             path_parts[1..].join("/")
         } else {
             raw_name.clone()
         };
-        
+
         if relative_path.is_empty() {
             continue;
         }
-        
+
         let outpath = dest_dir.join(&relative_path);
-        
+
         if file.name().ends_with('/') {
-            std::fs::create_dir_all(&outpath)
-                .map_err(|e| format!("創建目錄失敗: {}", e))?;
+            std::fs::create_dir_all(&outpath).map_err(|e| format!("創建目錄失敗: {}", e))?;
         } else {
             if let Some(parent) = outpath.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| format!("創建父目錄失敗: {}", e))?;
+                std::fs::create_dir_all(parent).map_err(|e| format!("創建父目錄失敗: {}", e))?;
             }
-            
-            let mut outfile = File::create(&outpath)
-                .map_err(|e| format!("創建文件失敗: {}", e))?;
-            std::io::copy(&mut file, &mut outfile)
-                .map_err(|e| format!("寫入文件失敗: {}", e))?;
+
+            let mut outfile = File::create(&outpath).map_err(|e| format!("創建文件失敗: {}", e))?;
+            std::io::copy(&mut file, &mut outfile).map_err(|e| format!("寫入文件失敗: {}", e))?;
         }
     }
-    
+
     // Remove ZIP file to save space
-    std::fs::remove_file(&zip_path)
-        .unwrap_or_else(|e| eprintln!("警告: 無法刪除 ZIP 文件: {}", e));
-    
+    std::fs::remove_file(&zip_path).unwrap_or_else(|e| eprintln!("警告: 無法刪除 ZIP 文件: {}", e));
+
     println!("[Downloader] 解壓完成: {:?}", dest_dir);
     Ok(dest_dir.to_path_buf())
 }

@@ -24,11 +24,11 @@
 ## 安裝 Installation
 
 1. 下載 `m2m100-418M-ct2-int8.zip`
-2. 解壓到 `~/Library/Application Support/com.classnoteai/models/ct2/`
+2. 解壓到 `~/Library/Application Support/com.classnoteai/models/translation/`
 3. 重啟應用
 
 ```bash
-cd ~/Library/Application\ Support/com.classnoteai/models/ct2/
+cd ~/Library/Application\ Support/com.classnoteai/models/translation/
 unzip ~/Downloads/m2m100-418M-ct2-int8.zip
 ```
 

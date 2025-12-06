@@ -1,30 +1,36 @@
-// Embedding service - requires 'embedding' feature due to protobuf conflict with ct2rs
-// Enable with: cargo build --features embedding
+// Candle-based Embedding Service
+// Uses Candle ML framework instead of ONNX to avoid protobuf conflict with ct2rs
+// Enable with: cargo build --features candle-embed
 
-#[cfg(feature = "embedding")]
-pub mod service;
-#[cfg(feature = "embedding")]
+#[cfg(feature = "candle-embed")]
 pub mod download;
+#[cfg(feature = "candle-embed")]
+pub mod service;
 
-#[cfg(feature = "embedding")]
-pub use service::EmbeddingService;
-#[cfg(feature = "embedding")]
+#[cfg(feature = "candle-embed")]
 pub use download::{download_embedding_model, EmbeddingModelConfig};
+#[cfg(feature = "candle-embed")]
+pub use service::EmbeddingService;
 
-// Stub when embedding feature is disabled
-#[cfg(not(feature = "embedding"))]
+// Stub when candle-embed feature is disabled
+#[cfg(not(feature = "candle-embed"))]
 pub struct EmbeddingService;
 
-#[cfg(not(feature = "embedding"))]
+#[cfg(not(feature = "candle-embed"))]
 impl EmbeddingService {
-    pub fn new<P: AsRef<std::path::Path>>(_model_path: P, _tokenizer_path: P) -> anyhow::Result<Self> {
-        Err(anyhow::anyhow!("Embedding feature is disabled. Rebuild with --features embedding to enable."))
+    pub fn new<P: AsRef<std::path::Path>>(
+        _model_path: P,
+        _tokenizer_path: P,
+    ) -> anyhow::Result<Self> {
+        Err(anyhow::anyhow!(
+            "Candle embedding feature is disabled. Rebuild with --features candle-embed to enable."
+        ))
     }
-    
+
     pub fn generate_embedding(&mut self, _text: &str) -> anyhow::Result<Vec<f32>> {
-        Err(anyhow::anyhow!("Embedding feature is disabled"))
+        Err(anyhow::anyhow!("Candle embedding feature is disabled"))
     }
-    
+
     pub fn cosine_similarity(_a: &[f32], _b: &[f32]) -> f32 {
         0.0
     }

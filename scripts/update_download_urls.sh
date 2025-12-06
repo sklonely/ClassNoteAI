@@ -63,3 +63,4 @@ echo "  - mbart-large-50-onnx: ${BASE_URL}/mbart-large-50-onnx.zip"
 echo ""
 echo "請確認 URL 是否正確，然後重新編譯應用程序。"
 
+

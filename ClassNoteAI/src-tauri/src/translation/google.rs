@@ -4,7 +4,6 @@
  * 1. 官方 Google Cloud Translation API（需要 API 密鑰）
  * 2. 非官方網頁接口（無需 API 密鑰，但可能違反服務條款）
  */
-
 use super::{TranslationError, TranslationResult, TranslationSource};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,7 +34,7 @@ struct GoogleTranslation {
 }
 
 /// Google 翻譯（使用官方 Google Cloud Translation API）
-/// 
+///
 /// API 文檔：https://cloud.google.com/translate/docs/reference/rest/v2/translate
 pub async fn translate_with_google_api(
     text: &str,
@@ -58,7 +57,7 @@ pub async fn translate_with_google_api(
         "zh" => "zh-CN",
         _ => source_lang,
     };
-    
+
     let google_target_lang = match target_lang {
         "en" => "en",
         "zh" => "zh-CN",
@@ -120,7 +119,7 @@ pub async fn translate_with_google_api(
 }
 
 /// Google 翻譯（使用非官方網頁接口，無需 API 密鑰）
-/// 
+///
 /// ⚠️ 警告：此方法可能違反 Google 的服務條款，僅供學習和測試使用
 /// 建議在生產環境中使用官方 API
 pub async fn translate_with_google_unofficial(
@@ -146,14 +145,17 @@ pub async fn translate_with_google_unofficial(
         "zh" => "zh-CN",
         _ => source_lang,
     };
-    
+
     let google_target_lang = match target_lang {
         "en" => "en",
         "zh" => "zh-CN",
         _ => target_lang,
     };
 
-    println!("  Google 語言代碼: {} -> {}", google_source_lang, google_target_lang);
+    println!(
+        "  Google 語言代碼: {} -> {}",
+        google_source_lang, google_target_lang
+    );
 
     // 構建請求 URL（使用 Google Translate 網頁接口）
     let url = format!(
@@ -162,7 +164,7 @@ pub async fn translate_with_google_unofficial(
         google_target_lang,
         urlencoding::encode(text)
     );
-    
+
     println!("  請求 URL: {}", url);
 
     // 發送 HTTP 請求，模擬瀏覽器
@@ -200,12 +202,15 @@ pub async fn translate_with_google_unofficial(
 
     // Google Translate 返回的格式類似：[[["翻譯結果",...],...],...]
     // 我們需要提取第一個翻譯結果
-    let json_value: serde_json::Value = serde_json::from_str(&response_text)
-        .map_err(|e| {
-            let error_msg = format!("解析 JSON 失敗: {}。響應前 200 字符: {}", e, &response_text[..response_text.len().min(200)]);
-            println!("[GoogleTranslate] {}", error_msg);
-            TranslationError::RemoteError(error_msg)
-        })?;
+    let json_value: serde_json::Value = serde_json::from_str(&response_text).map_err(|e| {
+        let error_msg = format!(
+            "解析 JSON 失敗: {}。響應前 200 字符: {}",
+            e,
+            &response_text[..response_text.len().min(200)]
+        );
+        println!("[GoogleTranslate] {}", error_msg);
+        TranslationError::RemoteError(error_msg)
+    })?;
 
     // 提取翻譯文本
     let translated_text = if let Some(array) = json_value.as_array() {
@@ -222,7 +227,7 @@ pub async fn translate_with_google_unofficial(
                     }
                 }
             }
-            
+
             if let Some(text) = found_text {
                 println!("[GoogleTranslate] 提取到翻譯文本: {}", text);
                 text
@@ -262,7 +267,7 @@ pub async fn translate_with_google(
             return translate_with_google_api(text, source_lang, target_lang, key).await;
         }
     }
-    
+
     // 如果沒有 API 密鑰或密鑰為空，使用非官方接口
     translate_with_google_unofficial(text, source_lang, target_lang).await
 }
@@ -281,11 +286,10 @@ mod tests {
             return;
         }
 
-        let result = translate_with_google("Hello world", "en", "zh", &api_key).await;
+        let result = translate_with_google("Hello world", "en", "zh", Some(&*api_key)).await;
         assert!(result.is_ok());
         let translation = result.unwrap();
         assert!(!translation.translated_text.is_empty());
         println!("翻譯結果: {}", translation.translated_text);
     }
 }
-

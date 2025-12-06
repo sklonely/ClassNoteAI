@@ -1,6 +1,6 @@
 [package]
 name = "classnoteai"
-version = "0.1.2"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -18,10 +18,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = []
-# Embedding feature - disabled by default due to protobuf conflict with ct2rs
-# Enable with: cargo build --features embedding
-embedding = ["ort", "ndarray"]
+default = ["candle-embed"]
+# Candle embedding - 使用 Candle 框架進行文本 Embedding（預設啟用）
+candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -35,10 +34,12 @@ anyhow = "1.0"
 num_cpus = "1.0"
 reqwest = { version = "0.12", features = ["stream", "json"] }
 futures-util = "0.3"
-# ONNX Runtime for embedding models (optional due to protobuf conflict)
-# WARNING: Cannot use simultaneously with ct2rs on same process due to protobuf version conflict
-ort = { version = "2.0.0-rc.10", features = ["ndarray"], optional = true }
-ndarray = { version = "0.16", optional = true }
+# Candle ML framework for embeddings (no protobuf conflict)
+candle-core = { version = "0.8", optional = true }
+candle-nn = { version = "0.8", optional = true }
+candle-transformers = { version = "0.8", optional = true }
+# Hugging Face Hub for model downloads
+hf-hub = { version = "0.3", optional = true }
 # Tokenizer for text preprocessing
 tokenizers = "0.21"
 # Random number generation for sampling
@@ -65,3 +66,6 @@ dirs = "5"
 
 [dev-dependencies]
 tempfile = "3.8"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
