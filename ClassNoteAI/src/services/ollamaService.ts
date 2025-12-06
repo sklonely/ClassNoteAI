@@ -30,7 +30,7 @@ export interface OllamaResponse {
 }
 
 class OllamaService {
-    private defaultHost = 'http://100.117.82.111:11434';
+    private defaultHost = 'http://100.118.7.50:11434';
 
     /**
      * 獲取 Ollama Host 地址
@@ -274,6 +274,89 @@ class OllamaService {
             return {};
         }
     }
+
+    /**
+     * 生成文本嵌入向量
+     * @param text 要嵌入的文本
+     * @param model 嵌入模型 (預設: nomic-embed-text)
+     */
+    public async generateEmbedding(text: string, model: string = 'nomic-embed-text'): Promise<number[]> {
+        try {
+            const host = await this.getHost();
+            console.log(`[OllamaService] 生成嵌入向量... 模型: ${model}, 文本長度: ${text.length}`);
+
+            const response = await fetch(`${host}/api/embed`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model,
+                    input: text,
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Ollama Embed API error: ${response.statusText}`);
+            }
+
+            const data = await response.json() as { embeddings: number[][] };
+            console.log(`[OllamaService] 嵌入向量生成成功，維度: ${data.embeddings[0]?.length || 0}`);
+            return data.embeddings[0] || [];
+        } catch (error) {
+            console.error('[OllamaService] 嵌入向量生成失敗:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * 批量生成文本嵌入向量
+     * @param texts 要嵌入的文本數組
+     * @param model 嵌入模型
+     * @param onProgress 進度回調
+     */
+    public async generateEmbeddings(
+        texts: string[],
+        model: string = 'nomic-embed-text',
+        onProgress?: (current: number, total: number) => void
+    ): Promise<number[][]> {
+        const embeddings: number[][] = [];
+
+        for (let i = 0; i < texts.length; i++) {
+            const embedding = await this.generateEmbedding(texts[i], model);
+            embeddings.push(embedding);
+
+            if (onProgress) {
+                onProgress(i + 1, texts.length);
+            }
+        }
+
+        console.log(`[OllamaService] 批量嵌入完成，共 ${embeddings.length} 個向量`);
+        return embeddings;
+    }
+
+    /**
+     * 計算兩個向量的餘弦相似度
+     */
+    public cosineSimilarity(vecA: number[], vecB: number[]): number {
+        if (vecA.length !== vecB.length) {
+            throw new Error('向量維度不匹配');
+        }
+
+        let dotProduct = 0;
+        let normA = 0;
+        let normB = 0;
+
+        for (let i = 0; i < vecA.length; i++) {
+            dotProduct += vecA[i] * vecB[i];
+            normA += vecA[i] * vecA[i];
+            normB += vecB[i] * vecB[i];
+        }
+
+        if (normA === 0 || normB === 0) return 0;
+        return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
 }
 
 export const ollamaService = new OllamaService();
+

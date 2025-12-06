@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2 } from 'lucide-react';
+import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap } from 'lucide-react';
 import { ollamaService } from '../services/ollamaService';
 import { storageService } from '../services/storageService';
+import { ragService, IndexingProgress } from '../services/ragService';
 
 export interface ChatMessage {
     id: string;
     role: 'user' | 'assistant';
     content: string;
     timestamp: string;
+    sources?: Array<{ text: string; sourceType: string; pageNumber?: number; similarity: number }>;
 }
 
 interface AIChatPanelProps {
@@ -37,6 +39,10 @@ export default function AIChatPanel({
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [isMinimized, setIsMinimized] = useState(false);
+    const [useRAG, setUseRAG] = useState(true);
+    const [isIndexing, setIsIndexing] = useState(false);
+    const [indexingProgress, setIndexingProgress] = useState<IndexingProgress | null>(null);
+    const [hasIndex, setHasIndex] = useState(false);
 
     // 視窗位置和大小
     const [position, setPosition] = useState({ x: window.innerWidth - DEFAULT_WIDTH - 20, y: 100 });
@@ -47,12 +53,44 @@ export default function AIChatPanel({
     const dragRef = useRef({ isDragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
     const resizeRef = useRef({ isResizing: false, startX: 0, startY: 0, startWidth: 0, startHeight: 0 });
 
-    // 載入對話歷史
+    // 載入對話歷史和檢查索引狀態
     useEffect(() => {
         if (isOpen && lectureId) {
             loadChatHistory();
+            checkIndexStatus();
         }
     }, [isOpen, lectureId]);
+
+    // 檢查是否有 RAG 索引
+    const checkIndexStatus = async () => {
+        try {
+            const indexed = await ragService.hasIndex(lectureId);
+            setHasIndex(indexed);
+        } catch (error) {
+            console.error('[AIChatPanel] 檢查索引狀態失敗:', error);
+        }
+    };
+
+    // 建立 RAG 索引
+    const buildIndex = async () => {
+        if (isIndexing) return;
+
+        setIsIndexing(true);
+        try {
+            await ragService.indexLecture(
+                lectureId,
+                context?.pdfText || null,
+                context?.transcriptText || null,
+                (progress) => setIndexingProgress(progress)
+            );
+            setHasIndex(true);
+            setIndexingProgress(null);
+        } catch (error) {
+            console.error('[AIChatPanel] 建立索引失敗:', error);
+        } finally {
+            setIsIndexing(false);
+        }
+    };
 
     // 自動滾動到底部
     useEffect(() => {
@@ -152,28 +190,54 @@ export default function AIChatPanel({
         setIsLoading(true);
 
         try {
-            let systemPrompt = '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。';
+            let assistantMessage: ChatMessage;
 
-            if (context?.pdfText || context?.transcriptText) {
-                systemPrompt += '\n\n以下是課程相關內容供參考：\n';
-                if (context.pdfText) {
-                    systemPrompt += `\n【課程講義】\n${context.pdfText.slice(0, 3000)}`;
+            if (useRAG && hasIndex) {
+                // 使用 RAG 增強問答
+                console.log('[AIChatPanel] 使用 RAG 模式');
+                const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
+                    topK: 5,
+                    systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
+                });
+
+                assistantMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: answer,
+                    timestamp: new Date().toISOString(),
+                    sources: sources.map(s => ({
+                        text: s.chunk.chunkText.slice(0, 100) + '...',
+                        sourceType: s.chunk.sourceType,
+                        pageNumber: s.chunk.pageNumber,
+                        similarity: s.similarity,
+                    })),
+                };
+            } else {
+                // 傳統模式：直接傳入全文
+                console.log('[AIChatPanel] 使用傳統模式');
+                let systemPrompt = '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。';
+
+                if (context?.pdfText || context?.transcriptText) {
+                    systemPrompt += '\n\n以下是課程相關內容供參考：\n';
+                    if (context.pdfText) {
+                        systemPrompt += `\n【課程講義】\n${context.pdfText.slice(0, 3000)}`;
+                    }
+                    if (context.transcriptText) {
+                        systemPrompt += `\n\n【課堂錄音轉錄】\n${context.transcriptText.slice(0, 3000)}`;
+                    }
                 }
-                if (context.transcriptText) {
-                    systemPrompt += `\n\n【課堂錄音轉錄】\n${context.transcriptText.slice(0, 3000)}`;
-                }
+
+                const response = await ollamaService.generate(input.trim(), {
+                    system: systemPrompt,
+                });
+
+                assistantMessage = {
+                    id: crypto.randomUUID(),
+                    role: 'assistant',
+                    content: response,
+                    timestamp: new Date().toISOString(),
+                };
             }
-
-            const response = await ollamaService.generate(input.trim(), {
-                system: systemPrompt,
-            });
-
-            const assistantMessage: ChatMessage = {
-                id: crypto.randomUUID(),
-                role: 'assistant',
-                content: response,
-                timestamp: new Date().toISOString(),
-            };
 
             const finalMessages = [...updatedMessages, assistantMessage];
             setMessages(finalMessages);
@@ -245,6 +309,41 @@ export default function AIChatPanel({
                             <div className="flex items-center gap-2 p-2 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-lg text-xs">
                                 <AlertCircle className="w-3 h-3 flex-shrink-0" />
                                 <span>Ollama 未連線</span>
+                            </div>
+                        )}
+
+                        {/* RAG 索引狀態 */}
+                        {ollamaConnected && (
+                            <div className="flex items-center justify-between p-2 bg-gray-50 dark:bg-slate-700/50 rounded-lg text-xs">
+                                <div className="flex items-center gap-2">
+                                    <Database className="w-3 h-3 text-gray-500" />
+                                    {hasIndex ? (
+                                        <button
+                                            onClick={() => setUseRAG(!useRAG)}
+                                            className={`flex items-center gap-1 ${useRAG ? 'text-green-600 dark:text-green-400' : 'text-gray-500'}`}
+                                            title={useRAG ? '點擊切換到傳統模式' : '點擊切換到 RAG 模式'}
+                                        >
+                                            <Zap className="w-3 h-3" />
+                                            {useRAG ? 'RAG 啟用' : 'RAG 關閉'}
+                                        </button>
+                                    ) : (
+                                        <span className="text-gray-500">尚未建立索引</span>
+                                    )}
+                                </div>
+                                {!hasIndex && !isIndexing && (context?.pdfText || context?.transcriptText) && (
+                                    <button
+                                        onClick={buildIndex}
+                                        className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                                    >
+                                        建立索引
+                                    </button>
+                                )}
+                                {isIndexing && indexingProgress && (
+                                    <span className="text-blue-500 flex items-center gap-1">
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        {indexingProgress.message}
+                                    </span>
+                                )}
                             </div>
                         )}
 
