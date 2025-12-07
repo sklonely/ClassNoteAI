@@ -146,6 +146,50 @@ class OllamaService {
     }
 
     /**
+     * 對話式生成 (支持對話歷史)
+     * 使用 Ollama /api/chat 端點
+     */
+    public async chat(
+        messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+        options?: { model?: string; system?: string }
+    ): Promise<string> {
+        try {
+            const host = await this.getHost();
+            const model = options?.model || await this.getModel();
+
+            // 如果有 system prompt，添加到消息開頭
+            const allMessages = options?.system
+                ? [{ role: 'system' as const, content: options.system }, ...messages]
+                : messages;
+
+            console.log(`[OllamaService] Chat 生成中... 模型: ${model}, 消息數: ${allMessages.length}`);
+
+            const response = await fetch(`${host}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model,
+                    messages: allMessages,
+                    stream: false,
+                    options: { temperature: 0.7 },
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`Ollama Chat API error: ${response.statusText}`);
+            }
+
+            const data = await response.json() as { message?: { content: string } };
+            const content = data.message?.content || '';
+            console.log('[OllamaService] Chat 回應長度:', content.length, '字元');
+            return content;
+        } catch (error) {
+            console.error('[OllamaService] Chat 生成失敗:', error);
+            throw error;
+        }
+    }
+
+    /**
      * 從文本中提取關鍵詞
      */
     public async extractKeywords(text: string): Promise<string[]> {

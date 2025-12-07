@@ -1,16 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap } from 'lucide-react';
+import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap, Plus, History, Trash2 } from 'lucide-react';
 import { ollamaService } from '../services/ollamaService';
-import { storageService } from '../services/storageService';
 import { ragService, IndexingProgress } from '../services/ragService';
+import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
 
-export interface ChatMessage {
-    id: string;
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: string;
-    sources?: Array<{ text: string; sourceType: string; pageNumber?: number; similarity: number }>;
-}
+// 重新導出 ChatMessage 類型供其他組件使用
+export type { ChatMessage } from '../services/chatSessionService';
 
 interface AIChatPanelProps {
     lectureId: string;
@@ -46,7 +41,12 @@ export default function AIChatPanel({
     const [isIndexing, setIsIndexing] = useState(false);
     const [indexingProgress, setIndexingProgress] = useState<IndexingProgress | null>(null);
     const [hasIndex, setHasIndex] = useState(false);
-    const [useOCR, setUseOCR] = useState(false); // 使用 DeepSeek-OCR 蕭取 PDF
+    const [useOCR, setUseOCR] = useState(false);
+
+    // 對話管理狀態
+    const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
+    const [sessions, setSessions] = useState<ChatSession[]>([]);
+    const [showSessions, setShowSessions] = useState(false);
 
     // 視窗位置和大小
     const [position, setPosition] = useState({ x: window.innerWidth - DEFAULT_WIDTH - 20, y: 100 });
@@ -173,25 +173,57 @@ export default function AIChatPanel({
         e.stopPropagation();
     };
 
-    const loadChatHistory = async () => {
+    const loadChatHistory = () => {
         try {
-            const history = await storageService.getChatHistory(lectureId);
-            setMessages(history || []);
+            const allSessions = chatSessionService.getSessionsByLecture(lectureId);
+            setSessions(allSessions);
+
+            const lectureSession = allSessions.find(s => s.lectureId === lectureId);
+            if (lectureSession) {
+                setCurrentSession(lectureSession);
+                setMessages(lectureSession.messages);
+            } else {
+                setCurrentSession(null);
+                setMessages([]);
+            }
         } catch (error) {
             console.error('[AIChatPanel] 載入對話歷史失敗:', error);
         }
     };
 
-    const saveChatHistory = async (newMessages: ChatMessage[]) => {
-        try {
-            await storageService.saveChatHistory(lectureId, newMessages);
-        } catch (error) {
-            console.error('[AIChatPanel] 儲存對話歷史失敗:', error);
+    const createNewSession = () => {
+        const session = chatSessionService.createSession(lectureId);
+        setCurrentSession(session);
+        setMessages([]);
+        setSessions(prev => [session, ...prev]);
+        setShowSessions(false);
+    };
+
+    const switchSession = (session: ChatSession) => {
+        setCurrentSession(session);
+        setMessages(session.messages);
+        setShowSessions(false);
+    };
+
+    const deleteSession = (sessionId: string) => {
+        chatSessionService.deleteSession(sessionId);
+        setSessions(prev => prev.filter(s => s.id !== sessionId));
+        if (currentSession?.id === sessionId) {
+            setCurrentSession(null);
+            setMessages([]);
         }
     };
 
     const handleSend = async () => {
         if (!input.trim() || !ollamaConnected || isLoading) return;
+
+        // 自動創建 session (如果沒有)
+        let session = currentSession;
+        if (!session) {
+            session = chatSessionService.createSession(lectureId);
+            setCurrentSession(session);
+            setSessions(prev => [session!, ...prev]);
+        }
 
         const userMessage: ChatMessage = {
             id: crypto.randomUUID(),
@@ -199,6 +231,9 @@ export default function AIChatPanel({
             content: input.trim(),
             timestamp: new Date().toISOString(),
         };
+
+        // 保存用戶消息
+        chatSessionService.addMessage(session.id, userMessage);
 
         const updatedMessages = [...messages, userMessage];
         setMessages(updatedMessages);
@@ -208,13 +243,17 @@ export default function AIChatPanel({
         try {
             let assistantMessage: ChatMessage;
 
+            // 獲取壓縮後的對話歷史
+            const chatHistory = await chatSessionService.getHistoryForLLM(session.id);
+
             if (useRAG && hasIndex) {
-                // 使用 RAG 增強問答 (傳入當前頁面優先檢索)
-                console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'})`);
+                // 使用 RAG 增強問答 (傳入對話歷史)
+                console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'}, 歷史:${chatHistory.length}條)`);
                 const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
                     topK: 5,
                     systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
                     currentPage,
+                    chatHistory: chatHistory.filter(m => m.role !== 'system') as Array<{ role: 'user' | 'assistant'; content: string }>,
                 });
 
                 assistantMessage = {
@@ -244,9 +283,11 @@ export default function AIChatPanel({
                     }
                 }
 
-                const response = await ollamaService.generate(input.trim(), {
-                    system: systemPrompt,
-                });
+                // 使用對話式 API
+                const response = await ollamaService.chat(
+                    chatHistory as Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
+                    { system: systemPrompt }
+                );
 
                 assistantMessage = {
                     id: crypto.randomUUID(),
@@ -256,9 +297,11 @@ export default function AIChatPanel({
                 };
             }
 
+            // 保存助手消息
+            chatSessionService.addMessage(session.id, assistantMessage);
+
             const finalMessages = [...updatedMessages, assistantMessage];
             setMessages(finalMessages);
-            await saveChatHistory(finalMessages);
         } catch (error) {
             console.error('[AIChatPanel] 生成回答失敗:', error);
             const errorMessage: ChatMessage = {
@@ -267,6 +310,7 @@ export default function AIChatPanel({
                 content: `抱歉，生成回答時發生錯誤：${error instanceof Error ? error.message : String(error)}`,
                 timestamp: new Date().toISOString(),
             };
+            chatSessionService.addMessage(session.id, errorMessage);
             setMessages([...updatedMessages, errorMessage]);
         } finally {
             setIsLoading(false);
@@ -302,6 +346,20 @@ export default function AIChatPanel({
                 </div>
                 <div className="flex items-center gap-1">
                     <button
+                        onClick={createNewSession}
+                        className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                        title="新對話"
+                    >
+                        <Plus className="w-3 h-3" />
+                    </button>
+                    <button
+                        onClick={() => setShowSessions(!showSessions)}
+                        className={`p-1 hover:bg-white/20 rounded transition-colors text-white ${showSessions ? 'bg-white/20' : ''}`}
+                        title="對話歷史"
+                    >
+                        <History className="w-3 h-3" />
+                    </button>
+                    <button
                         onClick={() => setIsMinimized(!isMinimized)}
                         className="p-1 hover:bg-white/20 rounded transition-colors text-white"
                         title={isMinimized ? '展開' : '最小化'}
@@ -318,6 +376,37 @@ export default function AIChatPanel({
                 </div>
             </div>
 
+            {/* 對話歷史列表 */}
+            {showSessions && !isMinimized && (
+                <div className="absolute top-12 left-0 right-0 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 shadow-lg z-10 max-h-48 overflow-y-auto">
+                    {sessions.length === 0 ? (
+                        <div className="p-3 text-center text-gray-500 text-xs">尚無對話歷史</div>
+                    ) : (
+                        sessions.map(session => (
+                            <div
+                                key={session.id}
+                                className={`flex items-center justify-between p-2 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer text-sm ${currentSession?.id === session.id ? 'bg-purple-50 dark:bg-purple-900/20' : ''
+                                    }`}
+                                onClick={() => switchSession(session)}
+                            >
+                                <div className="truncate flex-1">
+                                    <div className="font-medium truncate">{session.title}</div>
+                                    <div className="text-xs text-gray-500">
+                                        {session.messages.length} 則訊息 · {new Date(session.updatedAt).toLocaleDateString()}
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); deleteSession(session.id); }}
+                                    className="p-1 hover:bg-red-100 dark:hover:bg-red-900/20 rounded text-gray-400 hover:text-red-500"
+                                    title="刪除"
+                                >
+                                    <Trash2 className="w-3 h-3" />
+                                </button>
+                            </div>
+                        ))
+                    )}
+                </div>
+            )}
             {!isMinimized && (
                 <>
                     {/* Messages */}
@@ -353,8 +442,8 @@ export default function AIChatPanel({
                                             <button
                                                 onClick={() => setUseOCR(!useOCR)}
                                                 className={`px-2 py-1 text-xs rounded transition-colors ${useOCR
-                                                        ? 'bg-purple-500 text-white'
-                                                        : 'bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
+                                                    ? 'bg-purple-500 text-white'
+                                                    : 'bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
                                                     }`}
                                                 title="使用 DeepSeek-OCR 識別表格/公式 (較慢但更準確)"
                                             >

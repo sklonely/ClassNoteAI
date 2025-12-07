@@ -287,6 +287,7 @@ class RAGService {
 
     /**
      * RAG 增強問答
+     * @param chatHistory 對話歷史 (可選，用於延續對話)
      */
     public async chat(
         question: string,
@@ -296,6 +297,7 @@ class RAGService {
             systemPrompt?: string;
             model?: string;
             currentPage?: number; // 當前頁面，用於優先檢索
+            chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>; // 對話歷史
         }
     ): Promise<{ answer: string; sources: SearchResult[] }> {
         const topK = options?.topK || 5;
@@ -303,24 +305,25 @@ class RAGService {
         // 檢索相關上下文 (傳入當前頁面優先檢索)
         const context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
 
-        if (context.chunks.length === 0) {
-            // 沒有找到相關內容，使用通用回答
-            const answer = await ollamaService.generate(question, {
-                system: options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。',
-                model: options?.model,
-            });
-            return { answer, sources: [] };
+        // 構建增強的系統提示 (包含當前頁面位置和 RAG 上下文)
+        const enhancedSystemPrompt = context.chunks.length > 0
+            ? this.buildEnhancedPrompt(
+                options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。',
+                context.formattedContext,
+                options?.currentPage
+            )
+            : options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
+
+        // 組合消息：歷史 + 當前問題
+        const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
+
+        if (options?.chatHistory && options.chatHistory.length > 0) {
+            messages.push(...options.chatHistory);
         }
+        messages.push({ role: 'user', content: question });
 
-        // 構建增強的系統提示 (包含當前頁面位置)
-        const enhancedSystemPrompt = this.buildEnhancedPrompt(
-            options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。',
-            context.formattedContext,
-            options?.currentPage
-        );
-
-        // 生成回答
-        const answer = await ollamaService.generate(question, {
+        // 使用對話式生成
+        const answer = await ollamaService.chat(messages, {
             system: enhancedSystemPrompt,
             model: options?.model,
         });
