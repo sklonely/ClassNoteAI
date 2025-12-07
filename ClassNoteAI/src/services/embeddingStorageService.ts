@@ -4,7 +4,7 @@
  * TODO Phase 2: 遷移到 Rust 後端 SQLite
  */
 
-import { embeddingService } from './embeddingService';
+import { ollamaService } from './ollamaService';
 import { TextChunk } from './chunkingService';
 
 export interface EmbeddingRecord {
@@ -116,8 +116,9 @@ class EmbeddingStorageService {
         lectureId: string,
         topK: number = 5
     ): Promise<SearchResult[]> {
-        // 使用本地 ONNX 模型生成查詢的嵌入向量
-        const queryEmbedding = await embeddingService.generateEmbedding(query);
+        // 使用 Ollama 遠程 nomic-embed-text 生成查詢的嵌入向量
+        const EMBEDDING_MODEL = 'nomic-embed-text';
+        const queryEmbedding = await ollamaService.generateEmbedding(query, EMBEDDING_MODEL);
 
         // 獲取課堂的所有嵌入向量
         const records = await this.getEmbeddingsByLecture(lectureId);
@@ -130,7 +131,7 @@ class EmbeddingStorageService {
         // 計算相似度並排序
         const results: SearchResult[] = records.map(record => ({
             chunk: record,
-            similarity: embeddingService.cosineSimilarityVector(queryEmbedding, record.embedding),
+            similarity: ollamaService.cosineSimilarity(queryEmbedding, record.embedding),
         }));
 
         // 按相似度降序排序，取 topK

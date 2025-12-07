@@ -16,7 +16,6 @@ import PDFViewer, { PDFViewerHandle } from "./PDFViewer";
 import DragDropZone from "./DragDropZone";
 import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
-import { embeddingService } from "../services/embeddingService";
 import { pdfService } from "../services/pdfService";
 import AIChatPanel from "./AIChatPanel";
 
@@ -92,36 +91,8 @@ export default function NotesView() {
           console.log('[NotesView] Whisper model loaded');
         }
 
-        // Load Embedding Model for Auto Alignment
-        try {
-          console.log('[NotesView] Loading Embedding model for auto-alignment...');
-          // 使用後端統一路徑 API
-          const embeddingDir = await invoke<string>('get_embedding_models_dir');
-          const modelPath = `${embeddingDir}/all-MiniLM-L6-v2.onnx`;
-          const tokenizerPath = `${embeddingDir}/all-MiniLM-L6-v2-tokenizer.json`;
-
-          await embeddingService.loadModel(modelPath, tokenizerPath);
-          console.log('[NotesView] Embedding model loaded successfully');
-        } catch (embErr) {
-          console.warn('[NotesView] Embedding model not available:', embErr);
-          console.log('[NotesView] Starting automatic download of Embedding model...');
-
-          try {
-            // Automatically download the model
-            await invoke('download_embedding_model_cmd');
-            console.log('[NotesView] Embedding model downloaded successfully');
-
-            // Try loading again
-            const embeddingDir = await invoke<string>('get_embedding_models_dir');
-            const modelPath = `${embeddingDir}/all-MiniLM-L6-v2.onnx`;
-            const tokenizerPath = `${embeddingDir}/all-MiniLM-L6-v2-tokenizer.json`;
-            await embeddingService.loadModel(modelPath, tokenizerPath);
-            console.log('[NotesView] Embedding model loaded successfully after download');
-          } catch (downloadErr) {
-            console.error('[NotesView] Failed to download Embedding model:', downloadErr);
-            console.warn('[NotesView] Auto-alignment feature will be disabled');
-          }
-        }
+        // Embedding Model: 使用 Ollama 遠程 nomic-embed-text，無需本地加載
+        console.log('[NotesView] Using Ollama remote nomic-embed-text for auto-alignment');
         // Load Translation Model if provider is local
         const translationProvider = settings?.translation?.provider || 'local';
         if (translationProvider === 'local') {
@@ -229,7 +200,8 @@ export default function NotesView() {
           const pageEmbeddings = [];
           for (const p of pages) {
             try {
-              const emb = await embeddingService.generateEmbedding(p.text);
+              const EMBEDDING_MODEL = 'nomic-embed-text';
+              const emb = await ollamaService.generateEmbedding(p.text, EMBEDDING_MODEL);
               pageEmbeddings.push({ pageNumber: p.page, text: p.text, embedding: emb });
             } catch (e) {
               console.error(`Failed to embed page ${p.page}`, e);

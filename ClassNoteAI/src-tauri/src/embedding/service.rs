@@ -4,6 +4,7 @@
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use tokenizers::Tokenizer;
+use serde::Deserialize;
 
 #[cfg(feature = "candle-embed")]
 use candle_core::{DType, Device, Tensor};
@@ -11,6 +12,55 @@ use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 #[cfg(feature = "candle-embed")]
 use candle_transformers::models::bert::{BertModel, Config};
+
+/// Nomic 模型配置格式 (使用 n_embd 等字段)
+#[derive(Debug, Deserialize)]
+struct NomicConfig {
+    n_embd: Option<usize>,
+    n_layer: Option<usize>,
+    n_head: Option<usize>,
+    n_inner: Option<usize>,
+    n_positions: Option<usize>,
+    vocab_size: Option<usize>,
+    layer_norm_epsilon: Option<f64>,
+    // 標準 BERT 字段 (作為後備)
+    hidden_size: Option<usize>,
+    num_hidden_layers: Option<usize>,
+    num_attention_heads: Option<usize>,
+    intermediate_size: Option<usize>,
+    max_position_embeddings: Option<usize>,
+}
+
+impl NomicConfig {
+    /// 轉換為標準 BERT Config JSON
+    fn to_bert_config_json(&self) -> String {
+        let hidden_size = self.hidden_size.or(self.n_embd).unwrap_or(768);
+        let num_hidden_layers = self.num_hidden_layers.or(self.n_layer).unwrap_or(12);
+        let num_attention_heads = self.num_attention_heads.or(self.n_head).unwrap_or(12);
+        let intermediate_size = self.intermediate_size.or(self.n_inner).unwrap_or(3072);
+        let max_position_embeddings = self.max_position_embeddings.or(self.n_positions).unwrap_or(512);
+        let vocab_size = self.vocab_size.unwrap_or(30522);
+        let layer_norm_eps = self.layer_norm_epsilon.unwrap_or(1e-12);
+
+        format!(r#"{{
+            "hidden_size": {},
+            "num_hidden_layers": {},
+            "num_attention_heads": {},
+            "intermediate_size": {},
+            "hidden_act": "gelu",
+            "hidden_dropout_prob": 0.0,
+            "attention_probs_dropout_prob": 0.0,
+            "max_position_embeddings": {},
+            "type_vocab_size": 2,
+            "initializer_range": 0.02,
+            "layer_norm_eps": {},
+            "vocab_size": {},
+            "pad_token_id": 0,
+            "model_type": "bert"
+        }}"#, hidden_size, num_hidden_layers, num_attention_heads, 
+            intermediate_size, max_position_embeddings, layer_norm_eps, vocab_size)
+    }
+}
 
 /// Candle-based Embedding Service
 pub struct EmbeddingService {
@@ -46,17 +96,23 @@ impl EmbeddingService {
         // Use CPU device (Metal support can be added later)
         let device = Device::Cpu;
 
-        // Load config
+        // Load config (支持 nomic 和標準 BERT 格式)
         let config_path = model_path
             .parent()
             .ok_or_else(|| anyhow!("Invalid model path"))?
             .join("config.json");
 
-        let config: Config = serde_json::from_str(
-            &std::fs::read_to_string(&config_path)
-                .map_err(|e| anyhow!("Failed to read config: {}", e))?,
-        )
-        .map_err(|e| anyhow!("Failed to parse config: {}", e))?;
+        let config_str = std::fs::read_to_string(&config_path)
+            .map_err(|e| anyhow!("Failed to read config: {}", e))?;
+
+        // 先嘗試解析為通用格式，然後轉換
+        let nomic_config: NomicConfig = serde_json::from_str(&config_str)
+            .map_err(|e| anyhow!("Failed to parse config: {}", e))?;
+
+        // 轉換為標準 BERT 格式
+        let bert_config_json = nomic_config.to_bert_config_json();
+        let config: Config = serde_json::from_str(&bert_config_json)
+            .map_err(|e| anyhow!("Failed to parse converted config: {}", e))?;
 
         // Load model weights from safetensors
         let vb =

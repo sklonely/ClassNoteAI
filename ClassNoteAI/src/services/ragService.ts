@@ -1,12 +1,11 @@
 /**
  * RAG (Retrieval-Augmented Generation) 服務
  * 整合文本分塊、向量嵌入和語義檢索
- * 使用本地 ONNX Embedding 模型 (nomic-embed-text)
+ * 使用 Ollama 遠程 nomic-embed-text 模型
  */
 
 import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
-import { embeddingService } from './embeddingService';
 import { ollamaService } from './ollamaService';
 
 export interface RAGContext {
@@ -77,9 +76,11 @@ class RAGService {
             const texts = allChunks.map(c => c.text);
             const embeddings: number[][] = [];
 
-            // 使用本地 ONNX Embedding 模型逐個生成
+            // 使用 Ollama 遠程 nomic-embed-text 模型生成嵌入向量
+            const EMBEDDING_MODEL = 'nomic-embed-text';
+
             for (let i = 0; i < texts.length; i++) {
-                const embedding = await embeddingService.generateEmbedding(texts[i]);
+                const embedding = await ollamaService.generateEmbedding(texts[i], EMBEDDING_MODEL);
                 embeddings.push(embedding);
 
                 onProgress?.({

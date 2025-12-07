@@ -30,6 +30,7 @@ class EmbeddingService {
     private async doLoad(): Promise<void> {
         try {
             const modelsDir = await this.getModelDir();
+            // 使用 nomic-embed-text-v1 (中文效果較好)
             const modelDir = `${modelsDir}/nomic-embed-text-v1`;
 
             // safetensors 模型路徑

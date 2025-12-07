@@ -1,4 +1,4 @@
-import { embeddingService } from './embeddingService';
+import { ollamaService } from './ollamaService';
 
 export interface PageEmbedding {
     pageNumber: number;
@@ -66,14 +66,15 @@ class AutoAlignmentService {
             // 生成緩衝區的 Embedding
             // 取最後一段文本進行匹配
             const textToCheck = this.transcriptionBuffer.slice(-this.bufferWindowSize);
-            const bufferEmbedding = await embeddingService.generateEmbedding(textToCheck);
+            const EMBEDDING_MODEL = 'nomic-embed-text';
+            const bufferEmbedding = await ollamaService.generateEmbedding(textToCheck, EMBEDDING_MODEL);
 
             let bestPage = -1;
             let maxSimilarity = -1;
 
             // 與每一頁進行比對
             for (const page of this.pageEmbeddings) {
-                let similarity = embeddingService.cosineSimilarityVector(bufferEmbedding, page.embedding);
+                let similarity = ollamaService.cosineSimilarity(bufferEmbedding, page.embedding);
 
                 // Locality Bias: 給當前頁和相鄰頁一點加成，防止亂跳
                 // 如果是當前頁或下一頁，加成 5%
