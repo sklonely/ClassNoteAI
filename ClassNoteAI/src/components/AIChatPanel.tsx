@@ -66,11 +66,17 @@ export default function AIChatPanel({
         }
     }, [isOpen, lectureId]);
 
-    // 檢查是否有 RAG 索引
+    // 檢查是否有 RAG 索引，沒有則自動建立
     const checkIndexStatus = async () => {
         try {
             const indexed = await ragService.hasIndex(lectureId);
             setHasIndex(indexed);
+
+            // 如果沒有索引且有內容可索引，自動建立
+            if (!indexed && (context?.pdfText || context?.transcriptText)) {
+                console.log('[AIChatPanel] 未檢測到索引，自動開始建立...');
+                await buildIndex();
+            }
         } catch (error) {
             console.error('[AIChatPanel] 檢查索引狀態失敗:', error);
         }
