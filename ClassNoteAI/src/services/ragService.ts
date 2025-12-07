@@ -185,10 +185,11 @@ class RAGService {
             return { answer, sources: [] };
         }
 
-        // 構建增強的系統提示
+        // 構建增強的系統提示 (包含當前頁面位置)
         const enhancedSystemPrompt = this.buildEnhancedPrompt(
             options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。',
-            context.formattedContext
+            context.formattedContext,
+            options?.currentPage
         );
 
         // 生成回答
@@ -222,18 +223,23 @@ class RAGService {
 
     /**
      * 構建增強的系統提示
+     * @param currentPage 用戶當前閱讀的頁面
      */
-    private buildEnhancedPrompt(basePrompt: string, context: string): string {
+    private buildEnhancedPrompt(basePrompt: string, context: string, currentPage?: number): string {
+        const locationInfo = currentPage
+            ? `\n用戶目前正在閱讀第 ${currentPage} 頁，請優先解釋該頁面及其前後內容。\n`
+            : '';
+
         return `${basePrompt}
 
 以下是與用戶問題相關的課程內容，請基於這些內容回答問題：
-
+${locationInfo}
 ${context}
 
 請注意：
 1. 優先使用上述內容回答問題
 2. 如果內容不足以回答，請說明
-3. 回答時可以引用來源編號 (如 [來源 1])`;
+3. 回答時可以引用來源編號 (如 [來源 1])${currentPage ? `\n4. 用戶目前在第 ${currentPage} 頁，請優先考慮該頁相關內容` : ''}`;
     }
 
     /**
