@@ -21,6 +21,7 @@ interface AIChatPanelProps {
         transcriptText?: string;
     };
     ollamaConnected: boolean;
+    currentPage?: number; // 當前 PDF 頁面，用於 RAG 優先檢索
 }
 
 const DEFAULT_WIDTH = 360;
@@ -34,6 +35,7 @@ export default function AIChatPanel({
     onClose,
     context,
     ollamaConnected,
+    currentPage,
 }: AIChatPanelProps) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
@@ -193,11 +195,12 @@ export default function AIChatPanel({
             let assistantMessage: ChatMessage;
 
             if (useRAG && hasIndex) {
-                // 使用 RAG 增強問答
-                console.log('[AIChatPanel] 使用 RAG 模式');
+                // 使用 RAG 增強問答 (傳入當前頁面優先檢索)
+                console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'})`);
                 const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
                     topK: 5,
                     systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
+                    currentPage,
                 });
 
                 assistantMessage = {

@@ -110,11 +110,13 @@ class EmbeddingStorageService {
 
     /**
      * 語義搜索：找到最相似的 chunks
+     * @param currentPage 當前頁面，用於優先返回該頁面/相鄰頁面的內容
      */
     public async semanticSearch(
         query: string,
         lectureId: string,
-        topK: number = 5
+        topK: number = 5,
+        currentPage?: number
     ): Promise<SearchResult[]> {
         // 使用 Ollama 遠程 nomic-embed-text 生成查詢的嵌入向量
         const EMBEDDING_MODEL = 'nomic-embed-text';
@@ -129,16 +131,29 @@ class EmbeddingStorageService {
         }
 
         // 計算相似度並排序
-        const results: SearchResult[] = records.map(record => ({
-            chunk: record,
-            similarity: ollamaService.cosineSimilarity(queryEmbedding, record.embedding),
-        }));
+        const results: SearchResult[] = records.map(record => {
+            let similarity = ollamaService.cosineSimilarity(queryEmbedding, record.embedding);
+
+            // 頁面優先級加成 (當前頁面和相鄰頁面優先)
+            if (currentPage && record.pageNumber) {
+                const pageDiff = Math.abs(record.pageNumber - currentPage);
+                if (pageDiff === 0) {
+                    // 當前頁面：+10% 加成
+                    similarity *= 1.10;
+                } else if (pageDiff === 1) {
+                    // 相鄰頁面：+5% 加成
+                    similarity *= 1.05;
+                }
+            }
+
+            return { chunk: record, similarity };
+        });
 
         // 按相似度降序排序，取 topK
         results.sort((a, b) => b.similarity - a.similarity);
         const topResults = results.slice(0, topK);
 
-        console.log(`[EmbeddingStorageService] 搜索完成，返回 ${topResults.length} 個結果`);
+        console.log(`[EmbeddingStorageService] 搜索完成，返回 ${topResults.length} 個結果${currentPage ? ` (當前頁:${currentPage})` : ''}`);
         return topResults;
     }
 

@@ -980,6 +980,7 @@ export default function NotesView() {
             transcriptText: transcriptContent,
           }}
           ollamaConnected={ollamaConnected}
+          currentPage={pdfViewerRef.current?.getCurrentPage()}
         />
       )}
     </div >

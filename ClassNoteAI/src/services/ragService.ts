@@ -122,13 +122,15 @@ class RAGService {
 
     /**
      * 語義檢索增強
+     * @param currentPage 當前頁面，用於優先返回該頁面/相鄰頁面的內容
      */
     public async retrieveContext(
         query: string,
         lectureId: string,
-        topK: number = 5
+        topK: number = 5,
+        currentPage?: number
     ): Promise<RAGContext> {
-        const results = await embeddingStorageService.semanticSearch(query, lectureId, topK);
+        const results = await embeddingStorageService.semanticSearch(query, lectureId, topK, currentPage);
 
         // 格式化上下文
         const formattedContext = this.formatContext(results);
@@ -166,12 +168,13 @@ class RAGService {
             topK?: number;
             systemPrompt?: string;
             model?: string;
+            currentPage?: number; // 當前頁面，用於優先檢索
         }
     ): Promise<{ answer: string; sources: SearchResult[] }> {
         const topK = options?.topK || 5;
 
-        // 檢索相關上下文
-        const context = await this.retrieveContext(question, lectureId, topK);
+        // 檢索相關上下文 (傳入當前頁面優先檢索)
+        const context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
 
         if (context.chunks.length === 0) {
             // 沒有找到相關內容，使用通用回答

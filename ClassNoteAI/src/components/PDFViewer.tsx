@@ -11,6 +11,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 
 export interface PDFViewerHandle {
   scrollToPage: (pageNumber: number) => void;
+  getCurrentPage: () => number;
 }
 
 interface PDFViewerProps {
@@ -36,7 +37,8 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
         canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
         setCurrentPage(pageNumber);
       }
-    }
+    },
+    getCurrentPage: () => currentPage,
   }));
 
   // 加載 PDF 文檔
