@@ -44,7 +44,7 @@ export default function AIChatPanel({
     const [isIndexing, setIsIndexing] = useState(false);
     const [indexingProgress, setIndexingProgress] = useState<IndexingProgress | null>(null);
     const [hasIndex, setHasIndex] = useState(false);
-    const [useOCR, setUseOCR] = useState(false);
+    const [useOCR, setUseOCR] = useState(true); // 預設開啟 OCR
 
     // 對話管理狀態
     const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
@@ -445,7 +445,7 @@ export default function AIChatPanel({
                                         <span className="text-gray-500">尚未建立索引</span>
                                     )}
                                 </div>
-                                {!hasIndex && !isIndexing && (context?.pdfText || context?.transcriptText || context?.pdfData) && (
+                                {!isIndexing && (context?.pdfText || context?.transcriptText || context?.pdfData) && (
                                     <div className="flex items-center gap-2">
                                         {context?.pdfData && (
                                             <button
@@ -463,7 +463,7 @@ export default function AIChatPanel({
                                             onClick={buildIndex}
                                             className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
                                         >
-                                            建立索引
+                                            {hasIndex ? '重建索引' : '建立索引'}
                                         </button>
                                     </div>
                                 )}
