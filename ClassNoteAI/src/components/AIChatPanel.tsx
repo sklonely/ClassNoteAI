@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap, Plus, History, Trash2 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import { ollamaService } from '../services/ollamaService';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
@@ -485,7 +486,13 @@ export default function AIChatPanel({
                                         : 'bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-gray-200'
                                         }`}
                                 >
-                                    <p className="whitespace-pre-wrap">{msg.content}</p>
+                                    {msg.role === 'user' ? (
+                                        <p className="whitespace-pre-wrap">{msg.content}</p>
+                                    ) : (
+                                        <div className="prose prose-sm dark:prose-invert max-w-none">
+                                            <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         ))}
