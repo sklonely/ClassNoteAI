@@ -19,6 +19,7 @@ interface AIChatPanelProps {
     context?: {
         pdfText?: string;
         transcriptText?: string;
+        pdfData?: ArrayBuffer; // PDF ArrayBuffer 用於 OCR 索引
     };
     ollamaConnected: boolean;
     currentPage?: number; // 當前 PDF 頁面，用於 RAG 優先檢索
@@ -45,6 +46,7 @@ export default function AIChatPanel({
     const [isIndexing, setIsIndexing] = useState(false);
     const [indexingProgress, setIndexingProgress] = useState<IndexingProgress | null>(null);
     const [hasIndex, setHasIndex] = useState(false);
+    const [useOCR, setUseOCR] = useState(false); // 使用 DeepSeek-OCR 蕭取 PDF
 
     // 視窗位置和大小
     const [position, setPosition] = useState({ x: window.innerWidth - DEFAULT_WIDTH - 20, y: 100 });
@@ -79,12 +81,24 @@ export default function AIChatPanel({
 
         setIsIndexing(true);
         try {
-            await ragService.indexLecture(
-                lectureId,
-                context?.pdfText || null,
-                context?.transcriptText || null,
-                (progress) => setIndexingProgress(progress)
-            );
+            if (useOCR && context?.pdfData) {
+                // 使用 DeepSeek-OCR 模式 (適合表格/公式)
+                console.log('[AIChatPanel] 使用 OCR 模式建立索引');
+                await ragService.indexLectureWithOCR(
+                    lectureId,
+                    context.pdfData,
+                    context?.transcriptText || null,
+                    (progress) => setIndexingProgress(progress)
+                );
+            } else {
+                // 使用普通模式
+                await ragService.indexLecture(
+                    lectureId,
+                    context?.pdfText || null,
+                    context?.transcriptText || null,
+                    (progress) => setIndexingProgress(progress)
+                );
+            }
             setHasIndex(true);
             setIndexingProgress(null);
         } catch (error) {
@@ -333,13 +347,27 @@ export default function AIChatPanel({
                                         <span className="text-gray-500">尚未建立索引</span>
                                     )}
                                 </div>
-                                {!hasIndex && !isIndexing && (context?.pdfText || context?.transcriptText) && (
-                                    <button
-                                        onClick={buildIndex}
-                                        className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-                                    >
-                                        建立索引
-                                    </button>
+                                {!hasIndex && !isIndexing && (context?.pdfText || context?.transcriptText || context?.pdfData) && (
+                                    <div className="flex items-center gap-2">
+                                        {context?.pdfData && (
+                                            <button
+                                                onClick={() => setUseOCR(!useOCR)}
+                                                className={`px-2 py-1 text-xs rounded transition-colors ${useOCR
+                                                        ? 'bg-purple-500 text-white'
+                                                        : 'bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
+                                                    }`}
+                                                title="使用 DeepSeek-OCR 識別表格/公式 (較慢但更準確)"
+                                            >
+                                                {useOCR ? 'OCR 開' : 'OCR 關'}
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={buildIndex}
+                                            className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                                        >
+                                            建立索引
+                                        </button>
+                                    </div>
                                 )}
                                 {isIndexing && indexingProgress && (
                                     <span className="text-blue-500 flex items-center gap-1">

@@ -7,6 +7,8 @@
 import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
 import { ollamaService } from './ollamaService';
+import { ocrService } from './ocrService';
+import { pdfToImageService } from './pdfToImageService';
 
 export interface RAGContext {
     chunks: SearchResult[];
@@ -121,6 +123,131 @@ class RAGService {
     }
 
     /**
+     * 使用 DeepSeek-OCR 為課堂 PDF 建立索引
+     * 適合包含表格、數學公式的複雜 PDF
+     * @param lectureId 課堂 ID
+     * @param pdfData PDF 的 ArrayBuffer
+     * @param transcriptText 轉錄文本 (可選)
+     * @param onProgress 進度回調
+     */
+    public async indexLectureWithOCR(
+        lectureId: string,
+        pdfData: ArrayBuffer | null,
+        transcriptText: string | null,
+        onProgress?: (progress: IndexingProgress) => void
+    ): Promise<{ chunksCount: number; success: boolean }> {
+        try {
+            const allChunks: TextChunk[] = [];
+
+            // 階段 1: OCR 識別 PDF 頁面
+            if (pdfData) {
+                onProgress?.({
+                    stage: 'chunking',
+                    current: 0,
+                    total: 1,
+                    message: '正在將 PDF 轉換為圖片...',
+                });
+
+                // 將 PDF 頁面渲染為圖片
+                const totalPages = await pdfToImageService.getTotalPages(pdfData);
+                const pageImages = await pdfToImageService.renderPages(
+                    pdfData,
+                    undefined, // 全部頁面
+                    1.5,
+                    (current, total) => {
+                        onProgress?.({
+                            stage: 'chunking',
+                            current,
+                            total: total * 2, // PDF 轉圖片 + OCR 兩階段
+                            message: `渲染頁面 ${current}/${total}...`,
+                        });
+                    }
+                );
+
+                // OCR 識別
+                const ocrResults = await ocrService.recognizePages(
+                    pageImages,
+                    (current, total) => {
+                        onProgress?.({
+                            stage: 'chunking',
+                            current: pageImages.length + current,
+                            total: pageImages.length + total,
+                            message: `OCR 識別頁面 ${current}/${total}...`,
+                        });
+                    }
+                );
+
+                // 分塊處理 OCR 結果
+                for (const result of ocrResults) {
+                    if (result.success && result.text.trim().length > 0) {
+                        const chunks = chunkingService.chunkText(result.text, lectureId, 'pdf');
+                        // 為每個 chunk 設置頁碼
+                        chunks.forEach(chunk => {
+                            chunk.pageNumber = result.pageNumber;
+                        });
+                        allChunks.push(...chunks);
+                    }
+                }
+
+                console.log(`[RAGService] OCR PDF 分塊完成: ${allChunks.length} 個 chunks (${totalPages} 頁)`);
+            }
+
+            // 階段 2: 處理轉錄文本 (與原邏輯相同)
+            if (transcriptText && transcriptText.trim().length > 0) {
+                onProgress?.({
+                    stage: 'chunking',
+                    current: 1,
+                    total: 2,
+                    message: '正在分割轉錄文本...',
+                });
+
+                const transcriptChunks = chunkingService.chunkText(transcriptText, lectureId, 'transcript');
+                allChunks.push(...transcriptChunks);
+                console.log(`[RAGService] 轉錄分塊完成: ${transcriptChunks.length} 個 chunks`);
+            }
+
+            if (allChunks.length === 0) {
+                console.warn('[RAGService] 沒有內容可索引');
+                return { chunksCount: 0, success: false };
+            }
+
+            // 階段 3: 生成嵌入向量
+            await embeddingStorageService.deleteByLecture(lectureId);
+
+            const EMBEDDING_MODEL = 'nomic-embed-text';
+            const embeddings: number[][] = [];
+
+            for (let i = 0; i < allChunks.length; i++) {
+                onProgress?.({
+                    stage: 'embedding',
+                    current: i + 1,
+                    total: allChunks.length,
+                    message: `生成嵌入向量 ${i + 1}/${allChunks.length}...`,
+                });
+
+                const embedding = await ollamaService.generateEmbedding(allChunks[i].text, EMBEDDING_MODEL);
+                embeddings.push(embedding);
+            }
+
+            // 階段 4: 存儲
+            await embeddingStorageService.storeEmbeddings(allChunks, embeddings);
+
+            onProgress?.({
+                stage: 'storing',
+                current: 1,
+                total: 1,
+                message: 'OCR 索引完成',
+            });
+
+            console.log(`[RAGService] 課堂 ${lectureId} OCR 索引完成: ${allChunks.length} 個 chunks`);
+            return { chunksCount: allChunks.length, success: true };
+        } catch (error) {
+            console.error('[RAGService] OCR 索引失敗:', error);
+            return { chunksCount: 0, success: false };
+        }
+    }
+
+    /**
      * 語義檢索增強
      * @param currentPage 當前頁面，用於優先返回該頁面/相鄰頁面的內容
      */
@@ -227,7 +354,7 @@ class RAGService {
      */
     private buildEnhancedPrompt(basePrompt: string, context: string, currentPage?: number): string {
         const locationInfo = currentPage
-            ? `\n用戶目前正在閱讀第 ${currentPage} 頁，請優先解釋該頁面及其前後內容。\n`
+            ? `\n用戶目前正在閱讀第 ${currentPage} 頁。\n`
             : '';
 
         return `${basePrompt}
@@ -239,7 +366,7 @@ ${context}
 請注意：
 1. 優先使用上述內容回答問題
 2. 如果內容不足以回答，請說明
-3. 回答時可以引用來源編號 (如 [來源 1])${currentPage ? `\n4. 用戶目前在第 ${currentPage} 頁，請優先考慮該頁相關內容` : ''}`;
+3. 回答時可以引用來源編號 (如 [來源 1])`;
     }
 
     /**
