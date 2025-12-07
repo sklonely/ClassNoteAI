@@ -15,10 +15,11 @@ interface AIChatPanelProps {
     context?: {
         pdfText?: string;
         transcriptText?: string;
-        pdfData?: ArrayBuffer; // PDF ArrayBuffer 用於 OCR 索引
+        pdfData?: ArrayBuffer;
     };
     ollamaConnected: boolean;
-    currentPage?: number; // 當前 PDF 頁面，用於 RAG 優先檢索
+    currentPage?: number;
+    onNavigateToPage?: (page: number) => void; // 回調跳轉到指定頁面
 }
 
 const DEFAULT_WIDTH = 360;
@@ -33,6 +34,7 @@ export default function AIChatPanel({
     context,
     ollamaConnected,
     currentPage,
+    onNavigateToPage,
 }: AIChatPanelProps) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
@@ -495,9 +497,35 @@ export default function AIChatPanel({
                                     {msg.role === 'user' ? (
                                         <p className="whitespace-pre-wrap">{msg.content}</p>
                                     ) : (
-                                        <div className="prose prose-sm dark:prose-invert max-w-none">
-                                            <ReactMarkdown>{msg.content}</ReactMarkdown>
-                                        </div>
+                                        <>
+                                            <div className="prose prose-sm dark:prose-invert max-w-none">
+                                                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                            </div>
+                                            {/* 來源引用連結 */}
+                                            {msg.sources && msg.sources.length > 0 && (
+                                                <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-600">
+                                                    <div className="text-xs text-gray-500 dark:text-gray-400 flex flex-wrap gap-1">
+                                                        <span>來源:</span>
+                                                        {msg.sources.map((source, idx) => (
+                                                            source.pageNumber ? (
+                                                                <button
+                                                                    key={idx}
+                                                                    onClick={() => onNavigateToPage?.(source.pageNumber!)}
+                                                                    className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded hover:bg-blue-200 dark:hover:bg-blue-900/50 transition-colors"
+                                                                    title={`跳轉到第 ${source.pageNumber} 頁`}
+                                                                >
+                                                                    第{source.pageNumber}頁
+                                                                </button>
+                                                            ) : (
+                                                                <span key={idx} className="px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">
+                                                                    {source.sourceType === 'transcript' ? '錄音' : '講義'}
+                                                                </span>
+                                                            )
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </>
                                     )}
                                 </div>
                             </div>

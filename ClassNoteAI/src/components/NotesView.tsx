@@ -978,10 +978,11 @@ export default function NotesView() {
           context={{
             pdfText: pdfTextContent,
             transcriptText: transcriptContent,
-            pdfData: pdfData || undefined, // 用於 OCR 模式
+            pdfData: pdfData || undefined,
           }}
           ollamaConnected={ollamaConnected}
           currentPage={pdfViewerRef.current?.getCurrentPage()}
+          onNavigateToPage={(page) => pdfViewerRef.current?.scrollToPage(page)}
         />
       )}
     </div >

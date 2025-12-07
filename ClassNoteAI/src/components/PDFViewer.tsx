@@ -116,7 +116,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
         setTotalPages(pdf.numPages);
         setCurrentPage(1);
 
-        // 提取所有頁面的文字供 AI 使用
+        // 提取所有頁面的文字供 AI 使用 (帶頁碼標記)
         if (onTextExtract) {
           try {
             const allTexts: string[] = [];
@@ -126,10 +126,11 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
               const pageText = textContent.items
                 .map((item: any) => item.str)
                 .join(" ");
-              allTexts.push(pageText);
+              // 添加頁面標記，供 chunkingService 解析
+              allTexts.push(`[PAGE:${i}]\n${pageText}`);
             }
             const fullText = allTexts.join("\n\n");
-            console.log("[PDFViewer] 提取完整文本，長度:", fullText.length, "字元");
+            console.log("[PDFViewer] 提取完整文本，長度:", fullText.length, "字元, 頁數:", pdf.numPages);
             onTextExtract(fullText);
           } catch (textErr) {
             console.error("[PDFViewer] 文本提取失敗:", textErr);

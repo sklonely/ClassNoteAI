@@ -27,7 +27,8 @@ const DEFAULT_OPTIONS: ChunkingOptions = {
 
 class ChunkingService {
     /**
-     * 將文本分割為 chunks
+     * 將文本分割為 chunks (支援頁面標記)
+     * PDF 文本格式: [PAGE:1]\n內容\n\n[PAGE:2]\n內容...
      */
     public chunkText(
         text: string,
@@ -42,10 +43,135 @@ class ChunkingService {
             return chunks;
         }
 
-        // 清理文本
-        const cleanedText = this.cleanText(text);
+        // 解析頁面標記 [PAGE:X]
+        const pagePattern = /\[PAGE:(\d+)\]/g;
+        const pages: Array<{ pageNumber: number; text: string; startPos: number }> = [];
 
-        // 按段落分割，保持語義完整性
+        let match;
+        while ((match = pagePattern.exec(text)) !== null) {
+            if (pages.length > 0) {
+                // 完成上一頁的文本
+                pages[pages.length - 1].text = text.slice(pages[pages.length - 1].startPos, match.index).trim();
+            }
+            pages.push({
+                pageNumber: parseInt(match[1], 10),
+                text: '',
+                startPos: match.index + match[0].length,
+            });
+        }
+
+        // 處理最後一頁
+        if (pages.length > 0) {
+            pages[pages.length - 1].text = text.slice(pages[pages.length - 1].startPos).trim();
+        }
+
+        // 如果沒有頁面標記，整體處理
+        if (pages.length === 0) {
+            return this.chunkTextWithoutPageInfo(text, lectureId, sourceType, opts);
+        }
+
+        let chunkIndex = 0;
+
+        // 按頁面處理
+        for (const page of pages) {
+            if (!page.text || page.text.length < opts.minChunkSize) {
+                continue;
+            }
+
+            // 如果頁面內容小於 chunkSize，直接作為一個 chunk
+            if (page.text.length <= opts.chunkSize) {
+                chunks.push({
+                    id: `${lectureId}_${sourceType}_${chunkIndex++}`,
+                    text: page.text,
+                    lectureId,
+                    sourceType,
+                    position: page.startPos,
+                    pageNumber: page.pageNumber,
+                });
+                continue;
+            }
+
+            // 頁面內容較長，需要分塊 (保持相同頁碼)
+            const paragraphs = this.splitByParagraphs(page.text);
+            let currentChunk = '';
+
+            for (const paragraph of paragraphs) {
+                if (paragraph.length > opts.chunkSize) {
+                    // 保存當前累積
+                    if (currentChunk.length >= opts.minChunkSize) {
+                        chunks.push({
+                            id: `${lectureId}_${sourceType}_${chunkIndex++}`,
+                            text: currentChunk.trim(),
+                            lectureId,
+                            sourceType,
+                            position: page.startPos,
+                            pageNumber: page.pageNumber,
+                        });
+                    }
+
+                    // 分割大段落
+                    const subChunks = this.splitLargeParagraph(paragraph, opts);
+                    for (const subChunk of subChunks) {
+                        chunks.push({
+                            id: `${lectureId}_${sourceType}_${chunkIndex++}`,
+                            text: subChunk,
+                            lectureId,
+                            sourceType,
+                            position: page.startPos,
+                            pageNumber: page.pageNumber,
+                        });
+                    }
+                    currentChunk = '';
+                    continue;
+                }
+
+                if (currentChunk.length + paragraph.length > opts.chunkSize) {
+                    if (currentChunk.length >= opts.minChunkSize) {
+                        chunks.push({
+                            id: `${lectureId}_${sourceType}_${chunkIndex++}`,
+                            text: currentChunk.trim(),
+                            lectureId,
+                            sourceType,
+                            position: page.startPos,
+                            pageNumber: page.pageNumber,
+                        });
+                        currentChunk = paragraph;
+                    } else {
+                        currentChunk += '\n' + paragraph;
+                    }
+                } else {
+                    currentChunk += (currentChunk ? '\n' : '') + paragraph;
+                }
+            }
+
+            // 保存頁面最後的 chunk
+            if (currentChunk.length >= opts.minChunkSize) {
+                chunks.push({
+                    id: `${lectureId}_${sourceType}_${chunkIndex++}`,
+                    text: currentChunk.trim(),
+                    lectureId,
+                    sourceType,
+                    position: page.startPos,
+                    pageNumber: page.pageNumber,
+                });
+            }
+        }
+
+        console.log(`[ChunkingService] 分塊完成: ${chunks.length} 個 chunks，原文長度: ${text.length}，頁數: ${pages.length}`);
+        return chunks;
+    }
+
+    /**
+     * 無頁面資訊時的分塊 (用於 transcript 或無標記 PDF)
+     */
+    private chunkTextWithoutPageInfo(
+        text: string,
+        lectureId: string,
+        sourceType: 'pdf' | 'transcript',
+        opts: ChunkingOptions
+    ): TextChunk[] {
+        const chunks: TextChunk[] = [];
+        const cleanedText = this.cleanText(text);
         const paragraphs = this.splitByParagraphs(cleanedText);
 
         let currentChunk = '';
@@ -53,48 +179,22 @@ class ChunkingService {
         let chunkIndex = 0;
 
         for (const paragraph of paragraphs) {
-            // 如果單個段落超過 chunkSize，需要進一步分割
             if (paragraph.length > opts.chunkSize) {
-                // 先保存當前累積的 chunk
                 if (currentChunk.length >= opts.minChunkSize) {
-                    chunks.push(this.createChunk(
-                        currentChunk,
-                        lectureId,
-                        sourceType,
-                        currentPosition,
-                        chunkIndex++
-                    ));
+                    chunks.push(this.createChunk(currentChunk, lectureId, sourceType, currentPosition, chunkIndex++));
                 }
-
-                // 分割大段落
                 const subChunks = this.splitLargeParagraph(paragraph, opts);
                 for (const subChunk of subChunks) {
-                    chunks.push(this.createChunk(
-                        subChunk,
-                        lectureId,
-                        sourceType,
-                        currentPosition,
-                        chunkIndex++
-                    ));
+                    chunks.push(this.createChunk(subChunk, lectureId, sourceType, currentPosition, chunkIndex++));
                 }
-
                 currentChunk = '';
                 currentPosition += paragraph.length;
                 continue;
             }
 
-            // 如果加入這個段落會超過 chunkSize，先保存當前 chunk
             if (currentChunk.length + paragraph.length > opts.chunkSize) {
                 if (currentChunk.length >= opts.minChunkSize) {
-                    chunks.push(this.createChunk(
-                        currentChunk,
-                        lectureId,
-                        sourceType,
-                        currentPosition - currentChunk.length,
-                        chunkIndex++
-                    ));
-
-                    // 保留 overlap
+                    chunks.push(this.createChunk(currentChunk, lectureId, sourceType, currentPosition - currentChunk.length, chunkIndex++));
                     const overlapText = currentChunk.slice(-opts.chunkOverlap);
                     currentChunk = overlapText + paragraph;
                 } else {
@@ -103,22 +203,14 @@ class ChunkingService {
             } else {
                 currentChunk += (currentChunk ? '\n' : '') + paragraph;
             }
-
             currentPosition += paragraph.length;
         }
 
-        // 保存最後一個 chunk
         if (currentChunk.length >= opts.minChunkSize) {
-            chunks.push(this.createChunk(
-                currentChunk,
-                lectureId,
-                sourceType,
-                currentPosition - currentChunk.length,
-                chunkIndex
-            ));
+            chunks.push(this.createChunk(currentChunk, lectureId, sourceType, currentPosition - currentChunk.length, chunkIndex));
         }
 
-        console.log(`[ChunkingService] 分塊完成: ${chunks.length} 個 chunks，原文長度: ${text.length}`);
+        console.log(`[ChunkingService] 分塊完成 (無頁碼): ${chunks.length} 個 chunks，原文長度: ${text.length}`);
         return chunks;
     }
 
