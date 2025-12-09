@@ -18,9 +18,10 @@ interface PDFViewerProps {
   filePath?: string;
   pdfData?: ArrayBuffer;
   onTextExtract?: (text: string) => void;
+  onPageChange?: (page: number) => void;
 }
 
-const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfData, onTextExtract }, ref) => {
+const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfData, onTextExtract, onPageChange }, ref) => {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
@@ -29,6 +30,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
   const [error, setError] = useState<string | null>(null);
   const canvasRefs = useRef<Map<number, HTMLCanvasElement>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
   useImperativeHandle(ref, () => ({
     scrollToPage: (pageNumber: number) => {
@@ -36,10 +38,49 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
       if (canvas) {
         canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
         setCurrentPage(pageNumber);
+        onPageChange?.(pageNumber);
       }
     },
     getCurrentPage: () => currentPage,
   }));
+
+  // 設置 IntersectionObserver 監聽頁面可見性
+  useEffect(() => {
+    if (!pdfDoc || loading) return;
+
+    const options = {
+      root: containerRef.current,
+      rootMargin: '0px',
+      threshold: 0.5 // 當頁面 50% 可見時觸發
+    };
+
+    const callback: IntersectionObserverCallback = (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          const pageNum = parseInt(entry.target.getAttribute('data-page-number') || '1');
+          setCurrentPage(pageNum);
+          onPageChange?.(pageNum);
+        }
+      });
+    };
+
+    observerRef.current = new IntersectionObserver(callback, options);
+
+    // 觀察所有 canvas 容器
+    canvasRefs.current.forEach((canvas, pageNum) => {
+      if (canvas) {
+        // 確保 canvas 有 data-page-number 屬性
+        canvas.setAttribute('data-page-number', pageNum.toString());
+        observerRef.current?.observe(canvas);
+      }
+    });
+
+    return () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+      }
+    };
+  }, [pdfDoc, loading, totalPages]); // 當 PDF 加載完成或頁數變化時重新設置
 
   // 加載 PDF 文檔
   useEffect(() => {
@@ -59,6 +100,19 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
 
         // 優先使用直接傳遞的 ArrayBuffer
         if (pdfData) {
+          // Check if buffer is detached (byteLength will be 0)
+          if (pdfData.byteLength === 0) {
+            console.warn("[PDFViewer] ArrayBuffer is detached (byteLength=0), skipping reload");
+            // If we already have a loaded document, keep using it
+            if (pdfDoc) {
+              console.log("[PDFViewer] Using previously loaded PDF document");
+              setLoading(false);
+              return;
+            }
+            // No existing doc and buffer is detached - this is an error state
+            throw new Error("PDF buffer is detached and no cached document available");
+          }
+
           console.log("[PDFViewer] 使用直接傳遞的 ArrayBuffer，大小:", pdfData.byteLength);
           // 創建一個完全獨立的 ArrayBuffer 副本，確保可以被正確序列化
           const sourceArray = new Uint8Array(pdfData);
@@ -115,6 +169,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
         setPdfDoc(pdf);
         setTotalPages(pdf.numPages);
         setCurrentPage(1);
+        onPageChange?.(1); // 初始加載時通知第一頁
 
         // 提取所有頁面的文字供 AI 使用 (帶頁碼標記)
         if (onTextExtract) {
@@ -199,6 +254,12 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
           };
 
           await page.render(renderContext).promise;
+
+          // 渲染完成後，確保 IntersectionObserver 監聽此 canvas
+          if (observerRef.current) {
+            canvas.setAttribute('data-page-number', pageNum.toString());
+            observerRef.current.observe(canvas);
+          }
         } catch (err) {
           console.error(`[PDFViewer] 頁面 ${pageNum} 渲染失敗:`, err);
           // 不設置全局錯誤，只記錄單個頁面的錯誤
@@ -260,14 +321,26 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
   // 上一頁
   const goToPreviousPage = () => {
     if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
+      const newPage = currentPage - 1;
+      scrollToPage(newPage);
     }
   };
 
   // 下一頁
   const goToNextPage = () => {
     if (pdfDoc && currentPage < totalPages) {
-      setCurrentPage(currentPage + 1);
+      const newPage = currentPage + 1;
+      scrollToPage(newPage);
+    }
+  };
+
+  // 內部跳轉函數
+  const scrollToPage = (pageNumber: number) => {
+    const canvas = canvasRefs.current.get(pageNumber);
+    if (canvas) {
+      canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setCurrentPage(pageNumber);
+      onPageChange?.(pageNumber);
     }
   };
 
@@ -417,7 +490,7 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
       <div className="px-4 py-2 bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between sticky bottom-0">
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-600 dark:text-gray-400">
-            共 {totalPages} 頁
+            第 {currentPage} 頁 / 共 {totalPages} 頁
           </span>
         </div>
 

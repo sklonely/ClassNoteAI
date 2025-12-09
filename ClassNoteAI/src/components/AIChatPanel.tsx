@@ -44,7 +44,6 @@ export default function AIChatPanel({
     const [isIndexing, setIsIndexing] = useState(false);
     const [indexingProgress, setIndexingProgress] = useState<IndexingProgress | null>(null);
     const [hasIndex, setHasIndex] = useState(false);
-    const [useOCR, setUseOCR] = useState(true); // 預設開啟 OCR
 
     // 對話管理狀態
     const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
@@ -84,23 +83,25 @@ export default function AIChatPanel({
         }
     };
 
-    // 建立 RAG 索引
-    const buildIndex = async () => {
+    // 建立 RAG 索引 (統一使用 OCR 模式)
+    const buildIndex = async (forceRefresh: boolean = false) => {
         if (isIndexing) return;
 
         setIsIndexing(true);
         try {
-            if (useOCR && context?.pdfData) {
-                // 使用 DeepSeek-OCR 模式 (適合表格/公式)
-                console.log('[AIChatPanel] 使用 OCR 模式建立索引');
+            if (context?.pdfData) {
+                // 使用 DeepSeek-OCR 模式識別 PDF
+                console.log(`[AIChatPanel] 使用 OCR 模式建立索引 (強制刷新: ${forceRefresh})`);
                 await ragService.indexLectureWithOCR(
                     lectureId,
                     context.pdfData,
                     context?.transcriptText || null,
-                    (progress) => setIndexingProgress(progress)
+                    (progress) => setIndexingProgress(progress),
+                    forceRefresh
                 );
-            } else {
-                // 使用普通模式
+            } else if (context?.pdfText || context?.transcriptText) {
+                // 無 PDF 時使用文本模式 (僅錄音轉錄)
+                console.log('[AIChatPanel] 使用文本模式建立索引 (無 PDF)');
                 await ragService.indexLecture(
                     lectureId,
                     context?.pdfText || null,
@@ -258,11 +259,13 @@ export default function AIChatPanel({
             if (useRAG && hasIndex) {
                 // 使用 RAG 增強問答 (傳入對話歷史)
                 console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'}, 歷史:${chatHistory.length}條)`);
+                const standardModel = await ollamaService.getStandardModel();
                 const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
                     topK: 5,
                     systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
                     currentPage,
                     chatHistory: chatHistory.filter(m => m.role !== 'system') as Array<{ role: 'user' | 'assistant'; content: string }>,
+                    model: standardModel,
                 });
 
                 assistantMessage = {
@@ -292,10 +295,11 @@ export default function AIChatPanel({
                     }
                 }
 
-                // 使用對話式 API
+                // 使用對話式 API (標準模型)
+                const standardModel = await ollamaService.getStandardModel();
                 const response = await ollamaService.chat(
                     chatHistory as Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
-                    { system: systemPrompt }
+                    { system: systemPrompt, model: standardModel }
                 );
 
                 assistantMessage = {
@@ -446,26 +450,12 @@ export default function AIChatPanel({
                                     )}
                                 </div>
                                 {!isIndexing && (context?.pdfText || context?.transcriptText || context?.pdfData) && (
-                                    <div className="flex items-center gap-2">
-                                        {context?.pdfData && (
-                                            <button
-                                                onClick={() => setUseOCR(!useOCR)}
-                                                className={`px-2 py-1 text-xs rounded transition-colors ${useOCR
-                                                    ? 'bg-purple-500 text-white'
-                                                    : 'bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-300'
-                                                    }`}
-                                                title="使用 DeepSeek-OCR 識別表格/公式 (較慢但更準確)"
-                                            >
-                                                {useOCR ? 'OCR 開' : 'OCR 關'}
-                                            </button>
-                                        )}
-                                        <button
-                                            onClick={buildIndex}
-                                            className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-                                        >
-                                            {hasIndex ? '重建索引' : '建立索引'}
-                                        </button>
-                                    </div>
+                                    <button
+                                        onClick={() => buildIndex(true)}
+                                        className="px-2 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+                                    >
+                                        {hasIndex ? '重建索引' : '建立索引'}
+                                    </button>
                                 )}
                                 {isIndexing && indexingProgress && (
                                     <span className="text-blue-500 flex items-center gap-1">
@@ -499,7 +489,31 @@ export default function AIChatPanel({
                                     ) : (
                                         <>
                                             <div className="prose prose-sm dark:prose-invert max-w-none">
-                                                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                                <ReactMarkdown
+                                                    components={{
+                                                        a: ({ node, href, children, ...props }) => {
+                                                            if (href && href.startsWith('#page-')) {
+                                                                const pageNum = parseInt(href.replace('#page-', ''));
+                                                                return (
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.preventDefault();
+                                                                            onNavigateToPage?.(pageNum);
+                                                                        }}
+                                                                        className="inline-flex items-center gap-0.5 px-1.5 py-0.5 mx-1 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 dark:text-blue-400 dark:bg-blue-900/30 dark:hover:bg-blue-900/50 rounded transition-colors align-middle"
+                                                                        title={`跳轉到第 ${pageNum} 頁`}
+                                                                    >
+                                                                        <span className="w-1 h-1 rounded-full bg-blue-600 dark:bg-blue-400"></span>
+                                                                        {children}
+                                                                    </button>
+                                                                );
+                                                            }
+                                                            return <a href={href} {...props} target="_blank" rel="noopener noreferrer">{children}</a>;
+                                                        }
+                                                    }}
+                                                >
+                                                    {msg.content.replace(/\[\[頁碼:(\d+)\]\]/g, '[第 $1 頁](#page-$1)')}
+                                                </ReactMarkdown>
                                             </div>
                                             {/* 來源引用連結 */}
                                             {msg.sources && msg.sources.length > 0 && (

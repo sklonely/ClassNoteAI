@@ -109,6 +109,14 @@ class EmbeddingStorageService {
     }
 
     /**
+     * 獲取特定頁面的所有 chunks
+     */
+    public async getChunksByPage(lectureId: string, pageNumber: number): Promise<EmbeddingRecord[]> {
+        const records = await this.getEmbeddingsByLecture(lectureId);
+        return records.filter(r => r.pageNumber === pageNumber);
+    }
+
+    /**
      * 語義搜索：找到最相似的 chunks
      * @param currentPage 當前頁面，用於優先返回該頁面/相鄰頁面的內容
      */

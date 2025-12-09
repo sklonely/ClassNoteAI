@@ -2,6 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
 import { storageService } from "../services/storageService";
 import { ollamaService } from "../services/ollamaService";
 import { Lecture, Note, RecordingStatus } from "../types";
@@ -21,9 +24,17 @@ import AIChatPanel from "./AIChatPanel";
 
 type ViewMode = 'recording' | 'review';
 
-export default function NotesView() {
+interface NotesViewProps {
+  courseId?: string;
+  lectureId?: string;
+}
+
+export default function NotesView({ courseId: propCourseId, lectureId: propLectureId }: NotesViewProps) {
   const navigate = useNavigate();
-  const { courseId, lectureId } = useParams<{ courseId: string; lectureId: string }>();
+  const params = useParams<{ courseId: string; lectureId: string }>();
+
+  const courseId = propCourseId || params.courseId;
+  const lectureId = propLectureId || params.lectureId;
 
   const [currentLectureData, setCurrentLectureData] = useState<Lecture | null>(null);
   const [selectedNote, setSelectedNote] = useState<Note | null>(null);
@@ -47,6 +58,7 @@ export default function NotesView() {
   const [ollamaConnected, setOllamaConnected] = useState(false);
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
+  const [currentPage, setCurrentPage] = useState(1);
 
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const pdfViewerRef = useRef<PDFViewerHandle>(null);
@@ -297,8 +309,9 @@ export default function NotesView() {
 
         // Load Subtitles
         const subtitles = await storageService.getSubtitles(lecture.id);
+        subtitleService.clear();
+        subtitleService.setLectureId(lecture.id); // Enable database sync
         if (subtitles.length > 0) {
-          subtitleService.clear();
           subtitles.forEach((sub) => {
             subtitleService.addSegment({
               id: sub.id,
@@ -318,7 +331,105 @@ export default function NotesView() {
 
         // Load Notes
         const note = await storageService.getNote(id);
-        setSelectedNote(note);
+
+        // ===== AUTO-GENERATE NOTES FOR EXISTING LECTURES =====
+        // If no notes exist but subtitles do, generate notes from subtitles
+        // Check BOTH database subtitles AND in-memory subtitleService segments
+        const inMemorySegments = subtitleService.getSegments();
+        const hasSubtitles = subtitles.length > 0 || inMemorySegments.length > 0;
+
+        console.log('[NotesView] Notes check - note exists:', !!note, ', db subtitles:', subtitles.length, ', in-memory segments:', inMemorySegments.length);
+
+        if (!note && hasSubtitles) {
+          console.log('[NotesView] No notes found but subtitles exist. Auto-generating notes...');
+
+          const SECTION_DURATION_SEC = 300; // 5 minutes per section
+          const sections: { title: string; content: string; timestamp: number }[] = [];
+
+          let currentSectionStart = 0;
+          let currentSectionContent: string[] = [];
+          let sectionIndex = 1;
+
+          // Use database subtitles if available, otherwise use in-memory segments
+          if (subtitles.length > 0) {
+            for (const sub of subtitles) {
+              const segTimestamp = sub.timestamp;
+
+              if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
+                sections.push({
+                  title: `Section ${sectionIndex}`,
+                  content: currentSectionContent.join(' '),
+                  timestamp: currentSectionStart,
+                });
+                sectionIndex++;
+                currentSectionStart = segTimestamp;
+                currentSectionContent = [];
+              }
+
+              const text = sub.text_zh || sub.text_en || '';
+              if (text.trim()) {
+                currentSectionContent.push(text.trim());
+              }
+            }
+          } else {
+            // Use in-memory segments as fallback
+            for (const seg of inMemorySegments) {
+              const segTimestamp = seg.startTime / 1000;
+
+              if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
+                sections.push({
+                  title: `Section ${sectionIndex}`,
+                  content: currentSectionContent.join(' '),
+                  timestamp: currentSectionStart,
+                });
+                sectionIndex++;
+                currentSectionStart = segTimestamp;
+                currentSectionContent = [];
+              }
+
+              const text = seg.displayTranslation || seg.roughTranslation || seg.displayText || seg.roughText || '';
+              if (text.trim()) {
+                currentSectionContent.push(text.trim());
+              }
+            }
+          }
+
+          // Save the last section
+          if (currentSectionContent.length > 0) {
+            sections.push({
+              title: `Section ${sectionIndex}`,
+              content: currentSectionContent.join(' '),
+              timestamp: currentSectionStart,
+            });
+          }
+
+          // Create and save the Note
+          if (sections.length > 0) {
+            const generatedNote: Note = {
+              lecture_id: lecture.id,
+              title: lecture.title,
+              sections: sections,
+              qa_records: [],
+              generated_at: new Date().toISOString(),
+            };
+
+            try {
+              await storageService.saveNote(generatedNote);
+              setSelectedNote(generatedNote);
+              console.log('[NotesView] Auto-generated notes with', sections.length, 'sections');
+            } catch (noteError) {
+              console.error('[NotesView] Failed to save auto-generated note:', noteError);
+              // Still show the note in UI even if DB save failed (e.g., FK constraint)
+              setSelectedNote(generatedNote);
+            }
+          } else {
+            console.log('[NotesView] No sections generated, skipping note creation');
+            setSelectedNote(null);
+          }
+        } else {
+          setSelectedNote(note);
+        }
+        // ===== END AUTO-GENERATE NOTES =====
       } else {
         console.error('Lecture not found:', id);
       }
@@ -399,6 +510,17 @@ export default function NotesView() {
 
     try {
       setSaveStatus('saving');
+
+      // ===== FIX: Ensure lecture exists in DB before FK-dependent operations =====
+      // This prevents FOREIGN KEY constraint failures when saving notes/subtitles
+      const existingLecture = await storageService.getLecture(currentLectureData.id);
+      if (!existingLecture) {
+        console.log('[NotesView] Lecture not in DB yet, saving first...');
+        // Save the lecture first to establish FK reference
+        await storageService.saveLecture(currentLectureData);
+      }
+      // ==========================================================================
+
       const segments = subtitleService.getSegments();
       const duration = recordingStartTime
         ? Math.floor((Date.now() - recordingStartTime) / 1000)
@@ -427,6 +549,67 @@ export default function NotesView() {
           created_at: now,
         }));
         await storageService.saveSubtitles(subtitles);
+
+        // ===== AUTO-GENERATE NOTE FROM SUBTITLES =====
+        // Group subtitles into sections (every 5 minutes or every 10 segments)
+        const SECTION_DURATION_SEC = 300; // 5 minutes per section
+        const sections: { title: string; content: string; timestamp: number }[] = [];
+
+        let currentSectionStart = 0;
+        let currentSectionContent: string[] = [];
+        let sectionIndex = 1;
+
+        for (const seg of segments) {
+          const segTimestamp = seg.startTime / 1000;
+
+          // Check if we need to start a new section
+          if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
+            // Save current section
+            sections.push({
+              title: `Section ${sectionIndex}`,
+              content: currentSectionContent.join(' '),
+              timestamp: currentSectionStart,
+            });
+            sectionIndex++;
+            currentSectionStart = segTimestamp;
+            currentSectionContent = [];
+          }
+
+          // Add text to current section (prefer Chinese if available)
+          const text = seg.displayTranslation || seg.roughTranslation || seg.displayText || seg.roughText || '';
+          if (text.trim()) {
+            currentSectionContent.push(text.trim());
+          }
+        }
+
+        // Save the last section
+        if (currentSectionContent.length > 0) {
+          sections.push({
+            title: `Section ${sectionIndex}`,
+            content: currentSectionContent.join(' '),
+            timestamp: currentSectionStart,
+          });
+        }
+
+        // Create and save the Note
+        const note: Note = {
+          lecture_id: currentLectureData.id,
+          title: currentLectureData.title,
+          sections: sections,
+          qa_records: [], // Empty initially, can be populated later via AI Chat
+          generated_at: now,
+        };
+
+        try {
+          await storageService.saveNote(note);
+          setSelectedNote(note);
+          console.log('[NotesView] Note auto-generated with', sections.length, 'sections');
+        } catch (noteError) {
+          console.error('[NotesView] Failed to save auto-generated note:', noteError);
+          // Still show the note in UI even if DB save failed
+          setSelectedNote(note);
+        }
+        // ===== END AUTO-GENERATE NOTE =====
       }
 
       setCurrentLectureData(updatedLecture);
@@ -825,6 +1008,7 @@ export default function NotesView() {
                     filePath={pdfPath || undefined}
                     pdfData={pdfData || undefined}
                     onTextExtract={handleTextExtract}
+                    onPageChange={setCurrentPage}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900">
@@ -922,8 +1106,23 @@ export default function NotesView() {
                       <FileText className="w-5 h-5" />
                       <h2 className="text-xl font-bold m-0">Summary</h2>
                     </div>
-                    <div className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap leading-relaxed">
-                      {selectedNote.summary}
+                    <div className="
+                      text-gray-700 dark:text-gray-300 
+                      prose prose-lg dark:prose-invert max-w-none
+                      prose-headings:font-bold prose-headings:text-gray-900 dark:prose-headings:text-gray-100
+                      prose-h1:text-2xl prose-h1:mt-6 prose-h1:mb-4 prose-h1:border-b prose-h1:border-gray-200 prose-h1:pb-2
+                      prose-h2:text-xl prose-h2:mt-5 prose-h2:mb-3
+                      prose-h3:text-lg prose-h3:mt-4 prose-h3:mb-2
+                      prose-p:my-2 prose-ul:my-2 prose-li:my-0 prose-table:my-4
+                      prose-strong:text-gray-900 dark:prose-strong:text-gray-100
+                      prose-blockquote:border-l-4 prose-blockquote:border-indigo-400 prose-blockquote:pl-4 prose-blockquote:italic
+                    ">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw]}
+                      >
+                        {selectedNote.summary}
+                      </ReactMarkdown>
                     </div>
                   </div>
                 )}
@@ -981,7 +1180,7 @@ export default function NotesView() {
             pdfData: pdfData || undefined,
           }}
           ollamaConnected={ollamaConnected}
-          currentPage={pdfViewerRef.current?.getCurrentPage()}
+          currentPage={currentPage}
           onNavigateToPage={(page) => pdfViewerRef.current?.scrollToPage(page)}
         />
       )}

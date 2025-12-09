@@ -734,6 +734,23 @@ async fn get_subtitles(lecture_id: String) -> Result<Vec<storage::Subtitle>, Str
         .map_err(|e| format!("獲取字幕失敗: {}", e))
 }
 
+/// 刪除單條字幕
+#[tauri::command]
+async fn delete_subtitle(id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    db.delete_subtitle_by_id(&id)
+        .map_err(|e| format!("刪除字幕失敗: {}", e))?;
+
+    Ok(())
+}
+
 /// 保存設置
 #[tauri::command]
 async fn save_setting(key: String, value: String) -> Result<(), String> {
@@ -1457,6 +1474,7 @@ pub fn run() {
             save_subtitle,
             save_subtitles,
             get_subtitles,
+            delete_subtitle,
             save_setting,
             get_setting,
             get_all_settings,

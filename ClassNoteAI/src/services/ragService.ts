@@ -134,7 +134,8 @@ class RAGService {
         lectureId: string,
         pdfData: ArrayBuffer | null,
         transcriptText: string | null,
-        onProgress?: (progress: IndexingProgress) => void
+        onProgress?: (progress: IndexingProgress) => void,
+        forceRefresh: boolean = false // 是否強制刷新 (忽略緩存)
     ): Promise<{ chunksCount: number; success: boolean }> {
         try {
             const allChunks: TextChunk[] = [];
@@ -148,12 +149,14 @@ class RAGService {
                     message: '正在將 PDF 轉換為圖片...',
                 });
 
-                // 將 PDF 頁面渲染為圖片
-                const totalPages = await pdfToImageService.getTotalPages(pdfData);
+                // 複製 pdfData 避免 buffer detached 問題
+                const pdfDataCopy = pdfData.slice(0);
+
+                // 將 PDF 轉換為圖片 (使用 scale 3.0 獲得高解析度，約 216 DPI)
                 const pageImages = await pdfToImageService.renderPages(
-                    pdfData,
-                    undefined, // 全部頁面
-                    1.5,
+                    pdfDataCopy,
+                    undefined,
+                    3.0, // Scale 3.0 for better OCR accuracy
                     (current, total) => {
                         onProgress?.({
                             stage: 'chunking',
@@ -174,22 +177,44 @@ class RAGService {
                             total: pageImages.length + total,
                             message: `OCR 識別頁面 ${current}/${total}...`,
                         });
-                    }
+                    },
+                    1, // 改回單線程處理，避免 Ollama 內部資源競爭
+                    lectureId, // 啟用緩存
+                    forceRefresh // 是否強制刷新
                 );
 
                 // 分塊處理 OCR 結果
                 for (const result of ocrResults) {
-                    if (result.success && result.text.trim().length > 0) {
-                        const chunks = chunkingService.chunkText(result.text, lectureId, 'pdf');
-                        // 為每個 chunk 設置頁碼
+                    let pageText = result.text;
+
+                    // 如果 OCR 失敗，嘗試使用 PDF.js 提取文本 (Fallback)
+                    if (!result.success || !pageText) {
+                        console.warn(`[RAGService] 頁面 ${result.pageNumber} OCR 失敗，嘗試使用 PDF.js 提取文本...`);
+                        try {
+                            // 再次複製 pdfData 以避免 detached
+                            const pdfDataForFallback = pdfData.slice(0);
+                            pageText = await pdfToImageService.extractText(pdfDataForFallback, result.pageNumber);
+                            console.log(`[RAGService] 頁面 ${result.pageNumber} PDF.js 提取成功 (${pageText.length} 字)`);
+                        } catch (fallbackError) {
+                            console.error(`[RAGService] 頁面 ${result.pageNumber} PDF.js 提取失敗:`, fallbackError);
+                            continue; // 如果都失敗，跳過此頁
+                        }
+                    }
+
+                    if (pageText && pageText.length > 0) {
+                        const chunks = chunkingService.chunkText(pageText, lectureId, 'pdf');
+                        // 為每個 chunk 添加頁碼元數據
                         chunks.forEach(chunk => {
-                            chunk.pageNumber = result.pageNumber;
+                            chunk.metadata = {
+                                ...chunk.metadata,
+                                pageNumber: result.pageNumber
+                            };
                         });
                         allChunks.push(...chunks);
                     }
                 }
 
-                console.log(`[RAGService] OCR PDF 分塊完成: ${allChunks.length} 個 chunks (${totalPages} 頁)`);
+                console.log(`[RAGService] OCR PDF 分塊完成: ${allChunks.length} 個 chunks (${pageImages.length} 頁)`);
             }
 
             // 階段 2: 處理轉錄文本 (與原邏輯相同)
@@ -257,7 +282,27 @@ class RAGService {
         topK: number = 5,
         currentPage?: number
     ): Promise<RAGContext> {
-        const results = await embeddingStorageService.semanticSearch(query, lectureId, topK, currentPage);
+        // 1. 執行語義檢索
+        let results = await embeddingStorageService.semanticSearch(query, lectureId, topK, currentPage);
+
+        // 2. 如果有當前頁碼，強制獲取該頁內容並置頂
+        if (currentPage) {
+            const currentPageChunks = await embeddingStorageService.getChunksByPage(lectureId, currentPage);
+
+            if (currentPageChunks.length > 0) {
+                // 將 EmbeddingRecord 轉換為 SearchResult (相似度設為 1.0)
+                const currentPageResults: SearchResult[] = currentPageChunks.map(chunk => ({
+                    chunk,
+                    similarity: 1.0
+                }));
+
+                // 過濾掉語義檢索中已存在的當前頁 chunks (避免重複)
+                results = results.filter(r => r.chunk.pageNumber !== currentPage);
+
+                // 將當前頁內容放在最前面
+                results = [...currentPageResults, ...results];
+            }
+        }
 
         // 格式化上下文
         const formattedContext = this.formatContext(results);
@@ -369,7 +414,8 @@ ${context}
 請注意：
 1. 優先使用上述內容回答問題
 2. 如果內容不足以回答，請說明
-3. 回答時可以引用來源編號 (如 [來源 1])`;
+3. 回答時請務必標註來源頁碼，格式為 [[頁碼:X]] (例如 [[頁碼:5]])，這將在界面上生成可點擊的跳轉鏈接。
+4. 如果引用了多個頁面，請分別標註，例如 [[頁碼:5]] [[頁碼:8]]。`;
     }
 
     /**

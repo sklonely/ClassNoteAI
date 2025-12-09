@@ -99,12 +99,10 @@ export class TranscriptionService {
       // Safety check: Ensure lecture exists to avoid FOREIGN KEY error
       const lecture = await storageService.getLecture(this.lectureId);
       if (!lecture) {
-        console.warn(`[TranscriptionService] Lecture ${this.lectureId} not found in DB. Stopping auto-save.`);
-        this.stopAutoSave();
-        return;
+        // DON'T stop auto-save - just log warning and keep pending subtitles for retry
+        console.warn(`[TranscriptionService] Lecture ${this.lectureId} not found in DB yet. Keeping ${this.pendingSubtitles.length} pending subtitles for retry.`);
+        return; // Keep pending subtitles, will retry on next interval
       }
-
-      // console.log(`[TranscriptionService] Verified lecture exists: ${lecture.id}`);
 
       const now = new Date().toISOString();
       // 簡單去重：避免保存重複 ID
@@ -118,12 +116,10 @@ export class TranscriptionService {
 
       await storageService.saveSubtitles(subtitles);
       console.log(`[TranscriptionService] 自動保存 ${subtitles.length} 個字幕片段`);
-      this.pendingSubtitles = [];
+      this.pendingSubtitles = []; // Only clear after successful save
     } catch (error) {
       console.error(`[TranscriptionService] 自動保存失敗 (LectureID: ${this.lectureId}):`, error);
-      // Don't clear pending subtitles on error so we can retry? 
-      // Or maybe clear them to avoid stuck loop?
-      // For now, keep them but maybe limit size?
+      // Keep pending subtitles for retry on error
     }
   }
 

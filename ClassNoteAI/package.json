@@ -1,7 +1,7 @@
 {
   "name": "classnoteai",
   "private": true,
-  "version": "0.2.3",
+  "version": "0.2.4",
   "type": "module",
   "scripts": {
     "dev": "vite --debug",
@@ -24,9 +24,12 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^7.9.6"
+    "react-router-dom": "^7.9.6",
+    "rehype-raw": "^7.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/cli": "^2",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",

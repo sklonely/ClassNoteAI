@@ -70,6 +70,42 @@ impl Database {
             }
         }
 
+        // ===== FIX: 檢查並修復 notes 表的 FK 約束（遷移：lectures_old -> lectures）=====
+        if let Ok(sql) = self.conn.query_row::<String, _, _>(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes'",
+            [],
+            |row| row.get(0),
+        ) {
+            if sql.contains("lectures_old") {
+                println!("[Database] 修復 notes 表 FK 約束 (lectures_old -> lectures)...");
+
+                // 備份 -> 刪除 -> 重建 -> 恢復
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS notes_backup AS SELECT * FROM notes",
+                    [],
+                )?;
+                self.conn.execute("DROP TABLE notes", [])?;
+                self.conn.execute(
+                    "CREATE TABLE notes (
+                        lecture_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        generated_at TEXT NOT NULL,
+                        FOREIGN KEY (lecture_id) REFERENCES lectures(id) ON DELETE CASCADE
+                    )",
+                    [],
+                )?;
+                // 只恢復有效的筆記（lecture_id 存在於 lectures 表中）
+                self.conn.execute(
+                    "INSERT INTO notes SELECT * FROM notes_backup WHERE lecture_id IN (SELECT id FROM lectures)",
+                    [],
+                )?;
+                self.conn.execute("DROP TABLE notes_backup", [])?;
+                println!("[Database] notes 表 FK 修復完成");
+            }
+        }
+        // ==========================================================================
+
         // 1. 創建 courses 表
         // 1. 創建 courses 表
         self.conn.execute(
@@ -532,6 +568,13 @@ impl Database {
     pub fn delete_subtitles(&self, lecture_id: &str) -> SqlResult<()> {
         self.conn
             .execute("DELETE FROM subtitles WHERE lecture_id = ?1", [lecture_id])?;
+        Ok(())
+    }
+
+    /// 刪除單條字幕 (by ID)
+    pub fn delete_subtitle_by_id(&self, id: &str) -> SqlResult<()> {
+        self.conn
+            .execute("DELETE FROM subtitles WHERE id = ?1", [id])?;
         Ok(())
     }
 

@@ -1,12 +1,6 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import MainWindow from "./components/MainWindow";
-import CourseListView from "./components/CourseListView";
-import CourseDetailView from "./components/CourseDetailView";
-import NotesView from "./components/NotesView";
-import SettingsView from "./components/SettingsView";
-import TranscriptionTest from "./components/TranscriptionTest";
-import { TranslationModelTest } from "./components/TranslationModelTest";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
 import { storageService } from "./services/storageService";
@@ -15,7 +9,6 @@ import { setupService } from "./services/setupService";
 type AppState = 'loading' | 'setup' | 'ready';
 
 function App() {
-  const navigate = useNavigate();
   const [appState, setAppState] = useState<AppState>('loading');
 
   // Check setup status on mount
@@ -75,38 +68,6 @@ function App() {
     return () => clearTimeout(timer);
   }, [appState]);
 
-  const handleSelectCourse = (courseId: string) => {
-    navigate(`/course/${courseId}`);
-  };
-
-  const handleBackToCourses = () => {
-    navigate('/');
-  };
-
-  const handleSelectLecture = (courseId: string, lectureId: string) => {
-    navigate(`/course/${courseId}/lecture/${lectureId}`);
-  };
-
-  const handleCreateLecture = async (courseId: string) => {
-    // 創建新課堂並跳轉
-    try {
-      const newLecture = {
-        id: crypto.randomUUID(),
-        course_id: courseId,
-        title: '新課堂',
-        date: new Date().toISOString(),
-        duration: 0,
-        status: 'recording' as const,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-      await storageService.saveLecture(newLecture);
-      navigate(`/course/${courseId}/lecture/${newLecture.id}`);
-    } catch (error) {
-      console.error('Failed to create lecture:', error);
-    }
-  };
-
   const handleSetupComplete = () => {
     setAppState('ready');
   };
@@ -130,55 +91,9 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <MainWindow>
-        <Routes>
-          <Route
-            path="/"
-            element={<CourseListView onSelectCourse={handleSelectCourse} />}
-          />
-          <Route
-            path="/course/:courseId"
-            element={
-              <CourseDetailViewWrapper
-                onBack={handleBackToCourses}
-                onSelectLecture={handleSelectLecture}
-                onCreateLecture={handleCreateLecture}
-              />
-            }
-          />
-          <Route
-            path="/course/:courseId/lecture/:lectureId"
-            element={<NotesView />}
-          />
-          <Route path="/settings" element={<SettingsView />} />
-          <Route path="/test" element={<TranscriptionTest />} />
-          <Route path="/test-translation" element={<TranslationModelTest />} />
-        </Routes>
-      </MainWindow>
+      <MainWindow />
     </ErrorBoundary>
   );
 }
-
-// Wrapper to extract params for CourseDetailView
-import { useParams } from "react-router-dom";
-
-const CourseDetailViewWrapper: React.FC<{
-  onBack: () => void;
-  onSelectLecture: (courseId: string, lectureId: string) => void;
-  onCreateLecture: (courseId: string) => void;
-}> = ({ onBack, onSelectLecture, onCreateLecture }) => {
-  const { courseId } = useParams<{ courseId: string }>();
-
-  if (!courseId) return null;
-
-  return (
-    <CourseDetailView
-      courseId={courseId}
-      onBack={onBack}
-      onSelectLecture={(lectureId: string) => onSelectLecture(courseId, lectureId)}
-      onCreateLecture={onCreateLecture}
-    />
-  );
-};
 
 export default App;

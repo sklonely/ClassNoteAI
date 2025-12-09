@@ -10,6 +10,22 @@ class SubtitleService {
   private currentText: string = '';
   private currentTranslation?: string = '';
   private listeners: Set<(state: SubtitleState) => void> = new Set();
+  private lectureId: string | null = null; // 用於資料庫同步
+
+  /**
+   * 設置 lectureId 以啟用資料庫同步
+   */
+  setLectureId(id: string | null): void {
+    this.lectureId = id;
+    console.log('[SubtitleService] 設置 lectureId:', id);
+  }
+
+  /**
+   * 獲取當前 lectureId
+   */
+  getLectureId(): string | null {
+    return this.lectureId;
+  }
 
   /**
    * 添加字幕片段
@@ -76,6 +92,32 @@ class SubtitleService {
   }
 
   /**
+   * 刪除字幕片段
+   */
+  async deleteSegment(segmentId: string): Promise<void> {
+    const index = this.segments.findIndex(s => s.id === segmentId);
+    if (index === -1) {
+      console.warn(`[SubtitleService] 找不到字幕片段: ${segmentId}`);
+      return;
+    }
+
+    // 從記憶體移除
+    this.segments.splice(index, 1);
+    this.notifyListeners();
+
+    // 同步到資料庫
+    if (this.lectureId) {
+      try {
+        const { storageService } = await import('./storageService');
+        await storageService.deleteSubtitle(segmentId);
+        console.log('[SubtitleService] 已從資料庫刪除字幕:', segmentId);
+      } catch (error) {
+        console.error('[SubtitleService] 刪除字幕失敗:', error);
+      }
+    }
+  }
+
+  /**
    * 更新當前字幕文本
    */
   updateCurrentText(text: string, translation?: string): void {
@@ -119,6 +161,7 @@ class SubtitleService {
     this.segments = [];
     this.currentText = '';
     this.currentTranslation = undefined;
+    this.lectureId = null;
     this.notifyListeners();
   }
 

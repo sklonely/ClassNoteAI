@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { BookOpen, FileText, Settings, Moon, Sun, FlaskConical } from "lucide-react";
 import { applyTheme, getSystemTheme } from "../utils/theme";
 import { ollamaService } from "../services/ollamaService";
@@ -7,9 +7,27 @@ import * as whisperService from "../services/whisperService";
 import * as translationModelService from "../services/translationModelService";
 import { storageService } from "../services/storageService";
 
-export default function MainWindow({ children }: { children: React.ReactNode }) {
+// Import Views
+import CourseListView from "./CourseListView";
+import CourseDetailView from "./CourseDetailView";
+import NotesView from "./NotesView";
+import SettingsView from "./SettingsView";
+import TranscriptionTest from "./TranscriptionTest";
+import { TranslationModelTest } from "./TranslationModelTest";
+
+type ActiveView = 'home' | 'course' | 'lecture' | 'settings' | 'test' | 'test-translation';
+
+export default function MainWindow() {
+  const navigate = useNavigate();
   const location = useLocation();
-  const [theme, setTheme] = useState<"light" | "dark">("light"); // Default to light, will update from storage
+
+  // View State
+  const [activeView, setActiveView] = useState<ActiveView>('home');
+  const [activeCourseId, setActiveCourseId] = useState<string | null>(null);
+  const [activeLectureId, setActiveLectureId] = useState<string | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [ollamaStatus, setOllamaStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
   const [whisperModel, setWhisperModel] = useState<string | null>(null);
   const [translationState, setTranslationState] = useState<{
@@ -17,11 +35,17 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
     model: string | null;
   }>({ provider: 'local', model: null });
 
+  // Sync URL with internal state (optional, for deep linking)
+  useEffect(() => {
+    // This is a simplified sync. For full deep linking support, we'd parse the URL here.
+    // For now, we prioritize internal state to prevent unmounting.
+  }, []);
+
+  // ... (Theme and Service Checks - Keep existing useEffects) ...
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
 
-  // Load initial theme from storage
   useEffect(() => {
     const loadTheme = async () => {
       try {
@@ -29,7 +53,6 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
         if (settings && settings.theme) {
           setTheme(settings.theme);
         } else {
-          // Fallback to system theme if no setting saved
           setTheme(getSystemTheme());
         }
       } catch (error) {
@@ -41,19 +64,16 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
   }, []);
 
   useEffect(() => {
-    // Check Ollama Status
     const checkOllama = async () => {
       const isConnected = await ollamaService.checkConnection();
       setOllamaStatus(isConnected ? 'connected' : 'disconnected');
     };
 
     checkOllama();
-    const interval = setInterval(checkOllama, 30000); // Check every 30s
+    const interval = setInterval(checkOllama, 30000);
 
-    // Check Whisper Model
     setWhisperModel(whisperService.getCurrentModel());
 
-    // Check Translation State
     const checkTranslationState = async () => {
       const settings = await storageService.getAppSettings();
       const provider = settings?.translation?.provider || 'local';
@@ -66,7 +86,6 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
     };
     checkTranslationState();
 
-    // Event Listeners
     const handleWhisperModelChange = (e: CustomEvent) => {
       if (e.detail && e.detail.model) {
         setWhisperModel(e.detail.model);
@@ -81,7 +100,6 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
 
     const handleSettingsChange = async () => {
       checkTranslationState();
-      // Also reload theme in case it was changed in settings
       const settings = await storageService.getAppSettings();
       if (settings && settings.theme) {
         setTheme(settings.theme);
@@ -105,38 +123,95 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
     setTheme(newTheme);
     applyTheme(newTheme);
 
-    // Save new theme preference
     try {
-      // We need to update the full app settings object to persist the theme correctly
-      // First get current settings
       const currentSettings = await storageService.getAppSettings();
-
       if (currentSettings) {
-        // If settings exist, update theme
         await storageService.saveAppSettings({
           ...currentSettings,
           theme: newTheme
         });
-      } else {
-        console.warn('Cannot save theme: App settings not initialized');
       }
     } catch (error) {
       console.error('Failed to save theme preference:', error);
     }
   };
 
+  // Navigation Handlers
+  const handleNavigateHome = () => {
+    setActiveView('home');
+    setIsSettingsOpen(false);
+  };
+
+  const handleNavigateSettings = () => {
+    setIsSettingsOpen(true);
+  };
+
+  const handleSelectCourse = (courseId: string) => {
+    setActiveCourseId(courseId);
+    setActiveView('course');
+  };
+
+  const handleSelectLecture = (courseId: string, lectureId: string) => {
+    setActiveCourseId(courseId);
+    setActiveLectureId(lectureId);
+    setActiveView('lecture');
+  };
+
+  const handleCreateLecture = async (courseId: string) => {
+    try {
+      const newLecture = {
+        id: crypto.randomUUID(),
+        course_id: courseId,
+        title: '新課堂',
+        date: new Date().toISOString(),
+        duration: 0,
+        status: 'recording' as const,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      };
+      await storageService.saveLecture(newLecture);
+      handleSelectLecture(courseId, newLecture.id);
+    } catch (error) {
+      console.error('Failed to create lecture:', error);
+    }
+  };
+
+  const handleNavigateNotes = () => {
+    if (activeLectureId && activeCourseId) {
+      setActiveView('lecture');
+    } else {
+      // If no active lecture, maybe go to home or show a message
+      // For now, let's go to home as fallback, or maybe we should just switch to 'lecture' view 
+      // which shows "No active lecture" message as implemented.
+      setActiveView('lecture');
+    }
+    setIsSettingsOpen(false);
+  };
+
+  const handleBackToCourses = () => {
+    setActiveView('home');
+  };
+
+  const handleBackToCourseDetail = () => {
+    if (activeCourseId) {
+      setActiveView('course');
+    } else {
+      setActiveView('home');
+    }
+  };
+
   const navItems = [
-    { path: "/", label: "上課", icon: BookOpen },
-    { path: "/notes", label: "筆記", icon: FileText },
-    { path: "/settings", label: "設置", icon: Settings },
-    { path: "/test", label: "測試", icon: FlaskConical },
-    { path: "/test-translation", label: "翻譯測試", icon: FlaskConical },
+    { id: 'home', label: "上課", icon: BookOpen, action: handleNavigateHome },
+    { id: 'notes', label: "筆記", icon: FileText, action: handleNavigateNotes },
+    { id: 'settings', label: "設置", icon: Settings, action: handleNavigateSettings },
+    { id: 'test', label: "測試", icon: FlaskConical, action: () => { setActiveView('test'); setIsSettingsOpen(false); } },
+    { id: 'test-translation', label: "翻譯測試", icon: FlaskConical, action: () => { setActiveView('test-translation'); setIsSettingsOpen(false); } },
   ];
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100">
+    <div className="flex flex-col h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100 relative">
       {/* 頂部導航欄 */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800">
+      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 z-20 relative">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-semibold">ClassNote AI</h1>
         </div>
@@ -144,11 +219,21 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
         <nav className="flex items-center gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = location.pathname === item.path;
+            // Highlight logic
+            let isActive = false;
+            if (item.id === 'settings') {
+              isActive = isSettingsOpen;
+            } else if (!isSettingsOpen) {
+              if (item.id === 'home') isActive = ['home', 'course'].includes(activeView);
+              if (item.id === 'notes') isActive = activeView === 'lecture';
+              if (item.id === 'test') isActive = activeView === 'test';
+              if (item.id === 'test-translation') isActive = activeView === 'test-translation';
+            }
+
             return (
-              <Link
-                key={item.path}
-                to={item.path}
+              <button
+                key={item.id}
+                onClick={item.action}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${isActive
                   ? "bg-blue-500 text-white"
                   : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
@@ -156,7 +241,7 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
               >
                 <Icon size={18} />
                 <span>{item.label}</span>
-              </Link>
+              </button>
             );
           })}
         </nav>
@@ -173,11 +258,11 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
       </header>
 
       {/* 狀態欄 */}
-      <div className="px-6 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400">
+      <div className="px-6 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 z-10 relative">
         <div className="flex items-center gap-4">
           <span
             className="flex items-center gap-2 cursor-help"
-            title={ollamaStatus === 'connected' ? "Ollama 服務已連接 (用於總結與關鍵詞)" : "無法連接到 Ollama 服務"}
+            title={ollamaStatus === 'connected' ? "Ollama 服務已連接" : "無法連接到 Ollama 服務"}
           >
             <span className={`w-2 h-2 rounded-full ${ollamaStatus === 'connected' ? 'bg-green-500' :
               ollamaStatus === 'checking' ? 'bg-yellow-500' : 'bg-red-500'
@@ -187,45 +272,88 @@ export default function MainWindow({ children }: { children: React.ReactNode }) 
 
           <span
             className="flex items-center gap-2 cursor-help"
-            title={whisperModel ? `當前加載模型: ${whisperModel}` : "Whisper 模型尚未加載 (用於語音轉錄)"}
+            title={whisperModel ? `當前加載模型: ${whisperModel}` : "Whisper 模型尚未加載"}
           >
             <span className={`w-2 h-2 rounded-full ${whisperModel ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
             {whisperModel ? '模型就緒' : '模型未加載'}
           </span>
 
-          {whisperModel && (
-            <span className="text-xs px-2 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 rounded-full">
-              {whisperModel}
-            </span>
-          )}
-
           <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-2"></div>
 
           <span
             className="flex items-center gap-2 cursor-help"
-            title={translationState.provider === 'google'
-              ? "使用 Google Cloud Translation API (在線)"
-              : translationState.model
-                ? `使用本地模型: ${translationModelService.getModelDisplayName(translationState.model)}`
-                : "本地翻譯模型尚未加載"}
+            title={translationState.provider === 'google' ? "Google Cloud API" : "本地翻譯模型"}
           >
-            <span className={`w-2 h-2 rounded-full ${translationState.provider === 'google' ? 'bg-purple-500' :
-              translationState.model ? 'bg-purple-500' : 'bg-gray-400'
-              }`}></span>
+            <span className={`w-2 h-2 rounded-full ${translationState.provider === 'google' || translationState.model ? 'bg-purple-500' : 'bg-gray-400'}`}></span>
             翻譯就緒
           </span>
-
-          {(translationState.provider === 'google' || translationState.model) && (
-            <span className="text-xs px-2 py-0.5 bg-purple-100 dark:bg-purple-900 text-purple-600 dark:text-purple-300 rounded-full">
-              {translationState.provider === 'google' ? 'Google Cloud' : translationState.model}
-            </span>
-          )}
         </div>
       </div>
 
-      {/* 主內容區域 */}
-      <main className="flex-1 overflow-hidden">
-        {children}
+      {/* 主內容區域 - 使用 Stack 方式管理視圖 */}
+      <main className="flex-1 overflow-hidden relative">
+
+        {/* 1. Home View (Course List) */}
+        {activeView === 'home' && !isSettingsOpen && (
+          <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+            <CourseListView onSelectCourse={handleSelectCourse} />
+          </div>
+        )}
+
+        {/* 2. Course Detail View */}
+        {activeView === 'course' && activeCourseId && !isSettingsOpen && (
+          <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+            <CourseDetailView
+              courseId={activeCourseId}
+              onBack={handleBackToCourses}
+              onSelectLecture={(lectureId) => handleSelectLecture(activeCourseId, lectureId)}
+              onCreateLecture={() => handleCreateLecture(activeCourseId)}
+            />
+          </div>
+        )}
+
+        {/* 3. Lecture View (NotesView) - KEEP ALIVE */}
+        {/* 始終渲染，但通過 CSS 控制顯示/隱藏 */}
+        <div
+          className="absolute inset-0 bg-white dark:bg-slate-900"
+          style={{
+            display: (activeView === 'lecture' && !isSettingsOpen) ? 'block' : 'none',
+            zIndex: 0
+          }}
+        >
+          {activeLectureId && activeCourseId ? (
+            <NotesView
+              courseId={activeCourseId}
+              lectureId={activeLectureId}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-500">
+              No active lecture
+            </div>
+          )}
+        </div>
+
+        {/* 4. Settings Overlay */}
+        {isSettingsOpen && (
+          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+            <SettingsView onClose={() => setIsSettingsOpen(false)} />
+          </div>
+        )}
+
+        {/* 5. Test View */}
+        {activeView === 'test' && !isSettingsOpen && (
+          <div className="absolute inset-0 overflow-auto bg-white dark:bg-slate-900">
+            <TranscriptionTest />
+          </div>
+        )}
+
+        {/* 6. Translation Test View */}
+        {activeView === 'test-translation' && !isSettingsOpen && (
+          <div className="absolute inset-0 overflow-auto bg-white dark:bg-slate-900">
+            <TranslationModelTest />
+          </div>
+        )}
+
       </main>
     </div>
   );

@@ -30,7 +30,9 @@ class PdfToImageService {
         pageNumber: number,
         scale: number = 1.5
     ): Promise<PageImage> {
-        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+        // 複製 ArrayBuffer 防止 detached 錯誤
+        const pdfDataCopy = pdfData.slice(0);
+        const loadingTask = pdfjsLib.getDocument({ data: pdfDataCopy });
         const pdf = await loadingTask.promise;
 
         if (pageNumber < 1 || pageNumber > pdf.numPages) {
@@ -82,7 +84,9 @@ class PdfToImageService {
         scale: number = 1.5,
         onProgress?: (current: number, total: number) => void
     ): Promise<PageImage[]> {
-        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+        // 複製 ArrayBuffer 防止 detached 錯誤
+        const pdfDataCopy = pdfData.slice(0);
+        const loadingTask = pdfjsLib.getDocument({ data: pdfDataCopy });
         const pdf = await loadingTask.promise;
 
         // 如果沒指定頁碼，渲染全部頁面
@@ -133,9 +137,38 @@ class PdfToImageService {
      * 獲取 PDF 總頁數
      */
     public async getTotalPages(pdfData: ArrayBuffer): Promise<number> {
-        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+        // 複製 ArrayBuffer 防止 detached 錯誤
+        const pdfDataCopy = pdfData.slice(0);
+        const loadingTask = pdfjsLib.getDocument({ data: pdfDataCopy });
         const pdf = await loadingTask.promise;
         return pdf.numPages;
+    }
+
+    /**
+     * 從 PDF 頁面提取純文本 (Fallback 用)
+     * @param pdfData PDF 的 ArrayBuffer
+     * @param pageNumber 頁碼 (1-indexed)
+     */
+    public async extractText(
+        pdfData: ArrayBuffer,
+        pageNumber: number
+    ): Promise<string> {
+        // 複製 ArrayBuffer 防止 detached 錯誤
+        const pdfDataCopy = pdfData.slice(0);
+        const loadingTask = pdfjsLib.getDocument({ data: pdfDataCopy });
+        const pdf = await loadingTask.promise;
+
+        if (pageNumber < 1 || pageNumber > pdf.numPages) {
+            throw new Error(`頁碼 ${pageNumber} 超出範圍 (1-${pdf.numPages})`);
+        }
+
+        const page = await pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+
+        // 將文本項拼接成字符串
+        return textContent.items
+            .map((item: any) => item.str)
+            .join(' ');
     }
 }
 

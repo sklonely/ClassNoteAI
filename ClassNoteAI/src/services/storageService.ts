@@ -99,6 +99,13 @@ class StorageService {
   }
 
   /**
+   * 刪除單條字幕
+   */
+  async deleteSubtitle(id: string): Promise<void> {
+    await invoke('delete_subtitle', { id });
+  }
+
+  /**
    * 保存設置
    */
   async saveSetting(key: string, value: string): Promise<void> {
@@ -328,9 +335,40 @@ class StorageService {
 
   /**
    * 保存筆記
+   * 注意：前端 Note 使用 sections/qa_records/summary，需要轉換為數據庫格式 (content JSON 字符串)
    */
   async saveNote(note: Note): Promise<void> {
-    await invoke('save_note', { note });
+    console.log('[StorageService] Attempting to save note for lecture:', note.lecture_id);
+
+    // ===== FIX: Pre-check that lecture exists to prevent FK constraint errors =====
+    const lectureExists = await this.getLecture(note.lecture_id);
+    console.log('[StorageService] Lecture exists check result:', !!lectureExists, lectureExists?.id, lectureExists?.course_id);
+
+    if (!lectureExists) {
+      console.error('[StorageService] Cannot save note - lecture does not exist:', note.lecture_id);
+      throw new Error(`無法保存筆記：講座不存在 (${note.lecture_id})`);
+    }
+    // =============================================================================
+
+    // 將前端格式轉換為數據庫格式
+    const dbNote = {
+      lecture_id: note.lecture_id,
+      title: note.title,
+      content: JSON.stringify({
+        summary: note.summary,
+        sections: note.sections,
+        qa_records: note.qa_records,
+      }),
+      generated_at: note.generated_at,
+    };
+
+    try {
+      await invoke('save_note', { note: dbNote });
+      console.log('[StorageService] Note saved successfully');
+    } catch (error) {
+      console.error('[StorageService] Rust save_note failed:', error);
+      throw new Error(`保存筆記失敗: ${error}`);
+    }
   }
 
   /**
@@ -444,6 +482,22 @@ class StorageService {
       console.error('導入文件失敗:', error);
       throw new Error(`導入文件失敗: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+  /**
+   * 保存 OCR 結果
+   * key: ocr_result_{lectureId}_{pageNumber}
+   */
+  async saveOCRResult(lectureId: string, pageNumber: number, text: string): Promise<void> {
+    const key = `ocr_result_${lectureId}_${pageNumber}`;
+    await this.saveSetting(key, text);
+  }
+
+  /**
+   * 獲取 OCR 結果
+   */
+  async getOCRResult(lectureId: string, pageNumber: number): Promise<string | null> {
+    const key = `ocr_result_${lectureId}_${pageNumber}`;
+    return await this.getSetting(key);
   }
 }
 

@@ -102,6 +102,12 @@ export interface AppSettings {
     host: string;
     model: string;
     enabled: boolean;
+    aiModels?: {
+      embedding: string;  // Embedding 模型 (e.g., nomic-embed-text)
+      light: string;      // 輕量任務 (關鍵詞、對話壓縮)
+      standard: string;   // 標準任務 (RAG、對話)
+      heavy: string;      // 重量任務 (總結)
+    };
   };
 }
 

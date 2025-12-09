@@ -168,7 +168,7 @@ class ChatSessionService {
     }
 
     /**
-     * 生成對話摘要
+     * 生成對話摘要 (使用輕量模型)
      */
     private async generateSummary(session: ChatSession): Promise<string> {
         const oldMessages = session.messages.slice(0, -1); // 排除最新一條
@@ -179,7 +179,9 @@ class ChatSessionService {
         const prompt = `請將以下對話歷史總結為簡潔的摘要（100字以內）：\n\n${historyText}`;
 
         try {
+            const lightModel = await ollamaService.getLightModel();
             const summary = await ollamaService.generate(prompt, {
+                model: lightModel,
                 system: '你是一個對話摘要助手，請用繁體中文簡潔總結對話要點。',
             });
             console.log(`[ChatSessionService] 生成摘要: ${summary.slice(0, 50)}...`);

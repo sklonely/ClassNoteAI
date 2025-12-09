@@ -46,11 +46,57 @@ class OllamaService {
     }
 
     /**
-     * 獲取選定的模型
+     * 獲取選定的模型（預設/向後相容）
      */
     private async getModel(): Promise<string> {
         const settings = await storageService.getAppSettings();
-        return settings?.ollama?.model || 'llama3'; // 默認使用 llama3
+        return settings?.ollama?.model || 'qwen3:235b-a22b';
+    }
+
+    /**
+     * 獲取 AI 模型分層配置
+     */
+    public async getAiModelConfig() {
+        const settings = await storageService.getAppSettings();
+        const defaults = {
+            embedding: 'nomic-embed-text',
+            light: 'qwen3:8b',
+            standard: 'qwen3:8b',
+            heavy: 'qwen3:235b-a22b'
+        };
+        return settings?.ollama?.aiModels || defaults;
+    }
+
+    /**
+     * 獲取輕量任務模型 (關鍵詞、壓縮)
+     */
+    public async getLightModel(): Promise<string> {
+        const config = await this.getAiModelConfig();
+        return config.light;
+    }
+
+    /**
+     * 獲取標準任務模型 (RAG、對話)
+     */
+    public async getStandardModel(): Promise<string> {
+        const config = await this.getAiModelConfig();
+        return config.standard;
+    }
+
+    /**
+     * 獲取重量任務模型 (總結)
+     */
+    public async getHeavyModel(): Promise<string> {
+        const config = await this.getAiModelConfig();
+        return config.heavy;
+    }
+
+    /**
+     * 獲取 Embedding 模型
+     */
+    public async getEmbeddingModel(): Promise<string> {
+        const config = await this.getAiModelConfig();
+        return config.embedding;
     }
 
     /**
@@ -211,7 +257,9 @@ class OllamaService {
     `;
 
         try {
+            const lightModel = await this.getLightModel();
             const response = await this.generate(prompt, {
+                model: lightModel,
                 system: "You are a helpful assistant that extracts technical keywords from text."
             });
 
@@ -272,7 +320,8 @@ class OllamaService {
             `;
         }
 
-        return await this.generate(prompt, { system: systemPrompt });
+        const heavyModel = await this.getHeavyModel();
+        return await this.generate(prompt, { model: heavyModel, system: systemPrompt });
     }
     /**
      * 從文本中提取課程大綱結構化信息
@@ -300,7 +349,9 @@ class OllamaService {
     `;
 
         try {
+            const lightModel = await this.getLightModel();
             const response = await this.generate(prompt, {
+                model: lightModel,
                 system: "You are a helpful assistant that extracts structured course information into JSON format."
             });
 
