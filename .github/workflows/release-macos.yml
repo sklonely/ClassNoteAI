@@ -15,6 +15,10 @@ env:
   CARGO_TERM_COLOR: always
   TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  # 優化 Cargo 編譯
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
 
 defaults:
   run:
@@ -29,6 +33,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ===== Node.js + npm cache =====
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -36,19 +41,41 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ClassNoteAI/package-lock.json
 
+      # ===== Rust toolchain =====
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      # ===== Rust cache (改進版) =====
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ClassNoteAI/src-tauri
+          workspaces: ClassNoteAI/src-tauri -> target
+          # 使用更長的 cache key 包含 Cargo.lock hash
+          shared-key: "macos-rust-cache"
+          # 快取所有 target 目錄
+          cache-targets: true
+          # 保存 ~/.cargo 目錄 (crates.io index + 已下載的 crates)
+          cache-all-crates: true
 
+      # ===== 快取 CTranslate2 編譯結果 =====
+      - name: Cache ct2rs build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ClassNoteAI/src-tauri/target/aarch64-apple-darwin/release/build/ct2rs-*
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ct2rs-macos-aarch64-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ct2rs-macos-aarch64-
+
+      # ===== 安裝 npm 依賴 =====
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline
 
+      # ===== Build Tauri =====
       - name: Build Tauri (Apple Silicon)
         run: npm run tauri build -- --target aarch64-apple-darwin
 
