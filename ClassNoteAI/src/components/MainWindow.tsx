@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BookOpen, FileText, Settings, Moon, Sun, FlaskConical } from "lucide-react";
+import { useState, useEffect } from "react";
+import { BookOpen, Settings, Moon, Sun, User } from "lucide-react";
 import { applyTheme, getSystemTheme } from "../utils/theme";
 import { ollamaService } from "../services/ollamaService";
 import * as whisperService from "../services/whisperService";
@@ -12,20 +11,29 @@ import CourseListView from "./CourseListView";
 import CourseDetailView from "./CourseDetailView";
 import NotesView from "./NotesView";
 import SettingsView from "./SettingsView";
-import TranscriptionTest from "./TranscriptionTest";
-import { TranslationModelTest } from "./TranslationModelTest";
+import ProfileView from "./ProfileView";
+import TaskIndicator from "./TaskIndicator";
+import TrashView from "./TrashView";
 
 type ActiveView = 'home' | 'course' | 'lecture' | 'settings' | 'test' | 'test-translation';
 
 export default function MainWindow() {
-  const navigate = useNavigate();
-  const location = useLocation();
 
   // View State
   const [activeView, setActiveView] = useState<ActiveView>('home');
   const [activeCourseId, setActiveCourseId] = useState<string | null>(null);
   const [activeLectureId, setActiveLectureId] = useState<string | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [showTrashView, setShowTrashView] = useState(false);
+
+  // Expose setShowTrashView globally for SettingsView to access
+  useEffect(() => {
+    (window as any).__setShowTrashView = setShowTrashView;
+    return () => {
+      delete (window as any).__setShowTrashView;
+    };
+  }, []);
 
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [ollamaStatus, setOllamaStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
@@ -140,7 +148,9 @@ export default function MainWindow() {
   const handleNavigateHome = () => {
     setActiveView('home');
     setIsSettingsOpen(false);
+    setIsProfileOpen(false);
   };
+
 
   const handleNavigateSettings = () => {
     setIsSettingsOpen(true);
@@ -176,18 +186,6 @@ export default function MainWindow() {
     }
   };
 
-  const handleNavigateNotes = () => {
-    if (activeLectureId && activeCourseId) {
-      setActiveView('lecture');
-    } else {
-      // If no active lecture, maybe go to home or show a message
-      // For now, let's go to home as fallback, or maybe we should just switch to 'lecture' view 
-      // which shows "No active lecture" message as implemented.
-      setActiveView('lecture');
-    }
-    setIsSettingsOpen(false);
-  };
-
   const handleBackToCourses = () => {
     setActiveView('home');
   };
@@ -202,10 +200,8 @@ export default function MainWindow() {
 
   const navItems = [
     { id: 'home', label: "上課", icon: BookOpen, action: handleNavigateHome },
-    { id: 'notes', label: "筆記", icon: FileText, action: handleNavigateNotes },
     { id: 'settings', label: "設置", icon: Settings, action: handleNavigateSettings },
-    { id: 'test', label: "測試", icon: FlaskConical, action: () => { setActiveView('test'); setIsSettingsOpen(false); } },
-    { id: 'test-translation', label: "翻譯測試", icon: FlaskConical, action: () => { setActiveView('test-translation'); setIsSettingsOpen(false); } },
+    // { id: 'test', label: "測試", icon: FlaskConical, action: () => setActiveView('test') },
   ];
 
   return (
@@ -219,16 +215,9 @@ export default function MainWindow() {
         <nav className="flex items-center gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            // Highlight logic
-            let isActive = false;
-            if (item.id === 'settings') {
-              isActive = isSettingsOpen;
-            } else if (!isSettingsOpen) {
-              if (item.id === 'home') isActive = ['home', 'course'].includes(activeView);
-              if (item.id === 'notes') isActive = activeView === 'lecture';
-              if (item.id === 'test') isActive = activeView === 'test';
-              if (item.id === 'test-translation') isActive = activeView === 'test-translation';
-            }
+            // Highlight Home if we are in home, course, or lecture view (unless settings is open)
+            const isActive = item.id === 'settings' ? isSettingsOpen : (!isSettingsOpen && !isProfileOpen && ['home', 'course', 'lecture'].includes(activeView) && item.id === 'home');
+
 
             return (
               <button
@@ -247,7 +236,16 @@ export default function MainWindow() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <TaskIndicator />
           <button
+            onClick={() => setIsProfileOpen(true)}
+            className={`p-2 rounded-lg transition-colors ${isProfileOpen ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+            aria-label="個人中心"
+          >
+            <User size={20} />
+          </button>
+          <button
+
             onClick={toggleTheme}
             className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
             aria-label="切換主題"
@@ -294,14 +292,14 @@ export default function MainWindow() {
       <main className="flex-1 overflow-hidden relative">
 
         {/* 1. Home View (Course List) */}
-        {activeView === 'home' && !isSettingsOpen && (
+        {activeView === 'home' && !isSettingsOpen && !isProfileOpen && (
           <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
             <CourseListView onSelectCourse={handleSelectCourse} />
           </div>
         )}
 
         {/* 2. Course Detail View */}
-        {activeView === 'course' && activeCourseId && !isSettingsOpen && (
+        {activeView === 'course' && activeCourseId && !isSettingsOpen && !isProfileOpen && (
           <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
             <CourseDetailView
               courseId={activeCourseId}
@@ -317,7 +315,7 @@ export default function MainWindow() {
         <div
           className="absolute inset-0 bg-white dark:bg-slate-900"
           style={{
-            display: (activeView === 'lecture' && !isSettingsOpen) ? 'block' : 'none',
+            display: (activeView === 'lecture' && !isSettingsOpen && !isProfileOpen) ? 'block' : 'none',
             zIndex: 0
           }}
         >
@@ -325,6 +323,7 @@ export default function MainWindow() {
             <NotesView
               courseId={activeCourseId}
               lectureId={activeLectureId}
+              onBack={handleBackToCourseDetail}
             />
           ) : (
             <div className="flex items-center justify-center h-full text-gray-500">
@@ -340,17 +339,17 @@ export default function MainWindow() {
           </div>
         )}
 
-        {/* 5. Test View */}
-        {activeView === 'test' && !isSettingsOpen && (
-          <div className="absolute inset-0 overflow-auto bg-white dark:bg-slate-900">
-            <TranscriptionTest />
+        {/* 5. Profile Overlay */}
+        {isProfileOpen && (
+          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+            <ProfileView onClose={() => setIsProfileOpen(false)} />
           </div>
         )}
 
-        {/* 6. Translation Test View */}
-        {activeView === 'test-translation' && !isSettingsOpen && (
-          <div className="absolute inset-0 overflow-auto bg-white dark:bg-slate-900">
-            <TranslationModelTest />
+        {/* 6. Trash Bin Overlay */}
+        {showTrashView && (
+          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+            <TrashView onBack={() => setShowTrashView(false)} />
           </div>
         )}
 

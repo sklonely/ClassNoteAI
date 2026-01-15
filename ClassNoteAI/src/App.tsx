@@ -1,15 +1,19 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+
 import MainWindow from "./components/MainWindow";
+import LoginScreen from "./components/LoginScreen";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
 import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
+import { syncService } from "./services/syncService";
+import { useAuth } from "./contexts/AuthContext";
 
 type AppState = 'loading' | 'setup' | 'ready';
 
 function App() {
   const [appState, setAppState] = useState<AppState>('loading');
+  const { user } = useAuth();
 
   // Check setup status on mount
   useEffect(() => {
@@ -66,6 +70,41 @@ function App() {
     // 延遲檢查，確保應用已完全載入
     const timer = setTimeout(checkForUpdates, 3000);
     return () => clearTimeout(timer);
+
+  }, [appState]);
+
+  // 啟動時自動同步
+  useEffect(() => {
+    const autoSync = async () => {
+      if (appState !== 'ready') return;
+
+      try {
+        const settings = await storageService.getAppSettings();
+        if (settings?.sync?.autoSync && settings.sync.username && settings.server?.url) {
+          console.log('[App] 觸發啟動自動同步...');
+          // 確保 server url 正確
+          const serverUrl = settings.server.url;
+          await syncService.sync(serverUrl, settings.sync.username);
+          console.log('[App] 啟動自動同步完成');
+
+          // 更新上次同步時間
+          const now = new Date().toISOString();
+          await storageService.saveAppSettings({
+            ...settings,
+            sync: {
+              ...settings.sync,
+              lastSyncTime: now
+            }
+          });
+        }
+      } catch (error) {
+        console.error('[App] 啟動自動同步失敗:', error);
+      }
+    };
+
+    // 延遲 5 秒執行，避免與啟動重資源競爭
+    const timer = setTimeout(autoSync, 5000);
+    return () => clearTimeout(timer);
   }, [appState]);
 
   const handleSetupComplete = () => {
@@ -87,6 +126,11 @@ function App() {
   // Show setup wizard if setup is not complete
   if (appState === 'setup') {
     return <SetupWizard onComplete={handleSetupComplete} />;
+  }
+
+  // Show login screen if user not logged in
+  if (!user) {
+    return <LoginScreen onComplete={() => setAppState('ready')} />;
   }
 
   return (

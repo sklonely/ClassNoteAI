@@ -183,9 +183,9 @@ export default function AIChatPanel({
         e.stopPropagation();
     };
 
-    const loadChatHistory = () => {
+    const loadChatHistory = async () => {
         try {
-            const allSessions = chatSessionService.getSessionsByLecture(lectureId);
+            const allSessions = await chatSessionService.getSessionsByLecture(lectureId);
             setSessions(allSessions);
 
             const lectureSession = allSessions.find(s => s.lectureId === lectureId);
@@ -201,8 +201,8 @@ export default function AIChatPanel({
         }
     };
 
-    const createNewSession = () => {
-        const session = chatSessionService.createSession(lectureId);
+    const createNewSession = async () => {
+        const session = await chatSessionService.createSession(lectureId);
         setCurrentSession(session);
         setMessages([]);
         setSessions(prev => [session, ...prev]);
@@ -215,8 +215,8 @@ export default function AIChatPanel({
         setShowSessions(false);
     };
 
-    const deleteSession = (sessionId: string) => {
-        chatSessionService.deleteSession(sessionId);
+    const deleteSession = async (sessionId: string) => {
+        await chatSessionService.deleteSession(sessionId);
         setSessions(prev => prev.filter(s => s.id !== sessionId));
         if (currentSession?.id === sessionId) {
             setCurrentSession(null);
@@ -230,7 +230,7 @@ export default function AIChatPanel({
         // 自動創建 session (如果沒有)
         let session = currentSession;
         if (!session) {
-            session = chatSessionService.createSession(lectureId);
+            session = await chatSessionService.createSession(lectureId);
             setCurrentSession(session);
             setSessions(prev => [session!, ...prev]);
         }
@@ -243,7 +243,7 @@ export default function AIChatPanel({
         };
 
         // 保存用戶消息
-        chatSessionService.addMessage(session.id, userMessage);
+        await chatSessionService.addMessage(session.id, userMessage);
 
         const updatedMessages = [...messages, userMessage];
         setMessages(updatedMessages);
@@ -311,7 +311,7 @@ export default function AIChatPanel({
             }
 
             // 保存助手消息
-            chatSessionService.addMessage(session.id, assistantMessage);
+            await chatSessionService.addMessage(session.id, assistantMessage);
 
             const finalMessages = [...updatedMessages, assistantMessage];
             setMessages(finalMessages);
@@ -323,7 +323,7 @@ export default function AIChatPanel({
                 content: `抱歉，生成回答時發生錯誤：${error instanceof Error ? error.message : String(error)}`,
                 timestamp: new Date().toISOString(),
             };
-            chatSessionService.addMessage(session.id, errorMessage);
+            await chatSessionService.addMessage(session.id, errorMessage);
             setMessages([...updatedMessages, errorMessage]);
         } finally {
             setIsLoading(false);

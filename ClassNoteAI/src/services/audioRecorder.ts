@@ -404,9 +404,9 @@ export class AudioRecorder {
   }
 
   /**
-   * 測試用途：將錄製的音頻保存為 WAV 文件
+   * 獲取錄製的 WAV 數據
    */
-  async saveAsWAV(filename: string = `recording-${Date.now()}.wav`): Promise<void> {
+  async getWavData(): Promise<ArrayBuffer> {
     if (this.recordedChunks.length === 0) {
       throw new Error('沒有錄製的音頻數據');
     }
@@ -460,7 +460,19 @@ export class AudioRecorder {
     );
 
     // 合併 WAV 頭和 PCM 數據
-    const wavFile = new Blob([wavHeader, pcmBuffer], { type: 'audio/wav' });
+    const tmp = new Uint8Array(wavHeader.byteLength + pcmBuffer.byteLength);
+    tmp.set(new Uint8Array(wavHeader), 0);
+    tmp.set(new Uint8Array(pcmBuffer), wavHeader.byteLength);
+
+    return tmp.buffer;
+  }
+
+  /**
+   * 測試用途：將錄製的音頻保存為 WAV 文件
+   */
+  async saveAsWAV(filename: string = `recording-${Date.now()}.wav`): Promise<void> {
+    const wavBuffer = await this.getWavData();
+    const wavFile = new Blob([wavBuffer], { type: 'audio/wav' });
 
     // 創建下載鏈接
     const url = URL.createObjectURL(wavFile);
@@ -472,8 +484,9 @@ export class AudioRecorder {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
+    const sampleRate = this.recordingSampleRate || this.config.sampleRate;
     console.log('[AudioRecorder] 音頻已保存:', filename, {
-      duration: (mergedData.length / sampleRate).toFixed(2) + 's',
+      duration: (wavBuffer.byteLength / 2 / sampleRate).toFixed(2) + 's',
       sampleRate,
       size: (wavFile.size / 1024).toFixed(2) + 'KB',
     });

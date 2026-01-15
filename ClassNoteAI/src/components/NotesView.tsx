@@ -1,16 +1,20 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { readFile } from "@tauri-apps/plugin-fs";
 import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot } from "lucide-react";
+import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { storageService } from "../services/storageService";
 import { ollamaService } from "../services/ollamaService";
+import { taskService } from "../services/taskService";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
 import SubtitleDisplay from "./SubtitleDisplay";
+import AudioPlayer from "./AudioPlayer";
 import { transcriptionService } from "../services/transcriptionService";
 import { loadModel, checkModelFile } from "../services/whisperService";
 import * as translationModelService from "../services/translationModelService";
@@ -20,6 +24,7 @@ import DragDropZone from "./DragDropZone";
 import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
 import { pdfService } from "../services/pdfService";
+import { syncService } from "../services/syncService";
 import AIChatPanel from "./AIChatPanel";
 
 type ViewMode = 'recording' | 'review';
@@ -27,9 +32,10 @@ type ViewMode = 'recording' | 'review';
 interface NotesViewProps {
   courseId?: string;
   lectureId?: string;
+  onBack?: () => void;
 }
 
-export default function NotesView({ courseId: propCourseId, lectureId: propLectureId }: NotesViewProps) {
+export default function NotesView({ courseId: propCourseId, lectureId: propLectureId, onBack }: NotesViewProps) {
   const navigate = useNavigate();
   const params = useParams<{ courseId: string; lectureId: string }>();
 
@@ -60,6 +66,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [transcriptContent, setTranscriptContent] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
 
+  // Note Editing State
+  const [isEditingNote, setIsEditingNote] = useState(false);
+  const [editedNote, setEditedNote] = useState<Note | null>(null);
+  const [, setNoteSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+
+
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const pdfViewerRef = useRef<PDFViewerHandle>(null);
   const modelsLoadingRef = useRef(false);
@@ -77,10 +89,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
 
     return () => {
-      // Cleanup on unmount
+      // Stop recording when switching lectures, but don't destroy recorder instance
+      // unless component unmounts (handled by recorder effect)
       transcriptionService.stop();
       if (audioRecorderRef.current) {
-        audioRecorderRef.current.destroy();
+        audioRecorderRef.current.stop();
       }
     };
   }, [lectureId]);
@@ -131,6 +144,118 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
     checkAndLoadModels();
   }, []);
+
+  // DEBUG: Check lecture data
+  useEffect(() => {
+    if (currentLectureData) {
+      console.log('[NotesView DEBUG] Current Lecture:', {
+        id: currentLectureData.id,
+        title: currentLectureData.title,
+        audio_path: currentLectureData.audio_path,
+        hasAudio: !!currentLectureData.audio_path,
+        viewMode
+      });
+    }
+  }, [currentLectureData, viewMode]);
+
+  // Audio & Review State
+  const [activeTab, setActiveTab] = useState<'note' | 'subtitles'>('note');
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playbackVolume, setPlaybackVolume] = useState(100); // Output volume for playback
+
+  // Initialize audio when review mode starts or lecture loads
+  // Initialize audio when review mode starts or lecture loads
+  useEffect(() => {
+    let objectUrl: string | null = null;
+
+    const loadAudio = async () => {
+      if (viewMode === 'review' && currentLectureData?.audio_path && audioRef.current) {
+        try {
+          console.log('[NotesView] Loading audio file:', currentLectureData.audio_path);
+          // Use readFile from plugin-fs to bypass asset protocol issues
+          const data = await readFile(currentLectureData.audio_path);
+          const blob = new Blob([data], { type: 'audio/wav' }); // Default to wav as per recorder
+          objectUrl = URL.createObjectURL(blob);
+
+          if (audioRef.current) {
+            audioRef.current.src = objectUrl;
+            audioRef.current.load();
+            console.log('[NotesView] Audio loaded via Blob URL');
+          }
+        } catch (error) {
+          console.error('[NotesView] Failed to load audio file:', error);
+          // Fallback to convertFileSrc if readFile fails (e.g. permission error but assuming asset protocol works?)
+          // But since asset URL is failing, better to just log error.
+        }
+      }
+    };
+
+    loadAudio();
+
+    return () => {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [viewMode, currentLectureData?.audio_path]);
+
+  const togglePlay = () => {
+    if (audioRef.current) {
+      if (isPlaying) {
+        audioRef.current.pause();
+      } else {
+        audioRef.current.play().catch(console.error);
+      }
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const handleSeek = (time: number) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = time;
+      setAudioCurrentTime(time);
+    }
+  };
+
+  const handleTimeUpdate = () => {
+    if (audioRef.current) {
+      setAudioCurrentTime(audioRef.current.currentTime);
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    if (audioRef.current) {
+      setAudioDuration(audioRef.current.duration);
+    }
+  };
+
+  const handleSubtitleSeek = (timestamp: number) => {
+    // timestamp is absolute Date time (ms). We need relative seconds.
+    // Assuming recording started at lecture.created_at? 
+    // Or first segment start time? 
+    // Ideally we store 'recording_start_time' in lecture.
+    // Fallback: Use 1st segment start time as rough base 
+    // OR assume 0 if we can't determine.
+    // In "Live Recording", usually the first segment starts at ~0-5s.
+    // Let's rely on segment data if available.
+    // Actually, simpler approach:
+    // If we use `created_at` of the lecture as start time.
+    if (!currentLectureData) return;
+
+    const lectureStart = new Date(currentLectureData.created_at).getTime();
+    const seekTime = (timestamp - lectureStart) / 1000;
+
+    // Sanity check: seek time should be positive.
+    // If user started recording later than creation? 
+    // This is tricky without explicit 'recording_start_timestamp'.
+    // But usually acceptable to assume created_at ~= start.
+    // Better: check first segment.
+    // If seekTime < 0, maybe use 0.
+    handleSeek(Math.max(0, seekTime));
+  };
 
   // Check Ollama Connection
   useEffect(() => {
@@ -198,6 +323,13 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     });
 
     audioRecorderRef.current = recorder;
+
+    // Cleanup on unmount
+    return () => {
+      if (audioRecorderRef.current) {
+        audioRecorderRef.current.destroy();
+      }
+    };
   }, []);
 
   // Initialize Auto Alignment
@@ -209,18 +341,37 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           // Clone buffer to prevent detachment by worker
           const bufferCopy = pdfData.slice(0);
           const pages = await pdfService.extractAllPagesText(bufferCopy);
-          const pageEmbeddings = [];
-          for (const p of pages) {
-            try {
-              const EMBEDDING_MODEL = 'nomic-embed-text';
-              const emb = await ollamaService.generateEmbedding(p.text, EMBEDDING_MODEL);
-              pageEmbeddings.push({ pageNumber: p.page, text: p.text, embedding: emb });
-            } catch (e) {
-              console.error(`Failed to embed page ${p.page}`, e);
+
+          // Map to server format
+          const pageData = pages.map(p => ({ page_number: p.page, text: p.text }));
+
+          if (currentLectureData) {
+            console.log('[NotesView] Triggering server-side PDF indexing...');
+            const task = await taskService.triggerIndexing(currentLectureData.id, pageData);
+
+            if (!task) {
+              console.log('[NotesView] Indexing queued (offline).');
+              return;
             }
+
+            console.log('[NotesView] Indexing task started:', task.id);
+
+            await taskService.pollUntilCompletion(task.id);
+            console.log('[NotesView] Indexing task completed. Fetching embeddings...');
+
+            const serverEmbeddings = await taskService.getLectureEmbeddings(currentLectureData.id);
+
+            const alignmentEmbeddings = serverEmbeddings.map(e => ({
+              pageNumber: e.page_number,
+              text: e.content,
+              embedding: e.embedding
+            }));
+
+            autoAlignmentService.setPageEmbeddings(alignmentEmbeddings);
+            console.log("PDF alignment data ready (from server)");
+          } else {
+            console.warn('Cannot index PDF: Lecture ID not available');
           }
-          autoAlignmentService.setPageEmbeddings(pageEmbeddings);
-          console.log("PDF alignment data ready");
         } catch (e) {
           console.error("Failed to init alignment", e);
         }
@@ -243,6 +394,20 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const loadLectureData = async (id: string) => {
     try {
       setIsLoading(true);
+
+      // Reset State to prevent data leakage between lectures
+      setPdfPath(null);
+      setPdfData(null);
+      setPdfTextContent('');
+      setAudioDuration(0);
+      setAudioCurrentTime(0);
+      setTranscriptContent('');
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current.load();
+      }
+
       const lecture = await storageService.getLecture(id);
       if (lecture) {
         setCurrentLectureData(lecture);
@@ -290,10 +455,36 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         transcriptionService.setInitialPrompt(contextPrompt, allKeywords);
 
         // Load PDF if available
-        // Load PDF if available
         if (lecture.pdf_path) {
           setPdfPath(lecture.pdf_path);
 
+          // Loaf PDF data
+          try {
+            // ...
+          } catch (e) { /* ... */ }
+        }
+
+        // Try to recover audio path if missing (Fix for Schema migration issue)
+        if (!lecture.audio_path) {
+          console.log('[NotesView] Audio path missing, attempting recovery...');
+          try {
+            const recoveredPath = await invoke<string | null>('try_recover_audio_path', { lectureId: lecture.id });
+            if (recoveredPath) {
+              console.log('[NotesView] Audio path recovered:', recoveredPath);
+              lecture.audio_path = recoveredPath;
+              // Update state immediately so UI renders
+              setCurrentLectureData({ ...lecture });
+            } else {
+              console.log('[NotesView] No audio file found for recovery.');
+            }
+          } catch (recErr) {
+            console.error('[NotesView] Audio recovery failed:', recErr);
+          }
+        }
+
+        // Initial PDF load logic was here, merging...
+        if (lecture.pdf_path) {
+          // ... (existing PDF loading logic)
           // Load PDF data if path exists
           try {
             console.log('[NotesView] Loading PDF data from:', lecture.pdf_path);
@@ -470,16 +661,69 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
   const handleStopRecording = async () => {
     try {
-      if (!audioRecorderRef.current) return;
+      if (!audioRecorderRef.current || !currentLectureData) return;
 
       transcriptionService.stop();
+      // Stop recorder and get the WAV data
+      // Get data BEFORE stopping to ensure we catch everything and buffers aren't cleared
+      // (Though stop() logic should be safe, this is more robust)
+      let wavBuffer: ArrayBuffer | null = null;
+      try {
+        wavBuffer = await audioRecorderRef.current.getWavData();
+      } catch (err) {
+        console.warn('Failed to get WAV data before stop:', err);
+      }
+
       await audioRecorderRef.current.stop();
+
+      // If wavBuffer failed, try again? OR rely on what we got.
+      // If it failed, likely empty.
+
       setRecordingStatus("stopped");
       setVolume(0);
 
-      await handleSaveLecture();
+      if (!wavBuffer) {
+        throw new Error('No audio data captured');
+      }
+
+      // Save Audio File
+      let audioPath = currentLectureData.audio_path;
+      try {
+        console.log('[NotesView] Saving audio file...');
+        const audioDir = await invoke<string>('get_audio_dir');
+        const filename = `lecture_${currentLectureData.id}_${Date.now()}.wav`; // Saved as .wav (16Hz PCM) which is what AudioRecorder produces (mostly) 
+        // Note: AudioRecorder produces WAV format in getWavData()
+
+        // Ensure path separator
+        const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
+        const fullPath = `${audioDir}${sep}${filename}`;
+
+        await invoke('write_binary_file', {
+          path: fullPath,
+          data: Array.from(new Uint8Array(wavBuffer))
+        });
+
+        console.log('[NotesView] Audio saved to:', fullPath);
+        audioPath = fullPath;
+      } catch (e) {
+        console.error('[NotesView] Failed to save audio file:', e);
+        alert('Failed to save audio recording');
+      }
+
+      // Update lecture with audio path immediately for the UI to update
+      const updatedLecture = {
+        ...currentLectureData,
+        audio_path: audioPath,
+        status: 'completed' as const,
+        updated_at: new Date().toISOString()
+      };
+
+      setCurrentLectureData(updatedLecture);
+      await handleSaveLecture(updatedLecture);
+
     } catch (error) {
       console.error('Failed to stop recording:', error);
+      setRecordingStatus("stopped"); // Ensure status is stopped even on error
     }
   };
 
@@ -505,32 +749,39 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
-  const handleSaveLecture = async () => {
-    if (!currentLectureData) return;
+  const handleSaveLecture = async (lectureOverride?: any) => {
+    // Determine which lecture data to use (current state or override)
+    // React Event objects might be passed as first arg if used in onClick
+    let lectureToUse = currentLectureData;
+    if (lectureOverride && typeof lectureOverride === 'object' && 'id' in lectureOverride) {
+      lectureToUse = lectureOverride as Lecture;
+    }
+
+    if (!lectureToUse) return;
 
     try {
       setSaveStatus('saving');
 
       // ===== FIX: Ensure lecture exists in DB before FK-dependent operations =====
       // This prevents FOREIGN KEY constraint failures when saving notes/subtitles
-      const existingLecture = await storageService.getLecture(currentLectureData.id);
+      const existingLecture = await storageService.getLecture(lectureToUse.id);
       if (!existingLecture) {
         console.log('[NotesView] Lecture not in DB yet, saving first...');
         // Save the lecture first to establish FK reference
-        await storageService.saveLecture(currentLectureData);
+        await storageService.saveLecture(lectureToUse);
       }
       // ==========================================================================
 
       const segments = subtitleService.getSegments();
       const duration = recordingStartTime
         ? Math.floor((Date.now() - recordingStartTime) / 1000)
-        : currentLectureData.duration;
+        : lectureToUse.duration;
 
       const updatedLecture: Lecture = {
-        ...currentLectureData,
+        ...lectureToUse,
         duration,
         status: recordingStatus === "recording" ? "recording" : "completed",
-        pdf_path: pdfPath || currentLectureData.pdf_path,
+        pdf_path: pdfPath || lectureToUse.pdf_path,
         updated_at: new Date().toISOString(),
       };
 
@@ -540,7 +791,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         const now = new Date().toISOString();
         const subtitles = segments.map(seg => ({
           id: seg.id,
-          lecture_id: currentLectureData.id,
+          lecture_id: updatedLecture.id,
           timestamp: seg.startTime / 1000,
           text_en: seg.displayText || seg.roughText || '',
           text_zh: seg.displayTranslation || seg.roughTranslation || undefined,
@@ -593,8 +844,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
         // Create and save the Note
         const note: Note = {
-          lecture_id: currentLectureData.id,
-          title: currentLectureData.title,
+          lecture_id: updatedLecture.id,
+          title: updatedLecture.title,
           sections: sections,
           qa_records: [], // Empty initially, can be populated later via AI Chat
           generated_at: now,
@@ -763,11 +1014,18 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       }
       handleStopRecording();
     }
-    navigate(courseId ? `/course/${courseId}` : '/');
+
+    if (onBack) {
+      onBack();
+    } else {
+      // Fallback for direct routing usage (if any)
+      const targetCourseId = courseId || currentLectureData?.course_id;
+      navigate(targetCourseId ? `/course/${targetCourseId}` : '/');
+    }
   };
 
   const handleGenerateSummary = async (language: 'zh' | 'en') => {
-    if (!selectedNote) return;
+    if (!selectedNote || !currentLectureData) return;
     setIsGeneratingSummary(true);
     try {
       const content = selectedNote.sections.map(s => s.content).join('\n\n');
@@ -786,17 +1044,103 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         }
       }
 
-      const summary = await ollamaService.summarizeCourse(content, language, pdfContext);
-      const updatedNote = { ...selectedNote, summary };
-      await storageService.saveNote(updatedNote);
-      setSelectedNote(updatedNote);
-      alert('Summary generated successfully!');
+      // Pre-flight: Sync metadata to server to ensure FK constraints
+      try {
+        const settings = await storageService.getAppSettings();
+        // Default to localhost:3001 and 'default_user' if not configured to ensure Task works.
+        const serverUrl = settings?.server?.url || 'http://localhost:3001';
+        const username = settings?.sync?.username || 'default_user';
+
+        console.log(`[NotesView] Syncing metadata to ${serverUrl} as ${username} before task...`);
+        await syncService.pushData(serverUrl, username, { skipFiles: true });
+      } catch (e) {
+        console.warn('[NotesView] Pre-task sync failed, task might fail if lecture is missing on server:', e);
+      }
+
+      // Trigger generation on server
+      const task = await taskService.triggerSummary(currentLectureData.id, language, content, pdfContext);
+
+      if (!task) {
+        alert("已離線，任務已加入佇列。");
+        setIsGeneratingSummary(false);
+        return;
+      }
+
+      console.log('[NotesView] Summary task started:', task.id);
+
+      // Poll for result
+      const completedTask = await taskService.pollUntilCompletion(task.id);
+
+      if (completedTask.status === 'completed' && completedTask.result) {
+        const summary = completedTask.result.summary;
+        const updatedNote = { ...selectedNote, summary };
+        await storageService.saveNote(updatedNote);
+        setSelectedNote(updatedNote);
+        alert('Summary generated successfully!');
+      } else {
+        throw new Error(completedTask.error || 'Task completed via unknown status');
+      }
+
     } catch (error) {
+      console.error('Failed to generate summary:', error);
       alert(`Failed to generate summary: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       setIsGeneratingSummary(false);
     }
   };
+
+  // ===== Note Editing Handlers =====
+  const handleStartEditing = () => {
+    if (!selectedNote) return;
+    setEditedNote({ ...selectedNote });
+    setIsEditingNote(true);
+  };
+
+  const handleCancelEditing = () => {
+    setIsEditingNote(false);
+    setEditedNote(null);
+    setNoteSaveStatus('idle');
+  };
+
+  const handleSaveNote = async () => {
+    if (!editedNote) return;
+    setNoteSaveStatus('saving');
+    try {
+      await storageService.saveNote(editedNote);
+      setSelectedNote(editedNote);
+      setNoteSaveStatus('saved');
+      setTimeout(() => setNoteSaveStatus('idle'), 1500);
+    } catch (error) {
+      console.error('[NotesView] Failed to save note:', error);
+      setNoteSaveStatus('idle');
+    }
+  };
+
+  const handleSaveAndExitEditing = async () => {
+    await handleSaveNote();
+    setIsEditingNote(false);
+    setEditedNote(null);
+  };
+
+  const handleUpdateSummary = (newSummary: string) => {
+    if (!editedNote) return;
+    setEditedNote({ ...editedNote, summary: newSummary });
+  };
+
+  const handleUpdateSectionTitle = (index: number, newTitle: string) => {
+    if (!editedNote) return;
+    const newSections = [...editedNote.sections];
+    newSections[index] = { ...newSections[index], title: newTitle };
+    setEditedNote({ ...editedNote, sections: newSections });
+  };
+
+  const handleUpdateSectionContent = (index: number, newContent: string) => {
+    if (!editedNote) return;
+    const newSections = [...editedNote.sections];
+    newSections[index] = { ...newSections[index], content: newContent };
+    setEditedNote({ ...editedNote, sections: newSections });
+  };
+  // ===== End Note Editing Handlers =====
 
   const handleExport = async (format: "markdown" | "pdf") => {
     if (!currentLectureData || !selectedNote) {
@@ -819,8 +1163,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             markdown += `### ${section.title || `章節 ${index + 1}`}\n\n`;
             markdown += `${section.content}\n\n`;
             if (section.timestamp) {
-              const minutes = Math.floor(section.timestamp / 60);
-              const seconds = Math.floor(section.timestamp % 60);
+              const baseTime = currentLectureData?.created_at ? new Date(currentLectureData.created_at).getTime() / 1000 : section.timestamp;
+              const relativeTime = Math.max(0, section.timestamp - baseTime);
+              const minutes = Math.floor(relativeTime / 60);
+              const seconds = Math.floor(relativeTime % 60);
               markdown += `*時間戳: ${minutes}:${seconds.toString().padStart(2, '0')}*\n\n`;
             }
           });
@@ -833,8 +1179,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             markdown += `**Q:** ${qa.question}\n\n`;
             markdown += `**A:** ${qa.answer}\n\n`;
             if (qa.timestamp) {
-              const minutes = Math.floor(qa.timestamp / 60);
-              const seconds = Math.floor(qa.timestamp % 60);
+              const baseTime = currentLectureData?.created_at ? new Date(currentLectureData.created_at).getTime() / 1000 : qa.timestamp;
+              const relativeTime = Math.max(0, qa.timestamp - baseTime);
+              const minutes = Math.floor(relativeTime / 60);
+              const seconds = Math.floor(relativeTime % 60);
               markdown += `*時間戳: ${minutes}:${seconds.toString().padStart(2, '0')}*\n\n`;
             }
           });
@@ -987,165 +1335,301 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       {/* Content */}
       <div className="flex-1 overflow-hidden">
         {viewMode === 'recording' ? (
-          // Recording Mode Layout (Split View)
-          <div className="flex h-full">
-            {/* Left: PDF Viewer */}
-            <div className="flex-1 flex flex-col border-r border-gray-200 dark:border-gray-700">
-              {(pdfPath || pdfData) && (
-                <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                  <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
-                    {pdfPath ? (pdfPath.startsWith('blob:') ? 'Dropped File' : pdfPath.split("/").pop()) : 'Selected PDF'}
-                  </span>
-                  <button onClick={handleSelectPDF} className="px-3 py-1 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-                    Change
-                  </button>
-                </div>
-              )}
-              <DragDropZone onFileDrop={handleFileDrop} className="flex-1 overflow-hidden">
-                {pdfPath || pdfData ? (
-                  <PDFViewer
-                    ref={pdfViewerRef}
-                    filePath={pdfPath || undefined}
-                    pdfData={pdfData || undefined}
-                    onTextExtract={handleTextExtract}
-                    onPageChange={setCurrentPage}
-                  />
-                ) : (
-                  <div className="flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900">
-                    <div className="text-center">
-                      <FolderOpen size={64} className="mx-auto mb-4 text-gray-400 dark:text-gray-600" />
-                      <p className="text-lg text-gray-600 dark:text-gray-400 mb-2">No PDF Selected</p>
-                      <button onClick={handleSelectPDF} className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors">
-                        Select PDF
+          // Recording Mode Layout (Split View with Resizable Panels)
+          <div className="flex flex-col h-full">
+            <PanelGroup direction="horizontal" className="flex-1">
+              {/* Left Panel: PDF Viewer */}
+              <Panel defaultSize={60} minSize={30}>
+                <div className="flex flex-col h-full border-r border-gray-200 dark:border-gray-700">
+                  {(pdfPath || pdfData) && (
+                    <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+                      <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
+                        {pdfPath ? (pdfPath.startsWith('blob:') ? 'Dropped File' : pdfPath.split("/").pop()) : 'Selected PDF'}
+                      </span>
+                      <button onClick={handleSelectPDF} className="px-3 py-1 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                        Change
                       </button>
-                      {isConverting && (
-                        <div className="mt-4 flex items-center justify-center gap-2 text-blue-600 dark:text-blue-400">
-                          <Loader2 className="w-5 h-5 animate-spin" />
-                          <span>Converting document to PDF...</span>
+                    </div>
+                  )}
+                  <DragDropZone onFileDrop={handleFileDrop} className="flex-1 overflow-hidden">
+                    {pdfPath || pdfData ? (
+                      <PDFViewer
+                        ref={pdfViewerRef}
+                        filePath={pdfPath || undefined}
+                        pdfData={pdfData || undefined}
+                        onTextExtract={handleTextExtract}
+                        onPageChange={setCurrentPage}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900">
+                        <div className="text-center">
+                          <FolderOpen size={64} className="mx-auto mb-4 text-gray-400 dark:text-gray-600" />
+                          <p className="text-lg text-gray-600 dark:text-gray-400 mb-2">No PDF Selected</p>
+                          <button onClick={handleSelectPDF} className="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors">
+                            Select PDF
+                          </button>
+                          {isConverting && (
+                            <div className="mt-4 flex items-center justify-center gap-2 text-blue-600 dark:text-blue-400">
+                              <Loader2 className="w-5 h-5 animate-spin" />
+                              <span>Converting document to PDF...</span>
+                            </div>
+                          )}
                         </div>
+                      </div>
+                    )}
+                  </DragDropZone>
+                  {/* Alignment Suggestion Notification */}
+                  {alignmentSuggestion && !autoScrollEnabled && (
+                    <button
+                      className="absolute bottom-20 right-1/2 translate-x-1/2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 animate-bounce z-50 hover:bg-blue-700 transition-colors"
+                      onClick={() => {
+                        if (pdfViewerRef.current) {
+                          pdfViewerRef.current.scrollToPage(alignmentSuggestion.pageNumber);
+                          setAlignmentSuggestion(null);
+                        }
+                      }}
+                    >
+                      <Wand2 size={16} />
+                      <span>Jump to Slide {alignmentSuggestion.pageNumber}</span>
+                      <span className="text-xs opacity-75">({(alignmentSuggestion.confidence * 100).toFixed(0)}%)</span>
+                    </button>
+                  )}
+                </div>
+              </Panel>
+
+              <PanelResizeHandle className="w-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-col-resize z-50" />
+
+              {/* Right Panel: Subtitles & Controls */}
+              <Panel defaultSize={40} minSize={20}>
+                <div className="flex flex-col h-full bg-white dark:bg-slate-800">
+                  <div className="flex-1 min-h-0 p-4 flex flex-col overflow-hidden">
+                    <h2 className="text-lg font-semibold mb-4 flex-shrink-0 dark:text-white">Live Subtitles</h2>
+                    <div className="flex-1 min-h-0 overflow-hidden">
+                      <SubtitleDisplay maxLines={10} fontSize={16} position="bottom" />
+                    </div>
+                  </div>
+
+                  {/* Recording Controls */}
+                  <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <MicOff size={16} className="text-gray-400" />
+                        <div className="w-24 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                          <div className="h-full bg-green-500 transition-all" style={{ width: `${volume}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-xs text-gray-500">{recordingStatus === 'recording' ? 'Recording...' : 'Ready'}</span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      {recordingStatus === 'idle' || recordingStatus === 'stopped' ? (
+                        <button onClick={handleStartRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium">
+                          <Mic size={20} /> Start
+                        </button>
+                      ) : recordingStatus === 'recording' ? (
+                        <>
+                          <button onClick={handlePauseRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors font-medium">
+                            <Pause size={20} /> Pause
+                          </button>
+                          <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
+                            <Square size={20} /> Stop
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={handleResumeRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors font-medium">
+                            <Mic size={20} /> Resume
+                          </button>
+                          <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
+                            <Square size={20} /> Stop
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
-                )}
-              </DragDropZone>
-              {/* Alignment Suggestion Notification */}
-              {alignmentSuggestion && !autoScrollEnabled && (
-                <button
-                  className="absolute bottom-4 right-4 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 animate-bounce z-50 hover:bg-blue-700 transition-colors"
-                  onClick={() => {
-                    if (pdfViewerRef.current) {
-                      pdfViewerRef.current.scrollToPage(alignmentSuggestion.pageNumber);
-                      setAlignmentSuggestion(null);
-                    }
-                  }}
-                >
-                  <Wand2 size={16} />
-                  <span>Jump to Slide {alignmentSuggestion.pageNumber}</span>
-                  <span className="text-xs opacity-75">({(alignmentSuggestion.confidence * 100).toFixed(0)}%)</span>
-                </button>
-              )}
-            </div>
-
-            {/* Right: Subtitles & Controls */}
-            <div className="w-96 flex flex-col border-l border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800">
-              <div className="flex-1 min-h-0 p-4 flex flex-col overflow-hidden">
-                <h2 className="text-lg font-semibold mb-4 flex-shrink-0 dark:text-white">Live Subtitles</h2>
-                <div className="flex-1 min-h-0 overflow-hidden">
-                  <SubtitleDisplay maxLines={10} fontSize={16} position="bottom" />
                 </div>
-              </div>
+              </Panel>
+            </PanelGroup>
 
-              {/* Recording Controls */}
-              <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <MicOff size={16} className="text-gray-400" />
-                    <div className="w-24 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                      <div className="h-full bg-green-500 transition-all" style={{ width: `${volume}%` }} />
-                    </div>
-                  </div>
-                  <span className="text-xs text-gray-500">{recordingStatus === 'recording' ? 'Recording...' : 'Ready'}</span>
-                </div>
-
-                <div className="flex gap-2">
-                  {recordingStatus === 'idle' || recordingStatus === 'stopped' ? (
-                    <button onClick={handleStartRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium">
-                      <Mic size={20} /> Start
-                    </button>
-                  ) : recordingStatus === 'recording' ? (
-                    <>
-                      <button onClick={handlePauseRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors font-medium">
-                        <Pause size={20} /> Pause
-                      </button>
-                      <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
-                        <Square size={20} /> Stop
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button onClick={handleResumeRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors font-medium">
-                        <Mic size={20} /> Resume
-                      </button>
-                      <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
-                        <Square size={20} /> Stop
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+            {/* Bottom Audio Player Bar (Optional position, currently integrating roughly where controls were but lets keep it separate if needed) 
+                 Actually, the requirement was to put Audio Player broadly. 
+                 For 'Recording Mode', we use the live controls above.
+                 AudioPlayer is mostly for 'Review Mode' to play back recorded audio.
+                 Let's stick to the plan: AudioPlayer helps in playback.
+             */}
           </div>
         ) : (
-          // Review Mode Layout (Existing Notes View)
-          <div className="h-full overflow-auto p-6 bg-gray-50 dark:bg-gray-900">
-            {selectedNote ? (
-              <div className="max-w-4xl mx-auto prose dark:prose-invert prose-headings:text-gray-900 dark:prose-headings:text-gray-100">
-                {selectedNote.summary && (
-                  <div className="mb-8 p-6 bg-indigo-50 dark:bg-indigo-900/10 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
-                    <div className="flex items-center gap-2 mb-4 text-indigo-700 dark:text-indigo-400">
-                      <FileText className="w-5 h-5" />
-                      <h2 className="text-xl font-bold m-0">Summary</h2>
+          // Review Mode Layout (Split View with Audio Player)
+          <div className="flex flex-col h-full overflow-hidden relative">
+            <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+              {/* Left Panel: PDF Viewer (Ref Area) */}
+              <Panel defaultSize={50} minSize={20} className="flex flex-col border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+                {/* PDF Header? Maybe keep it simple */}
+                <DragDropZone onFileDrop={handleFileDrop} className="flex-1 overflow-hidden">
+                  {pdfPath || pdfData ? (
+                    <PDFViewer
+                      ref={pdfViewerRef}
+                      filePath={pdfPath || undefined}
+                      pdfData={pdfData || undefined}
+                      onTextExtract={handleTextExtract}
+                      onPageChange={setCurrentPage}
+                    />
+                  ) : (
+                    <div className="flex items-center justify-center h-full text-gray-500">
+                      <div className="text-center">
+                        <BookOpen size={48} className="mx-auto mb-4 opacity-20" />
+                        <p>No PDF Reference</p>
+                      </div>
                     </div>
-                    <div className="
-                      text-gray-700 dark:text-gray-300 
-                      prose prose-lg dark:prose-invert max-w-none
-                      prose-headings:font-bold prose-headings:text-gray-900 dark:prose-headings:text-gray-100
-                      prose-h1:text-2xl prose-h1:mt-6 prose-h1:mb-4 prose-h1:border-b prose-h1:border-gray-200 prose-h1:pb-2
-                      prose-h2:text-xl prose-h2:mt-5 prose-h2:mb-3
-                      prose-h3:text-lg prose-h3:mt-4 prose-h3:mb-2
-                      prose-p:my-2 prose-ul:my-2 prose-li:my-0 prose-table:my-4
-                      prose-strong:text-gray-900 dark:prose-strong:text-gray-100
-                      prose-blockquote:border-l-4 prose-blockquote:border-indigo-400 prose-blockquote:pl-4 prose-blockquote:italic
-                    ">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        rehypePlugins={[rehypeRaw]}
-                      >
-                        {selectedNote.summary}
-                      </ReactMarkdown>
-                    </div>
-                  </div>
-                )}
+                  )}
+                </DragDropZone>
+              </Panel>
 
-                {selectedNote.sections?.map((section, index) => (
-                  <div key={index} className="mb-6 p-4 bg-white dark:bg-slate-800 rounded-lg shadow-sm">
-                    <h3 className="text-xl font-semibold mb-2">{section.title || `Section ${index + 1}`}</h3>
-                    <p className="text-gray-700 dark:text-gray-300 whitespace-pre-wrap">{section.content}</p>
-                    {section.timestamp && (
-                      <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">
-                        Timestamp: {Math.floor(section.timestamp / 60)}:{Math.floor(section.timestamp % 60).toString().padStart(2, '0')}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-gray-500 dark:text-gray-400">
-                <BookOpen className="w-16 h-16 mb-4 opacity-20" />
-                <p className="text-lg">No notes available yet</p>
-                <p className="text-sm">Notes will be generated after recording is completed</p>
-              </div>
+              <PanelResizeHandle className="w-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-col-resize z-50" />
+
+              {/* Right Panel: Note Editor & Subtitles */}
+              <Panel defaultSize={50} minSize={30} className="flex flex-col bg-white dark:bg-gray-900">
+                {/* Tab Switcher */}
+                <div className="flex items-center border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 px-4">
+                  <button
+                    onClick={() => setActiveTab('note')}
+                    className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'note' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'}`}
+                  >
+                    Notes
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('subtitles')}
+                    className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'subtitles' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'}`}
+                  >
+                    Subtitles & Audio
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-hidden relative">
+                  {activeTab === 'note' ? (
+                    <div className="h-full overflow-auto p-6">
+                      {selectedNote ? (
+                        <div className="max-w-3xl mx-auto space-y-6 pb-20">
+                          {/* Edit Controls */}
+                          <div className="flex items-center justify-between">
+                            <h2 className="text-2xl font-bold flex items-center gap-2">
+                              <FileText className="w-6 h-6 text-blue-500" />
+                              Study Notes
+                            </h2>
+                            <div className="flex gap-2">
+                              {isEditingNote ? (
+                                <>
+                                  <button onClick={handleSaveAndExitEditing} className="px-3 py-1.5 bg-green-500 text-white rounded hover:bg-green-600 flex items-center gap-1 text-sm"><Save size={14} /> Save</button>
+                                  <button onClick={handleCancelEditing} className="px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded hover:bg-gray-300 text-sm">Cancel</button>
+                                </>
+                              ) : (
+                                <button onClick={handleStartEditing} className="px-3 py-1.5 bg-blue-500 text-white rounded hover:bg-blue-600 flex items-center gap-1 text-sm"><Pencil size={14} /> Edit</button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Summary */}
+                          {(selectedNote.summary || isEditingNote) && (
+                            <div className="p-5 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+                              <h3 className="font-semibold text-indigo-800 dark:text-indigo-300 mb-3 uppercase text-xs tracking-wider">Summary</h3>
+                              {isEditingNote ? (
+                                <textarea
+                                  value={editedNote?.summary || ''}
+                                  onChange={e => handleUpdateSummary(e.target.value)}
+                                  className="w-full h-40 p-3 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
+                                />
+                              ) : (
+                                <div className="prose prose-sm dark:prose-invert max-w-none">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{selectedNote.summary}</ReactMarkdown>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Sections */}
+                          <div className="space-y-4">
+                            {(isEditingNote ? editedNote?.sections : selectedNote.sections)?.map((section, idx) => (
+                              <div key={idx} className="group relative pl-4 border-l-2 border-gray-200 dark:border-gray-700 hover:border-blue-300 dark:hover:border-blue-800 transition-colors">
+                                {isEditingNote ? (
+                                  <div className="space-y-2">
+                                    <input
+                                      value={section.title}
+                                      onChange={e => handleUpdateSectionTitle(idx, e.target.value)}
+                                      className="w-full font-bold bg-transparent border-b border-gray-200 dark:border-gray-700 focus:border-blue-500 outline-none py-1"
+                                    />
+                                    <textarea
+                                      value={section.content}
+                                      onChange={e => handleUpdateSectionContent(idx, e.target.value)}
+                                      className="w-full h-24 bg-gray-50 dark:bg-gray-800 p-2 rounded border border-transparent focus:border-blue-500 outline-none text-sm"
+                                    />
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="flex items-center justify-between mb-1">
+                                      <h4 className="font-semibold text-gray-900 dark:text-gray-100">{section.title}</h4>
+                                      {section.timestamp && (() => {
+                                        const baseTime = currentLectureData?.created_at ? new Date(currentLectureData.created_at).getTime() / 1000 : section.timestamp;
+                                        const relativeTime = Math.max(0, section.timestamp - baseTime);
+                                        return (
+                                          <button
+                                            onClick={() => handleSeek(relativeTime)}
+                                            className="text-xs text-blue-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                                          >
+                                            {Math.floor(relativeTime / 60)}:{Math.floor(relativeTime % 60).toString().padStart(2, '0')}
+                                          </button>
+                                        );
+                                      })()}
+                                    </div>
+                                    <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{section.content}</p>
+                                  </>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                          <p>No notes generated yet.</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    // Subtitles Tab
+                    <div className="h-full flex flex-col">
+                      <div className="flex-1 overflow-hidden">
+                        <SubtitleDisplay
+                          onSeek={handleSubtitleSeek}
+                          currentTime={audioCurrentTime}
+                          baseTime={currentLectureData?.created_at ? new Date(currentLectureData.created_at).getTime() : undefined}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Panel>
+            </PanelGroup>
+
+            {/* Audio Player Bar */}
+            {currentLectureData?.audio_path && (
+              <AudioPlayer
+                currentTime={audioCurrentTime}
+                duration={audioDuration}
+                isPlaying={isPlaying}
+                volume={playbackVolume}
+                onPlayPause={togglePlay}
+                onSeek={handleSeek}
+                onVolumeChange={setPlaybackVolume}
+                onSkip={(sec) => handleSeek(audioCurrentTime + sec)}
+              />
             )}
+
+            {/* Hidden Audio Element */}
+            <audio
+              ref={audioRef}
+              onTimeUpdate={handleTimeUpdate}
+              onLoadedMetadata={handleLoadedMetadata}
+              onEnded={() => setIsPlaying(false)}
+            />
           </div>
         )}
       </div>

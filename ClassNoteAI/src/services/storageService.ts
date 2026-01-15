@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { Course, Lecture, Subtitle, Note, AppSettings } from '../types';
 import { save, open } from '@tauri-apps/plugin-dialog';
+import { authService } from './authService';
 
 /**
  * 數據存儲服務
@@ -11,7 +12,14 @@ class StorageService {
    * 保存科目
    */
   async saveCourse(course: Course): Promise<void> {
-    await invoke('save_course', { course });
+    const currentUser = authService.getUser()?.username || 'default_user';
+    // Ensure course belongs to current user and has is_deleted
+    const courseToSave = {
+      ...course,
+      user_id: currentUser,
+      is_deleted: course.is_deleted ?? false
+    };
+    await invoke('save_course', { course: courseToSave });
   }
 
   /**
@@ -25,7 +33,16 @@ class StorageService {
    * 列出所有科目
    */
   async listCourses(): Promise<Course[]> {
-    return await invoke<Course[]>('list_courses');
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Course[]>('list_courses', { userId: currentUser });
+  }
+
+  /**
+   * 列出所有科目 (包含已刪除，用於同步)
+   */
+  async listCoursesSync(): Promise<Course[]> {
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Course[]>('list_courses_sync', { userId: currentUser });
   }
 
   /**
@@ -39,14 +56,18 @@ class StorageService {
    * 列出特定科目的所有課堂
    */
   async listLecturesByCourse(courseId: string): Promise<Lecture[]> {
-    return await invoke<Lecture[]>('list_lectures_by_course', { courseId });
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Lecture[]>('list_lectures_by_course', { courseId, userId: currentUser });
   }
 
   /**
    * 保存課程
    */
   async saveLecture(lecture: Lecture): Promise<void> {
-    await invoke('save_lecture', { lecture });
+    const currentUser = authService.getUser()?.username || 'default_user';
+    // Ensure lecture has is_deleted
+    const lectureToSave = { ...lecture, is_deleted: lecture.is_deleted ?? false };
+    await invoke('save_lecture', { lecture: lectureToSave, userId: currentUser });
   }
 
   /**
@@ -60,7 +81,16 @@ class StorageService {
    * 列出所有課程
    */
   async listLectures(): Promise<Lecture[]> {
-    return await invoke<Lecture[]>('list_lectures');
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Lecture[]>('list_lectures', { userId: currentUser });
+  }
+
+  /**
+   * 列出所有課程 (包含已刪除，用於同步)
+   */
+  async listLecturesSync(): Promise<Lecture[]> {
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Lecture[]>('list_lectures_sync', { userId: currentUser });
   }
 
   /**
@@ -360,6 +390,7 @@ class StorageService {
         qa_records: note.qa_records,
       }),
       generated_at: note.generated_at,
+      is_deleted: note.is_deleted ?? false,
     };
 
     try {
@@ -498,6 +529,52 @@ class StorageService {
   async getOCRResult(lectureId: string, pageNumber: number): Promise<string | null> {
     const key = `ocr_result_${lectureId}_${pageNumber}`;
     return await this.getSetting(key);
+  }
+
+  // ========== Trash Bin Methods ==========
+
+  /**
+   * 列出已刪除的課程
+   */
+  async listDeletedCourses(): Promise<Course[]> {
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Course[]>('list_deleted_courses', { userId: currentUser });
+  }
+
+  /**
+   * 列出已刪除的課堂
+   */
+  async listDeletedLectures(): Promise<Lecture[]> {
+    const currentUser = authService.getUser()?.username || 'default_user';
+    return await invoke<Lecture[]>('list_deleted_lectures', { userId: currentUser });
+  }
+
+  /**
+   * 還原已刪除的課程
+   */
+  async restoreCourse(id: string): Promise<void> {
+    await invoke('restore_course', { id });
+  }
+
+  /**
+   * 還原已刪除的課堂
+   */
+  async restoreLecture(id: string): Promise<void> {
+    await invoke('restore_lecture', { id });
+  }
+
+  /**
+   * 永久刪除課程
+   */
+  async purgeCourse(id: string): Promise<void> {
+    await invoke('purge_course', { id });
+  }
+
+  /**
+   * 永久刪除課堂
+   */
+  async purgeLecture(id: string): Promise<void> {
+    await invoke('purge_lecture', { id });
   }
 }
 

@@ -1,5 +1,6 @@
 import { storageService } from './storageService';
 import { fetch } from '@tauri-apps/plugin-http';
+import { taskService } from './taskService';
 
 export interface OllamaModel {
     name: string;
@@ -150,6 +151,11 @@ class OllamaService {
      * 生成文本 (Completion)
      */
     public async generate(prompt: string, options?: { model?: string, system?: string }): Promise<string> {
+        // Check network connectivity first
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            throw new Error('目前處於離線狀態，無法連接 AI 服務。請恢復網路連線後再試。');
+        }
+
         try {
             const host = await this.getHost();
             const model = options?.model || await this.getModel();
@@ -195,42 +201,41 @@ class OllamaService {
      * 對話式生成 (支持對話歷史)
      * 使用 Ollama /api/chat 端點
      */
+    /**
+     * 對話式生成 (Server-First)
+     */
     public async chat(
         messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
-        options?: { model?: string; system?: string }
+        options?: { model?: string; system?: string; lectureId?: string }
     ): Promise<string> {
+        // If lectureId is provided, used for context logging or RAG in future.
+        const lectureId = options?.lectureId || 'temp_chat';
+
+        // Combine system prompt with messages
+        const allMessages = options?.system
+            ? [{ role: 'system' as const, content: options.system }, ...messages]
+            : messages;
+
+        console.log(`[OllamaService] 觸發 Chat 任務 (Server-First)... Lecture: ${lectureId}`);
+
         try {
-            const host = await this.getHost();
-            const model = options?.model || await this.getModel();
+            // 1. Trigger Task (Priority 1)
+            const task = await taskService.triggerChat(lectureId, allMessages);
 
-            // 如果有 system prompt，添加到消息開頭
-            const allMessages = options?.system
-                ? [{ role: 'system' as const, content: options.system }, ...messages]
-                : messages;
-
-            console.log(`[OllamaService] Chat 生成中... 模型: ${model}, 消息數: ${allMessages.length}`);
-
-            const response = await fetch(`${host}/api/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model,
-                    messages: allMessages,
-                    stream: false,
-                    options: { temperature: 0.7 },
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`Ollama Chat API error: ${response.statusText}`);
+            if (!task) {
+                // Queued offline
+                return "已離線，訊息已加入佇列。恢復連線後將自動發送。";
             }
 
-            const data = await response.json() as { message?: { content: string } };
-            const content = data.message?.content || '';
-            console.log('[OllamaService] Chat 回應長度:', content.length, '字元');
+            // 2. Poll for completion
+            // Note: For Chat, we might want faster polling or SSE.
+            const result = await taskService.pollUntilCompletion(task.id, 1000); // 1s polling
+
+            const content = result.result?.content || '';
             return content;
+
         } catch (error) {
-            console.error('[OllamaService] Chat 生成失敗:', error);
+            console.error('[OllamaService] Chat 任務失敗:', error);
             throw error;
         }
     }
@@ -375,46 +380,28 @@ class OllamaService {
      * @param text 要嵌入的文本
      * @param model 嵌入模型 (預設: nomic-embed-text)
      */
+    /**
+     * 生成文本嵌入向量 (Server-First)
+     */
     public async generateEmbedding(text: string, model: string = 'nomic-embed-text'): Promise<number[]> {
+        // Server-First: Proxy through Server
         try {
-            const host = await this.getHost();
-            console.log(`[OllamaService] 生成嵌入向量... 模型: ${model}, 文本長度: ${text.length}`);
-
-            const response = await fetch(`${host}/api/embed`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    model,
-                    input: text,
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`Ollama Embed API error: ${response.statusText}`);
-            }
-
-            const data = await response.json() as { embeddings: number[][] };
-            console.log(`[OllamaService] 嵌入向量生成成功，維度: ${data.embeddings[0]?.length || 0}`);
-            return data.embeddings[0] || [];
+            return await taskService.generateEmbedding(text, model);
         } catch (error) {
-            console.error('[OllamaService] 嵌入向量生成失敗:', error);
+            console.error('[OllamaService] Embedding generation failed:', error);
             throw error;
         }
     }
 
     /**
-     * 批量生成文本嵌入向量
-     * @param texts 要嵌入的文本數組
-     * @param model 嵌入模型
-     * @param onProgress 進度回調
+     * @deprecated Use taskService.getLectureEmbeddings or taskService.generateEmbedding instead
      */
     public async generateEmbeddings(
         texts: string[],
         model: string = 'nomic-embed-text',
         onProgress?: (current: number, total: number) => void
     ): Promise<number[][]> {
+        console.warn('Using deprecated generateEmbeddings');
         const embeddings: number[][] = [];
 
         for (let i = 0; i < texts.length; i++) {
@@ -425,8 +412,6 @@ class OllamaService {
                 onProgress(i + 1, texts.length);
             }
         }
-
-        console.log(`[OllamaService] 批量嵌入完成，共 ${embeddings.length} 個向量`);
         return embeddings;
     }
 

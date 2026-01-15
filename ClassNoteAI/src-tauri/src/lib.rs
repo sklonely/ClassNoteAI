@@ -14,6 +14,8 @@ mod setup;
 pub mod paths;
 // 統一下載管理模塊
 pub mod downloads;
+// 同步模塊
+mod sync;
 
 use embedding::EmbeddingService;
 use tauri::Emitter;
@@ -556,7 +558,7 @@ async fn get_course(id: String) -> Result<Option<storage::Course>, String> {
 
 /// 列出所有科目
 #[tauri::command]
-async fn list_courses() -> Result<Vec<storage::Course>, String> {
+async fn list_courses(user_id: String) -> Result<Vec<storage::Course>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -565,7 +567,22 @@ async fn list_courses() -> Result<Vec<storage::Course>, String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.list_courses()
+    db.list_courses(&user_id)
+        .map_err(|e| format!("列出科目失敗: {}", e))
+}
+
+/// 列出所有科目 (包含已刪除，用於同步)
+#[tauri::command]
+async fn list_courses_sync(user_id: String) -> Result<Vec<storage::Course>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    db.list_courses_sync(&user_id)
         .map_err(|e| format!("列出科目失敗: {}", e))
 }
 
@@ -588,7 +605,7 @@ async fn delete_course(id: String) -> Result<(), String> {
 
 /// 列出特定科目的所有課堂
 #[tauri::command]
-async fn list_lectures_by_course(course_id: String) -> Result<Vec<storage::Lecture>, String> {
+async fn list_lectures_by_course(course_id: String, user_id: String) -> Result<Vec<storage::Lecture>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -597,13 +614,13 @@ async fn list_lectures_by_course(course_id: String) -> Result<Vec<storage::Lectu
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.list_lectures_by_course(&course_id)
+    db.list_lectures_by_course(&course_id, &user_id)
         .map_err(|e| format!("列出課程失敗: {}", e))
 }
 
 /// 保存課程
 #[tauri::command]
-async fn save_lecture(lecture: storage::Lecture) -> Result<(), String> {
+async fn save_lecture(lecture: storage::Lecture, user_id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -615,7 +632,7 @@ async fn save_lecture(lecture: storage::Lecture) -> Result<(), String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.save_lecture(&lecture)
+    db.save_lecture(&lecture, &user_id)
         .map_err(|e| format!("保存課程失敗: {}", e))?;
 
     Ok(())
@@ -638,7 +655,7 @@ async fn get_lecture(id: String) -> Result<Option<storage::Lecture>, String> {
 
 /// 列出所有課程
 #[tauri::command]
-async fn list_lectures() -> Result<Vec<storage::Lecture>, String> {
+async fn list_lectures(user_id: String) -> Result<Vec<storage::Lecture>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -647,7 +664,22 @@ async fn list_lectures() -> Result<Vec<storage::Lecture>, String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.list_lectures()
+    db.list_lectures(&user_id)
+        .map_err(|e| format!("列出課程失敗: {}", e))
+}
+
+/// 列出所有課程 (包含已刪除，用於同步)
+#[tauri::command]
+async fn list_lectures_sync(user_id: String) -> Result<Vec<storage::Lecture>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    db.list_lectures_sync(&user_id)
         .map_err(|e| format!("列出課程失敗: {}", e))
 }
 
@@ -798,6 +830,36 @@ async fn get_all_settings() -> Result<Vec<storage::Setting>, String> {
         .map_err(|e| format!("獲取所有設置失敗: {}", e))
 }
 
+/// 註冊本地使用者
+#[tauri::command]
+async fn register_local_user(username: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    db.create_local_user(&username)
+        .map_err(|e| format!("創建本地使用者失敗: {}", e))
+}
+
+/// 檢查本地使用者
+#[tauri::command]
+async fn check_local_user(username: String) -> Result<bool, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    db.check_local_user(&username)
+        .map_err(|e| format!("檢查使用者失敗: {}", e))
+}
+
 /// 保存筆記
 #[tauri::command]
 async fn save_note(note: storage::Note) -> Result<(), String> {
@@ -850,6 +912,23 @@ async fn read_text_file(path: String) -> Result<String, String> {
 async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     use std::fs;
     fs::read(&path).map_err(|e| format!("讀取文件失敗: {}", e))
+}
+
+/// 寫入二進制文件
+#[tauri::command]
+async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::path::Path;
+
+    let path_obj = Path::new(&path);
+    if let Some(parent) = path_obj.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("創建目錄失敗: {}", e))?;
+    }
+
+    let mut file = File::create(&path).map_err(|e| format!("創建文件失敗: {}", e))?;
+    file.write_all(&data).map_err(|e| format!("寫入文件失敗: {}", e))?;
+    Ok(())
 }
 
 // ========== 首次運行設置相關 Commands ==========
@@ -1004,6 +1083,11 @@ fn get_translation_models_dir() -> Result<String, String> {
 #[tauri::command]
 fn get_embedding_models_dir() -> Result<String, String> {
     paths::get_embedding_models_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn get_audio_dir() -> Result<String, String> {
+    paths::get_audio_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
 // ========== Storage Management Commands (Phase 3) ==========
@@ -1424,6 +1508,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             // 在 debug 模式下自動打開開發者工具
             #[cfg(debug_assertions)]
@@ -1464,11 +1549,13 @@ pub fn run() {
             save_course,
             get_course,
             list_courses,
+            list_courses_sync, // Added
             delete_course,
             list_lectures_by_course,
             save_lecture,
             get_lecture,
             list_lectures,
+            list_lectures_sync, // Added
             delete_lecture,
             update_lecture_status,
             save_subtitle,
@@ -1478,6 +1565,8 @@ pub fn run() {
             save_setting,
             get_setting,
             get_all_settings,
+            register_local_user,
+            check_local_user,
             save_note,
             get_note,
             write_text_file,
@@ -1512,8 +1601,312 @@ pub fn run() {
             get_storage_usage,
             clear_model_cache,
             reset_app_data,
-            uninstall_app_data
+            // Sync 相關
+            sync::upload_file,
+            sync::download_file,
+            write_binary_file,
+            get_audio_dir,
+            try_recover_audio_path,
+            // Offline Queue
+            add_pending_action,
+            list_pending_actions,
+            update_pending_action,
+            remove_pending_action,
+            // Trash Bin
+            list_deleted_courses,
+            list_deleted_lectures,
+            restore_course,
+            restore_lecture,
+            purge_course,
+            purge_lecture,
+            // Sync Extensions (New)
+            delete_subtitles_by_lecture,
+            get_all_chat_sessions,
+            save_chat_session,
+            get_all_chat_messages,
+            save_chat_message,
+            delete_chat_messages_by_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// 嘗試恢復丟失的 audio_path
+#[tauri::command]
+async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, String> {
+    use std::fs;
+    
+    // 1. 檢查 DB 中是否確實缺失
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("DB Error: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("DB Connection Error: {}", e))?;
+    
+    let lecture_opt = db.get_lecture(&lecture_id).map_err(|e| format!("Get Lecture Error: {}", e))?;
+    
+    if let Some(lecture) = lecture_opt {
+        if let Some(path) = lecture.audio_path {
+            if !path.is_empty() {
+                return Ok(Some(path)); // 已存在，直接返回
+            }
+        }
+    } else {
+        return Ok(None); // Lecture 不存在
+    }
+
+    // 2. 掃描目錄
+    let audio_dir = paths::get_audio_dir().map_err(|e| format!("Path Error: {}", e))?;
+    if !audio_dir.exists() {
+        return Ok(None);
+    }
+
+    let prefix = format!("lecture_{}_", lecture_id);
+    let mut found_path: Option<std::path::PathBuf> = None;
+
+    if let Ok(entries) = fs::read_dir(&audio_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(&prefix) && name.ends_with(".wav") {
+                        found_path = Some(path);
+                        break; // 找到一個即可（通常只有一個，或者取最新的）
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 更新 DB
+    if let Some(path) = found_path {
+        let path_str = path.to_string_lossy().to_string();
+        println!("[Recovery] 找到丟失的音頻文件: {}", path_str);
+        
+        // 我們需要一個更新 audio_path 的方法，或者直接用 save_lecture
+        // 由於我們剛才更新了 save_lecture 支持 audio_path，重新保存一次即可
+        // 但需要先獲取完整 lecture 對象
+        if let Some(mut lecture) = db.get_lecture(&lecture_id).unwrap_or(None) {
+            lecture.audio_path = Some(path_str.clone());
+            // 更新狀態為 completed 如果是 recording
+            if lecture.status == "recording" {
+                lecture.status = "completed".to_string();
+            }
+            // Fetch user_id from course
+            let user_id = if let Some(course) = db.get_course(&lecture.course_id).unwrap_or(None) {
+                course.user_id
+            } else {
+                "default_user".to_string() // Should not happen if foreign keys are enforced, but safe fallback
+            };
+            
+            db.save_lecture(&lecture, &user_id).map_err(|e| format!("Update DB Error: {}", e))?;
+            return Ok(Some(path_str));
+        }
+    }
+
+    Ok(None)
+}
+
+// ========== Offline Queue Commands ==========
+
+#[tauri::command]
+async fn add_pending_action(id: String, action_type: String, payload: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.add_pending_action(&id, &action_type, &payload)
+        .map_err(|e| format!("新增待處理動作失敗: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_pending_actions() -> Result<Vec<(String, String, String, String, i32)>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_pending_actions()
+        .map_err(|e| format!("列出待處理動作失敗: {}", e))
+}
+
+#[tauri::command]
+async fn update_pending_action(id: String, status: String, retry_count: i32) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.update_pending_action(&id, &status, retry_count)
+        .map_err(|e| format!("更新待處理動作失敗: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_pending_action(id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.remove_pending_action(&id)
+        .map_err(|e| format!("移除待處理動作失敗: {}", e))?;
+    Ok(())
+}
+
+// ========== Trash Bin Commands ==========
+
+#[tauri::command]
+async fn list_deleted_courses(user_id: String) -> Result<Vec<storage::models::Course>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_deleted_courses(&user_id)
+        .map_err(|e| format!("列出已刪除課程失敗: {}", e))
+}
+
+#[tauri::command]
+async fn list_deleted_lectures(user_id: String) -> Result<Vec<storage::models::Lecture>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_deleted_lectures(&user_id)
+        .map_err(|e| format!("列出已刪除課堂失敗: {}", e))
+}
+
+#[tauri::command]
+async fn restore_course(id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.restore_course(&id)
+        .map_err(|e| format!("還原課程失敗: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn restore_lecture(id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.restore_lecture(&id)
+        .map_err(|e| format!("還原課堂失敗: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn purge_course(id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.purge_course(&id)
+        .map_err(|e| format!("永久刪除課程失敗: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn purge_lecture(id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.purge_lecture(&id)
+        .map_err(|e| format!("永久刪除課堂失敗: {}", e))?;
+    Ok(())
+}
+
+// ========== Sync 相關 Commands ==========
+
+#[tauri::command]
+async fn delete_subtitles_by_lecture(lecture_id: String) -> Result<usize, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.delete_subtitles_by_lecture(&lecture_id)
+        .map_err(|e| format!("刪除字幕失敗: {}", e))
+}
+
+#[tauri::command]
+async fn get_all_chat_sessions(user_id: String) -> Result<Vec<(String, Option<String>, String, String, Option<String>, String, String, bool)>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.get_all_chat_sessions(&user_id)
+        .map_err(|e| format!("獲取聊天會話失敗: {}", e))
+}
+
+#[tauri::command]
+async fn save_chat_session(
+    id: String,
+    lecture_id: Option<String>,
+    user_id: String,
+    title: String,
+    summary: Option<String>,
+    created_at: String,
+    updated_at: String,
+    is_deleted: bool,
+) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.save_chat_session(
+        &id,
+        lecture_id.as_deref(),
+        &user_id,
+        &title,
+        summary.as_deref(),
+        &created_at,
+        &updated_at,
+        is_deleted,
+    )
+    .map_err(|e| format!("保存聊天會話失敗: {}", e))
+}
+
+#[tauri::command]
+async fn get_all_chat_messages(user_id: String) -> Result<Vec<(String, String, String, String, Option<String>, String)>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.get_all_chat_messages(&user_id)
+        .map_err(|e| format!("獲取聊天訊息失敗: {}", e))
+}
+
+#[tauri::command]
+async fn save_chat_message(
+    id: String,
+    session_id: String,
+    role: String,
+    content: String,
+    sources: Option<String>,
+    timestamp: String,
+) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.save_chat_message(
+        &id,
+        &session_id,
+        &role,
+        &content,
+        sources.as_deref(),
+        &timestamp,
+    )
+    .map_err(|e| format!("保存聊天訊息失敗: {}", e))
+}
+
+#[tauri::command]
+async fn delete_chat_messages_by_session(session_id: String) -> Result<usize, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.delete_chat_messages_by_session(&session_id)
+        .map_err(|e| format!("刪除聊天訊息失敗: {}", e))
 }

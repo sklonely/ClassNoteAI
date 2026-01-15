@@ -80,6 +80,13 @@ pub fn get_documents_dir() -> Result<PathBuf, String> {
     Ok(get_app_data_dir()?.join("documents"))
 }
 
+/// Get the audio directory
+///
+/// Returns: {app_data_dir}/audio/
+pub fn get_audio_dir() -> Result<PathBuf, String> {
+    Ok(get_app_data_dir()?.join("audio"))
+}
+
 /// Get the database file path
 ///
 /// Returns: {app_data_dir}/classnoteai.db
@@ -121,6 +128,7 @@ pub fn init_app_dirs() -> Result<(), String> {
         get_whisper_models_dir()?,
         get_embedding_models_dir()?,
         get_documents_dir()?,
+        get_audio_dir()?,
         get_cache_dir()?,
     ];
 

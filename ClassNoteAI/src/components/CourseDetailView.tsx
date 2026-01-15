@@ -20,6 +20,8 @@ import {
 import { Course, Lecture } from '../types';
 import { storageService } from '../services/storageService';
 import { ollamaService } from '../services/ollamaService';
+import { syncService } from '../services/syncService';
+import { taskService } from '../services/taskService';
 import CourseCreationDialog from './CourseCreationDialog';
 
 interface CourseDetailViewProps {
@@ -44,6 +46,47 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
 
     useEffect(() => {
         loadData();
+    }, [courseId]);
+
+    // SSE Event Listener for real-time updates
+    useEffect(() => {
+        let eventSource: EventSource | null = null;
+
+        const connectSSE = async () => {
+            const settings = await storageService.getAppSettings();
+            if (!settings?.server?.enabled) return;
+
+            console.log('[CourseDetailView] Connecting to SSE...');
+            eventSource = await taskService.startEventStream(async (event) => {
+                if (event.status === 'completed' || event.status === 'failed') {
+                    console.log('[CourseDetailView] Task update received:', event);
+
+                    // Simple strategy: If ANY task completes, try to pull updates.
+                    // Optimizations can filter by event.task_type later.
+                    if (settings.sync?.username) {
+                        try {
+                            console.log('[CourseDetailView] Syncing updated data...');
+                            await syncService.pullData(settings.server.url, settings.sync.username);
+
+                            // Reload local data
+                            await loadData();
+                            console.log('[CourseDetailView] Data reloaded.');
+                        } catch (err) {
+                            console.error('[CourseDetailView] Sync failed after SSE event:', err);
+                        }
+                    }
+                }
+            });
+        };
+
+        connectSSE();
+
+        return () => {
+            if (eventSource) {
+                console.log('[CourseDetailView] Closing SSE connection');
+                eventSource.close();
+            }
+        };
     }, [courseId]);
 
     // 點擊外部關閉菜單（但不在刪除確認期間）
@@ -313,7 +356,13 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                             ) : (
                                 <div className="text-sm text-gray-500 dark:text-gray-400">
                                     {course.description ? (
-                                        <p className="whitespace-pre-wrap">{course.description}</p>
+                                        <div className="space-y-2">
+                                            <p className="whitespace-pre-wrap">{course.description}</p>
+                                            <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 p-2 rounded-lg animate-pulse">
+                                                <Clock className="w-4 h-4" />
+                                                <span>AI 正在生成課程大綱...</span>
+                                            </div>
+                                        </div>
                                     ) : (
                                         <p className="italic">暫無課程大綱信息</p>
                                     )}

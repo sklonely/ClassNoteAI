@@ -1,24 +1,26 @@
 import { useState, useEffect } from "react";
-import { Save, CheckCircle, RefreshCw, Download, Upload, AlertCircle, Mic, Languages, Type, Database, Cpu, ChevronRight, Info, X } from "lucide-react";
+import { Save, CheckCircle, RefreshCw, Download, Upload, AlertCircle, Mic, Languages, Type, Database, Cpu, Info, Server, Brain, ChevronRight, Trash2 } from "lucide-react";
 import { AppSettings } from "../types";
 import { getVersion } from "@tauri-apps/api/app";
 
 import WhisperModelManager from './WhisperModelManager';
 import TranslationModelManager from './TranslationModelManager';
 import { ollamaService, OllamaModel } from "../services/ollamaService";
-import { remoteService } from "../services/remoteService";
+
 import { storageService } from "../services/storageService";
 import { audioDeviceService, AudioDevice } from "../services/audioDeviceService";
+
+
 
 interface SettingsViewProps {
   onClose?: () => void;
 }
 
-export default function SettingsView({ onClose }: SettingsViewProps) {
-  const [remoteServiceUrl, setRemoteServiceUrl] = useState<string>('');
+export default function SettingsView({ }: SettingsViewProps) {
+
   // ... (keep existing state)
 
-  const [isRemoteServiceAvailable, setIsRemoteServiceAvailable] = useState(false);
+
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
@@ -26,11 +28,14 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
   const [whisperModelPath, setWhisperModelPath] = useState<string>('');
   const [importStatus, setImportStatus] = useState<{ success: boolean; message: string } | null>(null);
 
-  const [ollamaHost, setOllamaHost] = useState("http://100.117.82.111:11434");
+
+  // AI & Server Configuration
+  const [aiServerHost, setAiServerHost] = useState("http://100.117.82.111");
   const [ollamaModel, setOllamaModel] = useState("qwen3:235b-a22b");
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
-  const [isCheckingOllama, setIsCheckingOllama] = useState(false);
+  const [isCheckingConnection, setIsCheckingConnection] = useState(false);
   const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
+  const [taskServerStatus, setTaskServerStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
 
   // AI 模型分層配置
   const [aiModelConfig, setAiModelConfig] = useState({
@@ -40,17 +45,28 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
     heavy: 'qwen3:235b-a22b' // 重量任務：課程總結
   });
 
+  // 同步配置
+
+
+  // Auth State
+
+
   // ... (省略中間代碼)
 
   // 自動保存 Ollama 設定
   useEffect(() => {
     // 避免在初始加載時觸發保存
-    if (ollamaStatus === 'unknown') return;
+    if (ollamaStatus === 'unknown' && taskServerStatus === 'unknown') return;
 
     const autoSave = async () => {
       try {
         const currentSettings = await storageService.getAppSettings();
         if (!currentSettings) return;
+
+        // 構建完整的 Host URL
+        const cleanHost = aiServerHost.replace(/\/$/, ''); // 移除結尾斜線
+        const fullOllamaHost = `${cleanHost}:11434`;
+        const fullServerUrl = `${cleanHost}:3001`;
 
         // 檢查是否真的有變化
         const currentAiModels = currentSettings.ollama?.aiModels;
@@ -60,9 +76,11 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
           currentAiModels.standard !== aiModelConfig.standard ||
           currentAiModels.heavy !== aiModelConfig.heavy;
 
-        if (currentSettings.ollama?.host === ollamaHost &&
+
+
+        if (currentSettings.ollama?.host === fullOllamaHost &&
+          currentSettings.server?.url === fullServerUrl &&
           currentSettings.ollama?.model === ollamaModel &&
-          currentSettings.ollama?.enabled === (ollamaStatus === 'connected') &&
           !aiModelsChanged) {
           return;
         }
@@ -70,14 +88,20 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
         const updatedSettings: AppSettings = {
           ...currentSettings,
           ollama: {
-            host: ollamaHost,
+            host: fullOllamaHost,
             model: ollamaModel,
             enabled: ollamaStatus === 'connected',
             aiModels: aiModelConfig
+          },
+          server: {
+            ...currentSettings.server,
+            url: fullServerUrl,
+            port: 3001,
+            enabled: taskServerStatus === 'connected'
           }
         };
         await storageService.saveAppSettings(updatedSettings);
-        console.log('[SettingsView] Ollama settings auto-saved');
+        console.log('[SettingsView] AI settings auto-saved');
       } catch (error) {
         console.error('[SettingsView] Auto-save failed:', error);
       }
@@ -85,29 +109,55 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
 
     const timer = setTimeout(autoSave, 1000); // Debounce 1s
     return () => clearTimeout(timer);
-  }, [ollamaHost, ollamaModel, ollamaStatus, aiModelConfig]);
+  }, [aiServerHost, ollamaModel, ollamaStatus, taskServerStatus, aiModelConfig]);
 
-  const checkOllamaConnection = async (host: string) => {
-    setIsCheckingOllama(true);
+  const checkUnifiedConnection = async (host: string) => {
+    setIsCheckingConnection(true);
     setOllamaStatus('unknown');
-    try {
-      const models = await ollamaService.listModels(host);
-      setOllamaModels(models);
-      setOllamaStatus('connected');
+    setTaskServerStatus('unknown');
 
-      // 只有當模型列表不為空且當前未選擇任何模型時，才自動選擇第一個
-      if (models.length > 0 && !ollamaModel) {
-        setOllamaModel(models[0].name);
+    const cleanHost = host.replace(/\/$/, ''); // 移除結尾斜線
+
+    // 1. Check Ollama (:11434)
+    const checkOllama = async () => {
+      try {
+        const ollamaUrl = `${cleanHost}:11434`;
+        const models = await ollamaService.listModels(ollamaUrl);
+        setOllamaModels(models);
+        setOllamaStatus('connected');
+
+        if (models.length > 0 && !ollamaModel) {
+          setOllamaModel(models[0].name);
+        }
+      } catch (error) {
+        console.error('Ollama 連接失敗:', error);
+        setOllamaStatus('error');
+        setOllamaModels([]);
       }
-      // 如果當前選擇的模型不在列表中，保持原樣，不自動覆蓋
-      // 這允許用戶使用未在列表中顯示的模型（例如自定義模型或列表獲取不完整時）
-    } catch (error) {
-      console.error('Ollama 連接失敗:', error);
-      setOllamaStatus('error');
-      setOllamaModels([]);
-    } finally {
-      setIsCheckingOllama(false);
-    }
+    };
+
+    // 2. Check Task Server (:3001)
+    const checkServer = async () => {
+      try {
+        const serverUrl = `${cleanHost}:3001`;
+        // Check health endpoint
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+        try {
+          await fetch(`${serverUrl}/health`, { signal: controller.signal });
+          setTaskServerStatus('connected');
+        } finally {
+          clearTimeout(timeoutId);
+        }
+      } catch (error) {
+        console.error('Task Server 連接失敗:', error);
+        setTaskServerStatus('error');
+      }
+    };
+
+    await Promise.all([checkOllama(), checkServer()]);
+    setIsCheckingConnection(false);
   };
 
   const [activeTab, setActiveTab] = useState<string>('transcription-translation');
@@ -220,6 +270,7 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
           models: savedSettings.models,
           translation: savedSettings.translation,
           ollama: savedSettings.ollama || { host: "http://100.117.82.111:11434", model: "qwen3:235b-a22b", enabled: false },
+          sync: savedSettings.sync || { username: '', autoSync: false }
         };
 
         setSettings(mergedSettings);
@@ -229,9 +280,10 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
         }
 
         if (savedSettings.ollama) {
-          setOllamaHost(savedSettings.ollama.host);
+          const host = savedSettings.ollama.host.replace(/:11434$/, '').replace(/\/$/, '');
+          setAiServerHost(host);
           setOllamaModel(savedSettings.ollama.model);
-          checkOllamaConnection(savedSettings.ollama.host);
+          checkUnifiedConnection(host);
 
           // 載入 AI 模型分層配置
           if (savedSettings.ollama.aiModels) {
@@ -243,25 +295,11 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
             });
           }
         } else {
-          checkOllamaConnection("http://100.117.82.111:11434");
+          checkUnifiedConnection("http://100.117.82.111");
         }
       }
 
-      const savedUrl = localStorage.getItem('remoteServiceUrl') || '';
-      if (savedUrl) {
-        setRemoteServiceUrl(savedUrl);
-        remoteService.setServiceUrl(savedUrl);
-        remoteService.checkAvailability().then(available => {
-          setIsRemoteServiceAvailable(available);
-        });
-      } else if (savedSettings?.server?.enabled) {
-        const url = `${savedSettings.server.url}:${savedSettings.server.port}`;
-        setRemoteServiceUrl(url);
-        remoteService.setServiceUrl(url);
-        remoteService.checkAvailability().then(available => {
-          setIsRemoteServiceAvailable(available);
-        });
-      }
+
 
       const whisperPath = await storageService.getSetting('whisper_model_path');
       if (whisperPath) {
@@ -273,23 +311,16 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
     }
   };
 
-  const handleRemoteServiceUrlChange = async (url: string) => {
-    setRemoteServiceUrl(url);
-    localStorage.setItem('remoteServiceUrl', url);
 
-    if (url.trim()) {
-      remoteService.setServiceUrl(url);
-      const available = await remoteService.checkAvailability();
-      setIsRemoteServiceAvailable(available);
-    } else {
-      remoteService.setServiceUrl(null);
-      setIsRemoteServiceAvailable(false);
-    }
-  };
 
   const handleSave = async () => {
     setSaveStatus('saving');
     try {
+      // 構建完整的 Host URL
+      const cleanHost = aiServerHost.replace(/\/$/, '');
+      const fullOllamaHost = `${cleanHost}:11434`;
+      const fullServerUrl = `${cleanHost}:3001`;
+
       const updatedSettings: AppSettings = {
         ...settings,
         audio: {
@@ -297,9 +328,17 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
           device_id: selectedDeviceId || undefined,
         },
         ollama: {
-          host: ollamaHost,
+          host: fullOllamaHost,
           model: ollamaModel,
-          enabled: ollamaStatus === 'connected'
+          enabled: ollamaStatus === 'connected',
+          aiModels: aiModelConfig // 確保保存模型配置
+        },
+
+        server: {
+          ...settings.server,
+          url: fullServerUrl,
+          port: 3001,
+          enabled: taskServerStatus === 'connected'
         }
       };
 
@@ -316,9 +355,7 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
         await storageService.saveSetting('whisper_model_path', whisperModelPath);
       }
 
-      if (remoteServiceUrl) {
-        localStorage.setItem('remoteServiceUrl', remoteServiceUrl);
-      }
+
 
       if (selectedDeviceId) {
         audioDeviceService.setDefaultDevice(selectedDeviceId);
@@ -385,14 +422,16 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
     }
   };
 
+
+
   const translationProvider = settings.translation?.provider || 'local';
 
   const navigationItems = [
     { id: 'transcription-translation', label: '轉錄與翻譯', icon: Languages, description: '配置語音識別和翻譯模型' },
     { id: 'ollama-settings', label: 'AI 增強 (Ollama)', icon: Cpu, description: '配置本地 LLM 進行總結和關鍵詞提取' },
     { id: 'audio', label: '音頻設置', icon: Mic, description: '麥克風和採樣率設置' },
-    { id: 'subtitle', label: '字幕設置', icon: Type, description: '字幕外觀和顯示模式' },
-    { id: 'remote-service', label: '遠程服務', icon: Database, description: '連接到遠程後端服務' },
+
+
     { id: 'data-management', label: '數據管理', icon: Database, description: '導入和導出應用數據' },
     { id: 'about-update', label: '關於與更新', icon: Info, description: '版本信息和檢查更新' },
   ];
@@ -509,6 +548,32 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
                     />
                   </div>
                 )}
+
+                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                  <label className="block text-sm font-medium mb-2">目標語言 (AI 生成內容)</label>
+                  <select
+                    value={settings.translation?.target_language || 'zh-TW'}
+                    onChange={(e) => {
+                      setSettings({
+                        ...settings,
+                        translation: {
+                          ...settings.translation,
+                          target_language: e.target.value,
+                        },
+                      });
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="zh-TW">繁體中文 (Traditional Chinese)</option>
+                    <option value="zh-CN">簡體中文 (Simplified Chinese)</option>
+                    <option value="en">English</option>
+                    <option value="ja">日本語 (Japanese)</option>
+                    <option value="ko">한국어 (Korean)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    此設置將應用於 AI 自動生成的課程大綱、總結與筆記翻譯。
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -527,36 +592,50 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
               <div className="p-6 space-y-6">
                 <div>
                   <label className="block text-sm font-medium mb-2">
-                    Ollama Host 地址
+                    AI Server Host (Unified)
                   </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    請輸入 Ollama 與 Task Server 所在的主機地址 (e.g., http://10.0.0.1)
+                  </p>
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      value={ollamaHost}
-                      onChange={(e) => setOllamaHost(e.target.value)}
-                      placeholder="例如：http://localhost:11434"
+                      value={aiServerHost}
+                      onChange={(e) => setAiServerHost(e.target.value)}
+                      placeholder="http://localhost"
                       className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
                     />
                     <button
-                      onClick={() => checkOllamaConnection(ollamaHost)}
-                      disabled={isCheckingOllama}
+                      onClick={() => checkUnifiedConnection(aiServerHost)}
+                      disabled={isCheckingConnection}
                       className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
                     >
-                      {isCheckingOllama ? '檢查中...' : '檢查連接'}
+                      {isCheckingConnection ? '檢查連接...' : '重新連接'}
                     </button>
                   </div>
-                  {ollamaStatus === 'connected' && (
-                    <p className="text-sm text-green-500 mt-2 flex items-center gap-1">
-                      <CheckCircle className="w-4 h-4" />
-                      已連接到 Ollama 服務
-                    </p>
-                  )}
-                  {ollamaStatus === 'error' && (
-                    <p className="text-sm text-red-500 mt-2 flex items-center gap-1">
-                      <AlertCircle className="w-4 h-4" />
-                      無法連接到 Ollama 服務
-                    </p>
-                  )}
+
+                  {/* Status Indicators */}
+                  <div className="mt-3 grid grid-cols-2 gap-4">
+                    <div className={`flex items-center gap-2 p-2 rounded-lg border ${ollamaStatus === 'connected' ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800' : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800'}`}>
+                      <Brain className={`w-5 h-5 ${ollamaStatus === 'connected' ? 'text-green-600' : 'text-red-500'}`} />
+                      <div>
+                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Ollama (LLM)</div>
+                        <div className={`text-sm ${ollamaStatus === 'connected' ? 'text-green-600' : 'text-red-500'}`}>
+                          {ollamaStatus === 'connected' ? '已連接' : '未連接'}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className={`flex items-center gap-2 p-2 rounded-lg border ${taskServerStatus === 'connected' ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800' : 'bg-gray-50 border-gray-200 dark:bg-gray-800 dark:border-gray-700'}`}>
+                      <Server className={`w-5 h-5 ${taskServerStatus === 'connected' ? 'text-green-600' : 'text-gray-500'}`} />
+                      <div>
+                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Task Server</div>
+                        <div className={`text-sm ${taskServerStatus === 'connected' ? 'text-green-600' : 'text-gray-500'}`}>
+                          {taskServerStatus === 'connected' ? '已連接' : taskServerStatus === 'error' ? '連接失敗' : '未知'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div>
@@ -841,41 +920,11 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
           </div>
         );
 
-      case 'remote-service':
-        return (
-          <div className="space-y-6 animate-in fade-in duration-300">
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/50">
-                <h3 className="text-lg font-medium flex items-center gap-2">
-                  <Database className="w-5 h-5 text-indigo-500" />
-                  遠程服務連接
-                </h3>
-              </div>
-              <div className="p-6 space-y-6">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    服務 URL
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={remoteServiceUrl}
-                      onChange={(e) => handleRemoteServiceUrlChange(e.target.value)}
-                      placeholder="例如：http://localhost:8000"
-                      className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${isRemoteServiceAvailable ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <span className="text-sm text-gray-600 dark:text-gray-400">
-                      {isRemoteServiceAvailable ? '服務在線' : '服務離線'}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
+
+
+
+
+
 
       case 'data-management':
         return (
@@ -925,9 +974,31 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
                     <span className="text-sm">{importStatus.message}</span>
                   </div>
                 )}
+
+                {/* Trash Bin Link */}
+                <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-medium flex items-center gap-2">
+                        <Trash2 size={18} className="text-red-500" />
+                        回收桶
+                      </h4>
+                      <p className="text-xs text-gray-500 mt-1">
+                        查看已刪除的項目，可還原或永久刪除。
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => (window as any).__setShowTrashView?.(true)}
+                      className="px-4 py-2 bg-red-100 text-red-700 hover:bg-red-200 rounded-lg text-sm font-medium transition dark:bg-red-900/40 dark:text-red-300 dark:hover:bg-red-900/60 flex items-center gap-1"
+                    >
+                      開啟
+                      <ChevronRight size={14} />
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          </div >
         );
 
       case 'about-update':
@@ -996,7 +1067,7 @@ export default function SettingsView({ onClose }: SettingsViewProps) {
                 )}
               </div>
             </div>
-          </div>
+          </div >
         );
 
       default:

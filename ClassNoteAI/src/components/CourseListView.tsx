@@ -13,8 +13,8 @@ import {
 } from 'lucide-react';
 import { Course } from '../types';
 import { storageService } from '../services/storageService';
-import { ollamaService } from '../services/ollamaService';
 import CourseCreationDialog from './CourseCreationDialog';
+import { taskService } from '../services/taskService';
 
 interface CourseListViewProps {
     onSelectCourse: (courseId: string) => void;
@@ -59,22 +59,8 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
         if (!title.trim()) return;
 
         try {
-            let syllabusInfo = undefined;
-
-            // Only extract if description changed and is long enough
+            // Check if description changed
             const descriptionChanged = !editingCourse || description !== editingCourse.description;
-
-            if (descriptionChanged && description && description.trim().length > 50) {
-                // 如果有足夠長的描述，嘗試提取結構化信息
-                console.log('[CourseListView] Extracting syllabus info...');
-                const extracted = await ollamaService.extractSyllabusInfo(description);
-                console.log('[CourseListView] Extracted syllabus info:', extracted);
-
-                // Only use if extraction was successful (has keys)
-                if (extracted && Object.keys(extracted).length > 0) {
-                    syllabusInfo = extracted;
-                }
-            }
 
             if (editingCourse) {
                 // Update existing course
@@ -83,32 +69,59 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                     title: title,
                     description: description || '',
                     keywords: keywords,
-                    // Use new syllabus info if available, otherwise keep old one
-                    // BUT if description changed and extraction failed (syllabusInfo is undefined), 
-                    // we might want to keep the old one? Or clear it?
-                    // If description changed significantly, old syllabus might be invalid.
-                    // But for safety, let's keep old one unless we have a new one.
-                    syllabus_info: syllabusInfo || editingCourse.syllabus_info,
+                    // Keep old syllabus info for now, async task will update it if triggered
+                    syllabus_info: editingCourse.syllabus_info,
                     updated_at: new Date().toISOString()
                 };
                 await storageService.saveCourse(updatedCourse);
+
+                // Trigger Async Syllabus Update if description changed
+                if (descriptionChanged && description && description.trim().length > 10) {
+                    // Non-blocking: Fetch settings then trigger task
+                    storageService.getAppSettings().then(settings => {
+                        const targetLang = settings?.translation?.target_language || 'zh-TW';
+                        return taskService.triggerSyllabus(editingCourse.id, title, description, targetLang);
+                    })
+                        .then(() => console.log('[CourseListView] Syllabus task triggered'))
+                        .catch(err => console.error('[CourseListView] Failed to trigger syllabus task:', err));
+                }
+
             } else {
                 // Create new course
+                const newCourseId = crypto.randomUUID();
                 const newCourse: Course = {
-                    id: crypto.randomUUID(),
+                    id: newCourseId,
+                    user_id: "", // Will be set by storageService
                     title: title,
                     description: description || '',
                     keywords: keywords,
-                    syllabus_info: syllabusInfo,
+                    syllabus_info: undefined, // Will be populated by async task
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString()
                 };
                 await storageService.saveCourse(newCourse);
+
+                if (description && description.trim().length > 10) {
+                    // Non-blocking: Fetch settings then trigger task
+                    storageService.getAppSettings().then(settings => {
+                        const targetLang = settings?.translation?.target_language || 'zh-TW';
+                        return taskService.triggerSyllabus(newCourseId, title, description, targetLang);
+                    })
+                        .then(() => console.log('[CourseListView] Syllabus task triggered'))
+                        .catch(err => console.error('[CourseListView] Failed to trigger syllabus task:', err));
+                }
+
+                // Return ID for auto-save use cases
+                setIsDialogOpen(false);
+                setEditingCourse(null);
+                loadCourses();
+                return newCourseId;
             }
 
             setIsDialogOpen(false);
             setEditingCourse(null);
             loadCourses();
+            return editingCourse?.id;
         } catch (error) {
             console.error('Failed to save course:', error);
         }
@@ -274,7 +287,7 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                                     <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
                                         <div className="flex items-center gap-1">
                                             <Calendar className="w-3.5 h-3.5" />
-                                            {new Date(course.updated_at).toLocaleDateString()}
+                                            {course.updated_at ? new Date(course.updated_at).toLocaleDateString() : ''}
                                         </div>
                                         <div className="flex items-center gap-1">
                                             <BookOpen className="w-3.5 h-3.5" />

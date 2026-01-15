@@ -1,4 +1,5 @@
 import { ollamaService } from './ollamaService';
+import { taskService } from './taskService';
 
 export interface PageEmbedding {
     pageNumber: number;
@@ -67,7 +68,7 @@ class AutoAlignmentService {
             // 取最後一段文本進行匹配
             const textToCheck = this.transcriptionBuffer.slice(-this.bufferWindowSize);
             const EMBEDDING_MODEL = 'nomic-embed-text';
-            const bufferEmbedding = await ollamaService.generateEmbedding(textToCheck, EMBEDDING_MODEL);
+            const bufferEmbedding = await taskService.generateEmbedding(textToCheck, EMBEDDING_MODEL);
 
             let bestPage = -1;
             let maxSimilarity = -1;

@@ -12,6 +12,18 @@
     "process:default",
     "updater:default",
     "http:default",
+    "fs:default",
+    "fs:allow-appdata-read-recursive",
+    {
+      "identifier": "fs:allow-read",
+      "options": {
+        "scope": [
+          "$APP_DATA/**",
+          "$HOME/Library/Application Support/com.classnoteai/**",
+          "$HOME/eduTranslate/ClassNoteAI/src-tauri/target/**"
+        ]
+      }
+    },
     {
       "identifier": "http:allow-fetch",
       "allow": [

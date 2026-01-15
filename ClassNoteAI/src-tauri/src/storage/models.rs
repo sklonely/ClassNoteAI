@@ -6,16 +6,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Course {
     pub id: String,
+    pub user_id: String,
     pub title: String,
     pub description: Option<String>,
     pub keywords: Option<String>,                 // 全域關鍵詞
     pub syllabus_info: Option<serde_json::Value>, // 結構化課程大綱
+    pub is_deleted: bool, // Soft Delete
     pub created_at: String,
     pub updated_at: String,
 }
 
 impl Course {
     pub fn new(
+        user_id: String,
         title: String,
         description: Option<String>,
         keywords: Option<String>,
@@ -24,10 +27,12 @@ impl Course {
         let now = Utc::now().to_rfc3339();
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            user_id,
             title,
             description,
             keywords,
             syllabus_info,
+            is_deleted: false,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -38,17 +43,29 @@ impl TryFrom<&Row<'_>> for Course {
     type Error = rusqlite::Error;
 
     fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
-        let syllabus_str: Option<String> = row.get(4)?;
+        let syllabus_str: Option<String> = row.get(5)?; // Shifted index if needed, check query order!
+        // Wait, I will ensure the query in database.rs matches this order.
+        // Let's adopt a standard order: standard fields, then is_deleted, then timestamps?
+        // Or append is_deleted at the end?
+        // Current database.rs query: id, user_id, title, description, keywords, syllabus_info, created_at, updated_at
+        // I will append is_deleted at the end of the query in database.rs.
+        
         let syllabus_info = syllabus_str.and_then(|s| serde_json::from_str(&s).ok());
 
         Ok(Course {
             id: row.get(0)?,
-            title: row.get(1)?,
-            description: row.get(2)?,
-            keywords: row.get(3)?,
+            user_id: row.get(1)?,
+            title: row.get(2)?,
+            description: row.get(3)?,
+            keywords: row.get(4)?,
             syllabus_info,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            // Assuming is_deleted will be at index 6 (Wait, syllabus_info was 5? No)
+            // Original: id(0), user_id(1), title(2), description(3), keywords(4), syllabus_info(5), created_at(6), updated_at(7)
+            // New: ..., created_at(6), updated_at(7), is_deleted(8)
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+            is_deleted: row.get(8).unwrap_or(false), // Handle case where it might be missing during migration? No, query will fail if column count mismatch. 
+            // But strict index is safer.
         })
     }
 }
@@ -57,12 +74,14 @@ impl TryFrom<&Row<'_>> for Course {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lecture {
     pub id: String,
-    pub course_id: String, // 關聯的科目 ID
+    pub course_id: String,
     pub title: String,
-    pub date: String,  // ISO 8601
-    pub duration: i64, // 秒
+    pub date: String,
+    pub duration: i64,
     pub pdf_path: Option<String>,
-    pub status: String, // "recording" | "completed"
+    pub audio_path: Option<String>,
+    pub status: String,
+    pub is_deleted: bool, // Soft Delete
     pub created_at: String,
     pub updated_at: String,
 }
@@ -77,7 +96,9 @@ impl Lecture {
             date: now.clone(),
             duration: 0,
             pdf_path,
+            audio_path: None,
             status: "recording".to_string(),
+            is_deleted: false,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -95,9 +116,11 @@ impl TryFrom<&Row<'_>> for Lecture {
             date: row.get(3)?,
             duration: row.get(4)?,
             pdf_path: row.get(5)?,
-            status: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
+            audio_path: row.get(6)?,
+            status: row.get(7)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
+            is_deleted: row.get(10).unwrap_or(false), // Append is_deleted at the end (index 10)
         })
     }
 }
@@ -162,6 +185,7 @@ pub struct Note {
     pub title: String,
     pub content: String, // JSON 格式存儲 sections 和 qa_records
     pub generated_at: String,
+    pub is_deleted: bool,
 }
 
 impl Note {
@@ -171,6 +195,7 @@ impl Note {
             title,
             content,
             generated_at: Utc::now().to_rfc3339(),
+            is_deleted: false,
         }
     }
 }
@@ -184,6 +209,7 @@ impl TryFrom<&Row<'_>> for Note {
             title: row.get(1)?,
             content: row.get(2)?,
             generated_at: row.get(3)?,
+            is_deleted: row.get(4).unwrap_or(false),
         })
     }
 }

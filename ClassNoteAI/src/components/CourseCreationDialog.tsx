@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from "react";
-import { X, BookOpen, FileText } from "lucide-react";
-import { selectPDFFile, readPDFFile } from "../services/fileService";
-import { ollamaService } from "../services/ollamaService";
+import { X, BookOpen, FileText, Cpu, Loader2 } from "lucide-react";
+import { selectPDFFile } from "../services/fileService";
 import { pdfService } from "../services/pdfService";
-import { Cpu, Loader2 } from "lucide-react";
+import { taskService } from "../services/taskService";
 
 interface CourseCreationDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (title: string, keywords: string, pdfData?: ArrayBuffer, description?: string) => Promise<void> | void;
+  onSubmit: (title: string, keywords: string, pdfData?: ArrayBuffer, description?: string, shouldClose?: boolean) => Promise<string | void | undefined>;
   initialTitle?: string;
   initialKeywords?: string;
   initialPdfPath?: string;
@@ -18,16 +17,18 @@ interface CourseCreationDialogProps {
 }
 
 export default function CourseCreationDialog({
-  isOpen,
   onClose,
   onSubmit,
   initialTitle = "",
   initialKeywords = "",
-  initialPdfPath,
   initialDescription = "",
   existingContext,
   mode = 'create',
+  isOpen,
 }: CourseCreationDialogProps) {
+  if (!isOpen) return null;
+
+  // ... existing state ...
   const [title, setTitle] = useState(initialTitle);
   const [keywords, setKeywords] = useState(initialKeywords);
   const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
@@ -38,69 +39,48 @@ export default function CourseCreationDialog({
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isComposingRef = useRef(false);
-
-
   const [isGeneratingKeywords, setIsGeneratingKeywords] = useState(false);
 
-  // 當 isOpen 或 initialValues 改變時重置或更新狀態
+  // Sync prompts to state when they change (e.g. when opening edit mode)
+  useEffect(() => {
+    setTitle(initialTitle);
+    setKeywords(initialKeywords);
+    setDescription(initialDescription);
+    setPdfData(null); // Reset PDF on open/mode change? Or should we keep?
+    // If editing, we might want to keep existing context if passed, but usually we just reset for new course.
+    // For edit mode, we sync.
+  }, [initialTitle, initialKeywords, initialDescription, mode, isOpen]);
+
+  // Reset internal state when dialog opens/closes significantly
   useEffect(() => {
     if (isOpen) {
-      setTitle(initialTitle);
-      setKeywords(initialKeywords);
-      setPdfData(null);
-      setPdfFileName("");
-      setDescription(initialDescription);
-      setIsSubmitting(false);
-      // 如果有初始描述但沒有 PDF，默認顯示文本標籤
-      if (initialDescription && !initialPdfPath) {
-        setContextTab('text');
-      } else {
-        setContextTab('pdf');
-      }
-
-      // 如果是編輯模式且有 PDF 路徑，嘗試自動加載
-      if (mode === 'edit' && initialPdfPath) {
-        const loadPdf = async () => {
-          setIsLoading(true);
-          try {
-            const result = await readPDFFile(initialPdfPath);
-            if (result) {
-              setPdfData(result.data);
-              const fileName = result.path.split("/").pop() || "已加載 PDF";
-              setPdfFileName(fileName);
-            }
-          } catch (error) {
-            console.error("自動加載 PDF 失敗:", error);
-          } finally {
-            setIsLoading(false);
-          }
-        };
-        loadPdf();
-      }
+      // Reset additional state if needed
     }
-  }, [isOpen, initialTitle, initialKeywords, initialPdfPath, initialDescription, mode]);
-
-  if (!isOpen) return null;
+  }, [isOpen]);
 
   const handleSelectPDF = async () => {
+    setIsLoading(true);
     try {
-      setIsLoading(true);
-      const result = await selectPDFFile();
-      if (result) {
-        setPdfData(result.data);
-        // 從路徑提取文件名
-        const fileName = result.path ? result.path.split("/").pop() || "已選擇 PDF" : "已選擇 PDF";
-        setPdfFileName(fileName);
+      const selected = await selectPDFFile();
+      if (selected) {
+        const name = selected.path.split(/[/\\]/).pop() || "document.pdf";
+        setPdfFileName(name);
+        setPdfData(selected.data);
       }
     } catch (error) {
-      console.error("選擇 PDF 失敗:", error);
-      alert("選擇 PDF 失敗，請重試");
+      console.error("Failed to select PDF:", error);
+      alert("無法讀取 PDF 文件");
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleGenerateKeywords = async () => {
+    // 1. Validate Input
+    if (!title.trim()) {
+      alert("請先輸入課程標題以進行保存");
+      return;
+    }
     if (!pdfData && !existingContext && !description.trim()) {
       alert("請先選擇 PDF 文件、輸入課程大綱或確保課程有筆記內容");
       return;
@@ -108,45 +88,62 @@ export default function CourseCreationDialog({
 
     setIsGeneratingKeywords(true);
     try {
+      // 2. Extract Text
       let text = "";
-
       if (contextTab === 'pdf' && pdfData) {
-        // 1. 優先使用 PDF 文本
         text = await pdfService.extractText(pdfData);
-        if (!text || text.trim().length === 0) {
-          throw new Error("無法從 PDF 中提取文本");
-        }
+        if (!text?.trim()) throw new Error("無法從 PDF 中提取文本");
       } else if (contextTab === 'text' && description.trim()) {
-        // 2. 使用課程大綱
         text = description;
       } else if (existingContext) {
-        // 3. 使用現有筆記內容
         text = existingContext;
       }
 
-      if (!text) {
-        throw new Error("沒有可用的文本內容用於生成關鍵詞");
+      if (!text) throw new Error("沒有可用的文本內容");
+
+      // 3. Auto-Save to get Course ID
+      // Pass shouldClose = false to keep dialog open
+      const courseId = await onSubmit(title.trim(), keywords.trim(), pdfData || undefined, description.trim(), false);
+
+      if (!courseId || typeof courseId !== 'string') {
+        throw new Error("無法保存課程草稿，無法啟動後台任務");
       }
 
-      // 4. 使用 Ollama 生成關鍵詞
-      console.log('[CourseCreationDialog] Generating keywords from text length:', text.length);
-      const extractedKeywords = await ollamaService.extractKeywords(text);
-      console.log('[CourseCreationDialog] Extracted keywords:', extractedKeywords);
+      // 4. Trigger Server Task
+      const task = await taskService.triggerKeywordExtract(courseId, text);
 
-      if (extractedKeywords.length > 0) {
-        // 合併現有關鍵詞
-        const currentKeywords = keywords ? keywords.split(',').map(k => k.trim()).filter(k => k) : [];
-        const newKeywords = [...new Set([...currentKeywords, ...extractedKeywords])];
-        console.log('[CourseCreationDialog] New keywords list:', newKeywords);
-        setKeywords(newKeywords.join(', '));
+      if (task) {
+        // 5. Non-blocking Wait
+        // We start a detached promise to poll for results
+        taskService.pollUntilCompletion(task.id)
+          .then((result) => {
+            if (result.status === 'completed' && result.result?.keywords) {
+              const extracted = result.result.keywords as string[];
+              console.log('[CourseCreationDialog] Keywords generated:', extracted);
+
+              // Update Local State (if component still mounted)
+              // Note: accessing state from async closure is fine, usually.
+              setKeywords(prev => {
+                const current = prev ? prev.split(',').map(k => k.trim()).filter(Boolean) : [];
+                const merged = [...new Set([...current, ...extracted])];
+                return merged.join(', ');
+              });
+            }
+          })
+          .catch(err => console.error("Background keyword task failed:", err))
+          .finally(() => setIsGeneratingKeywords(false));
+
+        // Notify User
+        alert("關鍵詞生成任務已在後台啟動！\n您可以繼續編輯或關閉此視窗，完成後關鍵詞將自動填入。");
       } else {
-        console.warn('[CourseCreationDialog] No keywords extracted');
-        alert("未能生成關鍵詞，請檢查 Ollama 服務是否正常");
+        // Offline queue
+        alert("已離線，任務已加入佇列。恢復連線後將自動執行。");
+        setIsGeneratingKeywords(false);
       }
+
     } catch (error) {
       console.error("生成關鍵詞失敗:", error);
       alert(`生成關鍵詞失敗: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
       setIsGeneratingKeywords(false);
     }
   };

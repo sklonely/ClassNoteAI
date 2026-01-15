@@ -1,12 +1,14 @@
 // 科目類型
 export interface Course {
   id: string;
+  user_id: string; // Add user_id
   title: string;
   description?: string;
   keywords?: string; // 全域關鍵詞
   syllabus_info?: SyllabusInfo; // 結構化課程大綱
   created_at: string;
-  updated_at: string;
+  updated_at?: string;
+  is_deleted?: boolean; // Soft Delete
 }
 
 export interface SyllabusInfo {
@@ -32,8 +34,11 @@ export interface Lecture {
   status: "recording" | "completed";
   created_at: string; // ISO 8601 - 必需字段
   updated_at: string; // ISO 8601 - 必需字段
+  audio_path?: string;
+  audio_hash?: string;
   subtitles?: Subtitle[]; // 可選，用於前端顯示，數據庫中不存儲
   notes?: Note; // 可選，用於前端顯示，數據庫中不存儲
+  is_deleted?: boolean; // Soft Delete
 }
 
 // 字幕類型（用於數據庫存儲）
@@ -56,6 +61,7 @@ export interface Note {
   sections: Section[];
   qa_records: QARecord[];
   generated_at: string; // ISO 8601
+  is_deleted?: boolean; // Soft Delete
 }
 
 export interface Section {
@@ -97,6 +103,7 @@ export interface AppSettings {
   translation?: {
     provider?: 'local' | 'google'; // 翻譯提供商：本地 ONNX 或 Google API
     google_api_key?: string; // Google Cloud Translation API 密鑰
+    target_language?: string; // 目標語言 (e.g. "zh-TW", "en")，用於 AI 生成內容的翻譯
   };
   ollama?: {
     host: string;
@@ -108,6 +115,13 @@ export interface AppSettings {
       standard: string;   // 標準任務 (RAG、對話)
       heavy: string;      // 重量任務 (總結)
     };
+  };
+  sync?: {
+    username: string;
+    deviceId?: string;
+    deviceName?: string;
+    autoSync: boolean;
+    lastSyncTime?: string;
   };
 }
 

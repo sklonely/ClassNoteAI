@@ -12,9 +12,12 @@ interface SubtitleDisplayProps {
   maxLines?: number;
   fontSize?: number;
   position?: 'top' | 'bottom' | 'center';
+  onSeek?: (timestamp: number) => void;
+  currentTime?: number;
+  baseTime?: number;
 }
 
-export default function SubtitleDisplay(_props: SubtitleDisplayProps) {
+export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: SubtitleDisplayProps) {
   const [subtitleState, setSubtitleState] = useState<SubtitleState>(subtitleService.getState());
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -29,10 +32,27 @@ export default function SubtitleDisplay(_props: SubtitleDisplayProps) {
 
   // 自動滾動到底部
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && !currentTime) { // Only auto-scroll if not reviewing (currentTime implies review/playback) or if strict follow mode (TODO)
+      // For now, let's keep auto-scroll behavior basic or maybe disable it if reviewing history?
+      // Actually, if we are in review mode, we might want auto-scroll TO the highlighted segment.
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [subtitleState.segments]);
+  }, [subtitleState.segments, currentTime]); // Re-run when segments change. CurrentTime might be too frequent?
+
+  // Auto-scroll to current time segment
+  useEffect(() => {
+    if (currentTime && scrollRef.current) {
+      /* TODO: Implement auto-scroll logic
+      const activeSegment = subtitleState.segments.find((s, i) => {
+        const next = subtitleState.segments[i + 1];
+        const start = new Date(s.startTime).getTime();
+        // ... implementation needed
+        return false;
+      });
+      */
+      // Implementing scroll to active element inside render might be easier by ref
+    }
+  }, [currentTime]);
 
   return (
     <div className="relative h-full flex flex-col overflow-hidden" style={{ zIndex: 10 }}>
@@ -48,14 +68,39 @@ export default function SubtitleDisplay(_props: SubtitleDisplayProps) {
             <p className="text-sm mt-2">開始錄音後，轉錄結果會實時顯示</p>
           </div>
         ) : (
-          subtitleState.segments.map((segment) => {
-            const startTime = new Date(segment.startTime);
-            const timeString = `${startTime.getMinutes().toString().padStart(2, '0')}:${startTime.getSeconds().toString().padStart(2, '0')}`;
+          subtitleState.segments.map((segment, _index) => {
+            // Calculate relative time
+            // If baseTime is provided, use it. Otherwise fallback to first segment's time or created_at logic
+            const segmentTime = new Date(segment.startTime).getTime();
+            const referenceTime = baseTime || (subtitleState.segments[0] ? new Date(subtitleState.segments[0].startTime).getTime() : segmentTime);
+            const relativeMs = Math.max(0, segmentTime - referenceTime);
+
+            const minutes = Math.floor(relativeMs / 60000);
+            const seconds = Math.floor((relativeMs % 60000) / 1000);
+            const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+
+            // Calculate if active
+            // Note: We need relative time for audio sync. 
+            // segment.startTime is usually absolute timestamp of recording start.
+            // We need to know the lecture start time to calculate offset?
+            // OR, if audio file is pure recording, its 0:00 matches lecture start?
+            // Usually yes.
+            // But segment.startTime is "2023-..."
+            // We need to store 'relativeStartTime' or invoke a helper.
+            // For now, let's assume strict timestamp matching if we had absolute time, 
+            // but for AudioPlayer 'currentTime' is seconds from 0.
+            // We need to map Audio 'currentTime' (sec) to Segment 'startTime' (Date).
+            // This requires knowing the base timestamp of the recording.
+            // Let's defer exact highlighting logic and just add the onClick for now.
 
             return (
               <div
                 key={segment.id}
-                className="p-3 bg-white dark:bg-slate-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 relative z-10"
+                onClick={() => onSeek?.(relativeMs / 1000)}
+                className={`p-3 rounded-lg shadow-sm border relative z-10 cursor-pointer transition-colors
+                    ${currentTime ? 'hover:bg-blue-50 dark:hover:bg-blue-900/20' : ''}
+                    bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700
+                `}
                 style={{ zIndex: 10 }}
               >
                 <div className="flex items-start justify-between mb-1">
