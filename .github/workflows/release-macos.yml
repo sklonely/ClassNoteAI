@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - 'v*'
+  # 每週日 UTC 00:00 自動觸發，保持快取活躍
+  schedule:
+    - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
       version:
