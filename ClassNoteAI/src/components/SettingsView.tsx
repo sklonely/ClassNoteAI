@@ -116,12 +116,57 @@ export default function SettingsView({ }: SettingsViewProps) {
     setOllamaStatus('unknown');
     setTaskServerStatus('unknown');
 
-    const cleanHost = host.replace(/\/$/, ''); // 移除結尾斜線
+    // Robust URL parsing
+    let cleanHost = host.trim();
+
+    // Auto-prepend http:// if missing
+    if (!cleanHost.startsWith('http://') && !cleanHost.startsWith('https://')) {
+      cleanHost = `http://${cleanHost}`;
+    }
+
+    // Remove trailing slash
+    cleanHost = cleanHost.replace(/\/$/, '');
+
+    // Parse URL to handle ports intelligently
+    let hostnameUrl: URL;
+    try {
+      hostnameUrl = new URL(cleanHost);
+    } catch (e) {
+      console.error("Invalid URL:", cleanHost);
+      setOllamaStatus('error');
+      setTaskServerStatus('error');
+      setIsCheckingConnection(false);
+      return;
+    }
+
+    const baseProtocol = hostnameUrl.protocol; // http: or https:
+    const baseHostname = hostnameUrl.hostname; // host (no port)
+
+    // Determine ports override
+    // If user provided a port in input (e.g. :3001), we might respect it OR strip it
+    // Logic: "AI Server Host" implies the base host. 
+    // Ollama is usually :11434, Server is :3001.
+    // So we should STRIP the port from user input and append specific ports.
+    // UNLESS user specifically wants a non-standard setup.
+    // Current design: Unified Host (Input) -> leads to Host:11434 and Host:3001.
+
+    // Construct URLs
+    const ollamaUrl = `${baseProtocol}//${baseHostname}:11434`;
+    const serverUrl = `${baseProtocol}//${baseHostname}:3001`;
+
+    console.log(`[Connection Check] Checking Unified Host: ${baseHostname}`);
+    console.log(`[Connection Check] Ollama URL: ${ollamaUrl}`);
+    console.log(`[Connection Check] Server URL: ${serverUrl}`);
+
+    // Import fetch from plugin-http just for this check (dynamic import to avoid top-level conflict if needed, 
+    // but better to use the one from ollamaService or use window.__TAURI__.http if available, 
+    // OR just use the standard fetch if we fix the URL? 
+    // NO, standard fetch has CORS issues. We MUST use plugin-http fetch.
+    const { fetch } = await import('@tauri-apps/plugin-http');
 
     // 1. Check Ollama (:11434)
     const checkOllama = async () => {
       try {
-        const ollamaUrl = `${cleanHost}:11434`;
         const models = await ollamaService.listModels(ollamaUrl);
         setOllamaModels(models);
         setOllamaStatus('connected');
@@ -139,17 +184,20 @@ export default function SettingsView({ }: SettingsViewProps) {
     // 2. Check Task Server (:3001)
     const checkServer = async () => {
       try {
-        const serverUrl = `${cleanHost}:3001`;
         // Check health endpoint
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2000);
+        // Use Tauri fetch to bypass CORS/Network restrictions
+        const response = await fetch(`${serverUrl}/health`, {
+          method: 'GET',
+          connectTimeout: 2000 // plugin-http supports connectTimeout? Maybe not standard FetchInit. 
+          // Standard fetch doesn't support timeout in options directly usually, uses AbortController.
+        });
 
-        try {
-          await fetch(`${serverUrl}/health`, { signal: controller.signal });
+        if (response.ok) {
           setTaskServerStatus('connected');
-        } finally {
-          clearTimeout(timeoutId);
+        } else {
+          throw new Error(`Health check failed: ${response.status}`);
         }
+
       } catch (error) {
         console.error('Task Server 連接失敗:', error);
         setTaskServerStatus('error');
@@ -454,6 +502,7 @@ export default function SettingsView({ }: SettingsViewProps) {
   // 下載並安裝更新
   const handleDownloadUpdate = async () => {
     setIsDownloading(true);
+    setUpdateError(null);
     try {
       const { updateService } = await import('../services/updateService');
       await updateService.downloadAndInstall((progress) => {
@@ -461,6 +510,23 @@ export default function SettingsView({ }: SettingsViewProps) {
       });
     } catch (error) {
       setUpdateError(error instanceof Error ? error.message : '下載更新失敗');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  // 手動下載並打開 DMG
+  const handleManualDownload = async () => {
+    if (!updateInfo?.version) return;
+    setIsDownloading(true);
+    setUpdateError(null);
+    try {
+      const { updateService } = await import('../services/updateService');
+      await updateService.downloadAndOpenDmg(updateInfo.version, (percentage) => {
+        setDownloadProgress(percentage);
+      });
+    } catch (error) {
+      setUpdateError(error instanceof Error ? error.message : '手動下載失敗');
     } finally {
       setIsDownloading(false);
     }
@@ -1049,6 +1115,24 @@ export default function SettingsView({ }: SettingsViewProps) {
                             <><Download className="w-4 h-4 animate-bounce" /> 下載中 {downloadProgress}%</>
                           ) : (
                             <><Download className="w-4 h-4" /> 下載並安裝</>
+                          )}
+                        </button>
+
+                        <div className="relative flex py-1 items-center">
+                          <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
+                          <span className="flex-shrink-0 mx-2 text-xs text-gray-400">或</span>
+                          <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
+                        </div>
+
+                        <button
+                          onClick={handleManualDownload}
+                          disabled={isDownloading}
+                          className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 text-green-600 dark:text-green-400 border border-green-600 dark:border-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:bg-gray-100 dark:disabled:bg-gray-800 disabled:text-gray-400 disabled:border-gray-300 dark:disabled:border-gray-700 rounded-lg transition-colors"
+                        >
+                          {isDownloading ? (
+                            <>下載中 {downloadProgress}%</>
+                          ) : (
+                            <><Download className="w-4 h-4" /> 下載 .dmg 並開啟 (手動安裝)</>
                           )}
                         </button>
                       </div>

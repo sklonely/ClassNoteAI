@@ -1436,7 +1436,7 @@ fn wait_for_file(path: &std::path::Path) -> Result<(), String> {
     use std::fs;
     use std::time::Duration;
 
-    let max_wait = 30;
+    let max_wait = 120; // 60 seconds (120 * 500ms)
     let mut waited = 0;
     let mut last_size = 0;
 
