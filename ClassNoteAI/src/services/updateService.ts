@@ -5,9 +5,9 @@
  * Supports both automatic and manual update checks.
  */
 
-import { check, Update, UpdateInfo } from '@tauri-apps/plugin-updater';
+import { check, Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
-import { open } from '@tauri-apps/plugin-opener';
+import { openPath } from '@tauri-apps/plugin-opener';
 import { writeFile, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { fetch } from '@tauri-apps/plugin-http';
 import { downloadDir, join } from '@tauri-apps/api/path';
@@ -208,7 +208,7 @@ class UpdateService {
             // Open the specific file path
             // Note: plugin-opener's open() usually takes a path or URL. 
             // We need the absolute path.
-            await open(filePath);
+            await openPath(filePath);
 
         } catch (error) {
             console.error('[UpdateService] Failed to manually download/open DMG:', error);
