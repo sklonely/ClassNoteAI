@@ -176,4 +176,4 @@ jobs:
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           files: |
             ClassNoteAI/release-assets/*
-          body_path: release_body.txt
+          body_path: ClassNoteAI/release_body.txt
