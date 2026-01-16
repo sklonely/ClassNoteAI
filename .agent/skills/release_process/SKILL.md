@@ -22,13 +22,19 @@ description: How to release a new version of ClassNoteAI with CI/CD auto-build a
 
 ---
 
-## 最佳實踐：Release Notes
+## 最佳實踐：Structured Release Notes
 
-為了確保自動生成的 Release Notes 清晰易讀，建議：
+CI 流程已配置為自動根據 Commit 訊息生成分類的 Release Notes。請在提交 Commit 時遵循以下 **Prefix** 規範：
 
-1. **使用 Pull Requests**：盡量透過 PR 合併代碼，PR 標題將成為 Release Notes 的條目。
-2. **使用 Label 分類**：GitHub 會根據 Label (如 `enhancement`, `bug`, `documentation`) 自動分類變更。
-3. **Commit 訊息清晰**：如果直接 Push 到 main，Commit 訊息將被列出。
+| 類別 | 對應 Prefix (不分大小寫) | 範例 |
+| :-- | :-- | :-- |
+| **⚠️ 破壞性更新 (Breaking)** | `break:`, `breaking:`, `!:` | `feat!: Drop Node 14 support` |
+| **✨ 新增 (New)** | `feat:`, `add:`, `new:` | `feat: Add dark mode toggle` |
+| **🔨 修改 (Modify)** | `mod:`, `update:`, `refactor:`, `chore:` | `mod: Update UI colors` |
+| **🗑️ 刪除 (Delete)** | `del:`, `remove:`, `delete:` | `del: Remove unused assets` |
+| **🐛 修正 (Fix)** | `fix:`, `bug:` | `fix: Resolve login crash` |
+
+**Fallback**：任何不符合上述 Prefix 的 commit 都會被歸類為「📦 其他 (Other)」。
 
 ---
 
@@ -80,7 +86,9 @@ git push origin main --tags
    - `ClassNoteAI_X.Y.Z_aarch64.dmg`
    - `ClassNoteAI_X.Y.Z_aarch64.app.tar.gz`
    - `latest.json`
-7. **自動生成 Release Notes**：根據 Merged PRs 和 Commits 生成「What's Changed」清單。
+7. **自動生成 Release Notes**：
+   - 優先使用 GitHub 自動生成的 PR 摘要 (如果有)。
+   - **Fallback 機制**：如果自動生成為空 (例如無 PR)，則使用 `git log` 生成 Commit 列表。
 
 ### 5. 驗證發布
 

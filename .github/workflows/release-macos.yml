@@ -121,6 +121,54 @@ jobs:
           # latest.json
           cp latest.json release-assets/
 
+      - name: Generate Changelog
+        run: |
+          git fetch --tags
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          # Define temporary file
+          LOG_FILE="full_log.txt"
+          
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found. Generating log from root."
+            git log --pretty=format:"%s (%h)" > $LOG_FILE
+          else
+            echo "Generating log from $PREV_TAG to HEAD"
+            git log --pretty=format:"%s (%h)" $PREV_TAG..HEAD > $LOG_FILE
+          fi
+
+          echo "## What's Changed" > release_body.txt
+          echo "" >> release_body.txt
+
+          echo "### ⚠️ 破壞性更新 (Breaking Changes)" >> release_body.txt
+          grep -iE "(break|breaking|!:)" $LOG_FILE | sed -E 's/^/- /' >> release_body.txt || true
+          echo "" >> release_body.txt
+
+          echo "### ✨ 新增 (New)" >> release_body.txt
+          grep -iE "^(feat|add|new):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(feat|add|new): /- /I' >> release_body.txt || true
+          echo "" >> release_body.txt
+
+          echo "### 🐛 修正 (Fix)" >> release_body.txt
+          grep -iE "^(fix|bug):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(fix|bug): /- /I' >> release_body.txt || true
+          echo "" >> release_body.txt
+
+          echo "### 🔨 修改 (Modify)" >> release_body.txt
+          grep -iE "^(mod|modify|refactor|update|change|chore|style):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(mod|modify|refactor|update|change|chore|style): /- /I' >> release_body.txt || true
+          echo "" >> release_body.txt
+
+          echo "### 🗑️ 刪除 (Delete)" >> release_body.txt
+          grep -iE "^(del|delete|remove):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(del|delete|remove): /- /I' >> release_body.txt || true
+          echo "" >> release_body.txt
+
+          echo "### 📦 其他 (Other)" >> release_body.txt
+          grep -ivE "^(feat|add|new|fix|bug|mod|modify|refactor|update|change|chore|style|del|delete|remove|break|breaking):" $LOG_FILE | grep -vE "!:" | sed 's/^/- /' >> release_body.txt || true
+          
+          # Append installation instructions
+          echo "" >> release_body.txt
+          echo "---" >> release_body.txt
+          echo "### 自動更新" >> release_body.txt
+          echo "已安裝用戶可透過應用內「設定 → 關於與更新」檢查更新。" >> release_body.txt
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
@@ -128,4 +176,4 @@ jobs:
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           files: |
             ClassNoteAI/release-assets/*
-          generate_release_notes: true
+          body_path: release_body.txt
