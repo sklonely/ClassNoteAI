@@ -128,11 +128,4 @@ jobs:
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           files: |
             ClassNoteAI/release-assets/*
-          body: |
-            ## ClassNoteAI ${{ steps.get_version.outputs.VERSION }}
-            
-            ### 下載
-            - **macOS (Apple Silicon)**: ClassNoteAI_${{ steps.get_version.outputs.VERSION }}_aarch64.dmg
-            
-            ### 自動更新
-            已安裝用戶可透過應用內「設定 → 關於與更新」檢查更新。
+          generate_release_notes: true

@@ -22,6 +22,16 @@ description: How to release a new version of ClassNoteAI with CI/CD auto-build a
 
 ---
 
+## 最佳實踐：Release Notes
+
+為了確保自動生成的 Release Notes 清晰易讀，建議：
+
+1. **使用 Pull Requests**：盡量透過 PR 合併代碼，PR 標題將成為 Release Notes 的條目。
+2. **使用 Label 分類**：GitHub 會根據 Label (如 `enhancement`, `bug`, `documentation`) 自動分類變更。
+3. **Commit 訊息清晰**：如果直接 Push 到 main，Commit 訊息將被列出。
+
+---
+
 ## 發布步驟
 
 ### 1. 更新版本號
@@ -70,6 +80,7 @@ git push origin main --tags
    - `ClassNoteAI_X.Y.Z_aarch64.dmg`
    - `ClassNoteAI_X.Y.Z_aarch64.app.tar.gz`
    - `latest.json`
+7. **自動生成 Release Notes**：根據 Merged PRs 和 Commits 生成「What's Changed」清單。
 
 ### 5. 驗證發布
 
