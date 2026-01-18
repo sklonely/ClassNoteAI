@@ -1151,6 +1151,35 @@ export default function SettingsView({ }: SettingsViewProps) {
                 )}
               </div>
             </div>
+
+            {/* Developer Mode Section */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/50">
+                <h3 className="text-lg font-medium flex items-center gap-2">
+                  <Cpu className="w-5 h-5 text-orange-500" />
+                  開發者模式
+                </h3>
+              </div>
+              <div className="p-6 space-y-4">
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  開發者模式可以開啟開發者工具 (DevTools) 用於調試和診斷問題。
+                </p>
+                <button
+                  onClick={async () => {
+                    try {
+                      const { invoke } = await import('@tauri-apps/api/core');
+                      await invoke('open_devtools');
+                    } catch (e) {
+                      console.error('Failed to open devtools:', e);
+                    }
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-colors"
+                >
+                  <Cpu className="w-4 h-4" />
+                  開啟開發者工具 (DevTools)
+                </button>
+              </div>
+            </div>
           </div >
         );
 

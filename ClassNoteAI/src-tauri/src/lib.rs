@@ -1501,6 +1501,26 @@ async fn write_temp_file(path: String, data: Vec<u8>) -> Result<(), String> {
     Ok(())
 }
 
+/// 開啟開發者工具 (Developer Mode)
+#[tauri::command]
+async fn open_devtools(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        window.open_devtools();
+    }
+    Ok(())
+}
+
+/// 關閉開發者工具
+#[tauri::command]
+async fn close_devtools(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        window.close_devtools();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1510,13 +1530,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            // 打開開發者工具（Debug and Release with devtools feature）
-            {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    window.open_devtools();
-                }
-            }
+            // DevTools 現在由前端控制，根據 developerMode 設定
+            // 前端可透過 invoke 呼叫開啟
+            // 不再自動開啟
 
             // 初始化數據庫
             let app_handle = app.handle().clone();
@@ -1530,6 +1546,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            open_devtools,
+            close_devtools,
             detect_speech_segments,
             greet,
             load_whisper_model,
