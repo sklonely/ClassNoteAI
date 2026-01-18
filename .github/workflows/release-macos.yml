@@ -123,8 +123,13 @@ jobs:
 
       - name: Generate Changelog
         run: |
-          git fetch --tags
-          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          git fetch --tags --unshallow 2>/dev/null || git fetch --tags
+          
+          # Get current tag
+          CURRENT_TAG=${GITHUB_REF#refs/tags/}
+          
+          # Find previous tag by listing all tags sorted by version, excluding current
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
           
           # Define temporary file
           LOG_FILE="full_log.txt"
@@ -133,9 +138,13 @@ jobs:
             echo "No previous tag found. Generating log from root."
             git log --pretty=format:"%s (%h)" > $LOG_FILE
           else
-            echo "Generating log from $PREV_TAG to HEAD"
-            git log --pretty=format:"%s (%h)" $PREV_TAG..HEAD > $LOG_FILE
+            echo "Generating log from $PREV_TAG to $CURRENT_TAG"
+            git log --pretty=format:"%s (%h)" $PREV_TAG..$CURRENT_TAG > $LOG_FILE
           fi
+          
+          echo "=== Commits found ==="
+          cat $LOG_FILE
+          echo "====================="
 
           echo "## What's Changed" > release_body.txt
           echo "" >> release_body.txt
@@ -145,23 +154,23 @@ jobs:
           echo "" >> release_body.txt
 
           echo "### ✨ 新增 (New)" >> release_body.txt
-          grep -iE "^(feat|add|new):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(feat|add|new): /- /I' >> release_body.txt || true
+          grep -iE "^(feat|add|new)(\(.+\))?:" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(feat|add|new)(\([^)]+\))?: /- /' >> release_body.txt || true
           echo "" >> release_body.txt
 
           echo "### 🐛 修正 (Fix)" >> release_body.txt
-          grep -iE "^(fix|bug):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(fix|bug): /- /I' >> release_body.txt || true
+          grep -iE "^(fix|bug)(\(.+\))?:" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(fix|bug)(\([^)]+\))?: /- /' >> release_body.txt || true
           echo "" >> release_body.txt
 
           echo "### 🔨 修改 (Modify)" >> release_body.txt
-          grep -iE "^(mod|modify|refactor|update|change|chore|style):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(mod|modify|refactor|update|change|chore|style): /- /I' >> release_body.txt || true
+          grep -iE "^(mod|modify|refactor|update|change|chore|style|build|ci)(\(.+\))?:" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(mod|modify|refactor|update|change|chore|style|build|ci)(\([^)]+\))?: /- /' >> release_body.txt || true
           echo "" >> release_body.txt
 
           echo "### 🗑️ 刪除 (Delete)" >> release_body.txt
-          grep -iE "^(del|delete|remove):" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(del|delete|remove): /- /I' >> release_body.txt || true
+          grep -iE "^(del|delete|remove)(\(.+\))?:" $LOG_FILE | grep -vE "(break|breaking|!:)" | sed -E 's/^(del|delete|remove)(\([^)]+\))?: /- /' >> release_body.txt || true
           echo "" >> release_body.txt
 
           echo "### 📦 其他 (Other)" >> release_body.txt
-          grep -ivE "^(feat|add|new|fix|bug|mod|modify|refactor|update|change|chore|style|del|delete|remove|break|breaking):" $LOG_FILE | grep -vE "!:" | sed 's/^/- /' >> release_body.txt || true
+          grep -ivE "^(feat|add|new|fix|bug|mod|modify|refactor|update|change|chore|style|build|ci|del|delete|remove|break|breaking)(\(.+\))?:" $LOG_FILE | grep -vE "!:" | sed 's/^/- /' >> release_body.txt || true
           
           # Append installation instructions
           echo "" >> release_body.txt
