@@ -68,12 +68,14 @@ class TaskService {
         const url = `${baseUrl.replace(/\/$/, '')}${path}`;
 
         try {
-            const response = await fetch(url, options);
+            // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+            const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+            const response = await tauriFetch(url, options as any);
             if (!response.ok) {
                 const errorText = await response.text();
                 throw new Error(`Request failed: ${response.status} ${response.statusText} - ${errorText}`);
             }
-            return await response.json();
+            return await response.json() as T;
         } catch (error) {
             console.error(`[TaskService] Request failed for ${path}:`, error);
             throw error;

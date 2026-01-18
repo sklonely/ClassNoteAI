@@ -27,11 +27,13 @@ class AuthService {
     }
 
     private async registerOnServer(serverUrl: string, username: string): Promise<void> {
-        const response = await fetch(`${serverUrl}/api/auth/register`, {
+        // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+        const response = await tauriFetch(`${serverUrl}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username })
-        });
+        } as any);
 
         if (response.ok) {
             // Update user as verified

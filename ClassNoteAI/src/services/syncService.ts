@@ -184,11 +184,13 @@ export class SyncService {
                 chat_messages: chatMessages,
             };
 
-            const response = await fetch(`${baseUrl}/api/sync/push`, {
+            // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+            const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+            const response = await tauriFetch(`${baseUrl}/api/sync/push`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
-            });
+            } as any);
 
             if (!response.ok) {
                 throw new Error(`Sync Push failed: ${response.status} ${response.statusText}`);
@@ -203,9 +205,11 @@ export class SyncService {
 
     private async pullDataDirect(baseUrl: string, username: string): Promise<{ courses: number; lectures: number }> {
         try {
-            const response = await fetch(`${baseUrl}/api/sync/pull?username=${encodeURIComponent(username)}`, {
+            // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+            const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+            const response = await tauriFetch(`${baseUrl}/api/sync/pull?username=${encodeURIComponent(username)}`, {
                 method: 'GET',
-            });
+            } as any);
 
             if (!response.ok) {
                 throw new Error(`Sync Pull failed: ${response.status} ${response.statusText}`);
@@ -517,11 +521,13 @@ export class SyncService {
 
     private async registerDeviceDirect(baseUrl: string, username: string, deviceId: string, deviceName: string, platform: string): Promise<void> {
         try {
-            const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/devices/register`, {
+            // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+            const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+            const response = await tauriFetch(`${baseUrl.replace(/\/$/, '')}/api/devices/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id: deviceId, username, name: deviceName, platform }),
-            });
+            } as any);
             if (!response.ok) throw new Error(`Register failed: ${response.status}`);
         } catch (error) {
             console.error('[SyncService] Register device failed:', error);
@@ -531,7 +537,9 @@ export class SyncService {
 
     async getDevices(baseUrl: string, username: string): Promise<any[]> {
         try {
-            const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/devices?username=${encodeURIComponent(username)}`);
+            // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+            const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+            const response = await tauriFetch(`${baseUrl.replace(/\/$/, '')}/api/devices?username=${encodeURIComponent(username)}`);
             if (!response.ok) throw new Error(`Get devices failed: ${response.status}`);
             return await response.json();
         } catch (error) {
@@ -542,9 +550,11 @@ export class SyncService {
 
     private async deleteDeviceDirect(baseUrl: string, id: string): Promise<void> {
         try {
-            const response = await fetch(`${baseUrl.replace(/\/$/, '')}/api/devices/${id}`, {
+            // Use Tauri plugin-http fetch to bypass macOS ATS restrictions
+            const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+            const response = await tauriFetch(`${baseUrl.replace(/\/$/, '')}/api/devices/${id}`, {
                 method: 'DELETE',
-            });
+            } as any);
             if (!response.ok) throw new Error(`Delete device failed: ${response.status}`);
         } catch (error) {
             console.error('[SyncService] Delete device failed:', error);
