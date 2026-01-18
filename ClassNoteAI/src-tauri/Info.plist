@@ -4,5 +4,12 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>ClassNote AI 需要訪問麥克風以錄製課程音頻進行轉錄。</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
