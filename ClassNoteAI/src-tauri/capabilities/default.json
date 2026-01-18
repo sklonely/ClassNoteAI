@@ -28,13 +28,7 @@
       "identifier": "http:allow-fetch",
       "allow": [
         {
-          "url": "http://127.0.0.1:*/**"
-        },
-        {
-          "url": "http://localhost:*/**"
-        },
-        {
-          "url": "http://100.*:*/**"
+          "url": "http://**"
         },
         {
           "url": "https://**"
