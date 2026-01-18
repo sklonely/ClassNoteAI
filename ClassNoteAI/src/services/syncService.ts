@@ -65,36 +65,40 @@ export class SyncService {
             if (!options?.skipFiles) {
                 for (let i = 0; i < updatedLectures.length; i++) {
                     const lecture = updatedLectures[i];
-                    // Upload audio files
+
+                    // Handle Audio: Upload if needed, but ALWAYS send filename only
                     if (lecture.audio_path) {
-                        try {
-                            if (lecture.audio_path.startsWith('/')) {
-                                const serverFilename = await this.uploadFile(baseUrl, lecture.audio_path);
-                                updatedLectures[i] = {
-                                    ...lecture,
-                                    audio_path: serverFilename
-                                };
+                        const filename = lecture.audio_path.split(/[/\\]/).pop() || lecture.audio_path;
+                        // Try upload if it looks like a file path
+                        if (lecture.audio_path.includes('/') || lecture.audio_path.includes('\\')) {
+                            try {
+                                await this.uploadFile(baseUrl, lecture.audio_path);
+                            } catch (e) {
+                                console.warn(`[SyncService] Failed to upload audio for lecture ${lecture.id}:`, e);
                             }
-                        } catch (e) {
-                            console.warn(`[SyncService] Failed to upload audio for lecture ${lecture.id}:`, e);
                         }
+                        // Update payload to use filename only
+                        updatedLectures[i].audio_path = filename;
                     }
-                    // Upload PDF files
-                    if (updatedLectures[i].pdf_path) {
-                        try {
-                            if (updatedLectures[i].pdf_path!.startsWith('/')) {
-                                const serverFilename = await this.uploadFile(baseUrl, updatedLectures[i].pdf_path!);
-                                updatedLectures[i] = {
-                                    ...updatedLectures[i],
-                                    pdf_path: serverFilename
-                                };
+
+                    // Handle PDF: Upload if needed, but ALWAYS send filename only
+                    if (lecture.pdf_path) {
+                        const filename = lecture.pdf_path.split(/[/\\]/).pop() || lecture.pdf_path;
+                        // Try upload if it looks like a file path
+                        if (lecture.pdf_path.includes('/') || lecture.pdf_path.includes('\\')) {
+                            try {
+                                await this.uploadFile(baseUrl, lecture.pdf_path);
+                            } catch (e) {
+                                console.warn(`[SyncService] Failed to upload PDF for lecture ${lecture.id}:`, e);
                             }
-                        } catch (e) {
-                            console.warn(`[SyncService] Failed to upload PDF for lecture ${lecture.id}:`, e);
                         }
+                        // Update payload to use filename only
+                        updatedLectures[i].pdf_path = filename;
                     }
                 }
             }
+
+
 
             // Collect Notes
             const notes = [];
@@ -300,38 +304,61 @@ export class SyncService {
                     console.log(`[SyncService] Updating lecture ${serverLecture.id} (Server newer)`);
 
                     const sep = navigator.userAgent.includes('Win') ? '\\' : '/';
+                    const { exists } = await import('@tauri-apps/plugin-fs');
 
-                    // Handle Audio Download ONLY if active (not deleted)
-                    // If deleted, we don't need audio, but we need tombstone record.
-                    if (!serverLecture.is_deleted && serverLecture.audio_path && !serverLecture.audio_path.startsWith('/')) {
-                        const localPath = `${audioDir}${audioDir.endsWith(sep) ? '' : sep}${serverLecture.audio_path}`;
-
+                    // 1. Handle Audio Path
+                    if (!serverLecture.is_deleted && serverLecture.audio_path) {
                         try {
-                            const downloadUrl = `${baseUrl.replace(/\/$/, '')}/api/files/download/${serverLecture.audio_path}`;
-                            // Check if file exists locally? downloadFile overwrites usually.
-                            await this.downloadFile(downloadUrl, localPath);
+                            // Always extract clean filename, ignoring whatever path server sent
+                            const filename = serverLecture.audio_path.split(/[/\\]/).pop() || serverLecture.audio_path;
+
+                            // Construct proper local absolute path
+                            const localPath = `${audioDir}${audioDir.endsWith(sep) ? '' : sep}${filename}`;
+
+                            // Check if we need to download
+                            let needsDownload = true;
+                            if (await exists(localPath)) {
+                                needsDownload = false;
+                            }
+
+                            if (needsDownload) {
+                                const downloadUrl = `${baseUrl.replace(/\/$/, '')}/api/files/download/${filename}`;
+                                await this.downloadFile(downloadUrl, localPath);
+                                console.log(`[SyncService] Downloaded audio to ${localPath}`);
+                            }
+                            // Update the lecture object with LOCAL ABSOLUTE PATH before saving
                             serverLecture.audio_path = localPath;
                         } catch (e) {
-                            console.error(`[SyncService] Failed to download audio for ${serverLecture.id}:`, e);
-                            // Keep server path if download fails? Or clear it? 
-                            // Better keep it to allow retry later, or fallback.
+                            console.error(`[SyncService] Failed to handle audio sync for ${serverLecture.id}:`, e);
+                            // Keep original path if logic fails, though likely invalid on this device
                         }
                     }
 
-                    // Handle PDF Download ONLY if active (not deleted)
-                    if (!serverLecture.is_deleted && serverLecture.pdf_path && !serverLecture.pdf_path.startsWith('/')) {
-                        // Get documents directory for PDFs
-                        const documentsDir = await invoke<string>('get_documents_dir');
-                        const localPdfPath = `${documentsDir}${documentsDir.endsWith(sep) ? '' : sep}${serverLecture.pdf_path}`;
-
+                    // 2. Handle PDF Path
+                    if (!serverLecture.is_deleted && serverLecture.pdf_path) {
                         try {
-                            const downloadUrl = `${baseUrl.replace(/\/$/, '')}/api/files/download/${serverLecture.pdf_path}`;
-                            await this.downloadFile(downloadUrl, localPdfPath);
+                            // Always extract clean filename
+                            const filename = serverLecture.pdf_path.split(/[/\\]/).pop() || serverLecture.pdf_path;
+
+                            // Get local documents directory
+                            const documentsDir = await invoke<string>('get_documents_dir');
+                            const localPdfPath = `${documentsDir}${documentsDir.endsWith(sep) ? '' : sep}${filename}`;
+
+                            // Check if we need to download
+                            let needsDownload = true;
+                            if (await exists(localPdfPath)) {
+                                needsDownload = false;
+                            }
+
+                            if (needsDownload) {
+                                const downloadUrl = `${baseUrl.replace(/\/$/, '')}/api/files/download/${filename}`;
+                                await this.downloadFile(downloadUrl, localPdfPath);
+                                console.log(`[SyncService] Downloaded PDF to ${localPdfPath}`);
+                            }
+                            // Update the lecture object with LOCAL ABSOLUTE PATH before saving
                             serverLecture.pdf_path = localPdfPath;
-                            console.log(`[SyncService] Downloaded PDF for ${serverLecture.id} to ${localPdfPath}`);
                         } catch (e) {
-                            console.error(`[SyncService] Failed to download PDF for ${serverLecture.id}:`, e);
-                            // Clear pdf_path on failure to prevent showing non-existent file
+                            console.error(`[SyncService] Failed to handle PDF sync for ${serverLecture.id}:`, e);
                             serverLecture.pdf_path = undefined;
                         }
                     }
