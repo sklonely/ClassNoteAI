@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Connection Test</title>
+  <script type="module">
+    async function testConnection() {
+      const host = 'http://sklonelymac-studio.tailcceaaf.ts.net';
+      const ollamaUrl = `${host}:11434/api/tags`;
+      const serverUrl = `${host}:3001/health`;
+
+      const log = document.getElementById('log');
+      log.innerHTML = '';
+
+      const addLog = (msg) => {
+        log.innerHTML += msg + '\n';
+        console.log(msg);
+      };
+
+      addLog(`Testing connections...`);
+      addLog(`Ollama URL: ${ollamaUrl}`);
+      addLog(`Server URL: ${serverUrl}`);
+      addLog('---');
+
+      // Test 1: Standard fetch (will likely fail due to CORS)
+      addLog('[Test 1] Standard fetch (Ollama)...');
+      try {
+        const resp = await fetch(ollamaUrl);
+        addLog(`✅ Standard fetch OK: ${resp.status}`);
+        const data = await resp.json();
+        addLog(`Models: ${data.models?.length || 0}`);
+      } catch (e) {
+        addLog(`❌ Standard fetch FAILED: ${e.message}`);
+      }
+      addLog('---');
+
+      // Test 2: Tauri plugin-http fetch
+      addLog('[Test 2] Tauri plugin-http fetch (Ollama)...');
+      try {
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+        addLog('Tauri fetch imported successfully');
+        
+        const resp = await tauriFetch(ollamaUrl);
+        addLog(`✅ Tauri fetch OK: ${resp.status}`);
+        const data = await resp.json();
+        addLog(`Models: ${data.models?.length || 0}`);
+      } catch (e) {
+        addLog(`❌ Tauri fetch FAILED: ${e.message}`);
+        addLog(`Error details: ${e.stack || e}`);
+      }
+      addLog('---');
+
+      // Test 3: Tauri plugin-http fetch (Task Server)
+      addLog('[Test 3] Tauri plugin-http fetch (Task Server)...');
+      try {
+        const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+        const resp = await tauriFetch(serverUrl);
+        addLog(`✅ Task Server OK: ${resp.status}`);
+        const text = await resp.text();
+        addLog(`Response: ${text}`);
+      } catch (e) {
+        addLog(`❌ Task Server FAILED: ${e.message}`);
+      }
+    }
+
+    window.testConnection = testConnection;
+  </script>
+</head>
+<body style="background: #1a1a2e; color: #eee; font-family: monospace; padding: 20px;">
+  <h2>ClassNoteAI Connection Test</h2>
+  <button onclick="testConnection()" style="padding: 10px 20px; font-size: 16px;">Run Test</button>
+  <pre id="log" style="background: #0f0f23; padding: 20px; margin-top: 20px; border-radius: 8px; white-space: pre-wrap;"></pre>
+</body>
+</html>

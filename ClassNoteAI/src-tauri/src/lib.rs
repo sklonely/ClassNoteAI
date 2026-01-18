@@ -1510,8 +1510,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
-            // 在 debug 模式下自動打開開發者工具
-            #[cfg(debug_assertions)]
+            // 打開開發者工具（Debug and Release with devtools feature）
             {
                 use tauri::Manager;
                 if let Some(window) = app.get_webview_window("main") {
