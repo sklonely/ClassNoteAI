@@ -149,14 +149,36 @@ const PDFViewer = forwardRef<PDFViewerHandle, PDFViewerProps>(({ filePath, pdfDa
               loadingTask = pdfjsLib.getDocument(filePath);
             }
           } else if (filePath.startsWith('http://') || filePath.startsWith('https://')) {
-            // 對於 HTTP URL，直接使用
-            loadingTask = pdfjsLib.getDocument(filePath);
+            // 對於 HTTP URL，使用 Tauri plugin-http fetch
+            try {
+              const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+              const response = await tauriFetch(filePath);
+              if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+              }
+              const arrayBuffer = await response.arrayBuffer();
+              loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            } catch (e) {
+              console.error("[PDFViewer] Tauri fetch 失敗:", e);
+              // Fallback to pdfjs direct loading
+              loadingTask = pdfjsLib.getDocument(filePath);
+            }
           } else {
-            // 對於本地文件路徑，使用 file:// 前綴（如果需要）
-            loadingTask = pdfjsLib.getDocument({
-              url: filePath,
-              withCredentials: false,
-            });
+            // 對於本地文件路徑，使用 Tauri fs plugin
+            try {
+              const { readFile } = await import('@tauri-apps/plugin-fs');
+              console.log("[PDFViewer] 使用 Tauri fs 讀取本地文件:", filePath);
+              const fileData = await readFile(filePath);
+              console.log("[PDFViewer] 讀取成功，大小:", fileData.byteLength);
+              loadingTask = pdfjsLib.getDocument({ data: fileData });
+            } catch (fsError) {
+              console.error("[PDFViewer] Tauri fs 讀取失敗:", fsError);
+              // Fallback: 嘗試使用 file:// URL
+              loadingTask = pdfjsLib.getDocument({
+                url: filePath.startsWith('file://') ? filePath : `file://${filePath}`,
+                withCredentials: false,
+              });
+            }
           }
         }
 

@@ -65,6 +65,7 @@ export class SyncService {
             if (!options?.skipFiles) {
                 for (let i = 0; i < updatedLectures.length; i++) {
                     const lecture = updatedLectures[i];
+                    // Upload audio files
                     if (lecture.audio_path) {
                         try {
                             if (lecture.audio_path.startsWith('/')) {
@@ -76,6 +77,20 @@ export class SyncService {
                             }
                         } catch (e) {
                             console.warn(`[SyncService] Failed to upload audio for lecture ${lecture.id}:`, e);
+                        }
+                    }
+                    // Upload PDF files
+                    if (updatedLectures[i].pdf_path) {
+                        try {
+                            if (updatedLectures[i].pdf_path!.startsWith('/')) {
+                                const serverFilename = await this.uploadFile(baseUrl, updatedLectures[i].pdf_path!);
+                                updatedLectures[i] = {
+                                    ...updatedLectures[i],
+                                    pdf_path: serverFilename
+                                };
+                            }
+                        } catch (e) {
+                            console.warn(`[SyncService] Failed to upload PDF for lecture ${lecture.id}:`, e);
                         }
                     }
                 }
@@ -284,10 +299,11 @@ export class SyncService {
                 if (shouldUpdate) {
                     console.log(`[SyncService] Updating lecture ${serverLecture.id} (Server newer)`);
 
+                    const sep = navigator.userAgent.includes('Win') ? '\\' : '/';
+
                     // Handle Audio Download ONLY if active (not deleted)
                     // If deleted, we don't need audio, but we need tombstone record.
                     if (!serverLecture.is_deleted && serverLecture.audio_path && !serverLecture.audio_path.startsWith('/')) {
-                        const sep = navigator.userAgent.includes('Win') ? '\\' : '/';
                         const localPath = `${audioDir}${audioDir.endsWith(sep) ? '' : sep}${serverLecture.audio_path}`;
 
                         try {
@@ -299,6 +315,24 @@ export class SyncService {
                             console.error(`[SyncService] Failed to download audio for ${serverLecture.id}:`, e);
                             // Keep server path if download fails? Or clear it? 
                             // Better keep it to allow retry later, or fallback.
+                        }
+                    }
+
+                    // Handle PDF Download ONLY if active (not deleted)
+                    if (!serverLecture.is_deleted && serverLecture.pdf_path && !serverLecture.pdf_path.startsWith('/')) {
+                        // Get documents directory for PDFs
+                        const documentsDir = await invoke<string>('get_documents_dir');
+                        const localPdfPath = `${documentsDir}${documentsDir.endsWith(sep) ? '' : sep}${serverLecture.pdf_path}`;
+
+                        try {
+                            const downloadUrl = `${baseUrl.replace(/\/$/, '')}/api/files/download/${serverLecture.pdf_path}`;
+                            await this.downloadFile(downloadUrl, localPdfPath);
+                            serverLecture.pdf_path = localPdfPath;
+                            console.log(`[SyncService] Downloaded PDF for ${serverLecture.id} to ${localPdfPath}`);
+                        } catch (e) {
+                            console.error(`[SyncService] Failed to download PDF for ${serverLecture.id}:`, e);
+                            // Clear pdf_path on failure to prevent showing non-existent file
+                            serverLecture.pdf_path = undefined;
                         }
                     }
 

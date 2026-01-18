@@ -1090,6 +1090,11 @@ fn get_audio_dir() -> Result<String, String> {
     paths::get_audio_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+fn get_documents_dir() -> Result<String, String> {
+    paths::get_documents_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
 // ========== Storage Management Commands (Phase 3) ==========
 
 /// Get storage usage for all app data
@@ -1623,6 +1628,7 @@ pub fn run() {
             sync::download_file,
             write_binary_file,
             get_audio_dir,
+            get_documents_dir,
             try_recover_audio_path,
             // Offline Queue
             add_pending_action,
