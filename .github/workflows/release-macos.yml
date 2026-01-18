@@ -127,9 +127,12 @@ jobs:
           
           # Get current tag
           CURRENT_TAG=${GITHUB_REF#refs/tags/}
+          echo "Current tag: $CURRENT_TAG"
           
-          # Find previous tag by listing all tags sorted by version, excluding current
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+          # Find the previous tag that is an ancestor of the current tag
+          # This works by finding the most recent tag reachable from the commit BEFORE the current tag
+          PREV_TAG=$(git describe --tags --abbrev=0 ${CURRENT_TAG}^ 2>/dev/null || echo "")
+          echo "Previous tag: $PREV_TAG"
           
           # Define temporary file
           LOG_FILE="full_log.txt"
