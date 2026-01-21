@@ -192,14 +192,41 @@ impl Database {
             rusqlite::params![now],
         )?;
 
-        // 2. 檢查 lectures 表是否需要遷移
-        let mut stmt = self.conn.prepare("PRAGMA table_info(lectures)")?;
-        let has_course_id = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .any(|name| name.unwrap_or_default() == "course_id");
-        drop(stmt); // 釋放語句
+        // 2. 檢查 lectures 表是否存在
+        let lectures_table_exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lectures')",
+            [],
+            |row| row.get(0),
+        ).unwrap_or(false);
 
-        if !has_course_id {
+        if !lectures_table_exists {
+            // Fresh install - create lectures table directly
+            self.conn.execute(
+                "CREATE TABLE IF NOT EXISTS lectures (
+                    id TEXT PRIMARY KEY,
+                    course_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    duration INTEGER NOT NULL,
+                    pdf_path TEXT,
+                    audio_path TEXT,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    is_deleted INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+                )",
+                [],
+            )?;
+        } else {
+            // 2.1 檢查 lectures 表是否需要遷移
+            let mut stmt = self.conn.prepare("PRAGMA table_info(lectures)")?;
+            let has_course_id = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .any(|name| name.unwrap_or_default() == "course_id");
+            drop(stmt); // 釋放語句
+
+            if !has_course_id {
             println!("Migrating lectures table...");
             // 遷移邏輯
             // A. 重命名舊表
@@ -267,25 +294,26 @@ impl Database {
             // D. 刪除舊表 (可選，這裡保留以防萬一，或者刪除)
             // self.conn.execute("DROP TABLE lectures_old", [])?;
             println!("Migration completed.");
-        } else {
-            // 確保表存在 (如果已遷移過或全新安裝)
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS lectures (
-                    id TEXT PRIMARY KEY,
-                    course_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    duration INTEGER NOT NULL,
-                    pdf_path TEXT,
-                    audio_path TEXT,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
-                )",
-                [],
-            )?;
-        }
+            } else {
+                // 確保表存在 (如果已遷移過)
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS lectures (
+                        id TEXT PRIMARY KEY,
+                        course_id TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        duration INTEGER NOT NULL,
+                        pdf_path TEXT,
+                        audio_path TEXT,
+                        status TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
+                    )",
+                    [],
+                )?;
+            }
+        } // Close outer else (lectures_table_exists)
 
         // 2.1 檢查 lectures 表是否有 audio_path 列 (Schema Update)
         // 此處應該獨立於上面的 if/else，因為即使是全新安裝也需要檢查（或者上面的 CREATE TABLE 已經包含）
@@ -1046,7 +1074,7 @@ impl Database {
                 row.get::<_, String>(5)?,
             ))
         })?.filter_map(|r| r.ok()).collect();
-        Ok(msgs)
+            Ok(msgs)
     }
 
     /// 獲取多個會話的所有訊息
@@ -1070,3 +1098,254 @@ impl Database {
         Ok(msgs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_db() -> (Database, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("test.db");
+        let db = Database::new(&db_path).expect("Failed to create test db");
+        (db, temp_dir)
+    }
+
+    // ===== Course CRUD Tests =====
+
+    #[test]
+    fn test_save_and_get_course() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new(
+            "test_user".to_string(),
+            "Test Course".to_string(),
+            Some("Description".to_string()),
+            Some("keyword1, keyword2".to_string()),
+            None,
+        );
+        
+        db.save_course(&course).expect("Failed to save course");
+        
+        let retrieved = db.get_course(&course.id).expect("Failed to get course");
+        assert!(retrieved.is_some());
+        
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.id, course.id);
+        assert_eq!(retrieved.title, "Test Course");
+        assert_eq!(retrieved.user_id, "test_user");
+        assert_eq!(retrieved.description, Some("Description".to_string()));
+        assert_eq!(retrieved.keywords, Some("keyword1, keyword2".to_string()));
+        assert!(!retrieved.is_deleted);
+    }
+
+    #[test]
+    fn test_list_courses() {
+        let (db, _temp) = create_test_db();
+        
+        let course1 = Course::new("user1".to_string(), "Course 1".to_string(), None, None, None);
+        let course2 = Course::new("user1".to_string(), "Course 2".to_string(), None, None, None);
+        let course3 = Course::new("user2".to_string(), "Course 3".to_string(), None, None, None);
+        
+        db.save_course(&course1).unwrap();
+        db.save_course(&course2).unwrap();
+        db.save_course(&course3).unwrap();
+        
+        let user1_courses = db.list_courses("user1").unwrap();
+        assert_eq!(user1_courses.len(), 2);
+        
+        let user2_courses = db.list_courses("user2").unwrap();
+        assert_eq!(user2_courses.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_course_soft_delete() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new("test_user".to_string(), "To Delete".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        // Before delete: course visible
+        let courses = db.list_courses("test_user").unwrap();
+        assert_eq!(courses.len(), 1);
+        
+        // Soft delete
+        db.delete_course(&course.id).unwrap();
+        
+        // After delete: not visible in normal list
+        let courses = db.list_courses("test_user").unwrap();
+        assert_eq!(courses.len(), 0);
+        
+        // But visible in sync list
+        let sync_courses = db.list_courses_sync("test_user").unwrap();
+        assert_eq!(sync_courses.len(), 1);
+        assert!(sync_courses[0].is_deleted);
+    }
+
+    // ===== Lecture CRUD Tests =====
+
+    #[test]
+    fn test_save_and_get_lecture() {
+        let (db, _temp) = create_test_db();
+        
+        // First create a course
+        let course = Course::new("test_user".to_string(), "Test Course".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        // Then create a lecture
+        let lecture = Lecture::new(course.id.clone(), "Test Lecture".to_string(), None);
+        db.save_lecture(&lecture, "test_user").unwrap();
+        
+        let retrieved = db.get_lecture(&lecture.id).unwrap();
+        assert!(retrieved.is_some());
+        
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.id, lecture.id);
+        assert_eq!(retrieved.title, "Test Lecture");
+        assert_eq!(retrieved.course_id, course.id);
+        assert!(!retrieved.is_deleted);
+    }
+
+    #[test]
+    fn test_list_lectures_by_course() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        let lecture1 = Lecture::new(course.id.clone(), "Lecture 1".to_string(), None);
+        let lecture2 = Lecture::new(course.id.clone(), "Lecture 2".to_string(), None);
+        
+        db.save_lecture(&lecture1, "test_user").unwrap();
+        db.save_lecture(&lecture2, "test_user").unwrap();
+        
+        let lectures = db.list_lectures_by_course(&course.id, "test_user").unwrap();
+        assert_eq!(lectures.len(), 2);
+    }
+
+    #[test]
+    fn test_update_lecture_status() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
+        db.save_lecture(&lecture, "test_user").unwrap();
+        
+        db.update_lecture_status(&lecture.id, "completed").unwrap();
+        
+        let updated = db.get_lecture(&lecture.id).unwrap().unwrap();
+        assert_eq!(updated.status, "completed");
+    }
+
+    // ===== Subtitle CRUD Tests =====
+
+    #[test]
+    fn test_save_and_get_subtitles() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
+        db.save_lecture(&lecture, "test_user").unwrap();
+        
+        let sub1 = Subtitle::new(
+            lecture.id.clone(),
+            0.0,
+            "Hello".to_string(),
+            Some("你好".to_string()),
+            "rough".to_string(),
+            Some(0.95),
+        );
+        let sub2 = Subtitle::new(
+            lecture.id.clone(),
+            1.5,
+            "World".to_string(),
+            Some("世界".to_string()),
+            "fine".to_string(),
+            Some(0.98),
+        );
+        
+        db.save_subtitle(&sub1).unwrap();
+        db.save_subtitle(&sub2).unwrap();
+        
+        let subtitles = db.get_subtitles(&lecture.id).unwrap();
+        assert_eq!(subtitles.len(), 2);
+        assert_eq!(subtitles[0].text_en, "Hello");
+        assert_eq!(subtitles[1].text_en, "World");
+    }
+
+    #[test]
+    fn test_delete_subtitle_by_id() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
+        db.save_lecture(&lecture, "test_user").unwrap();
+        
+        let subtitle = Subtitle::new(lecture.id.clone(), 0.0, "Test".to_string(), None, "rough".to_string(), None);
+        db.save_subtitle(&subtitle).unwrap();
+        
+        assert_eq!(db.get_subtitles(&lecture.id).unwrap().len(), 1);
+        
+        db.delete_subtitle_by_id(&subtitle.id).unwrap();
+        
+        assert_eq!(db.get_subtitles(&lecture.id).unwrap().len(), 0);
+    }
+
+    // ===== Settings Tests =====
+
+    #[test]
+    fn test_save_and_get_setting() {
+        let (db, _temp) = create_test_db();
+        
+        db.save_setting("theme", "dark").unwrap();
+        
+        let value = db.get_setting("theme").unwrap();
+        assert_eq!(value, Some("dark".to_string()));
+        
+        // Update
+        db.save_setting("theme", "light").unwrap();
+        let value = db.get_setting("theme").unwrap();
+        assert_eq!(value, Some("light".to_string()));
+    }
+
+    #[test]
+    fn test_get_all_settings() {
+        let (db, _temp) = create_test_db();
+        
+        db.save_setting("key1", "value1").unwrap();
+        db.save_setting("key2", "value2").unwrap();
+        
+        let settings = db.get_all_settings().unwrap();
+        assert!(settings.len() >= 2); // May include defaults
+    }
+
+    // ===== Note Tests =====
+
+    #[test]
+    fn test_save_and_get_note() {
+        let (db, _temp) = create_test_db();
+        
+        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+        db.save_course(&course).unwrap();
+        
+        let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
+        db.save_lecture(&lecture, "test_user").unwrap();
+        
+        let note = Note::new(lecture.id.clone(), "Notes Title".to_string(), r#"{"sections":[]}"#.to_string());
+        db.save_note(&note).unwrap();
+        
+        let retrieved = db.get_note(&lecture.id).unwrap();
+        assert!(retrieved.is_some());
+        
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.title, "Notes Title");
+        assert_eq!(retrieved.lecture_id, lecture.id);
+    }
+}
+
