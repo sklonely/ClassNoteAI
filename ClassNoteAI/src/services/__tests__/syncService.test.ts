@@ -60,9 +60,12 @@ vi.mock('@tauri-apps/plugin-http', () => ({
     })),
 }));
 
-// Import after mocking
-import { syncService } from '../syncService';
+// Import after mocking - use SyncService class to create fresh instance
+import { SyncService } from '../syncService';
 import { offlineQueueService } from '../offlineQueueService';
+
+// Create a fresh instance for unit tests
+const syncService = new SyncService();
 
 describe('SyncService - Enhanced', () => {
     beforeEach(() => {
