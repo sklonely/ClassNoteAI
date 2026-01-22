@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
-    plugins: [react()],
+    plugins: [react() as any],
     test: {
         globals: true,
         environment: 'jsdom',
