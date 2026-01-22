@@ -141,7 +141,7 @@ vi.mock('@tauri-apps/plugin-http', () => ({
 
 // Mock invoke
 vi.mock('@tauri-apps/api/core', () => ({
-    invoke: vi.fn((cmd: string, args?: any) => {
+    invoke: vi.fn((cmd: string, _args?: any) => {
         if (cmd === 'get_audio_dir') return Promise.resolve('/Users/local/audio');
         if (cmd === 'get_documents_dir') return Promise.resolve('/Users/local/documents');
         if (cmd === 'get_all_chat_sessions') return Promise.resolve([]);
