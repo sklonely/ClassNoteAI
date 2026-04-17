@@ -108,14 +108,26 @@ pub fn check_os_version() -> RequirementStatus {
                     );
                 }
                 let raw = String::from_utf8_lossy(&output.stdout);
-                // Expect "Microsoft Windows [Version 10.0.22631.4890]"
-                let version_str = raw
+                // Expect `Microsoft Windows [Version 10.0.22631.4890]` on
+                // English systems. On localized Windows the word "Version"
+                // is translated (e.g. "版本" in zh-TW/zh-CN), so parse the
+                // dot-separated version number inside the brackets instead
+                // of relying on the keyword.
+                let inside_brackets = raw
                     .split('[')
                     .nth(1)
                     .and_then(|s| s.split(']').next())
-                    .and_then(|s| s.split("Version").nth(1))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
+                    .unwrap_or("");
+
+                let version_str = inside_brackets
+                    .split_whitespace()
+                    .find(|tok| {
+                        tok.chars()
+                            .all(|c| c.is_ascii_digit() || c == '.')
+                            && tok.contains('.')
+                    })
+                    .unwrap_or("")
+                    .to_string();
 
                 let build: u32 = version_str
                     .split('.')
