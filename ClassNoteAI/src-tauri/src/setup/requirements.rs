@@ -59,15 +59,19 @@ pub struct Requirement {
 // These were for development-time dependencies that end users don't need.
 // The app is self-contained after packaging.
 
-/// Check macOS version
-pub fn check_macos_version() -> RequirementStatus {
+/// Check OS version (macOS or Windows)
+///
+/// - macOS: requires 11.0 (Big Sur) or later via `sw_vers -productVersion`.
+/// - Windows: requires build 17763 (Windows 10 1809, WebView2 baseline) or
+///   later. Parsed from `cmd /c ver`, which prints e.g.
+///   `Microsoft Windows [Version 10.0.22631.4890]`.
+pub fn check_os_version() -> RequirementStatus {
     #[cfg(target_os = "macos")]
     {
         match Command::new("sw_vers").arg("-productVersion").output() {
             Ok(output) => {
                 if output.status.success() {
                     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    // Parse major version
                     let major: u32 = version
                         .split('.')
                         .next()
@@ -91,13 +95,62 @@ pub fn check_macos_version() -> RequirementStatus {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        RequirementStatus::Installed // Not applicable on other platforms
+        // Minimum: Windows 10 1809 (build 17763) — WebView2 baseline.
+        const MIN_BUILD: u32 = 17763;
+
+        match Command::new("cmd").args(["/c", "ver"]).output() {
+            Ok(output) => {
+                if !output.status.success() {
+                    return RequirementStatus::Error(
+                        "Failed to get Windows version".to_string(),
+                    );
+                }
+                let raw = String::from_utf8_lossy(&output.stdout);
+                // Expect "Microsoft Windows [Version 10.0.22631.4890]"
+                let version_str = raw
+                    .split('[')
+                    .nth(1)
+                    .and_then(|s| s.split(']').next())
+                    .and_then(|s| s.split("Version").nth(1))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+
+                let build: u32 = version_str
+                    .split('.')
+                    .nth(2)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+
+                if build == 0 {
+                    return RequirementStatus::Error(format!(
+                        "Failed to parse Windows version: {}",
+                        raw.trim()
+                    ));
+                }
+
+                if build >= MIN_BUILD {
+                    println!("[Setup] Windows version: {} (build {}) OK", version_str, build);
+                    RequirementStatus::Installed
+                } else {
+                    RequirementStatus::Outdated {
+                        current: version_str,
+                        required: format!("10.0.{} (Windows 10 1809+)", MIN_BUILD),
+                    }
+                }
+            }
+            Err(e) => RequirementStatus::Error(format!("Failed to check Windows version: {}", e)),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        RequirementStatus::Installed // Other platforms (Linux etc.) — no check.
     }
 }
 
-/// Check available disk space
+/// Check available disk space on the drive hosting the app data directory.
 pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
     #[cfg(target_os = "macos")]
     {
@@ -105,7 +158,6 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
             Ok(output) => {
                 if output.status.success() {
                     let output_str = String::from_utf8_lossy(&output.stdout);
-                    // Parse df output (second line, 4th column is available)
                     if let Some(line) = output_str.lines().nth(1) {
                         let parts: Vec<&str> = line.split_whitespace().collect();
                         if parts.len() >= 4 {
@@ -134,9 +186,77 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        RequirementStatus::Installed // Simplified check for other platforms
+        use std::path::Component;
+        // Resolve the drive the app data lives on; fall back to "C:\".
+        let probe_path: String = crate::paths::get_app_data_dir()
+            .ok()
+            .and_then(|p| {
+                p.components().next().and_then(|c| match c {
+                    Component::Prefix(pref) => {
+                        Some(format!("{}\\", pref.as_os_str().to_string_lossy()))
+                    }
+                    _ => None,
+                })
+            })
+            .unwrap_or_else(|| "C:\\".to_string());
+
+        // Use [System.IO.DriveInfo] to get free bytes. Works on every
+        // supported Windows build without needing wmic or fsutil.
+        let ps_cmd = format!(
+            "[System.IO.DriveInfo]::new('{}').AvailableFreeSpace",
+            probe_path.replace('\'', "''")
+        );
+
+        match Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &ps_cmd,
+            ])
+            .output()
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    return RequirementStatus::Error(format!(
+                        "Failed to check disk space: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ));
+                }
+                let trimmed = String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .to_string();
+                match trimmed.parse::<u64>() {
+                    Ok(bytes) => {
+                        let available_mb = bytes / 1024 / 1024;
+                        if available_mb >= required_mb {
+                            println!(
+                                "[Setup] Disk space ({}): {}MB available (need {}MB)",
+                                probe_path, available_mb, required_mb
+                            );
+                            RequirementStatus::Installed
+                        } else {
+                            RequirementStatus::Outdated {
+                                current: format!("{}MB", available_mb),
+                                required: format!("{}MB", required_mb),
+                            }
+                        }
+                    }
+                    Err(_) => RequirementStatus::Error(format!(
+                        "Failed to parse disk space output: {}",
+                        trimmed
+                    )),
+                }
+            }
+            Err(e) => RequirementStatus::Error(format!("Failed to check disk space: {}", e)),
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        RequirementStatus::Installed
     }
 }
 
@@ -166,16 +286,40 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
     let mut requirements = Vec::new();
 
     // System requirements
-    requirements.push(Requirement {
-        id: "macos_version".to_string(),
-        name: "macOS 版本".to_string(),
-        description: "需要 macOS 11.0 (Big Sur) 或更高版本".to_string(),
+    #[cfg(target_os = "windows")]
+    let os_req = Requirement {
+        id: "os_version".to_string(),
+        name: "Windows 版本".to_string(),
+        description: "需要 Windows 10 1809 (build 17763) 或更高版本".to_string(),
         category: RequirementCategory::System,
-        status: check_macos_version(),
+        status: check_os_version(),
         is_optional: false,
         install_size_mb: 0,
         install_source: None,
-    });
+    };
+    #[cfg(target_os = "macos")]
+    let os_req = Requirement {
+        id: "os_version".to_string(),
+        name: "macOS 版本".to_string(),
+        description: "需要 macOS 11.0 (Big Sur) 或更高版本".to_string(),
+        category: RequirementCategory::System,
+        status: check_os_version(),
+        is_optional: false,
+        install_size_mb: 0,
+        install_source: None,
+    };
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let os_req = Requirement {
+        id: "os_version".to_string(),
+        name: "作業系統版本".to_string(),
+        description: "作業系統相容性檢查".to_string(),
+        category: RequirementCategory::System,
+        status: check_os_version(),
+        is_optional: false,
+        install_size_mb: 0,
+        install_source: None,
+    };
+    requirements.push(os_req);
 
     requirements.push(Requirement {
         id: "disk_space".to_string(),
@@ -291,8 +435,8 @@ mod tests {
     }
 
     #[test]
-    fn test_check_macos_version() {
-        let status = check_macos_version();
-        println!("macOS version status: {:?}", status);
+    fn test_check_os_version() {
+        let status = check_os_version();
+        println!("OS version status: {:?}", status);
     }
 }
