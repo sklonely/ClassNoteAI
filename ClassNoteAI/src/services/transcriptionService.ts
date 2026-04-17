@@ -59,9 +59,41 @@ export class TranscriptionService {
   private static readonly FINE_BATCH_SIZE = 8;
   private static readonly FINE_DEBOUNCE_MS = 20_000;
 
+  // Language pair for rough translation. Read from AppSettings when a
+  // lecture starts. `auto` means "let Whisper detect". Introduced v0.5.1.
+  private sourceLang: string = 'auto';
+  private targetLang: string = 'zh-TW';
+
+  // Cached check: is an LLM provider configured? If not, we skip the
+  // fine-refinement queue entirely instead of spamming errors every
+  // FINE_DEBOUNCE_MS. Re-checked each new recording session.
+  private fineRefinementEnabled: boolean = false;
+
   constructor() {
     // 綁定方法以避免 this 丟失
     this.checkAndTranscribe = this.checkAndTranscribe.bind(this);
+  }
+
+  /** Update the language pair used for rough translation. Called from
+   *  NotesView right before a recording starts so settings changes take
+   *  effect mid-session. */
+  public setLanguages(source: string, target: string): void {
+    this.sourceLang = source || 'auto';
+    this.targetLang = target || 'zh-TW';
+    console.log('[TranscriptionService] Language pair:', this.sourceLang, '→', this.targetLang);
+  }
+
+  /** Pre-flight: check if any LLM provider is configured. We skip the
+   *  fine-refinement queue entirely if not. */
+  public async refreshFineRefinementAvailability(): Promise<void> {
+    try {
+      const { resolveActiveProvider } = await import('./llm');
+      const defaultId = localStorage.getItem('llm.defaultProvider') || undefined;
+      const provider = await resolveActiveProvider(defaultId);
+      this.fineRefinementEnabled = !!provider;
+    } catch {
+      this.fineRefinementEnabled = false;
+    }
   }
 
   /**
@@ -388,31 +420,39 @@ export class TranscriptionService {
         if (this.isValidText(cleaned)) {
           const segmentId = this.commitStableText(cleaned);
 
-          // 根據時間戳清理緩衝區
-          if (result.segments && result.segments.length > 0) {
-            const lastSegment = result.segments[result.segments.length - 1];
-            const endMs = lastSegment.end_ms;
-            const samplesToRemove = Math.floor((endMs * CONFIG.SAMPLE_RATE) / 1000);
+          // Buffer clearing after commit. v0.5.1: be more aggressive —
+          // if endMs is 0 / undefined / out-of-range we still clear the
+          // whole rolling buffer rather than leaving the audio around,
+          // because leaving it causes Whisper to re-transcribe the same
+          // sentence on the next polling tick, which then duplicates the
+          // committed subtitle when processRemainingBuffer fires.
+          const lastSegment = result.segments?.[result.segments.length - 1];
+          const endMs = lastSegment?.end_ms ?? 0;
+          const samplesToRemove = Math.floor((endMs * CONFIG.SAMPLE_RATE) / 1000);
+          const validTimestamp = samplesToRemove > 0 && samplesToRemove <= this.rollingBuffer.length;
 
-            if (samplesToRemove > 0 && samplesToRemove <= this.rollingBuffer.length) {
-              // 捕獲音頻數據用於精修
-              const audioForRefinement = this.rollingBuffer.slice(0, samplesToRemove);
-              refinementService.addToQueue(
-                segmentId,
-                audioForRefinement,
-                cleaned,
-                Date.now(),
-                this.keywords
-              );
+          if (validTimestamp && segmentId) {
+            const audioForRefinement = this.rollingBuffer.slice(0, samplesToRemove);
+            refinementService.addToQueue(
+              segmentId,
+              audioForRefinement,
+              cleaned,
+              Date.now(),
+              this.keywords
+            );
 
-              const overlapSamples = Math.floor(CONFIG.SAMPLE_RATE * 0.2);
-              const safeRemove = Math.max(0, samplesToRemove - overlapSamples);
-              console.log(`[TranscriptionService] 清理緩衝區: 移除 ${safeRemove} 樣本`);
-              this.rollingBuffer = this.rollingBuffer.slice(safeRemove);
-            } else {
-              this.rollingBuffer = new Int16Array(0);
-            }
+            const overlapSamples = Math.floor(CONFIG.SAMPLE_RATE * 0.2);
+            const safeRemove = Math.max(0, samplesToRemove - overlapSamples);
+            console.log(`[TranscriptionService] 清理緩衝區: 移除 ${safeRemove} 樣本`);
+            this.rollingBuffer = this.rollingBuffer.slice(safeRemove);
           } else {
+            // No usable timestamp (whisper-rs bindings vary by platform
+            // and segmentation mode) OR the commit was a duplicate that
+            // we just deduped — nuke the whole buffer. Losing audio
+            // overlap is the lesser evil compared to duplicate captions.
+            if (!validTimestamp) {
+              console.log('[TranscriptionService] 無有效時間戳，全清緩衝區');
+            }
             this.rollingBuffer = new Int16Array(0);
           }
         } else {
@@ -463,6 +503,23 @@ export class TranscriptionService {
   }
 
   private commitStableText(text: string): string {
+    // v0.5.1 dedup: guard against the "same sentence committed twice"
+    // bug that showed up on Windows (see bug report 00:00 / 00:03 in
+    // the release notes). Root cause is Whisper re-transcribing the
+    // same audio when rollingBuffer clearing after commit is incomplete,
+    // plus processRemainingBuffer firing on stop and committing the
+    // re-transcribed partial text. Even with the buffer fix below, a
+    // cheap tail-match is the most robust safety net.
+    const normalized = text.trim();
+    const tail = this.stableText.trim();
+    if (normalized && tail.endsWith(normalized)) {
+      console.log('[TranscriptionService] 重複文本，跳過提交:', normalized.slice(0, 40));
+      // Return an empty id so the caller can decide what to do. The
+      // buffer-cleanup branch uses this id only to enqueue refinement,
+      // and refinement is fine to skip on dupes.
+      return '';
+    }
+
     console.log('[TranscriptionService] 提交穩定文本:', text);
     this.stableText += (this.stableText ? ' ' : '') + text;
 
@@ -511,34 +568,55 @@ export class TranscriptionService {
   }
 
   /**
-   * 異步翻譯並更新現有字幕段落
+   * 異步翻譯並更新現有字幕段落。v0.5.1 改動：
+   *  - 使用使用者在 Settings 設定的 source/target language，不再寫死 en/zh
+   *  - 翻譯失敗時把錯誤標記寫入字幕，讓 UI 能顯示 "⚠️ 翻譯模型未載入"
+   *    而不是空白（先前使用者會誤以為是字幕自己重複）
    */
   private async translateAndUpdateSegment(id: string, text: string) {
+    // If source is 'auto' we let M2M100 default to English; Whisper's
+    // language-detect result should eventually feed back via setLanguages
+    // but we don't want to block translation waiting for it.
+    const src = this.sourceLang === 'auto' ? 'en' : this.sourceLang;
+    const tgt = this.targetLang || 'zh-TW';
+
     try {
-      const res = await translateRough(text, 'en', 'zh');
+      const res = await translateRough(text, src, tgt);
       const translation = res.translated_text;
+
+      if (!translation || !translation.trim()) {
+        throw new Error('translator returned empty string');
+      }
 
       console.log('[TranscriptionService] 翻譯完成，更新字幕:', {
         id,
-        translation: translation?.substring(0, 30),
+        translation: translation.substring(0, 30),
       });
 
-      // 更新現有字幕的翻譯
       subtitleService.updateSegment(id, {
         roughTranslation: translation,
         displayTranslation: translation,
         translationSource: 'rough',
-        translatedText: translation
+        translatedText: translation,
       });
 
-      // 更新待保存隊列中的翻譯
-      const pending = this.pendingSubtitles.find(s => s.id === id);
+      const pending = this.pendingSubtitles.find((s) => s.id === id);
       if (pending) {
         pending.text_zh = translation;
       }
     } catch (e) {
       console.warn('[TranscriptionService] 翻譯失敗', e);
-      // 翻譯失敗時，字幕已經在隊列中（沒有翻譯），無需額外處理
+      // Surface the failure to the UI so the user knows what's going on
+      // instead of seeing a blank gray row (which used to look like the
+      // caption duplicated itself).
+      const marker = '⚠️ 翻譯失敗（模型可能未載入，請至設定檢查）';
+      subtitleService.updateSegment(id, {
+        displayTranslation: marker,
+        translationSource: 'error',
+        translatedText: marker,
+      });
+      // Don't write the marker into the persistence queue — store leaves
+      // text_zh null so a successful retry later can populate it.
     }
 
     // Queue this segment for LLM-backed fine refinement (batched).
@@ -552,8 +630,15 @@ export class TranscriptionService {
    * correct ASR errors and produce a natural Chinese translation in one
    * shot, which we then apply to both the UI and the pending-subtitle
    * persistence queue.
+   *
+   * v0.5.1: completely skips the queue when no LLM provider is
+   * configured, so the console doesn't get spammed every 20 s with
+   * "No AI provider configured" errors. `refreshFineRefinementAvailability`
+   * is called once per recording session from NotesView.
    */
   private enqueueFineRefinement(id: string, text: string): void {
+    if (!this.fineRefinementEnabled) return;
+
     this.fineQueue.push({ id, text });
     if (this.fineQueue.length >= TranscriptionService.FINE_BATCH_SIZE) {
       void this.flushFineRefinement();

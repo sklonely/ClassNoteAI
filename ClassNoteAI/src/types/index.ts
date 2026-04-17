@@ -103,7 +103,10 @@ export interface AppSettings {
   translation?: {
     provider?: 'local' | 'google'; // 翻譯提供商：本地 ONNX 或 Google API
     google_api_key?: string; // Google Cloud Translation API 密鑰
-    target_language?: string; // 目標語言 (e.g. "zh-TW", "en")，用於 AI 生成內容的翻譯
+    // Spoken language of the lecture. `auto` lets Whisper detect per
+    // session; once detected we pass it to M2M100. Introduced in v0.5.1.
+    source_language?: 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
+    target_language?: string; // 目標語言 (e.g. "zh-TW", "en")。v0.5.1 預設 zh-TW。
   };
   ollama?: {
     host: string;
