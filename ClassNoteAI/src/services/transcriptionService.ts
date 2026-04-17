@@ -51,6 +51,14 @@ export class TranscriptionService {
   private saveInterval: ReturnType<typeof setInterval> | null = null;
   private pendingSubtitles: PendingSubtitle[] = [];
 
+  // Fine-translation batch queue (v0.5.0). Every N committed rough
+  // segments (or after a short debounce) we send the batch to the
+  // configured LLM provider for contextual refinement + translation.
+  private fineQueue: Array<{ id: string; text: string }> = [];
+  private fineFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly FINE_BATCH_SIZE = 8;
+  private static readonly FINE_DEBOUNCE_MS = 20_000;
+
   constructor() {
     // 綁定方法以避免 this 丟失
     this.checkAndTranscribe = this.checkAndTranscribe.bind(this);
@@ -87,7 +95,9 @@ export class TranscriptionService {
       clearInterval(this.saveInterval);
       this.saveInterval = null;
     }
-    this.savePendingSubtitles();
+    // Fire one last fine-refinement flush so trailing segments also get
+    // the LLM pass before we persist them.
+    void this.flushFineRefinement().finally(() => this.savePendingSubtitles());
   }
 
   private async savePendingSubtitles(): Promise<void> {
@@ -531,8 +541,68 @@ export class TranscriptionService {
       // 翻譯失敗時，字幕已經在隊列中（沒有翻譯），無需額外處理
     }
 
-    // Fine translation hook removed in v0.5.0 — will be re-implemented
-    // via LLMProvider batched calls in a follow-up PR.
+    // Queue this segment for LLM-backed fine refinement (batched).
+    this.enqueueFineRefinement(id, text);
+  }
+
+  /**
+   * Fine-translation batching. Accumulates rough segments and flushes
+   * either when FINE_BATCH_SIZE is reached or after FINE_DEBOUNCE_MS of
+   * inactivity. Each flush asks the user's configured LLM provider to
+   * correct ASR errors and produce a natural Chinese translation in one
+   * shot, which we then apply to both the UI and the pending-subtitle
+   * persistence queue.
+   */
+  private enqueueFineRefinement(id: string, text: string): void {
+    this.fineQueue.push({ id, text });
+    if (this.fineQueue.length >= TranscriptionService.FINE_BATCH_SIZE) {
+      void this.flushFineRefinement();
+      return;
+    }
+    if (this.fineFlushTimer) clearTimeout(this.fineFlushTimer);
+    this.fineFlushTimer = setTimeout(
+      () => void this.flushFineRefinement(),
+      TranscriptionService.FINE_DEBOUNCE_MS
+    );
+  }
+
+  private async flushFineRefinement(): Promise<void> {
+    if (this.fineFlushTimer) {
+      clearTimeout(this.fineFlushTimer);
+      this.fineFlushTimer = null;
+    }
+    if (!this.fineQueue.length) return;
+    const batch = this.fineQueue.splice(0, this.fineQueue.length);
+
+    try {
+      const { refineTranscripts } = await import('./llm');
+      const refinements = await refineTranscripts(batch);
+      if (!refinements.length) return;
+
+      const byId = new Map(refinements.map((r) => [r.id, r]));
+      for (const item of batch) {
+        const r = byId.get(item.id);
+        if (!r) continue;
+        subtitleService.updateSegment(item.id, {
+          text: r.en,
+          displayText: r.en,
+          roughTranslation: r.zh,
+          displayTranslation: r.zh,
+          translatedText: r.zh,
+          translationSource: 'fine',
+          source: 'fine',
+        });
+
+        const pending = this.pendingSubtitles.find((s) => s.id === item.id);
+        if (pending) {
+          pending.text_en = r.en;
+          pending.text_zh = r.zh;
+          pending.type = 'fine';
+        }
+      }
+    } catch (e) {
+      console.warn('[TranscriptionService] Fine refinement batch failed; keeping rough output:', e);
+    }
   }
 
   private async processRemainingBuffer() {
