@@ -74,6 +74,13 @@ jobs:
           restore-keys: |
             ct2rs-macos-aarch64-
 
+      # ===== Hydrate vendor/ =====
+      # Cargo.toml has [patch.crates-io] pointing at src-tauri/vendor/*,
+      # which is gitignored. The patches are Windows-only no-ops on macOS,
+      # but the directories must exist for cargo to resolve the patch.
+      - name: Hydrate vendor/ (no-op patches on macOS)
+        run: bash src-tauri/scripts/bootstrap-vendor.sh
+
       # ===== 安裝 npm 依賴 =====
       - name: Install dependencies
         run: npm ci --prefer-offline
