@@ -1,15 +1,12 @@
 name: Build and Release (Windows)
 
 on:
+  # Release bundles are expensive (~15–20 min). Only run when we're
+  # actually cutting a release (tag push) or when someone manually
+  # kicks it off. Lightweight PR feedback lives in pr-check.yml.
   push:
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
   workflow_dispatch:
     inputs:
       version:

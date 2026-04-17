@@ -1,0 +1,141 @@
+name: PR Check
+
+# Runs on every PR against main. Intentionally lightweight: tsc + vitest
+# + cargo check on both platforms. We do NOT build the full Tauri
+# bundle here — that happens on tag push via the release workflows.
+#
+# Rationale: a full bundle takes 15–20 min per platform. On a typical
+# refactor PR that's 30–40 min of CI for a change that doesn't need an
+# installer. This trims PR feedback to roughly 5–10 min per platform.
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/release-*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+defaults:
+  run:
+    working-directory: ClassNoteAI
+
+jobs:
+  pr-check-macos:
+    name: pr-check-macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ClassNoteAI/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ClassNoteAI/src-tauri -> target
+          shared-key: "pr-check-macos-cache"
+          cache-all-crates: true
+
+      # Needed because Cargo.toml's [patch.crates-io] points at vendored
+      # crates that are gitignored — the path must exist for cargo to
+      # resolve the manifest, even if the patch is a no-op on macOS.
+      - name: Hydrate vendor/
+        run: bash src-tauri/scripts/bootstrap-vendor.sh
+
+      - name: Install npm deps
+        run: npm ci --prefer-offline
+
+      - name: Type-check frontend
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        run: npx vitest run
+
+      - name: cargo check
+        working-directory: ClassNoteAI/src-tauri
+        run: cargo check --message-format=short
+
+  pr-check-windows:
+    name: pr-check-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ClassNoteAI/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install LLVM 18
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+          directory: ${{ runner.temp }}/llvm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ClassNoteAI/src-tauri -> target
+          shared-key: "pr-check-windows-cache"
+          cache-all-crates: true
+
+      - name: Cache native C++ builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ClassNoteAI/src-tauri/target/debug/build/ct2rs-*
+            ClassNoteAI/src-tauri/target/debug/build/whisper-rs-sys-*
+            ClassNoteAI/src-tauri/target/debug/build/sentencepiece-sys-*
+          key: pr-check-native-windows-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock', 'ClassNoteAI/src-tauri/vendor-patches/**') }}
+
+      - name: Hydrate vendor/
+        shell: bash
+        run: bash src-tauri/scripts/bootstrap-vendor.sh
+
+      - name: Install npm deps
+        run: npm ci --prefer-offline
+
+      - name: Type-check frontend
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        run: npx vitest run
+
+      - name: cargo check
+        shell: cmd
+        env:
+          LIBCLANG_PATH: ${{ runner.temp }}\llvm\bin
+          CMAKE_GENERATOR: Visual Studio 17 2022
+          CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\ClassNoteAI\src-tauri\scripts\win-toolchain.cmake
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cd src-tauri
+          cargo check --message-format=short

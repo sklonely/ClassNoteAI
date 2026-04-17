@@ -1,16 +1,12 @@
 name: Build and Release (macOS)
 
 on:
+  # Release bundles are expensive (~15–20 min). Only on tag push or
+  # manual dispatch. PR feedback lives in pr-check.yml.
   push:
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-  # 每週日 UTC 00:00 自動觸發，保持快取活躍
+  # 每週日 UTC 00:00 自動觸發，保持 Rust + ct2rs cache 活躍
   schedule:
     - cron: '0 0 * * 0'
   workflow_dispatch:
