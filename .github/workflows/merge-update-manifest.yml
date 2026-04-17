@@ -1,0 +1,132 @@
+name: Merge Update Manifest
+
+# Fires after either release workflow completes on a tag. Waits for the peer
+# release workflow to also finish successfully, then downloads both per-platform
+# manifest fragments from the release and merges them into a single
+# `latest.json` with both `darwin-aarch64` and `windows-x86_64` entries.
+#
+# The Tauri updater in v0.5.1+ reads a single URL from each binary's
+# compiled-in `tauri.conf.json`:
+#   https://github.com/.../releases/latest/download/latest.json
+#
+# Without a merged manifest, Windows clients find no `windows-x86_64` entry
+# (macOS-only `latest.json`) and silently report "no update." This workflow
+# closes that gap server-side, so v0.5.1 Windows users can auto-update to
+# v0.5.2+ without re-downloading the MSI. See issue #33.
+
+on:
+  workflow_run:
+    workflows:
+      - "Build and Release (macOS)"
+      - "Build and Release (Windows)"
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    # Only proceed when the triggering workflow succeeded AND was triggered
+    # by a tag push (head_branch is the tag name for tag-triggered runs,
+    # e.g. "v0.5.2").
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine tag + peer workflow
+        id: ctx
+        env:
+          THIS: ${{ github.event.workflow_run.name }}
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          case "$THIS" in
+            "Build and Release (macOS)")   echo "peer=Build and Release (Windows)" >> "$GITHUB_OUTPUT" ;;
+            "Build and Release (Windows)") echo "peer=Build and Release (macOS)"   >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unknown triggering workflow: $THIS"; exit 1 ;;
+          esac
+
+      - name: Wait for peer release workflow
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ctx.outputs.tag }}
+          PEER: ${{ steps.ctx.outputs.peer }}
+        run: |
+          # Poll for the peer workflow's run on the same tag to complete.
+          # Timeout after ~40 min (release bundles historically 15–20 min each,
+          # but allow generous slack for cache misses + queue time).
+          for i in $(seq 1 40); do
+            PEER_RUN=$(gh run list \
+              -R "${GITHUB_REPOSITORY}" \
+              --workflow "$PEER" \
+              --branch "$TAG" \
+              --limit 1 \
+              --json status,conclusion \
+              --jq '.[0]')
+            STATUS=$(echo "$PEER_RUN" | jq -r '.status // "missing"')
+            CONCLUSION=$(echo "$PEER_RUN" | jq -r '.conclusion // ""')
+            echo "attempt=$i peer status=$STATUS conclusion=$CONCLUSION"
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "ok=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              else
+                echo "Peer finished with non-success conclusion ($CONCLUSION) — aborting merge."
+                exit 0
+              fi
+            fi
+            sleep 60
+          done
+          echo "Peer did not complete within 40 minutes."
+
+      - name: Download manifest fragments
+        if: steps.wait.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ctx.outputs.tag }}
+        run: |
+          gh release download "$TAG" \
+            -R "${GITHUB_REPOSITORY}" \
+            --pattern "latest-macos-aarch64.json" \
+            --pattern "latest-windows-x86_64.json" \
+            --clobber
+
+      - name: Merge into latest.json
+        if: steps.wait.outputs.ok == 'true'
+        run: |
+          # Take version/notes/pub_date from the macOS fragment (arbitrary —
+          # both fragments carry the same version for a given tag) and union
+          # the `platforms` objects.
+          jq -s '.[0] * {platforms: (.[0].platforms + .[1].platforms)}' \
+            latest-macos-aarch64.json \
+            latest-windows-x86_64.json \
+            > latest.json
+          echo "--- merged latest.json ---"
+          cat latest.json
+
+      - name: Sanity check merged manifest
+        if: steps.wait.outputs.ok == 'true'
+        run: |
+          # Both platform keys must be present, otherwise we would regress
+          # the very bug this workflow was added to fix.
+          for key in "darwin-aarch64" "windows-x86_64"; do
+            if ! jq -e ".platforms[\"$key\"].url" latest.json > /dev/null; then
+              echo "ERROR: merged latest.json missing platforms.$key.url"
+              cat latest.json
+              exit 1
+            fi
+          done
+          echo "OK: latest.json has both platforms."
+
+      - name: Upload merged manifest
+        if: steps.wait.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ctx.outputs.tag }}
+        run: |
+          gh release upload "$TAG" latest.json \
+            -R "${GITHUB_REPOSITORY}" \
+            --clobber

@@ -155,15 +155,10 @@ jobs:
             ClassNoteAI/release-assets/*
 
 # NOTES ----------------------------------------------------------------
-# Tauri updater expects a single `latest.json` listing all platforms.
 # This workflow uploads `latest-windows-x86_64.json`; the macOS workflow
-# uploads its own fragment. Add a final job (in either workflow or a
-# third `merge-updater-manifest.yml` that runs on release:published) to
-# download both fragments from the release, merge their `.platforms`
-# objects, and upload `latest.json`. Until that exists, point
-# `tauri.conf.json -> plugins.updater.endpoints` at multiple URLs so the
-# client falls back:
-#   "endpoints": [
-#     "https://github.com/<you>/<repo>/releases/latest/download/latest-macos-aarch64.json",
-#     "https://github.com/<you>/<repo>/releases/latest/download/latest-windows-x86_64.json"
-#   ]
+# uploads `latest-macos-aarch64.json`. Neither alone is a valid Tauri
+# updater manifest. The unified `latest.json` (which a v0.5.1+ client
+# polls via the single endpoint compiled into its binary) is produced
+# by `.github/workflows/merge-update-manifest.yml`, which fires once
+# both release workflows finish on a tag and merges both fragments.
+# See issue #33.
