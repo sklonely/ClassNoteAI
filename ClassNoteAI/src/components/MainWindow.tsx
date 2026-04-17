@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { BookOpen, Settings, Moon, Sun, User } from "lucide-react";
 import { applyTheme, getSystemTheme } from "../utils/theme";
-import { ollamaService } from "../services/ollamaService";
 import * as whisperService from "../services/whisperService";
 import * as translationModelService from "../services/translationModelService";
 import { storageService } from "../services/storageService";
@@ -36,7 +35,6 @@ export default function MainWindow() {
   }, []);
 
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const [ollamaStatus, setOllamaStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
   const [whisperModel, setWhisperModel] = useState<string | null>(null);
   const [translationState, setTranslationState] = useState<{
     provider: 'local' | 'google';
@@ -72,14 +70,6 @@ export default function MainWindow() {
   }, []);
 
   useEffect(() => {
-    const checkOllama = async () => {
-      const isConnected = await ollamaService.checkConnection();
-      setOllamaStatus(isConnected ? 'connected' : 'disconnected');
-    };
-
-    checkOllama();
-    const interval = setInterval(checkOllama, 30000);
-
     setWhisperModel(whisperService.getCurrentModel());
 
     const checkTranslationState = async () => {
@@ -119,7 +109,6 @@ export default function MainWindow() {
     window.addEventListener('classnote-settings-changed', handleSettingsChange as EventListener);
 
     return () => {
-      clearInterval(interval);
       window.removeEventListener('classnote-whisper-model-changed', handleWhisperModelChange as EventListener);
       window.removeEventListener('classnote-translation-model-changed', handleTranslationModelChange as EventListener);
       window.removeEventListener('classnote-settings-changed', handleSettingsChange as EventListener);
@@ -258,16 +247,6 @@ export default function MainWindow() {
       {/* 狀態欄 */}
       <div className="px-6 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 z-10 relative">
         <div className="flex items-center gap-4">
-          <span
-            className="flex items-center gap-2 cursor-help"
-            title={ollamaStatus === 'connected' ? "Ollama 服務已連接" : "無法連接到 Ollama 服務"}
-          >
-            <span className={`w-2 h-2 rounded-full ${ollamaStatus === 'connected' ? 'bg-green-500' :
-              ollamaStatus === 'checking' ? 'bg-yellow-500' : 'bg-red-500'
-              }`}></span>
-            {ollamaStatus === 'connected' ? '已連接' : ollamaStatus === 'checking' ? '檢查中...' : '未連接'}
-          </span>
-
           <span
             className="flex items-center gap-2 cursor-help"
             title={whisperModel ? `當前加載模型: ${whisperModel}` : "Whisper 模型尚未加載"}

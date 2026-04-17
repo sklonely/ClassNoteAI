@@ -1,12 +1,11 @@
 import { useState, useEffect } from "react";
-import { Save, CheckCircle, RefreshCw, Download, Upload, AlertCircle, Mic, Languages, Type, Database, Cpu, Info, Server, Brain, ChevronRight, Trash2 } from "lucide-react";
+import { Save, CheckCircle, RefreshCw, Download, Upload, AlertCircle, Mic, Languages, Type, Database, Cpu, Info, Brain, ChevronRight, Trash2 } from "lucide-react";
 import { AppSettings } from "../types";
 import { getVersion } from "@tauri-apps/api/app";
 
 import WhisperModelManager from './WhisperModelManager';
 import TranslationModelManager from './TranslationModelManager';
 import AIProviderSettings from './AIProviderSettings';
-import { ollamaService, OllamaModel } from "../services/ollamaService";
 
 import { storageService } from "../services/storageService";
 import { audioDeviceService, AudioDevice } from "../services/audioDeviceService";
@@ -30,184 +29,9 @@ export default function SettingsView({ }: SettingsViewProps) {
   const [importStatus, setImportStatus] = useState<{ success: boolean; message: string } | null>(null);
 
 
-  // AI & Server Configuration
-  const [aiServerHost, setAiServerHost] = useState("http://100.117.82.111");
-  const [ollamaModel, setOllamaModel] = useState("qwen3:235b-a22b");
-  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
-  const [isCheckingConnection, setIsCheckingConnection] = useState(false);
-  const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
-  const [taskServerStatus, setTaskServerStatus] = useState<'unknown' | 'connected' | 'error'>('unknown');
-
-  // AI 模型分層配置
-  const [aiModelConfig, setAiModelConfig] = useState({
-    embedding: 'nomic-embed-text',
-    light: 'qwen3:8b',       // 輕量任務：關鍵詞提取、對話壓縮
-    standard: 'qwen3:8b',    // 標準任務：RAG 問答、AI 助教
-    heavy: 'qwen3:235b-a22b' // 重量任務：課程總結
-  });
-
-  // 同步配置
-
-
-  // Auth State
-
-
-  // ... (省略中間代碼)
-
-  // 自動保存 Ollama 設定
-  useEffect(() => {
-    // 避免在初始加載時觸發保存
-    if (ollamaStatus === 'unknown' && taskServerStatus === 'unknown') return;
-
-    const autoSave = async () => {
-      try {
-        const currentSettings = await storageService.getAppSettings();
-        if (!currentSettings) return;
-
-        // 構建完整的 Host URL
-        const cleanHost = aiServerHost.replace(/\/$/, ''); // 移除結尾斜線
-        const fullOllamaHost = `${cleanHost}:11434`;
-        const fullServerUrl = `${cleanHost}:3001`;
-
-        // 檢查是否真的有變化
-        const currentAiModels = currentSettings.ollama?.aiModels;
-        const aiModelsChanged = !currentAiModels ||
-          currentAiModels.embedding !== aiModelConfig.embedding ||
-          currentAiModels.light !== aiModelConfig.light ||
-          currentAiModels.standard !== aiModelConfig.standard ||
-          currentAiModels.heavy !== aiModelConfig.heavy;
-
-
-
-        if (currentSettings.ollama?.host === fullOllamaHost &&
-          currentSettings.server?.url === fullServerUrl &&
-          currentSettings.ollama?.model === ollamaModel &&
-          !aiModelsChanged) {
-          return;
-        }
-
-        const updatedSettings: AppSettings = {
-          ...currentSettings,
-          ollama: {
-            host: fullOllamaHost,
-            model: ollamaModel,
-            enabled: ollamaStatus === 'connected',
-            aiModels: aiModelConfig
-          },
-          server: {
-            ...currentSettings.server,
-            url: fullServerUrl,
-            port: 3001,
-            enabled: taskServerStatus === 'connected'
-          }
-        };
-        await storageService.saveAppSettings(updatedSettings);
-        console.log('[SettingsView] AI settings auto-saved');
-      } catch (error) {
-        console.error('[SettingsView] Auto-save failed:', error);
-      }
-    };
-
-    const timer = setTimeout(autoSave, 1000); // Debounce 1s
-    return () => clearTimeout(timer);
-  }, [aiServerHost, ollamaModel, ollamaStatus, taskServerStatus, aiModelConfig]);
-
-  const checkUnifiedConnection = async (host: string) => {
-    setIsCheckingConnection(true);
-    setOllamaStatus('unknown');
-    setTaskServerStatus('unknown');
-
-    // Robust URL parsing
-    let cleanHost = host.trim();
-
-    // Auto-prepend http:// if missing
-    if (!cleanHost.startsWith('http://') && !cleanHost.startsWith('https://')) {
-      cleanHost = `http://${cleanHost}`;
-    }
-
-    // Remove trailing slash
-    cleanHost = cleanHost.replace(/\/$/, '');
-
-    // Parse URL to handle ports intelligently
-    let hostnameUrl: URL;
-    try {
-      hostnameUrl = new URL(cleanHost);
-    } catch (e) {
-      console.error("Invalid URL:", cleanHost);
-      setOllamaStatus('error');
-      setTaskServerStatus('error');
-      setIsCheckingConnection(false);
-      return;
-    }
-
-    const baseProtocol = hostnameUrl.protocol; // http: or https:
-    const baseHostname = hostnameUrl.hostname; // host (no port)
-
-    // Determine ports override
-    // If user provided a port in input (e.g. :3001), we might respect it OR strip it
-    // Logic: "AI Server Host" implies the base host. 
-    // Ollama is usually :11434, Server is :3001.
-    // So we should STRIP the port from user input and append specific ports.
-    // UNLESS user specifically wants a non-standard setup.
-    // Current design: Unified Host (Input) -> leads to Host:11434 and Host:3001.
-
-    // Construct URLs
-    const ollamaUrl = `${baseProtocol}//${baseHostname}:11434`;
-    const serverUrl = `${baseProtocol}//${baseHostname}:3001`;
-
-    console.log(`[Connection Check] Checking Unified Host: ${baseHostname}`);
-    console.log(`[Connection Check] Ollama URL: ${ollamaUrl}`);
-    console.log(`[Connection Check] Server URL: ${serverUrl}`);
-
-    // Import fetch from plugin-http just for this check (dynamic import to avoid top-level conflict if needed, 
-    // but better to use the one from ollamaService or use window.__TAURI__.http if available, 
-    // OR just use the standard fetch if we fix the URL? 
-    // NO, standard fetch has CORS issues. We MUST use plugin-http fetch.
-    const { fetch } = await import('@tauri-apps/plugin-http');
-
-    // 1. Check Ollama (:11434)
-    const checkOllama = async () => {
-      try {
-        const models = await ollamaService.listModels(ollamaUrl);
-        setOllamaModels(models);
-        setOllamaStatus('connected');
-
-        if (models.length > 0 && !ollamaModel) {
-          setOllamaModel(models[0].name);
-        }
-      } catch (error) {
-        console.error('Ollama 連接失敗:', error);
-        setOllamaStatus('error');
-        setOllamaModels([]);
-      }
-    };
-
-    // 2. Check Task Server (:3001)
-    const checkServer = async () => {
-      try {
-        // Check health endpoint
-        // Use Tauri fetch to bypass CORS/Network restrictions
-        const response = await fetch(`${serverUrl}/health`, {
-          method: 'GET',
-          connectTimeout: 2000 // plugin-http supports connectTimeout? Maybe not standard FetchInit. 
-          // Standard fetch doesn't support timeout in options directly usually, uses AbortController.
-        });
-
-        if (response.ok) {
-          setTaskServerStatus('connected');
-        } else {
-          throw new Error(`Health check failed: ${response.status}`);
-        }
-
-      } catch (error) {
-        console.error('Task Server 連接失敗:', error);
-        setTaskServerStatus('error');
-      }
-    };
-
-    await Promise.all([checkOllama(), checkServer()]);
-    setIsCheckingConnection(false);
-  };
+  // Cloud AI providers (Copilot / OpenAI / Anthropic / Gemini) are configured
+  // via <AIProviderSettings /> below. Legacy Ollama + on-prem task-server
+  // fields and their auto-save effect were removed in v0.5.0.
 
   const [activeTab, setActiveTab] = useState<string>('transcription-translation');
   const [appVersion, setAppVersion] = useState<string>('...');
@@ -328,24 +152,6 @@ export default function SettingsView({ }: SettingsViewProps) {
           setSelectedDeviceId(savedSettings.audio.device_id);
         }
 
-        if (savedSettings.ollama) {
-          const host = savedSettings.ollama.host.replace(/:11434$/, '').replace(/\/$/, '');
-          setAiServerHost(host);
-          setOllamaModel(savedSettings.ollama.model);
-          checkUnifiedConnection(host);
-
-          // 載入 AI 模型分層配置
-          if (savedSettings.ollama.aiModels) {
-            setAiModelConfig({
-              embedding: savedSettings.ollama.aiModels.embedding || 'nomic-embed-text',
-              light: savedSettings.ollama.aiModels.light || 'qwen3:8b',
-              standard: savedSettings.ollama.aiModels.standard || 'qwen3:8b',
-              heavy: savedSettings.ollama.aiModels.heavy || 'qwen3:235b-a22b',
-            });
-          }
-        } else {
-          checkUnifiedConnection("http://100.117.82.111");
-        }
       }
 
 
@@ -365,30 +171,12 @@ export default function SettingsView({ }: SettingsViewProps) {
   const handleSave = async () => {
     setSaveStatus('saving');
     try {
-      // 構建完整的 Host URL
-      const cleanHost = aiServerHost.replace(/\/$/, '');
-      const fullOllamaHost = `${cleanHost}:11434`;
-      const fullServerUrl = `${cleanHost}:3001`;
-
       const updatedSettings: AppSettings = {
         ...settings,
         audio: {
           ...settings.audio,
           device_id: selectedDeviceId || undefined,
         },
-        ollama: {
-          host: fullOllamaHost,
-          model: ollamaModel,
-          enabled: ollamaStatus === 'connected',
-          aiModels: aiModelConfig // 確保保存模型配置
-        },
-
-        server: {
-          ...settings.server,
-          url: fullServerUrl,
-          port: 3001,
-          enabled: taskServerStatus === 'connected'
-        }
       };
 
       await storageService.saveAppSettings(updatedSettings);
@@ -661,204 +449,6 @@ export default function SettingsView({ }: SettingsViewProps) {
               </div>
               <div className="p-6">
                 <AIProviderSettings />
-              </div>
-            </div>
-
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/50">
-                <h3 className="text-lg font-medium flex items-center gap-2">
-                  <Cpu className="w-5 h-5 text-purple-500" />
-                  Ollama 連接設置
-                </h3>
-              </div>
-              <div className="p-6 space-y-6">
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    AI Server Host (Unified)
-                  </label>
-                  <p className="text-xs text-gray-500 mb-2">
-                    請輸入 Ollama 與 Task Server 所在的主機地址 (e.g., http://10.0.0.1)
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={aiServerHost}
-                      onChange={(e) => setAiServerHost(e.target.value)}
-                      placeholder="http://localhost"
-                      className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800"
-                    />
-                    <button
-                      onClick={() => checkUnifiedConnection(aiServerHost)}
-                      disabled={isCheckingConnection}
-                      className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 transition-colors"
-                    >
-                      {isCheckingConnection ? '檢查連接...' : '重新連接'}
-                    </button>
-                  </div>
-
-                  {/* Status Indicators */}
-                  <div className="mt-3 grid grid-cols-2 gap-4">
-                    <div className={`flex items-center gap-2 p-2 rounded-lg border ${ollamaStatus === 'connected' ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800' : 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800'}`}>
-                      <Brain className={`w-5 h-5 ${ollamaStatus === 'connected' ? 'text-green-600' : 'text-red-500'}`} />
-                      <div>
-                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Ollama (LLM)</div>
-                        <div className={`text-sm ${ollamaStatus === 'connected' ? 'text-green-600' : 'text-red-500'}`}>
-                          {ollamaStatus === 'connected' ? '已連接' : '未連接'}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className={`flex items-center gap-2 p-2 rounded-lg border ${taskServerStatus === 'connected' ? 'bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800' : 'bg-gray-50 border-gray-200 dark:bg-gray-800 dark:border-gray-700'}`}>
-                      <Server className={`w-5 h-5 ${taskServerStatus === 'connected' ? 'text-green-600' : 'text-gray-500'}`} />
-                      <div>
-                        <div className="text-xs font-medium text-gray-500 dark:text-gray-400">Task Server</div>
-                        <div className={`text-sm ${taskServerStatus === 'connected' ? 'text-green-600' : 'text-gray-500'}`}>
-                          {taskServerStatus === 'connected' ? '已連接' : taskServerStatus === 'error' ? '連接失敗' : '未知'}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-2">
-                    預設模型（舊版相容）
-                  </label>
-                  <select
-                    value={ollamaModel}
-                    onChange={(e) => setOllamaModel(e.target.value)}
-                    disabled={ollamaModels.length === 0}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 disabled:opacity-50"
-                  >
-                    {ollamaModels.length === 0 && <option value={ollamaModel}>{ollamaModel || '(未檢測到模型)'}</option>}
-                    {ollamaModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name} ({Math.round(model.size / 1024 / 1024 / 1024 * 10) / 10} GB)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* AI 模型分層配置 */}
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
-              <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/50">
-                <h3 className="text-lg font-medium flex items-center gap-2">
-                  <Cpu className="w-5 h-5 text-indigo-500" />
-                  AI 功能模型配置
-                </h3>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-                  為不同任務指定不同模型，優化性能與質量
-                </p>
-              </div>
-              <div className="p-6 space-y-6">
-
-                {/* Embedding 模型 */}
-                <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-blue-700 dark:text-blue-300">
-                      📊 Embedding 模型
-                    </label>
-                    <span className="text-xs bg-blue-100 dark:bg-blue-800 text-blue-600 dark:text-blue-300 px-2 py-0.5 rounded">
-                      專用
-                    </span>
-                  </div>
-                  <input
-                    type="text"
-                    value={aiModelConfig.embedding}
-                    onChange={(e) => setAiModelConfig({ ...aiModelConfig, embedding: e.target.value })}
-                    className="w-full px-3 py-2 rounded-lg border border-blue-300 dark:border-blue-600 bg-white dark:bg-gray-800"
-                  />
-                  <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                    用於：RAG 搜尋、PDF 對齊、知識庫索引
-                  </p>
-                </div>
-
-                {/* 輕量模型 */}
-                <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg border border-green-200 dark:border-green-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-green-700 dark:text-green-300">
-                      ⚡ 輕量任務模型
-                    </label>
-                    <span className="text-xs bg-green-100 dark:bg-green-800 text-green-600 dark:text-green-300 px-2 py-0.5 rounded">
-                      快速
-                    </span>
-                  </div>
-                  <select
-                    value={aiModelConfig.light}
-                    onChange={(e) => setAiModelConfig({ ...aiModelConfig, light: e.target.value })}
-                    disabled={ollamaModels.length === 0}
-                    className="w-full px-3 py-2 rounded-lg border border-green-300 dark:border-green-600 bg-white dark:bg-gray-800"
-                  >
-                    {ollamaModels.length === 0 && <option value={aiModelConfig.light}>{aiModelConfig.light}</option>}
-                    {ollamaModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name} ({Math.round(model.size / 1024 / 1024 / 1024 * 10) / 10} GB)
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-green-600 dark:text-green-400 mt-1">
-                    用於：關鍵詞提取、對話歷史壓縮、大綱提取
-                  </p>
-                </div>
-
-                {/* 標準模型 */}
-                <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg border border-yellow-200 dark:border-yellow-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-yellow-700 dark:text-yellow-300">
-                      💬 標準任務模型
-                    </label>
-                    <span className="text-xs bg-yellow-100 dark:bg-yellow-800 text-yellow-600 dark:text-yellow-300 px-2 py-0.5 rounded">
-                      平衡
-                    </span>
-                  </div>
-                  <select
-                    value={aiModelConfig.standard}
-                    onChange={(e) => setAiModelConfig({ ...aiModelConfig, standard: e.target.value })}
-                    disabled={ollamaModels.length === 0}
-                    className="w-full px-3 py-2 rounded-lg border border-yellow-300 dark:border-yellow-600 bg-white dark:bg-gray-800"
-                  >
-                    {ollamaModels.length === 0 && <option value={aiModelConfig.standard}>{aiModelConfig.standard}</option>}
-                    {ollamaModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name} ({Math.round(model.size / 1024 / 1024 / 1024 * 10) / 10} GB)
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-yellow-600 dark:text-yellow-400 mt-1">
-                    用於：RAG 問答、AI 助教對話
-                  </p>
-                </div>
-
-                {/* 重量模型 */}
-                <div className="p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-200 dark:border-purple-800">
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-purple-700 dark:text-purple-300">
-                      🧠 重量任務模型
-                    </label>
-                    <span className="text-xs bg-purple-100 dark:bg-purple-800 text-purple-600 dark:text-purple-300 px-2 py-0.5 rounded">
-                      高質量
-                    </span>
-                  </div>
-                  <select
-                    value={aiModelConfig.heavy}
-                    onChange={(e) => setAiModelConfig({ ...aiModelConfig, heavy: e.target.value })}
-                    disabled={ollamaModels.length === 0}
-                    className="w-full px-3 py-2 rounded-lg border border-purple-300 dark:border-purple-600 bg-white dark:bg-gray-800"
-                  >
-                    {ollamaModels.length === 0 && <option value={aiModelConfig.heavy}>{aiModelConfig.heavy}</option>}
-                    {ollamaModels.map((model) => (
-                      <option key={model.name} value={model.name}>
-                        {model.name} ({Math.round(model.size / 1024 / 1024 / 1024 * 10) / 10} GB)
-                      </option>
-                    ))}
-                  </select>
-                  <p className="text-xs text-purple-600 dark:text-purple-400 mt-1">
-                    用於：課程總結生成 (Deep Summarization)
-                  </p>
-                </div>
-
               </div>
             </div>
           </div>
