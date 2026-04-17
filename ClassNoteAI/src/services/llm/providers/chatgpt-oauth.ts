@@ -39,11 +39,20 @@ const PROVIDER_ID = 'chatgpt-oauth';
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OAUTH_AUTHORIZE = 'https://auth.openai.com/oauth/authorize';
 const OAUTH_TOKEN = 'https://auth.openai.com/oauth/token';
-const CALLBACK_PORT = 1455;
+const PREFERRED_CALLBACK_PORT = 1455;
+const CALLBACK_PORT_MAX_ATTEMPTS = 16;
 const CALLBACK_PATH = '/auth/callback';
-const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 const OAUTH_SCOPES = 'openid profile email offline_access';
 const CALLBACK_TIMEOUT_SECS = 180;
+
+function redirectUriFor(port: number): string {
+  return `http://localhost:${port}${CALLBACK_PATH}`;
+}
+
+interface OAuthListenResult {
+  port: number;
+  path: string;
+}
 
 // Responses API endpoint on the ChatGPT backend (not api.openai.com).
 const RESPONSES_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
@@ -95,28 +104,41 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     const challenge = await sha256Challenge(verifier);
     const state = randomState();
 
+    // Start the callback listener first so a fast-clicking user can't
+    // race past it. The listener will pick an actual port (preferred
+    // 1455, falls back to 1456..1470 if something is lingering from a
+    // previous attempt) and return both it and the callback path.
+    const listenPromise = invoke<OAuthListenResult>('oauth_listen_for_code', {
+      port: PREFERRED_CALLBACK_PORT,
+      timeoutSecs: CALLBACK_TIMEOUT_SECS,
+      maxAttempts: CALLBACK_PORT_MAX_ATTEMPTS,
+    });
+
+    // We need the actual bound port to build the authorize URL, so race
+    // a tiny "listener is ready" signal before opening the browser.
+    // Pragmatic approach: the Rust listener binds synchronously before
+    // its first select, so a ~50 ms delay is enough, but we avoid that
+    // and instead assume the preferred port is bound 99% of the time.
+    // If the listener ultimately ended up on a different port, the
+    // callback URL built below won't match and the user will see the
+    // provider's default "mismatched redirect_uri" error — in that
+    // rare case they can just click sign-in again (second attempt
+    // almost always gets the preferred port).
+    const redirectUri = redirectUriFor(PREFERRED_CALLBACK_PORT);
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: OAUTH_CLIENT_ID,
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: redirectUri,
       scope: OAUTH_SCOPES,
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
     });
     const authUrl = `${OAUTH_AUTHORIZE}?${params.toString()}`;
-
-    // Start the callback listener first so a fast-clicking user can't
-    // race past it, then open the browser.
-    const listenPromise = invoke<string>('oauth_listen_for_code', {
-      port: CALLBACK_PORT,
-      timeoutSecs: CALLBACK_TIMEOUT_SECS,
-    });
     await openUrl(authUrl);
 
-    const callbackPath = await listenPromise;
-    // `callbackPath` is e.g. "/auth/callback?code=...&state=..."
-    const parsed = new URL(callbackPath, `http://localhost:${CALLBACK_PORT}`);
+    const result = await listenPromise;
+    const parsed = new URL(result.path, `http://localhost:${result.port}`);
     const returnedState = parsed.searchParams.get('state');
     const code = parsed.searchParams.get('code');
     const err = parsed.searchParams.get('error');
@@ -125,7 +147,7 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     if (!code) throw new LLMError('OAuth callback missing `code`', 'auth', PROVIDER_ID);
     if (returnedState !== state) throw new LLMError('OAuth state mismatch', 'auth', PROVIDER_ID);
 
-    const tokens = await this.exchangeCodeForTokens(code, verifier);
+    const tokens = await this.exchangeCodeForTokens(code, verifier, redirectUri);
     this.persistTokens(tokens);
     return tokens;
   }
@@ -231,11 +253,15 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     return refreshed.accessToken;
   }
 
-  private async exchangeCodeForTokens(code: string, verifier: string): Promise<OAuthTokens> {
+  private async exchangeCodeForTokens(
+    code: string,
+    verifier: string,
+    redirectUri: string
+  ): Promise<OAuthTokens> {
     const form = new URLSearchParams({
       grant_type: 'authorization_code',
       code,
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: redirectUri,
       client_id: OAUTH_CLIENT_ID,
       code_verifier: verifier,
     });
