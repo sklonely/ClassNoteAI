@@ -24,7 +24,12 @@ if not defined LIBCLANG_PATH (
     )
 )
 
-if not defined CMAKE_GENERATOR set "CMAKE_GENERATOR=Visual Studio 17 2022"
+REM Auto-detect CMake Visual Studio generator from vcvars path
+if not defined CMAKE_GENERATOR (
+    echo %VS_VCVARS% | findstr /C:"\\18\\" >nul && set "CMAKE_GENERATOR=Visual Studio 18 2026"
+    if not defined CMAKE_GENERATOR echo %VS_VCVARS% | findstr /C:"\\2022\\" >nul && set "CMAKE_GENERATOR=Visual Studio 17 2022"
+    if not defined CMAKE_GENERATOR set "CMAKE_GENERATOR=Visual Studio 17 2022"
+)
 set "CMAKE_TOOLCHAIN_FILE=%~dp0win-toolchain.cmake"
 
 REM Add cargo, ninja (shipped with VS), and LLVM to PATH

@@ -208,59 +208,10 @@ export async function translateRough(
   }
 }
 
-/**
- * 精翻譯（遠程）
- * 帶緩存功能
- */
-export async function translateFine(
-  text: string,
-  sourceLang: string = 'en',
-  targetLang: string = 'zh',
-  serviceUrl: string,
-  useCache: boolean = true
-): Promise<TranslationResult> {
-  // 檢查緩存
-  if (useCache) {
-    const cached = translationCache.get(text, sourceLang, targetLang, 'fine');
-    if (cached) {
-      return cached;
-    }
-  }
-
-  try {
-    const result = await invoke<TranslationResult>('translate_fine', {
-      text,
-      sourceLang,
-      targetLang,
-      serviceUrl,
-    });
-
-    // 保存到緩存
-    if (useCache) {
-      translationCache.set(text, sourceLang, targetLang, 'fine', result);
-    }
-
-    return result;
-  } catch (error) {
-    console.error('[TranslationService] 精翻譯失敗:', error);
-    throw error;
-  }
-}
-
-/**
- * 檢查遠程服務是否可用
- */
-export async function checkRemoteService(serviceUrl: string): Promise<boolean> {
-  try {
-    const available = await invoke<boolean>('check_remote_service', {
-      serviceUrl,
-    });
-    return available;
-  } catch (error) {
-    console.error('[TranslationService] 檢查遠程服務失敗:', error);
-    return false;
-  }
-}
+// Fine translation and remote service check were removed in v0.5.0 —
+// they used to hit ClassNoteServer, which is now archived at git tag
+// server-archive-v0.4.0. Fine translation will be re-implemented via
+// LLMProvider (GitHub Models, OpenAI, Anthropic, etc.) in a follow-up PR.
 
 /**
  * 清除翻譯緩存

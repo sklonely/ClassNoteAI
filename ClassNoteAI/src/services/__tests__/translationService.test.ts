@@ -24,8 +24,6 @@ vi.mock('../storageService', () => ({
 // Import after mocking
 import {
     translateRough,
-    translateFine,
-    checkRemoteService,
     clearTranslationCache,
     getTranslationCacheStats,
     TranslationResult,
@@ -152,79 +150,7 @@ describe('TranslationService', () => {
         });
     });
 
-    // ===== Fine Translation Tests =====
-    describe('Fine Translation', () => {
-        it('should call invoke with service URL', async () => {
-            const mockResult: TranslationResult = {
-                translated_text: '精翻譯結果',
-                source: 'fine',
-                confidence: 0.99,
-            };
-
-            setMockInvokeResult('translate_fine', mockResult);
-
-            const result = await translateFine(
-                'Fine translation',
-                'en',
-                'zh',
-                'http://localhost:8080',
-                false
-            );
-
-            expect(invoke).toHaveBeenCalledWith('translate_fine', {
-                text: 'Fine translation',
-                sourceLang: 'en',
-                targetLang: 'zh',
-                serviceUrl: 'http://localhost:8080',
-            });
-            expect(result.translated_text).toBe('精翻譯結果');
-            expect(result.source).toBe('fine');
-        });
-
-        it('should cache fine translation results', async () => {
-            const mockResult: TranslationResult = {
-                translated_text: '緩存精翻',
-                source: 'fine',
-            };
-
-            setMockInvokeResult('translate_fine', mockResult);
-
-            await translateFine('cached fine', 'en', 'zh', 'http://localhost:8080', true);
-            expect(invoke).toHaveBeenCalledTimes(1);
-
-            // Second call should use cache
-            await translateFine('cached fine', 'en', 'zh', 'http://localhost:8080', true);
-            expect(invoke).toHaveBeenCalledTimes(1);
-        });
-    });
-
-    // ===== Remote Service Check Tests =====
-    describe('Remote Service Check', () => {
-        it('should return availability status', async () => {
-            setMockInvokeResult('check_remote_service', true);
-
-            const available = await checkRemoteService('http://localhost:8080');
-
-            expect(invoke).toHaveBeenCalledWith('check_remote_service', {
-                serviceUrl: 'http://localhost:8080',
-            });
-            expect(available).toBe(true);
-        });
-
-        it('should return false when service is unavailable', async () => {
-            setMockInvokeResult('check_remote_service', false);
-
-            const available = await checkRemoteService('http://unavailable:9999');
-
-            expect(available).toBe(false);
-        });
-
-        it('should return false on error', async () => {
-            setMockInvokeResult('check_remote_service', new Error('Network error'));
-
-            const available = await checkRemoteService('http://error:8080');
-
-            expect(available).toBe(false);
-        });
-    });
+    // Fine translation + remote service tests removed in v0.5.0 alongside
+    // the deletion of those functions. New tests will be added alongside
+    // the LLMProvider implementation in a follow-up PR.
 });

@@ -7,7 +7,6 @@ import { transcribeAudio } from './whisperService';
 import { subtitleService } from './subtitleService';
 import { AudioChunk } from './audioRecorder';
 import { translateRough } from './translationService';
-import { remoteService } from './remoteService';
 import { detectSpeechSegments } from './vadService';
 import { refinementService } from './refinementService';
 import { autoAlignmentService } from './autoAlignmentService';
@@ -532,10 +531,8 @@ export class TranscriptionService {
       // 翻譯失敗時，字幕已經在隊列中（沒有翻譯），無需額外處理
     }
 
-    // 觸發精細翻譯（可選）
-    if (remoteService.isServiceAvailable()) {
-      // TODO: Call fine translation
-    }
+    // Fine translation hook removed in v0.5.0 — will be re-implemented
+    // via LLMProvider batched calls in a follow-up PR.
   }
 
   private async processRemainingBuffer() {

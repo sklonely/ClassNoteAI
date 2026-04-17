@@ -1,7 +1,5 @@
 // Whisper 模塊
 mod whisper;
-// Parakeet ASR Module (v0.4.0)
-mod parakeet;
 // 工具模塊
 mod utils;
 // 翻譯模塊
@@ -290,24 +288,10 @@ async fn translate_rough(
     }
 }
 
-/// 精翻譯（遠程）
-#[tauri::command]
-async fn translate_fine(
-    text: String,
-    source_lang: String,
-    target_lang: String,
-    service_url: String,
-) -> Result<translation::TranslationResult, String> {
-    translation::fine::translate_fine(&text, &source_lang, &target_lang, &service_url)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 檢查遠程服務是否可用
-#[tauri::command]
-async fn check_remote_service(service_url: String) -> bool {
-    translation::fine::check_remote_service(&service_url).await
-}
+// Fine translation + remote service check were removed in v0.5.0.
+// Fine translation will be re-implemented via LLMProvider (GitHub Models,
+// OpenAI Platform, Anthropic) in a later PR. The legacy ClassNoteServer
+// is archived at tag server-archive-v0.4.0.
 
 // ========== CTranslate2 翻譯相關 Commands ==========
 
@@ -1539,7 +1523,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(Arc::new(parakeet::ParakeetService::new()))
         .setup(|app| {
             // DevTools 現在由前端控制，根據 developerMode 設定
             // 前端可透過 invoke 呼叫開啟
@@ -1566,14 +1549,9 @@ pub fn run() {
             greet,
             load_whisper_model,
             transcribe_audio,
-            // Parakeet Commands
-            parakeet::commands::load_parakeet_model,
-            parakeet::commands::transcribe_parakeet,
             download_whisper_model,
             check_whisper_model,
             translate_rough,
-            translate_fine,
-            check_remote_service,
             download_translation_model,
             check_translation_model,
             load_translation_model,
