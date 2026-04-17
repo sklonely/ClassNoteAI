@@ -16,10 +16,14 @@ if not defined VS_VCVARS (
 )
 call "%VS_VCVARS%" >nul
 
-if not defined LIBCLANG_PATH (
-    if exist "%USERPROFILE%\llvm18\bin\libclang.dll" (
-        set "LIBCLANG_PATH=%USERPROFILE%\llvm18\bin"
-    ) else if exist "C:\Program Files\LLVM\bin\libclang.dll" (
+REM whisper-rs-sys uses bindgen 0.69 which only works with libclang <= 18.
+REM We FORCE LIBCLANG_PATH to our LLVM 18 install if it's available,
+REM overriding any ambient shell value (e.g. scoop's LLVM 22) that would
+REM otherwise produce empty whisper_full_params bindings.
+if exist "%USERPROFILE%\llvm18\bin\libclang.dll" (
+    set "LIBCLANG_PATH=%USERPROFILE%\llvm18\bin"
+) else if not defined LIBCLANG_PATH (
+    if exist "C:\Program Files\LLVM\bin\libclang.dll" (
         set "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
     )
 )

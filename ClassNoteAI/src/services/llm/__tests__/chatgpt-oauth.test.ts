@@ -47,8 +47,10 @@ describe('ChatGPTOAuthProvider', () => {
         it('opens browser to auth URL with PKCE + state, then exchanges code', async () => {
             // Capture the auth URL on openUrl, then resolve the listener
             // promise with a callback path carrying the matching state.
-            let resolveListener: (p: string) => void;
-            const listenerPromise = new Promise<string>((r) => { resolveListener = r; });
+            let resolveListener: (r: { port: number; path: string }) => void;
+            const listenerPromise = new Promise<{ port: number; path: string }>((r) => {
+                resolveListener = r;
+            });
             mockedInvoke.mockImplementation(() => listenerPromise as never);
 
             let capturedAuthUrl = '';
@@ -56,7 +58,7 @@ describe('ChatGPTOAuthProvider', () => {
                 capturedAuthUrl = String(url);
                 const u = new URL(capturedAuthUrl);
                 const state = u.searchParams.get('state');
-                resolveListener!(`/auth/callback?code=fake-code&state=${state}`);
+                resolveListener!({ port: 1455, path: `/auth/callback?code=fake-code&state=${state}` });
             });
 
             queueFetchResponses(
@@ -76,7 +78,8 @@ describe('ChatGPTOAuthProvider', () => {
 
         it('rejects when state does not match (CSRF protection)', async () => {
             mockedInvoke.mockImplementation(
-                () => Promise.resolve('/auth/callback?code=c&state=WRONG') as never
+                () =>
+                    Promise.resolve({ port: 1455, path: '/auth/callback?code=c&state=WRONG' }) as never
             );
             mockedOpenUrl.mockImplementation(async () => {});
             await expect(provider.signIn()).rejects.toMatchObject({ kind: 'auth' });
@@ -84,7 +87,8 @@ describe('ChatGPTOAuthProvider', () => {
 
         it('rejects when callback has error param', async () => {
             mockedInvoke.mockImplementation(
-                () => Promise.resolve('/auth/callback?error=access_denied') as never
+                () =>
+                    Promise.resolve({ port: 1455, path: '/auth/callback?error=access_denied' }) as never
             );
             mockedOpenUrl.mockImplementation(async () => {});
             await expect(provider.signIn()).rejects.toMatchObject({ kind: 'auth' });
