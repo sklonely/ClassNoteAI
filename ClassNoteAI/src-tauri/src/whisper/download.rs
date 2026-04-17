@@ -88,6 +88,20 @@ pub fn get_medium_quantized_model_config(output_dir: &Path) -> ModelDownloadConf
     }
 }
 
+/// Whisper large-v3-turbo (Quantized q5_0) model download config.
+///
+/// New in v0.5.0. Turbo is ~8x faster than large-v3 at essentially the
+/// same accuracy, so this is the recommended option for users who want
+/// better-than-small accuracy without paying the full large-v3 cost.
+pub fn get_large_v3_turbo_quantized_model_config(output_dir: &Path) -> ModelDownloadConfig {
+    ModelDownloadConfig {
+        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+            .to_string(),
+        output_path: output_dir.join("ggml-large-v3-turbo-q5_0.bin"),
+        expected_size: Some(574_000_000), // ~574 MB
+    }
+}
+
 /// 下載進度信息
 #[derive(Clone, serde::Serialize)]
 pub struct DownloadProgress {

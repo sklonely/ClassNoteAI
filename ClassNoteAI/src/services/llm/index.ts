@@ -7,6 +7,9 @@ export {
   extractSyllabus,
   chat,
   chatStream,
+  refineTranscripts,
   type SummarizeParams,
   type SyllabusInfo,
+  type RoughSegment,
+  type FineRefinement,
 } from './tasks';

@@ -129,7 +129,8 @@ async fn download_whisper_model(
         "large" => download::get_large_model_config(output_path),
         "small-q5" => download::get_small_quantized_model_config(output_path),
         "medium-q5" => download::get_medium_quantized_model_config(output_path),
-        _ => return Err(format!("不支持的模型類型: {}。支持的類型: tiny, base, small, medium, large, small-q5, medium-q5", model_type)),
+        "large-v3-turbo-q5" => download::get_large_v3_turbo_quantized_model_config(output_path),
+        _ => return Err(format!("不支持的模型類型: {}。支持的類型: tiny, base, small, medium, large, small-q5, medium-q5, large-v3-turbo-q5", model_type)),
     };
 
     // 下載模型（通過 Tauri 事件發送進度）
@@ -237,6 +238,8 @@ async fn check_whisper_model(model_path: String) -> Result<bool, String> {
             Some(75_000_000) // Tiny 約 75MB
         } else if file_name.contains("base") {
             Some(142_000_000) // Base 約 142MB（實際約 141MB）
+        } else if file_name.contains("large-v3-turbo-q5") {
+            Some(574_000_000) // Large v3 turbo Q5 ~574MB
         } else if file_name.contains("small-q5") {
             Some(180_000_000) // Small Q5 約 180MB
         } else if file_name.contains("small") {

@@ -263,6 +263,7 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
           <option value="base">Base (142MB) - 推薦，平衡速度和準確度</option>
           <option value="small-q5">Small Quantized (180MB) - 🚀 推薦 (快且準)</option>
           <option value="medium-q5">Medium Quantized (530MB) - 🎯 最佳平衡</option>
+          <option value="large-v3-turbo-q5">Large-v3 Turbo Quantized (574MB) - ⭐ 最佳精度（v0.5.0 新增）</option>
           <option value="small">Small (466MB) - 更準確，較慢</option>
           <option value="medium">Medium (1.5GB) - 高準確度，較慢</option>
           <option value="large">Large (2.9GB) - 最高準確度，很慢</option>

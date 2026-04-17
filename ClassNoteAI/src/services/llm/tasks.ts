@@ -162,6 +162,67 @@ export async function chat(messages: LLMMessage[]): Promise<string> {
   return res.content;
 }
 
+/**
+ * Fine-refinement of streaming ASR segments.
+ *
+ * Input: a batch of rough English transcription segments (as emitted by
+ * whisper.cpp) with stable ids. The LLM uses the surrounding context
+ * to (a) fix plausible ASR errors, and (b) produce a natural Chinese
+ * translation for each segment.
+ *
+ * Output preserves 1:1 ordering with input — one refinement per input id.
+ * On parse failure we return an empty array so the caller falls back to
+ * the rough pass.
+ */
+export interface RoughSegment {
+  id: string;
+  text: string;
+}
+
+export interface FineRefinement {
+  id: string;
+  en: string;
+  zh: string;
+}
+
+export async function refineTranscripts(batch: RoughSegment[]): Promise<FineRefinement[]> {
+  if (!batch.length) return [];
+  const { provider, model } = await activeProviderAndModel();
+
+  const numbered = batch.map((s, i) => `[${i + 1} id=${s.id}] ${s.text}`).join('\n');
+  const systemPrompt =
+    '你正在精修即時語音辨識的輸出。使用者會貼上若干條「粗糙」英文段落，它們可能有辨識錯誤或不自然的斷句。' +
+    '你的任務是：\n' +
+    '(1) 用語意上下文修正 ASR 錯誤（保留原意，不臆測未說出的內容）；\n' +
+    '(2) 產出自然流暢的繁體中文翻譯。\n' +
+    '必須回傳 JSON：{"refinements": [{"id": "<原 id>", "en": "<修正後英文>", "zh": "<翻譯>"} ...]}。\n' +
+    '一條輸入對應一條輸出，順序與 id 必須與輸入一致。不要加額外說明。';
+
+  const res = await provider!.complete({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: numbered },
+    ],
+    temperature: 0.2,
+    jsonMode: true,
+    maxTokens: Math.min(8192, 512 * batch.length),
+  });
+
+  try {
+    const parsed = JSON.parse(res.content);
+    if (Array.isArray(parsed?.refinements)) {
+      return parsed.refinements.filter(
+        (r: any): r is FineRefinement =>
+          r && typeof r.id === 'string' && typeof r.en === 'string' && typeof r.zh === 'string'
+      );
+    }
+  } catch {
+    // fall through
+  }
+  return [];
+}
+
 /** Stream a chat response token-by-token. Caller receives incremental deltas. */
 export async function* chatStream(messages: LLMMessage[]): AsyncGenerator<string, void, void> {
   const { provider, model } = await activeProviderAndModel();

@@ -19,7 +19,17 @@ export interface TranscriptionSegment {
   end_ms: number;
 }
 
-export type ModelType = 'tiny' | 'base' | 'small' | 'medium' | 'large' | 'small-q5' | 'medium-q5';
+export type ModelType =
+  | 'tiny'
+  | 'base'
+  | 'small'
+  | 'medium'
+  | 'large'
+  | 'small-q5'
+  | 'medium-q5'
+  // large-v3 turbo: ~8x faster than large-v3 with almost identical accuracy.
+  // Added in v0.5.0 as the recommended default when users opt into a bigger model.
+  | 'large-v3-turbo-q5';
 
 /**
  * 獲取模型文件路徑（使用後端統一路徑 API）
@@ -34,6 +44,8 @@ async function getModelPath(modelType: ModelType = 'base'): Promise<string> {
     modelFileName = 'ggml-small-q5.bin';
   } else if (modelType === 'medium-q5') {
     modelFileName = 'ggml-medium-q5.bin';
+  } else if (modelType === 'large-v3-turbo-q5') {
+    modelFileName = 'ggml-large-v3-turbo-q5_0.bin';
   }
 
   return await path.join(whisperDir, modelFileName);
@@ -213,6 +225,7 @@ export function getModelSize(modelType: ModelType): number {
     large: 2900,
     'small-q5': 180,
     'medium-q5': 530,
+    'large-v3-turbo-q5': 574,
   };
   return sizes[modelType] || 142;
 }
@@ -229,6 +242,7 @@ export function getModelDisplayName(modelType: ModelType): string {
     large: 'Large (2.9GB) - 最高準確度，很慢',
     'small-q5': 'Small Quantized (180MB) - 🚀 推薦 (快且準)',
     'medium-q5': 'Medium Quantized (530MB) - 🎯 最佳平衡',
+    'large-v3-turbo-q5': 'Large-v3 Turbo Quantized (574MB) - ⭐ 最佳精度（v0.5.0+）',
   };
   return names[modelType] || 'Base';
 }
