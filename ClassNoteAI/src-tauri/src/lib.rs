@@ -18,9 +18,10 @@ pub mod paths;
 pub mod downloads;
 // 同步模塊
 mod sync;
+// Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
+mod oauth;
 
 use embedding::EmbeddingService;
-use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 use whisper::WhisperService; // For window.emit()
@@ -1557,6 +1558,8 @@ pub fn run() {
             load_translation_model,
             list_available_translation_models,
             load_translation_model_by_name,
+            // OAuth callback listener
+            oauth::oauth_listen_for_code,
             // 數據存儲相關
             save_course,
             get_course,
