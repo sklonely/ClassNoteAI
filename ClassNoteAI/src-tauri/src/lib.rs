@@ -1606,6 +1606,11 @@ async fn close_devtools(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Populate HTTP_PROXY/HTTPS_PROXY from Windows Internet Settings so
+    // campus/corporate users behind a system proxy can reach our backends.
+    // No-op on macOS/Linux. Must run before any reqwest client is built.
+    utils::sys_proxy::apply_system_proxy_env();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
