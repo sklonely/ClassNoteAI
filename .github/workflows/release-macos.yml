@@ -150,7 +150,8 @@ jobs:
       - name: Generate Changelog
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          git fetch --tags --unshallow 2>/dev/null || git fetch --tags
+          # --force so local/remote v<current> tag doesn't clobber-reject the fetch
+          git fetch --tags --force --unshallow 2>/dev/null || git fetch --tags --force
           
           # Get current tag
           CURRENT_TAG=${GITHUB_REF#refs/tags/}
