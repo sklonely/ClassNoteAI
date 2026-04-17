@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { ollamaService } from '../services/ollamaService';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
+import { chat as llmChat } from '../services/llm';
 
 // 重新導出 ChatMessage 類型供其他組件使用
 export type { ChatMessage } from '../services/chatSessionService';
@@ -295,12 +296,14 @@ export default function AIChatPanel({
                     }
                 }
 
-                // 使用對話式 API (標準模型)
-                const standardModel = await ollamaService.getStandardModel();
-                const response = await ollamaService.chat(
-                    chatHistory as Array<{ role: 'user' | 'assistant' | 'system'; content: string }>,
-                    { system: systemPrompt, model: standardModel }
-                );
+                // Route Q&A through the user's configured LLM provider
+                const response = await llmChat([
+                    { role: 'system', content: systemPrompt },
+                    ...chatHistory.map((m: { role: string; content: string }) => ({
+                        role: m.role as 'user' | 'assistant' | 'system',
+                        content: m.content,
+                    })),
+                ]);
 
                 assistantMessage = {
                     id: crypto.randomUUID(),

@@ -10,6 +10,7 @@ import rehypeRaw from 'rehype-raw';
 import { storageService } from "../services/storageService";
 import { ollamaService } from "../services/ollamaService";
 import { taskService } from "../services/taskService";
+import { summarize as llmSummarize } from "../services/llm";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -1057,29 +1058,18 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         console.warn('[NotesView] Pre-task sync failed, task might fail if lecture is missing on server:', e);
       }
 
-      // Trigger generation on server
-      const task = await taskService.triggerSummary(currentLectureData.id, language, content, pdfContext);
+      // Generate summary via the user's configured LLM provider
+      const summary = await llmSummarize({
+        content,
+        language,
+        pdfContext,
+        title: selectedNote.title,
+      });
 
-      if (!task) {
-        alert("已離線，任務已加入佇列。");
-        setIsGeneratingSummary(false);
-        return;
-      }
-
-      console.log('[NotesView] Summary task started:', task.id);
-
-      // Poll for result
-      const completedTask = await taskService.pollUntilCompletion(task.id);
-
-      if (completedTask.status === 'completed' && completedTask.result) {
-        const summary = completedTask.result.summary;
-        const updatedNote = { ...selectedNote, summary };
-        await storageService.saveNote(updatedNote);
-        setSelectedNote(updatedNote);
-        alert('Summary generated successfully!');
-      } else {
-        throw new Error(completedTask.error || 'Task completed via unknown status');
-      }
+      const updatedNote = { ...selectedNote, summary };
+      await storageService.saveNote(updatedNote);
+      setSelectedNote(updatedNote);
+      alert('Summary generated successfully!');
 
     } catch (error) {
       console.error('Failed to generate summary:', error);

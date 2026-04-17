@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { X, BookOpen, FileText, Cpu, Loader2 } from "lucide-react";
 import { selectPDFFile } from "../services/fileService";
 import { pdfService } from "../services/pdfService";
-import { taskService } from "../services/taskService";
+import { extractKeywords as llmExtractKeywords } from "../services/llm";
 
 interface CourseCreationDialogProps {
   isOpen: boolean;
@@ -109,37 +109,19 @@ export default function CourseCreationDialog({
         throw new Error("無法保存課程草稿，無法啟動後台任務");
       }
 
-      // 4. Trigger Server Task
-      const task = await taskService.triggerKeywordExtract(courseId, text);
+      // 4. Extract keywords via the user's configured LLM provider
+      llmExtractKeywords(text)
+        .then((extracted) => {
+          setKeywords((prev) => {
+            const current = prev ? prev.split(',').map((k) => k.trim()).filter(Boolean) : [];
+            const merged = [...new Set([...current, ...extracted])];
+            return merged.join(', ');
+          });
+        })
+        .catch((err) => console.error('Keyword extraction failed:', err))
+        .finally(() => setIsGeneratingKeywords(false));
 
-      if (task) {
-        // 5. Non-blocking Wait
-        // We start a detached promise to poll for results
-        taskService.pollUntilCompletion(task.id)
-          .then((result) => {
-            if (result.status === 'completed' && result.result?.keywords) {
-              const extracted = result.result.keywords as string[];
-              console.log('[CourseCreationDialog] Keywords generated:', extracted);
-
-              // Update Local State (if component still mounted)
-              // Note: accessing state from async closure is fine, usually.
-              setKeywords(prev => {
-                const current = prev ? prev.split(',').map(k => k.trim()).filter(Boolean) : [];
-                const merged = [...new Set([...current, ...extracted])];
-                return merged.join(', ');
-              });
-            }
-          })
-          .catch(err => console.error("Background keyword task failed:", err))
-          .finally(() => setIsGeneratingKeywords(false));
-
-        // Notify User
-        alert("關鍵詞生成任務已在後台啟動！\n您可以繼續編輯或關閉此視窗，完成後關鍵詞將自動填入。");
-      } else {
-        // Offline queue
-        alert("已離線，任務已加入佇列。恢復連線後將自動執行。");
-        setIsGeneratingKeywords(false);
-      }
+      alert('關鍵詞生成已在後台啟動！完成後會自動填入。');
 
     } catch (error) {
       console.error("生成關鍵詞失敗:", error);

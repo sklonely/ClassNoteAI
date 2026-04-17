@@ -14,7 +14,7 @@ import {
 import { Course } from '../types';
 import { storageService } from '../services/storageService';
 import CourseCreationDialog from './CourseCreationDialog';
-import { taskService } from '../services/taskService';
+import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
 
 interface CourseListViewProps {
     onSelectCourse: (courseId: string) => void;
@@ -75,15 +75,15 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                 };
                 await storageService.saveCourse(updatedCourse);
 
-                // Trigger Async Syllabus Update if description changed
+                // Trigger async syllabus extraction via LLM if description changed
                 if (descriptionChanged && description && description.trim().length > 10) {
-                    // Non-blocking: Fetch settings then trigger task
-                    storageService.getAppSettings().then(settings => {
-                        const targetLang = settings?.translation?.target_language || 'zh-TW';
-                        return taskService.triggerSyllabus(editingCourse.id, title, description, targetLang);
-                    })
-                        .then(() => console.log('[CourseListView] Syllabus task triggered'))
-                        .catch(err => console.error('[CourseListView] Failed to trigger syllabus task:', err));
+                    storageService.getAppSettings().then(async (settings) => {
+                        const targetLang = settings?.translation?.target_language?.startsWith('en') ? 'en' : 'zh';
+                        const syllabus = await llmExtractSyllabus(title, description, targetLang);
+                        if (syllabus && Object.keys(syllabus).length > 0) {
+                            await storageService.saveCourse({ ...updatedCourse, syllabus_info: syllabus });
+                        }
+                    }).catch(err => console.error('[CourseListView] Syllabus extraction failed:', err));
                 }
 
             } else {
@@ -102,13 +102,16 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                 await storageService.saveCourse(newCourse);
 
                 if (description && description.trim().length > 10) {
-                    // Non-blocking: Fetch settings then trigger task
-                    storageService.getAppSettings().then(settings => {
-                        const targetLang = settings?.translation?.target_language || 'zh-TW';
-                        return taskService.triggerSyllabus(newCourseId, title, description, targetLang);
-                    })
-                        .then(() => console.log('[CourseListView] Syllabus task triggered'))
-                        .catch(err => console.error('[CourseListView] Failed to trigger syllabus task:', err));
+                    storageService.getAppSettings().then(async (settings) => {
+                        const targetLang = settings?.translation?.target_language?.startsWith('en') ? 'en' : 'zh';
+                        const syllabus = await llmExtractSyllabus(title, description, targetLang);
+                        if (syllabus && Object.keys(syllabus).length > 0) {
+                            const refreshed = await storageService.getCourse(newCourseId);
+                            if (refreshed) {
+                                await storageService.saveCourse({ ...refreshed, syllabus_info: syllabus });
+                            }
+                        }
+                    }).catch(err => console.error('[CourseListView] Syllabus extraction failed:', err));
                 }
 
                 // Return ID for auto-save use cases

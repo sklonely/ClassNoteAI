@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { Course, Lecture } from '../types';
 import { storageService } from '../services/storageService';
-import { ollamaService } from '../services/ollamaService';
+import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
 import { syncService } from '../services/syncService';
 import { taskService } from '../services/taskService';
 import CourseCreationDialog from './CourseCreationDialog';
@@ -170,14 +170,14 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
             const descriptionChanged = description !== course.description;
 
             if (descriptionChanged && description && description.trim().length > 50) {
-                // 如果有足夠長的描述，嘗試提取結構化信息
-                console.log('[CourseDetailView] Extracting syllabus info...');
-                const extracted = await ollamaService.extractSyllabusInfo(description);
-                console.log('[CourseDetailView] Extracted syllabus info:', extracted);
-
-                // Only use if extraction was successful (has keys)
-                if (extracted && Object.keys(extracted).length > 0) {
-                    syllabusInfo = extracted;
+                // 嘗試透過 LLM 提取結構化資訊
+                try {
+                    const extracted = await llmExtractSyllabus(course.title, description, 'zh');
+                    if (extracted && Object.keys(extracted).length > 0) {
+                        syllabusInfo = extracted;
+                    }
+                } catch (e) {
+                    console.warn('[CourseDetailView] Syllabus extraction skipped:', e);
                 }
             }
 
