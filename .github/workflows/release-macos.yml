@@ -87,6 +87,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline
 
+      # Explicit frontend build for parity with release-windows.yml.
+      # `tauri build` does run `beforeBuildCommand` from tauri.conf.json,
+      # but making it explicit means an accidental removal of that hook
+      # fails loudly here instead of silently shipping stale JS.
+      - name: Build frontend
+        run: npm run build
+
       # ===== Build Tauri =====
       - name: Build Tauri (Apple Silicon)
         run: npm run tauri build -- --target aarch64-apple-darwin
