@@ -724,23 +724,27 @@ export default function SettingsView({ }: SettingsViewProps) {
                           )}
                         </button>
 
-                        <div className="relative flex py-1 items-center">
-                          <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
-                          <span className="flex-shrink-0 mx-2 text-xs text-gray-400">或</span>
-                          <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
-                        </div>
+                        {!navigator.userAgent.includes('Windows') && (
+                          <>
+                            <div className="relative flex py-1 items-center">
+                              <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
+                              <span className="flex-shrink-0 mx-2 text-xs text-gray-400">或</span>
+                              <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
+                            </div>
 
-                        <button
-                          onClick={handleManualDownload}
-                          disabled={isDownloading}
-                          className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 text-green-600 dark:text-green-400 border border-green-600 dark:border-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:bg-gray-100 dark:disabled:bg-gray-800 disabled:text-gray-400 disabled:border-gray-300 dark:disabled:border-gray-700 rounded-lg transition-colors"
-                        >
-                          {isDownloading ? (
-                            <>下載中 {downloadProgress}%</>
-                          ) : (
-                            <><Download className="w-4 h-4" /> 下載 .dmg 並開啟 (手動安裝)</>
-                          )}
-                        </button>
+                            <button
+                              onClick={handleManualDownload}
+                              disabled={isDownloading}
+                              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 text-green-600 dark:text-green-400 border border-green-600 dark:border-green-500 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:bg-gray-100 dark:disabled:bg-gray-800 disabled:text-gray-400 disabled:border-gray-300 dark:disabled:border-gray-700 rounded-lg transition-colors"
+                            >
+                              {isDownloading ? (
+                                <>下載中 {downloadProgress}%</>
+                              ) : (
+                                <><Download className="w-4 h-4" /> 下載 .dmg 並開啟 (手動安裝)</>
+                              )}
+                            </button>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 text-gray-600 dark:text-gray-400">
