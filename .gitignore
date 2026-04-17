@@ -39,6 +39,12 @@ desktop.ini
 **/src-tauri/target/
 **/src-tauri/gen/
 
+# Windows build vendor (hydrated by scripts/bootstrap-vendor.sh on demand)
+**/src-tauri/vendor/
+
+# Claude Code local state
+.claude/
+
 # Temporary files
 *.tmp
 *.temp

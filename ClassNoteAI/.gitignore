@@ -61,3 +61,13 @@ src-tauri/target/
 *.tmp
 *.temp
 .cache/
+
+# ===================
+# Windows build vendor (hydrated by scripts/bootstrap-vendor.sh)
+# ===================
+src-tauri/vendor/
+
+# ===================
+# Claude Code / editor local state
+# ===================
+.claude/
