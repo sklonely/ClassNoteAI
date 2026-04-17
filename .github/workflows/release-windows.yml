@@ -149,21 +149,20 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          draft: false
+          # Upload as draft. The release is flipped to published by
+          # merge-update-manifest.yml once both platforms' builds have
+          # succeeded and the unified latest.json is uploaded. This way,
+          # users never see a half-populated release.
+          draft: true
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           files: |
             ClassNoteAI/release-assets/*
 
 # NOTES ----------------------------------------------------------------
-# Tauri updater expects a single `latest.json` listing all platforms.
 # This workflow uploads `latest-windows-x86_64.json`; the macOS workflow
-# uploads its own fragment. Add a final job (in either workflow or a
-# third `merge-updater-manifest.yml` that runs on release:published) to
-# download both fragments from the release, merge their `.platforms`
-# objects, and upload `latest.json`. Until that exists, point
-# `tauri.conf.json -> plugins.updater.endpoints` at multiple URLs so the
-# client falls back:
-#   "endpoints": [
-#     "https://github.com/<you>/<repo>/releases/latest/download/latest-macos-aarch64.json",
-#     "https://github.com/<you>/<repo>/releases/latest/download/latest-windows-x86_64.json"
-#   ]
+# uploads `latest-macos-aarch64.json`. Neither alone is a valid Tauri
+# updater manifest. The unified `latest.json` (which a v0.5.1+ client
+# polls via the single endpoint compiled into its binary) is produced
+# by `.github/workflows/merge-update-manifest.yml`, which fires once
+# both release workflows finish on a tag and merges both fragments.
+# See issue #33.
