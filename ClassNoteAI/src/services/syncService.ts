@@ -44,18 +44,6 @@ export class SyncService {
         this.logListeners.forEach(l => l(this.logs));
     }
 
-    private addLog(level: SyncLog['level'], message: string, details?: any) {
-        const log: SyncLog = {
-            id: crypto.randomUUID(),
-            timestamp: new Date().toISOString(),
-            level,
-            message,
-            details
-        };
-        this.logs.unshift(log); // Newer first
-        if (this.logs.length > 100) this.logs.pop(); // Limit
-        this.notifyListeners();
-    }
 
 
     private registerProcessors(): void {
