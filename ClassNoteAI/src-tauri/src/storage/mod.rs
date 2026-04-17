@@ -1,7 +1,7 @@
 pub mod database;
 pub mod models;
 
-pub use database::Database;
+pub use database::{Database, EmbeddingRow};
 pub use models::{Course, Lecture, Note, Setting, Subtitle};
 
 use rusqlite::Result as SqlResult;

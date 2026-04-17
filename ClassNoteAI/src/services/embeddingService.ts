@@ -103,3 +103,11 @@ class EmbeddingService {
 }
 
 export const embeddingService = new EmbeddingService();
+
+/**
+ * Convenience wrapper for callers that only need a text → vector call.
+ * Routed through the local Candle-backed model, not the cloud.
+ */
+export async function generateLocalEmbedding(text: string): Promise<number[]> {
+    return embeddingService.generateEmbedding(text);
+}

@@ -1,10 +1,18 @@
 /**
- * 向量存儲服務
- * 使用 localStorage 作為快速原型 (Phase 1)
- * TODO Phase 2: 遷移到 Rust 後端 SQLite
+ * Vector store for lecture chunks (RAG / semantic search).
+ *
+ * v0.5.0: backed by the Tauri-side SQLite `embeddings` table.
+ * Previous versions used localStorage under `embeddings_<lectureId>`;
+ * a one-shot migration below pulls any legacy entries into SQLite the
+ * first time each lecture is accessed.
+ *
+ * Embeddings themselves are produced by the local Candle-backed
+ * generator (see embeddingService.ts).
  */
 
-import { ollamaService } from './ollamaService';
+import { invoke } from '@tauri-apps/api/core';
+import { generateLocalEmbedding } from './embeddingService';
+import { storageService } from './storageService';
 import { TextChunk } from './chunkingService';
 
 export interface EmbeddingRecord {
@@ -23,28 +31,85 @@ export interface SearchResult {
     similarity: number;
 }
 
-const STORAGE_KEY_PREFIX = 'embeddings_';
+interface BackendEmbeddingRow {
+    id: string;
+    lecture_id: string;
+    chunk_text: string;
+    embedding: number[];
+    source_type: string;
+    position: number;
+    page_number: number | null;
+    created_at: string;
+}
+
+const LEGACY_PREFIX = 'embeddings_';
+const MIGRATED_FLAG_PREFIX = 'embeddings_migrated_';
+
+function toRecord(row: BackendEmbeddingRow): EmbeddingRecord {
+    return {
+        id: row.id,
+        lectureId: row.lecture_id,
+        chunkText: row.chunk_text,
+        embedding: row.embedding,
+        sourceType: row.source_type === 'transcript' ? 'transcript' : 'pdf',
+        position: row.position,
+        pageNumber: row.page_number ?? undefined,
+        createdAt: row.created_at,
+    };
+}
+
+function toBackend(r: EmbeddingRecord) {
+    return {
+        id: r.id,
+        lecture_id: r.lectureId,
+        chunk_text: r.chunkText,
+        embedding: r.embedding,
+        source_type: r.sourceType,
+        position: r.position,
+        page_number: r.pageNumber ?? null,
+        created_at: r.createdAt,
+    };
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length) return 0;
+    let dot = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    return denom === 0 ? 0 : dot / denom;
+}
 
 class EmbeddingStorageService {
-    /**
-     * 獲取存儲 key
-     */
-    private getStorageKey(lectureId: string): string {
-        return `${STORAGE_KEY_PREFIX}${lectureId}`;
+    /** One-time migration of legacy localStorage data for a given lecture. */
+    private async migrateLegacyIfNeeded(lectureId: string): Promise<void> {
+        const flag = `${MIGRATED_FLAG_PREFIX}${lectureId}`;
+        if (localStorage.getItem(flag)) return;
+
+        const key = `${LEGACY_PREFIX}${lectureId}`;
+        const raw = localStorage.getItem(key);
+        if (raw) {
+            try {
+                const records = JSON.parse(raw) as EmbeddingRecord[];
+                if (Array.isArray(records) && records.length) {
+                    await invoke('save_embeddings', {
+                        inputs: records.map(toBackend),
+                    });
+                }
+                localStorage.removeItem(key);
+            } catch (e) {
+                console.warn('[EmbeddingStorage] Legacy migration skipped:', e);
+            }
+        }
+        localStorage.setItem(flag, '1');
     }
 
-    /**
-     * 存儲單個嵌入向量
-     */
-    public async storeEmbedding(
-        chunk: TextChunk,
-        embedding: number[]
-    ): Promise<void> {
-        const records = await this.getEmbeddingsByLecture(chunk.lectureId);
-
-        // 檢查是否已存在，如果存在則更新
-        const existingIndex = records.findIndex(r => r.id === chunk.id);
-
+    public async storeEmbedding(chunk: TextChunk, embedding: number[]): Promise<void> {
         const record: EmbeddingRecord = {
             id: chunk.id,
             lectureId: chunk.lectureId,
@@ -55,160 +120,118 @@ class EmbeddingStorageService {
             pageNumber: chunk.pageNumber,
             createdAt: new Date().toISOString(),
         };
-
-        if (existingIndex >= 0) {
-            records[existingIndex] = record;
-        } else {
-            records.push(record);
-        }
-
-        localStorage.setItem(this.getStorageKey(chunk.lectureId), JSON.stringify(records));
+        await invoke('save_embedding', { input: toBackend(record) });
     }
 
-    /**
-     * 批量存儲嵌入向量
-     */
-    public async storeEmbeddings(
-        chunks: TextChunk[],
-        embeddings: number[][]
-    ): Promise<void> {
+    public async storeEmbeddings(chunks: TextChunk[], embeddings: number[][]): Promise<void> {
         if (chunks.length !== embeddings.length) {
             throw new Error('chunks 和 embeddings 數量不匹配');
         }
+        if (!chunks.length) return;
 
-        if (chunks.length === 0) return;
-
-        const lectureId = chunks[0].lectureId;
-        const records: EmbeddingRecord[] = chunks.map((chunk, i) => ({
-            id: chunk.id,
-            lectureId: chunk.lectureId,
-            chunkText: chunk.text,
-            embedding: embeddings[i],
-            sourceType: chunk.sourceType,
-            position: chunk.position,
-            pageNumber: chunk.pageNumber,
-            createdAt: new Date().toISOString(),
-        }));
-
-        localStorage.setItem(this.getStorageKey(lectureId), JSON.stringify(records));
-        console.log(`[EmbeddingStorageService] 已存儲 ${records.length} 個嵌入向量`);
+        const now = new Date().toISOString();
+        const inputs = chunks.map((chunk, i) =>
+            toBackend({
+                id: chunk.id,
+                lectureId: chunk.lectureId,
+                chunkText: chunk.text,
+                embedding: embeddings[i],
+                sourceType: chunk.sourceType,
+                position: chunk.position,
+                pageNumber: chunk.pageNumber,
+                createdAt: now,
+            })
+        );
+        await invoke('save_embeddings', { inputs });
     }
 
-    /**
-     * 獲取課堂的所有嵌入向量
-     */
     public async getEmbeddingsByLecture(lectureId: string): Promise<EmbeddingRecord[]> {
-        const data = localStorage.getItem(this.getStorageKey(lectureId));
-        if (!data) return [];
+        await this.migrateLegacyIfNeeded(lectureId);
+        const rows = await invoke<BackendEmbeddingRow[]>('get_embeddings_by_lecture', {
+            lectureId,
+        });
+        return rows.map(toRecord);
+    }
 
-        try {
-            return JSON.parse(data) as EmbeddingRecord[];
-        } catch {
-            return [];
-        }
+    public async getChunksByPage(
+        lectureId: string,
+        pageNumber: number
+    ): Promise<EmbeddingRecord[]> {
+        const all = await this.getEmbeddingsByLecture(lectureId);
+        return all.filter((r) => r.pageNumber === pageNumber);
     }
 
     /**
-     * 獲取特定頁面的所有 chunks
-     */
-    public async getChunksByPage(lectureId: string, pageNumber: number): Promise<EmbeddingRecord[]> {
-        const records = await this.getEmbeddingsByLecture(lectureId);
-        return records.filter(r => r.pageNumber === pageNumber);
-    }
-
-    /**
-     * 語義搜索：找到最相似的 chunks
-     * @param currentPage 當前頁面，用於優先返回該頁面/相鄰頁面的內容
+     * In-process semantic search over a lecture's embeddings. Optionally
+     * boosts matches near `preferredPage` so PDF-slide-aware queries
+     * surface locally-relevant chunks first.
      */
     public async semanticSearch(
-        query: string,
         lectureId: string,
-        topK: number = 5,
-        currentPage?: number
+        query: string,
+        topK = 5,
+        preferredPage?: number
     ): Promise<SearchResult[]> {
-        // 使用 Ollama 遠程 nomic-embed-text 生成查詢的嵌入向量
-        const EMBEDDING_MODEL = 'nomic-embed-text';
-        const queryEmbedding = await ollamaService.generateEmbedding(query, EMBEDDING_MODEL);
-
-        // 獲取課堂的所有嵌入向量
+        const queryEmbedding = await generateLocalEmbedding(query);
         const records = await this.getEmbeddingsByLecture(lectureId);
+        if (!records.length) return [];
 
-        if (records.length === 0) {
-            console.log('[EmbeddingStorageService] 沒有找到嵌入向量');
-            return [];
-        }
-
-        // 計算相似度並排序
-        const results: SearchResult[] = records.map(record => {
-            let similarity = ollamaService.cosineSimilarity(queryEmbedding, record.embedding);
-
-            // 頁面優先級加成 (當前頁面和相鄰頁面優先)
-            if (currentPage && record.pageNumber) {
-                const pageDiff = Math.abs(record.pageNumber - currentPage);
-                if (pageDiff === 0) {
-                    // 當前頁面：+10% 加成
-                    similarity *= 1.10;
-                } else if (pageDiff === 1) {
-                    // 相鄰頁面：+5% 加成
-                    similarity *= 1.05;
-                }
+        const scored: SearchResult[] = records.map((chunk) => {
+            let sim = cosineSimilarity(queryEmbedding, chunk.embedding);
+            if (preferredPage !== undefined && chunk.pageNumber !== undefined) {
+                const gap = Math.abs(chunk.pageNumber - preferredPage);
+                if (gap <= 5) sim += 0.1;
+                else if (gap <= 10) sim += 0.05;
             }
-
-            return { chunk: record, similarity };
+            return { chunk, similarity: sim };
         });
 
-        // 按相似度降序排序，取 topK
-        results.sort((a, b) => b.similarity - a.similarity);
-        const topResults = results.slice(0, topK);
-
-        console.log(`[EmbeddingStorageService] 搜索完成，返回 ${topResults.length} 個結果${currentPage ? ` (當前頁:${currentPage})` : ''}`);
-        return topResults;
+        scored.sort((a, b) => b.similarity - a.similarity);
+        return scored.slice(0, topK);
     }
 
     /**
-     * 跨課堂語義搜索（課程級別）
-     * TODO: 需要從 storageService 獲取課程下的所有課堂
+     * Cross-lecture semantic search scoped to a course. Pulls the
+     * course's lectures via storageService, unions their embeddings,
+     * and ranks them all against `query`.
      */
     public async semanticSearchByCourse(
-        _query: string,
-        _courseId: string,
-        _topK: number = 5,
-        _embeddingModel: string = 'nomic-embed-text'
+        query: string,
+        courseId: string,
+        topK = 5
     ): Promise<SearchResult[]> {
-        // 暫時返回空結果，Phase 2 實現
-        console.log('[EmbeddingStorageService] 跨課堂搜索尚未實現');
-        return [];
-    }
-
-    /**
-     * 刪除課堂的所有嵌入向量
-     */
-    public async deleteByLecture(lectureId: string): Promise<void> {
-        localStorage.removeItem(this.getStorageKey(lectureId));
-        console.log(`[EmbeddingStorageService] 已刪除課堂 ${lectureId} 的所有嵌入向量`);
-    }
-
-    /**
-     * 檢查課堂是否已有嵌入向量
-     */
-    public async hasEmbeddings(lectureId: string): Promise<boolean> {
-        const records = await this.getEmbeddingsByLecture(lectureId);
-        return records.length > 0;
-    }
-
-    /**
-     * 獲取嵌入向量統計
-     */
-    public async getStats(lectureId: string): Promise<{ total: number; pdf: number; transcript: number }> {
-        const records = await this.getEmbeddingsByLecture(lectureId);
-
-        let pdf = 0, transcript = 0;
-        for (const record of records) {
-            if (record.sourceType === 'pdf') pdf++;
-            if (record.sourceType === 'transcript') transcript++;
+        const lectures = await storageService.listLecturesByCourse(courseId);
+        const queryEmbedding = await generateLocalEmbedding(query);
+        const all: EmbeddingRecord[] = [];
+        for (const lecture of lectures) {
+            all.push(...(await this.getEmbeddingsByLecture(lecture.id)));
         }
+        return all
+            .map((chunk) => ({ chunk, similarity: cosineSimilarity(queryEmbedding, chunk.embedding) }))
+            .sort((a, b) => b.similarity - a.similarity)
+            .slice(0, topK);
+    }
 
-        return { total: records.length, pdf, transcript };
+    public async deleteByLecture(lectureId: string): Promise<void> {
+        await invoke('delete_embeddings_by_lecture', { lectureId });
+        localStorage.removeItem(`${LEGACY_PREFIX}${lectureId}`);
+    }
+
+    public async hasEmbeddings(lectureId: string): Promise<boolean> {
+        await this.migrateLegacyIfNeeded(lectureId);
+        const count = await invoke<number>('count_embeddings', { lectureId });
+        return count > 0;
+    }
+
+    public async getStats(
+        lectureId: string
+    ): Promise<{ total: number; pdf: number; transcript: number }> {
+        const records = await this.getEmbeddingsByLecture(lectureId);
+        return {
+            total: records.length,
+            pdf: records.filter((r) => r.sourceType === 'pdf').length,
+            transcript: records.filter((r) => r.sourceType === 'transcript').length,
+        };
     }
 }
 
