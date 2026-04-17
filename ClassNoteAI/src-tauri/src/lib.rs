@@ -882,6 +882,91 @@ async fn get_note(lecture_id: String) -> Result<Option<storage::Note>, String> {
         .map_err(|e| format!("獲取筆記失敗: {}", e))
 }
 
+// ===== Embeddings (local RAG store) =====
+
+#[derive(serde::Deserialize)]
+pub struct EmbeddingInput {
+    pub id: String,
+    pub lecture_id: String,
+    pub chunk_text: String,
+    pub embedding: Vec<f32>,
+    pub source_type: String,
+    pub position: i64,
+    pub page_number: Option<i64>,
+    pub created_at: String,
+}
+
+#[tauri::command]
+async fn save_embedding(input: EmbeddingInput) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    db.save_embedding(
+        &input.id,
+        &input.lecture_id,
+        &input.chunk_text,
+        &input.embedding,
+        &input.source_type,
+        input.position,
+        input.page_number,
+        &input.created_at,
+    )
+    .map_err(|e| format!("save embedding: {}", e))
+}
+
+#[tauri::command]
+async fn save_embeddings(inputs: Vec<EmbeddingInput>) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    for input in inputs {
+        db.save_embedding(
+            &input.id,
+            &input.lecture_id,
+            &input.chunk_text,
+            &input.embedding,
+            &input.source_type,
+            input.position,
+            input.page_number,
+            &input.created_at,
+        )
+        .map_err(|e| format!("save embedding {}: {}", input.id, e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_embeddings_by_lecture(lecture_id: String) -> Result<Vec<storage::EmbeddingRow>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    db.get_embeddings_by_lecture(&lecture_id)
+        .map_err(|e| format!("get embeddings: {}", e))
+}
+
+#[tauri::command]
+async fn delete_embeddings_by_lecture(lecture_id: String) -> Result<usize, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    db.delete_embeddings_by_lecture(&lecture_id)
+        .map_err(|e| format!("delete embeddings: {}", e))
+}
+
+#[tauri::command]
+async fn count_embeddings(lecture_id: String) -> Result<i64, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    db.count_embeddings(&lecture_id)
+        .map_err(|e| format!("count embeddings: {}", e))
+}
+
 /// 寫入文本文件
 #[tauri::command]
 async fn write_text_file(path: String, contents: String) -> Result<(), String> {
@@ -1584,6 +1669,12 @@ pub fn run() {
             check_local_user,
             save_note,
             get_note,
+            // Embeddings (local RAG)
+            save_embedding,
+            save_embeddings,
+            get_embeddings_by_lecture,
+            delete_embeddings_by_lecture,
+            count_embeddings,
             write_text_file,
             read_text_file,
             read_binary_file,

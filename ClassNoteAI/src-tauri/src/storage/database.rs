@@ -475,6 +475,27 @@ impl Database {
             [],
         )?;
 
+        // Embeddings — local RAG / semantic-search store. Replaces the
+        // localStorage-backed implementation from v0.4.x.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS embeddings (
+                id TEXT PRIMARY KEY,
+                lecture_id TEXT NOT NULL,
+                chunk_text TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                source_type TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                page_number INTEGER,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (lecture_id) REFERENCES lectures(id) ON DELETE CASCADE
+            )",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embeddings_lecture ON embeddings(lecture_id)",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -1097,6 +1118,114 @@ impl Database {
         })?.filter_map(|r| r.ok()).collect();
         Ok(msgs)
     }
+
+    // ===== Embeddings (RAG semantic search store) =====
+
+    /// Saves a single embedding record; replaces if the id already exists.
+    /// `embedding` is stored as a packed little-endian f32 BLOB.
+    pub fn save_embedding(
+        &self,
+        id: &str,
+        lecture_id: &str,
+        chunk_text: &str,
+        embedding: &[f32],
+        source_type: &str,
+        position: i64,
+        page_number: Option<i64>,
+        created_at: &str,
+    ) -> SqlResult<()> {
+        let blob = pack_f32_le(embedding);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO embeddings
+             (id, lecture_id, chunk_text, embedding, source_type, position, page_number, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                id,
+                lecture_id,
+                chunk_text,
+                blob,
+                source_type,
+                position,
+                page_number,
+                created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Load all embedding rows for a lecture, ordered by position.
+    pub fn get_embeddings_by_lecture(
+        &self,
+        lecture_id: &str,
+    ) -> SqlResult<Vec<EmbeddingRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, lecture_id, chunk_text, embedding, source_type, position, page_number, created_at
+             FROM embeddings WHERE lecture_id = ?1 ORDER BY position ASC",
+        )?;
+        let rows: Vec<_> = stmt
+            .query_map([lecture_id], |row| {
+                let blob: Vec<u8> = row.get(3)?;
+                Ok(EmbeddingRow {
+                    id: row.get(0)?,
+                    lecture_id: row.get(1)?,
+                    chunk_text: row.get(2)?,
+                    embedding: unpack_f32_le(&blob),
+                    source_type: row.get(4)?,
+                    position: row.get(5)?,
+                    page_number: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    pub fn delete_embeddings_by_lecture(&self, lecture_id: &str) -> SqlResult<usize> {
+        self.conn.execute(
+            "DELETE FROM embeddings WHERE lecture_id = ?1",
+            [lecture_id],
+        )
+    }
+
+    pub fn count_embeddings(&self, lecture_id: &str) -> SqlResult<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM embeddings WHERE lecture_id = ?1",
+            [lecture_id],
+            |row| row.get(0),
+        )
+    }
+}
+
+/// Public shape for embedding rows returned across the Tauri boundary.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddingRow {
+    pub id: String,
+    pub lecture_id: String,
+    pub chunk_text: String,
+    pub embedding: Vec<f32>,
+    pub source_type: String,
+    pub position: i64,
+    pub page_number: Option<i64>,
+    pub created_at: String,
+}
+
+fn pack_f32_le(vec: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vec.len() * 4);
+    for &f in vec {
+        out.extend_from_slice(&f.to_le_bytes());
+    }
+    out
+}
+
+fn unpack_f32_le(blob: &[u8]) -> Vec<f32> {
+    let n = blob.len() / 4;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let b = &blob[i * 4..i * 4 + 4];
+        out.push(f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    }
+    out
 }
 
 #[cfg(test)]
