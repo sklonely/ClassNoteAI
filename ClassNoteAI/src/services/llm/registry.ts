@@ -8,6 +8,7 @@
  */
 
 import { AnthropicProvider } from './providers/anthropic';
+import { ChatGPTOAuthProvider } from './providers/chatgpt-oauth';
 import { GeminiProvider } from './providers/gemini';
 import { GitHubModelsProvider } from './providers/github-models';
 import { OpenAIProvider } from './providers/openai';
@@ -15,6 +16,7 @@ import { LLMProvider, LLMProviderDescriptor } from './types';
 
 const PROVIDERS: Record<string, () => LLMProvider> = {
   'github-models': () => new GitHubModelsProvider(),
+  'chatgpt-oauth': () => new ChatGPTOAuthProvider(),
   anthropic: () => new AnthropicProvider(),
   openai: () => new OpenAIProvider(),
   gemini: () => new GeminiProvider(),

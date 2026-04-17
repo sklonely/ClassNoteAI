@@ -70,6 +70,13 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
     },
 }));
 
+// Mock @tauri-apps/plugin-opener
+vi.mock('@tauri-apps/plugin-opener', () => ({
+    openUrl: vi.fn(() => Promise.resolve()),
+    openPath: vi.fn(() => Promise.resolve()),
+    revealItemInDir: vi.fn(() => Promise.resolve()),
+}));
+
 // Mock @tauri-apps/plugin-http
 vi.mock('@tauri-apps/plugin-http', () => ({
     fetch: vi.fn(() => Promise.resolve({
