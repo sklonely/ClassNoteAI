@@ -1,0 +1,11 @@
+--- a/build.rs
++++ b/build.rs
+@@ -83,7 +83,7 @@
+         }
+ 
+         println!("cargo::rustc-link-arg=/FORCE:MULTIPLE");
+-        cmake.profile("Release").cxxflag("/EHsc").static_crt(true);
++        cmake.profile("Release").cxxflag("/EHsc");
+     }
+     let mut include_paths: Vec<PathBuf> = env::var("CMAKE_INCLUDE_PATH")
+         .as_ref()

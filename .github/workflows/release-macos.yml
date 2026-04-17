@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
   # 每週日 UTC 00:00 自動觸發，保持快取活躍
   schedule:
     - cron: '0 0 * * 0'
@@ -74,6 +80,13 @@ jobs:
           restore-keys: |
             ct2rs-macos-aarch64-
 
+      # ===== Hydrate vendor/ =====
+      # Cargo.toml has [patch.crates-io] pointing at src-tauri/vendor/*,
+      # which is gitignored. The patches are Windows-only no-ops on macOS,
+      # but the directories must exist for cargo to resolve the patch.
+      - name: Hydrate vendor/ (no-op patches on macOS)
+        run: bash src-tauri/scripts/bootstrap-vendor.sh
+
       # ===== 安裝 npm 依賴 =====
       - name: Install dependencies
         run: npm ci --prefer-offline
@@ -87,12 +100,24 @@ jobs:
       # - name: Build Tauri (Intel)
       #   run: npm run tauri build -- --target x86_64-apple-darwin
 
+      - name: Upload artifacts (PR / manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64-bundle
+          path: |
+            ClassNoteAI/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            ClassNoteAI/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+          retention-days: 7
+
       - name: Get version from tag
         id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
         working-directory: .
 
       - name: Generate latest.json for updater
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           cat > latest.json << EOF
@@ -110,6 +135,7 @@ jobs:
           EOF
 
       - name: Prepare release assets
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           mkdir -p release-assets
@@ -122,6 +148,7 @@ jobs:
           cp latest.json release-assets/
 
       - name: Generate Changelog
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           git fetch --tags --unshallow 2>/dev/null || git fetch --tags
           
@@ -182,6 +209,7 @@ jobs:
           echo "已安裝用戶可透過應用內「設定 → 關於與更新」檢查更新。" >> release_body.txt
 
       - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           draft: false

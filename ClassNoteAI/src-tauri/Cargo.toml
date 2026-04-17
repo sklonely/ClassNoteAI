@@ -72,3 +72,9 @@ tempfile = "3.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+
+# Windows-only build fix: remove ct2rs's forced /MT static CRT so it matches
+# the rest of the build (default /MD). No-op on macOS (inside `if os == Os::Win` block).
+[patch.crates-io]
+ct2rs = { path = "vendor/ct2rs" }
+esaxx-rs = { path = "vendor/esaxx-rs" }

@@ -1,0 +1,172 @@
+name: Build and Release (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g., 0.1.3)'
+        required: false
+        default: ''
+
+env:
+  CARGO_TERM_COLOR: always
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+
+defaults:
+  run:
+    working-directory: ClassNoteAI
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: ClassNoteAI/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      # whisper-rs-sys uses bindgen 0.69 which breaks with libclang >= 19.
+      # Pin to LLVM 18 until whisper-rs upgrades (fixed in 0.13+).
+      - name: Install LLVM 18 (for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18"
+          directory: ${{ runner.temp }}/llvm
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ClassNoteAI/src-tauri -> target
+          shared-key: "windows-rust-cache"
+          cache-all-crates: true
+
+      # CTranslate2 + whisper.cpp + sentencepiece each take a few minutes;
+      # cache their build dirs keyed to Cargo.lock + vendor patches so we
+      # only rebuild when those actually change.
+      - name: Cache native C++ builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ClassNoteAI/src-tauri/target/release/build/ct2rs-*
+            ClassNoteAI/src-tauri/target/release/build/whisper-rs-sys-*
+            ClassNoteAI/src-tauri/target/release/build/sentencepiece-sys-*
+          key: native-windows-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock', 'ClassNoteAI/src-tauri/vendor-patches/**') }}
+
+      - name: Hydrate vendor/ (ct2rs, esaxx-rs with Windows patches)
+        shell: bash
+        run: bash src-tauri/scripts/bootstrap-vendor.sh
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri
+        shell: cmd
+        env:
+          LIBCLANG_PATH: ${{ runner.temp }}\llvm\bin
+          CMAKE_GENERATOR: Visual Studio 17 2022
+          CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\ClassNoteAI\src-tauri\scripts\win-toolchain.cmake
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          npx tauri build
+
+      - name: Upload artifacts (PR / manual runs)
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: |
+            ClassNoteAI/src-tauri/target/release/bundle/msi/*.msi
+            ClassNoteAI/src-tauri/target/release/bundle/nsis/*-setup.exe
+          retention-days: 7
+
+      - name: Get version from tag
+        id: get_version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        working-directory: .
+
+      # Write a platform-specific updater manifest so Mac and Windows jobs
+      # don't overwrite each other's latest.json. See notes at bottom of file
+      # for how to merge them into a single latest.json if you use the updater.
+      - name: Generate updater manifest (Windows)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          SIG=$(cat src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null || echo "")
+          cat > latest-windows-x86_64.json << EOF
+          {
+            "version": "${VERSION}",
+            "notes": "ClassNoteAI ${VERSION} update",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "${SIG}",
+                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/ClassNoteAI_${VERSION}_x64-setup.exe"
+              }
+            }
+          }
+          EOF
+
+      - name: Prepare release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          mkdir -p release-assets
+          cp src-tauri/target/release/bundle/msi/*.msi              "release-assets/ClassNoteAI_${VERSION}_x64.msi"            || true
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe       "release-assets/ClassNoteAI_${VERSION}_x64-setup.exe"     || true
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig   "release-assets/ClassNoteAI_${VERSION}_x64-setup.exe.sig" || true
+          cp latest-windows-x86_64.json                              release-assets/
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          files: |
+            ClassNoteAI/release-assets/*
+
+# NOTES ----------------------------------------------------------------
+# Tauri updater expects a single `latest.json` listing all platforms.
+# This workflow uploads `latest-windows-x86_64.json`; the macOS workflow
+# uploads its own fragment. Add a final job (in either workflow or a
+# third `merge-updater-manifest.yml` that runs on release:published) to
+# download both fragments from the release, merge their `.platforms`
+# objects, and upload `latest.json`. Until that exists, point
+# `tauri.conf.json -> plugins.updater.endpoints` at multiple URLs so the
+# client falls back:
+#   "endpoints": [
+#     "https://github.com/<you>/<repo>/releases/latest/download/latest-macos-aarch64.json",
+#     "https://github.com/<you>/<repo>/releases/latest/download/latest-windows-x86_64.json"
+#   ]

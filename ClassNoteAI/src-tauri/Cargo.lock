@@ -1033,8 +1033,6 @@ dependencies = [
 [[package]]
 name = "ct2rs"
 version = "0.9.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f31e31891043b7d1c1cc1148f7482e44e336f19b0849394c1c54a45270900d2"
 dependencies = [
  "anyhow",
  "cmake",
@@ -1568,8 +1566,6 @@ dependencies = [
 [[package]]
 name = "esaxx-rs"
 version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
 dependencies = [
  "cc",
 ]
