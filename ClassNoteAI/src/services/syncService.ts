@@ -3,10 +3,48 @@ import { Course, Lecture } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { offlineQueueService } from './offlineQueueService';
 
+export interface SyncLog {
+    id: string;
+    timestamp: string;
+    level: 'info' | 'warn' | 'error' | 'success';
+    message: string;
+    details?: any;
+}
+
 export class SyncService {
+    private logs: SyncLog[] = [];
+    private logListeners: ((logs: SyncLog[]) => void)[] = [];
+
     constructor() {
         this.registerProcessors();
     }
+
+    // ========== Log Management ==========
+
+    public getLogs(): SyncLog[] {
+        return this.logs;
+    }
+
+    public clearLogs(): void {
+        this.logs = [];
+        this.notifyListeners();
+    }
+
+    public subscribeLogs(listener: (logs: SyncLog[]) => void): () => void {
+        this.logListeners.push(listener);
+        // Notify immediately with current logs
+        listener(this.logs);
+
+        return () => {
+            this.logListeners = this.logListeners.filter(l => l !== listener);
+        };
+    }
+
+    private notifyListeners() {
+        this.logListeners.forEach(l => l(this.logs));
+    }
+
+
 
     private registerProcessors(): void {
         // Register SYNC_PUSH processor

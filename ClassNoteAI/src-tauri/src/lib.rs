@@ -1,5 +1,9 @@
 // Whisper 模塊
 mod whisper;
+// Parakeet ASR Module (v0.4.0)
+mod parakeet;
+// 工具模塊
+mod utils;
 // 翻譯模塊
 pub mod translation; // 公開以便測試使用
                      // 數據存儲模塊
@@ -18,6 +22,7 @@ pub mod downloads;
 mod sync;
 
 use embedding::EmbeddingService;
+use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::Mutex;
 use whisper::WhisperService; // For window.emit()
@@ -1534,12 +1539,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(Arc::new(parakeet::ParakeetService::new()))
         .setup(|app| {
             // DevTools 現在由前端控制，根據 developerMode 設定
             // 前端可透過 invoke 呼叫開啟
             // 不再自動開啟
 
-            // 初始化數據庫
+            // Initialize ONNX Runtime
+            utils::onnx::init_onnx();
+
+            // Initialization of database
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = storage::init_db(&app_handle).await {
@@ -1557,6 +1566,9 @@ pub fn run() {
             greet,
             load_whisper_model,
             transcribe_audio,
+            // Parakeet Commands
+            parakeet::commands::load_parakeet_model,
+            parakeet::commands::transcribe_parakeet,
             download_whisper_model,
             check_whisper_model,
             translate_rough,

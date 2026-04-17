@@ -7,6 +7,9 @@
     "dev": "vite --debug",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "test:coverage": "vitest --coverage",
     "tauri": "tauri",
     "tauri:build": "npm run build && bash -c 'source ~/.cargo/env 2>/dev/null || true; export PATH=\"$HOME/.cargo/bin:$PATH\"; npm run tauri build' && ./fix_bundle.sh",
     "tauri:build:debug": "npm run build && bash -c 'source ~/.cargo/env 2>/dev/null || true; export PATH=\"$HOME/.cargo/bin:$PATH\"; npm run tauri build -- --debug' && ./fix_bundle.sh",
@@ -33,13 +36,19 @@
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.0.0",
+    "@types/node": "^25.0.9",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^2.1.0",
     "autoprefixer": "^10.4.22",
+    "jsdom": "^25.0.0",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.0",
     "typescript": "~5.6.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^2.1.0"
   }
 }
