@@ -536,7 +536,7 @@ export default function LectureView() {
               <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
                   {pdfPath
-                    ? (pdfPath.startsWith('blob:') ? '拖放的文件' : pdfPath.split("/").pop())
+                    ? (pdfPath.startsWith('blob:') ? '拖放的文件' : pdfPath.split(/[/\\]/).pop())
                     : '已選擇的 PDF 文件'}
                 </span>
               </div>
