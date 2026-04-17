@@ -149,7 +149,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          draft: false
+          # Upload as draft. The release is flipped to published by
+          # merge-update-manifest.yml once both platforms' builds have
+          # succeeded and the unified latest.json is uploaded. This way,
+          # users never see a half-populated release.
+          draft: true
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           files: |
             ClassNoteAI/release-assets/*

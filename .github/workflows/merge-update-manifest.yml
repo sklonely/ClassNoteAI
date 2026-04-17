@@ -130,3 +130,17 @@ jobs:
           gh release upload "$TAG" latest.json \
             -R "${GITHUB_REPOSITORY}" \
             --clobber
+
+      # Both release workflows upload as draft so users never see a
+      # half-populated release. Now that both platforms' assets are
+      # on the release AND the merged latest.json is uploaded, flip
+      # the draft to published.
+      - name: Publish release
+        if: steps.wait.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ctx.outputs.tag }}
+        run: |
+          gh release edit "$TAG" \
+            -R "${GITHUB_REPOSITORY}" \
+            --draft=false
