@@ -8,12 +8,16 @@
  */
 
 import { AnthropicProvider } from './providers/anthropic';
+import { GeminiProvider } from './providers/gemini';
 import { GitHubModelsProvider } from './providers/github-models';
+import { OpenAIProvider } from './providers/openai';
 import { LLMProvider, LLMProviderDescriptor } from './types';
 
 const PROVIDERS: Record<string, () => LLMProvider> = {
   'github-models': () => new GitHubModelsProvider(),
   anthropic: () => new AnthropicProvider(),
+  openai: () => new OpenAIProvider(),
+  gemini: () => new GeminiProvider(),
 };
 
 /** Cached instances so provider state (e.g. cached tokens) sticks around. */
