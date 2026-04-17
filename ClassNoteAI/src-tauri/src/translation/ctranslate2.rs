@@ -87,11 +87,16 @@ impl CT2Translator {
         self.translator.is_some()
     }
 
-    /// Translate a batch of texts with optional target language override
+    /// Translate a batch of texts with optional source/target language override.
+    ///
+    /// For M2M100 we prepend the source language token (e.g. `__en__`) to each
+    /// input. Without it the model sometimes refuses to cross-translate and
+    /// echoes the source instead — especially on short / repetitive inputs.
     pub fn translate_batch(
         &self,
         texts: &[String],
         target_lang_override: Option<&str>,
+        source_lang_override: Option<&str>,
     ) -> Result<Vec<String>, String> {
         let translator = self
             .translator
@@ -102,8 +107,16 @@ impl CT2Translator {
             return Ok(vec![]);
         }
 
-        // Convert to Vec<&str> for the API
-        let sources: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        // Source language token (for M2M100 input prefix)
+        let source_lang = source_lang_override.unwrap_or(&self.source_lang);
+        let src_token = m2m100_lang_token(source_lang);
+
+        // Prepend source token to each input: "__en__ Hello world"
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|t| format!("{} {}", src_token, t))
+            .collect();
+        let sources: Vec<&str> = prefixed.iter().map(|s| s.as_str()).collect();
 
         // TranslationOptions with good defaults
         let options = TranslationOptions::<String, String> {
@@ -143,19 +156,8 @@ impl CT2Translator {
         let target_lang = target_lang_override.unwrap_or(&self.target_lang);
 
         // Prepare target prefix (language token)
-        // M2M100 requires the target language token as the first token
-        // Map common codes to M2M100 tokens
-        let lang_token = match target_lang {
-            "zh" | "zh-CN" | "zh-TW" => "__zh__",
-            "en" => "__en__",
-            "ja" => "__ja__",
-            "ko" => "__ko__",
-            "fr" => "__fr__",
-            "de" => "__de__",
-            "es" => "__es__",
-            "ru" => "__ru__",
-            _ => "__en__", // Default to English if unknown
-        };
+        // M2M100 requires the target language token as the first decoded token.
+        let lang_token = m2m100_lang_token(target_lang);
 
         // Prepare target prefix (language token)
         let target_prefix = vec![vec![lang_token.to_string()]; sources.len()];
@@ -176,11 +178,33 @@ impl CT2Translator {
 
     /// Translate a single text
     pub fn translate(&self, text: &str) -> Result<String, String> {
-        let results = self.translate_batch(&[text.to_string()], None)?;
+        let results = self.translate_batch(&[text.to_string()], None, None)?;
         results
             .into_iter()
             .next()
             .ok_or_else(|| "No translation result".to_string())
+    }
+}
+
+/// Map ISO-ish language codes to the M2M100 language token used by
+/// CTranslate2's target_prefix and by the source-side text prefix we
+/// prepend manually. Keep this list aligned with the dropdown in
+/// SettingsView / SetupWizard.
+fn m2m100_lang_token(lang: &str) -> &'static str {
+    match lang {
+        "zh" | "zh-CN" | "zh-TW" => "__zh__",
+        "en" => "__en__",
+        "ja" => "__ja__",
+        "ko" => "__ko__",
+        "fr" => "__fr__",
+        "de" => "__de__",
+        "es" => "__es__",
+        "ru" => "__ru__",
+        // `auto` falls back to English as a conservative default.
+        // Whisper's language auto-detect should have reported a concrete
+        // code by the time we reach translate_batch, so this branch is
+        // mostly defensive.
+        _ => "__en__",
     }
 }
 
@@ -226,7 +250,7 @@ pub async fn translate_ct2(text: &str) -> Result<String, String> {
 pub async fn translate_ct2_batch(texts: &[String]) -> Result<Vec<String>, String> {
     let translator = get_translator().await;
     let guard = translator.read().await;
-    guard.translate_batch(texts, None)
+    guard.translate_batch(texts, None, None)
 }
 
 // ========== Aliases for compatibility with rough.rs ==========
@@ -239,14 +263,18 @@ pub async fn is_loaded() -> bool {
 /// Translate text with language parameters (uses configured languages)
 pub async fn translate_text(
     text: &str,
-    _source_lang: &str,
+    source_lang: &str,
     target_lang: &str,
 ) -> Result<String, String> {
-    // Use the provided target_lang instead of the default
+    // Pass BOTH source and target through so M2M100 knows how to cross.
     let translator = get_translator().await;
     let guard = translator.read().await;
 
-    let results = guard.translate_batch(&[text.to_string()], Some(target_lang))?;
+    let results = guard.translate_batch(
+        &[text.to_string()],
+        Some(target_lang),
+        Some(source_lang),
+    )?;
     results
         .into_iter()
         .next()

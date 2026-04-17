@@ -24,7 +24,7 @@ export interface SubtitleSegment {
   endTime: number; // 毫秒
   language?: string; // 檢測到的語言
   source: 'rough' | 'fine';     // 當前顯示的來源
-  translationSource?: 'rough' | 'fine'; // 當前翻譯的來源
+  translationSource?: 'rough' | 'fine' | 'error'; // 當前翻譯的來源 ('error' = 本地模型失敗)
   
   // 精層狀態
   fineStatus?: 'pending' | 'transcribing' | 'translating' | 'completed' | 'failed';

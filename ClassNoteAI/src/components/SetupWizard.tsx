@@ -34,7 +34,9 @@ interface SetupWizardProps {
     onComplete: () => void;
 }
 
-type WizardStep = 'welcome' | 'checking' | 'review' | 'installing' | 'complete';
+type WizardStep = 'welcome' | 'language' | 'checking' | 'review' | 'installing' | 'complete';
+
+type SourceLang = 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
 
 export default function SetupWizard({ onComplete }: SetupWizardProps) {
     const [step, setStep] = useState<WizardStep>('welcome');
@@ -43,6 +45,12 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     const [includeOptional, setIncludeOptional] = useState(false);
     const [progressMap, setProgressMap] = useState<Record<string, Progress>>({});
     const [isInstalling, setIsInstalling] = useState(false);
+
+    // v0.5.1: first-run language pair. Persisted to AppSettings at the
+    // end of the language step so transcriptionService picks it up when
+    // the user eventually starts a lecture.
+    const [sourceLang, setSourceLang] = useState<SourceLang>('auto');
+    const [targetLang, setTargetLang] = useState<string>('zh-TW');
 
     // Check requirements when entering checking step
     const checkRequirements = useCallback(async () => {
@@ -191,8 +199,90 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 首次使用需要下載必要的 AI 模型，請確保網路連線穩定。
             </p>
 
-            <button className="setup-button primary" onClick={checkRequirements}>
+            <button className="setup-button primary" onClick={() => setStep('language')}>
                 開始設置 <ArrowRight className="w-5 h-5" />
+            </button>
+        </div>
+    );
+
+    // Render language step (v0.5.1)
+    const renderLanguage = () => (
+        <div className="setup-step welcome-step">
+            <div className="setup-icon-container">
+                <div className="setup-icon">
+                    <Languages className="w-16 h-16 text-green-500" />
+                </div>
+            </div>
+
+            <h2 className="setup-subtitle">選擇語言</h2>
+            <p className="setup-description">
+                設定課堂的講者語言（來源）和你想看到的翻譯語言（目標）。
+                之後隨時可以在「設定 → 轉錄與翻譯」修改。
+            </p>
+
+            <div style={{ width: '100%', maxWidth: 480, margin: '1.5rem auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <label style={{ display: 'block' }}>
+                    <span style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 6 }}>
+                        講者語言（來源）
+                    </span>
+                    <select
+                        value={sourceLang}
+                        onChange={(e) => setSourceLang(e.target.value as SourceLang)}
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white' }}
+                    >
+                        <option value="auto">自動偵測（推薦）</option>
+                        <option value="en">English</option>
+                        <option value="ja">日本語 (Japanese)</option>
+                        <option value="ko">한국어 (Korean)</option>
+                        <option value="fr">Français (French)</option>
+                        <option value="de">Deutsch (German)</option>
+                        <option value="es">Español (Spanish)</option>
+                        <option value="zh-TW">繁體中文</option>
+                        <option value="zh-CN">簡體中文</option>
+                    </select>
+                </label>
+
+                <label style={{ display: 'block' }}>
+                    <span style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 6 }}>
+                        目標語言
+                    </span>
+                    <select
+                        value={targetLang}
+                        onChange={(e) => setTargetLang(e.target.value)}
+                        style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white' }}
+                    >
+                        <option value="zh-TW">繁體中文 (Traditional Chinese)</option>
+                        <option value="zh-CN">簡體中文 (Simplified Chinese)</option>
+                        <option value="en">English</option>
+                        <option value="ja">日本語 (Japanese)</option>
+                        <option value="ko">한국어 (Korean)</option>
+                    </select>
+                </label>
+            </div>
+
+            <button
+                className="setup-button primary"
+                onClick={async () => {
+                    // Persist the pair to AppSettings before moving on so
+                    // transcriptionService reads it when a lecture starts.
+                    try {
+                        const { storageService } = await import('../services/storageService');
+                        const existing = (await storageService.getAppSettings()) || ({} as any);
+                        await storageService.saveAppSettings({
+                            ...existing,
+                            translation: {
+                                ...(existing.translation || {}),
+                                source_language: sourceLang,
+                                target_language: targetLang,
+                            },
+                        });
+                    } catch (e) {
+                        console.warn('[SetupWizard] Could not persist language pair:', e);
+                    }
+                    await checkRequirements();
+                }}
+            >
+                繼續 <ArrowRight className="w-5 h-5" />
             </button>
         </div>
     );
@@ -416,11 +506,11 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
             <div className="setup-container">
                 {/* Progress indicator */}
                 <div className="step-indicator">
-                    {['welcome', 'checking', 'review', 'installing', 'complete'].map((s, i) => (
+                    {(['welcome', 'language', 'checking', 'review', 'installing', 'complete'] as const).map((s, i) => (
                         <div
                             key={s}
                             className={`step-dot ${s === step ? 'active' :
-                                ['welcome', 'checking', 'review', 'installing', 'complete'].indexOf(step) > i ? 'done' : ''
+                                (['welcome', 'language', 'checking', 'review', 'installing', 'complete'] as const).indexOf(step) > i ? 'done' : ''
                                 }`}
                         />
                     ))}
@@ -428,6 +518,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
 
                 {/* Step content */}
                 {step === 'welcome' && renderWelcome()}
+                {step === 'language' && renderLanguage()}
                 {step === 'checking' && renderChecking()}
                 {step === 'review' && renderReview()}
                 {step === 'installing' && renderInstalling()}

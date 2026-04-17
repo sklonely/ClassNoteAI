@@ -116,7 +116,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         }
 
         // Embedding Model: 使用 Ollama 遠程 nomic-embed-text，無需本地加載
-        console.log('[NotesView] Using Ollama remote nomic-embed-text for auto-alignment');
+        console.log('[NotesView] Using local Candle nomic-embed-text-v1 for auto-alignment');
         // Load Translation Model if provider is local
         const translationProvider = settings?.translation?.provider || 'local';
         if (translationProvider === 'local') {
@@ -611,9 +611,23 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       await storageService.saveLecture(updatedLecture);
       setCurrentLectureData(updatedLecture);
 
-      // Now it's safe to set lectureId and start transcription
+      // Now it's safe to set lectureId and start transcription.
       transcriptionService.clear();
       transcriptionService.setLectureId(currentLectureData.id);
+
+      // v0.5.1: wire the user's configured source/target languages and
+      // pre-check whether the LLM fine-refinement queue should be active
+      // for this session.
+      try {
+        const settings = await storageService.getAppSettings();
+        const src = settings?.translation?.source_language || 'auto';
+        const tgt = settings?.translation?.target_language || 'zh-TW';
+        transcriptionService.setLanguages(src, tgt);
+      } catch {
+        transcriptionService.setLanguages('auto', 'zh-TW');
+      }
+      await transcriptionService.refreshFineRefinementAvailability();
+
       transcriptionService.start();
 
       await audioRecorderRef.current.start();

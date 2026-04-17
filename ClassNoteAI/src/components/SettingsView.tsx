@@ -404,30 +404,63 @@ export default function SettingsView({ }: SettingsViewProps) {
                   </div>
                 )}
 
-                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
-                  <label className="block text-sm font-medium mb-2">目標語言 (AI 生成內容)</label>
-                  <select
-                    value={settings.translation?.target_language || 'zh-TW'}
-                    onChange={(e) => {
-                      setSettings({
-                        ...settings,
-                        translation: {
-                          ...settings.translation,
-                          target_language: e.target.value,
-                        },
-                      });
-                    }}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                  >
-                    <option value="zh-TW">繁體中文 (Traditional Chinese)</option>
-                    <option value="zh-CN">簡體中文 (Simplified Chinese)</option>
-                    <option value="en">English</option>
-                    <option value="ja">日本語 (Japanese)</option>
-                    <option value="ko">한국어 (Korean)</option>
-                  </select>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                    此設置將應用於 AI 自動生成的課程大綱、總結與筆記翻譯。
-                  </p>
+                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700 grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium mb-2">講者語言（來源）</label>
+                    <select
+                      value={settings.translation?.source_language || 'auto'}
+                      onChange={(e) => {
+                        setSettings({
+                          ...settings,
+                          translation: {
+                            ...settings.translation,
+                            source_language: e.target.value as
+                              | 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN',
+                          },
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="auto">自動偵測</option>
+                      <option value="en">English</option>
+                      <option value="ja">日本語 (Japanese)</option>
+                      <option value="ko">한국어 (Korean)</option>
+                      <option value="fr">Français (French)</option>
+                      <option value="de">Deutsch (German)</option>
+                      <option value="es">Español (Spanish)</option>
+                      <option value="zh-TW">繁體中文</option>
+                      <option value="zh-CN">簡體中文</option>
+                    </select>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      課堂上講者使用的語言，影響 ASR 與翻譯方向。
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-2">目標語言</label>
+                    <select
+                      value={settings.translation?.target_language || 'zh-TW'}
+                      onChange={(e) => {
+                        setSettings({
+                          ...settings,
+                          translation: {
+                            ...settings.translation,
+                            target_language: e.target.value,
+                          },
+                        });
+                      }}
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="zh-TW">繁體中文 (Traditional Chinese)</option>
+                      <option value="zh-CN">簡體中文 (Simplified Chinese)</option>
+                      <option value="en">English</option>
+                      <option value="ja">日本語 (Japanese)</option>
+                      <option value="ko">한국어 (Korean)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      字幕、摘要、問答都會翻譯成這個語言。
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
