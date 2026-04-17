@@ -111,11 +111,22 @@ impl CT2Translator {
         let source_lang = source_lang_override.unwrap_or(&self.source_lang);
         let src_token = m2m100_lang_token(source_lang);
 
-        // Prepend source token to each input: "__en__ Hello world"
-        let prefixed: Vec<String> = texts
+        // Translate only non-empty inputs. M2M100 given an empty string
+        // after the source token produces garbage / can hang the beam
+        // search. Record the original indices so we can interleave
+        // empty-string outputs back at the correct positions.
+        let non_empty: Vec<(usize, String)> = texts
             .iter()
-            .map(|t| format!("{} {}", src_token, t))
+            .enumerate()
+            .filter(|(_, t)| !t.trim().is_empty())
+            .map(|(i, t)| (i, format!("{} {}", src_token, t)))
             .collect();
+
+        if non_empty.is_empty() {
+            return Ok(vec![String::new(); texts.len()]);
+        }
+
+        let prefixed: Vec<String> = non_empty.iter().map(|(_, t)| t.clone()).collect();
         let sources: Vec<&str> = prefixed.iter().map(|s| s.as_str()).collect();
 
         // TranslationOptions with good defaults
@@ -167,13 +178,16 @@ impl CT2Translator {
             .translate_batch_with_target_prefix(&sources, &target_prefix, &options, None)
             .map_err(|e| format!("Translation failed: {}", e))?;
 
-        // Extract translations from results
-        let translations: Vec<String> = results
-            .into_iter()
-            .map(|(translation, _score)| translation)
-            .collect();
+        // Extract translations from results, re-interleaving empty
+        // strings at the positions whose inputs we skipped above.
+        let mut output = vec![String::new(); texts.len()];
+        for ((orig_idx, _), (translation, _score)) in
+            non_empty.iter().zip(results.into_iter())
+        {
+            output[*orig_idx] = translation;
+        }
 
-        Ok(translations)
+        Ok(output)
     }
 
     /// Translate a single text

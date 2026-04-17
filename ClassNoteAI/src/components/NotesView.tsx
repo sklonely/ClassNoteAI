@@ -1311,7 +1311,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                   {(pdfPath || pdfData) && (
                     <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
                       <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
-                        {pdfPath ? (pdfPath.startsWith('blob:') ? 'Dropped File' : pdfPath.split(/[/\\]/).pop()) : 'Selected PDF'}
+                        {pdfPath ? (pdfPath.startsWith('blob:') ? 'Dropped File' : pdfPath.split('?')[0].split('#')[0].split(/[/\\]/).pop()) : 'Selected PDF'}
                       </span>
                       <button onClick={handleSelectPDF} className="px-3 py-1 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                         Change

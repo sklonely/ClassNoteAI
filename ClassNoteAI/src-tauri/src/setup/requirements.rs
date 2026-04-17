@@ -204,17 +204,17 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
 
         // Use [System.IO.DriveInfo] to get free bytes. Works on every
         // supported Windows build without needing wmic or fsutil.
-        let ps_cmd = format!(
-            "[System.IO.DriveInfo]::new('{}').AvailableFreeSpace",
-            probe_path.replace('\'', "''")
-        );
-
+        // Pass the path via $args rather than string-interpolating it into
+        // the -Command body so backticks/$/apostrophes in APPDATA (which
+        // can legally appear in a Windows username) cannot be interpreted
+        // by PowerShell.
         match Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                &ps_cmd,
+                "[System.IO.DriveInfo]::new($args[0]).AvailableFreeSpace",
+                &probe_path,
             ])
             .output()
         {
