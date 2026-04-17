@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap, Plus, History, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { ollamaService } from '../services/ollamaService';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
 import { chat as llmChat } from '../services/llm';
@@ -18,7 +17,6 @@ interface AIChatPanelProps {
         transcriptText?: string;
         pdfData?: ArrayBuffer;
     };
-    ollamaConnected: boolean;
     currentPage?: number;
     onNavigateToPage?: (page: number) => void; // 回調跳轉到指定頁面
 }
@@ -33,7 +31,6 @@ export default function AIChatPanel({
     isOpen,
     onClose,
     context,
-    ollamaConnected,
     currentPage,
     onNavigateToPage,
 }: AIChatPanelProps) {
@@ -226,7 +223,7 @@ export default function AIChatPanel({
     };
 
     const handleSend = async () => {
-        if (!input.trim() || !ollamaConnected || isLoading) return;
+        if (!input.trim() || isLoading) return;
 
         // 自動創建 session (如果沒有)
         let session = currentSession;
@@ -260,13 +257,11 @@ export default function AIChatPanel({
             if (useRAG && hasIndex) {
                 // 使用 RAG 增強問答 (傳入對話歷史)
                 console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'}, 歷史:${chatHistory.length}條)`);
-                const standardModel = await ollamaService.getStandardModel();
                 const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
                     topK: 5,
                     systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
                     currentPage,
                     chatHistory: chatHistory.filter(m => m.role !== 'system') as Array<{ role: 'user' | 'assistant'; content: string }>,
-                    model: standardModel,
                 });
 
                 assistantMessage = {
@@ -427,7 +422,7 @@ export default function AIChatPanel({
                 <>
                     {/* Messages */}
                     <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                        {!ollamaConnected && (
+                        {false && (
                             <div className="flex items-center gap-2 p-2 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-lg text-xs">
                                 <AlertCircle className="w-3 h-3 flex-shrink-0" />
                                 <span>Ollama 未連線</span>
@@ -435,7 +430,7 @@ export default function AIChatPanel({
                         )}
 
                         {/* RAG 索引狀態 */}
-                        {ollamaConnected && (
+                        {(
                             <div className="flex items-center justify-between p-2 bg-gray-50 dark:bg-slate-700/50 rounded-lg text-xs">
                                 <div className="flex items-center gap-2">
                                     <Database className="w-3 h-3 text-gray-500" />
@@ -469,7 +464,7 @@ export default function AIChatPanel({
                             </div>
                         )}
 
-                        {messages.length === 0 && ollamaConnected && (
+                        {messages.length === 0 && (
                             <div className="text-center text-gray-400 dark:text-gray-500 py-6">
                                 <Bot className="w-10 h-10 mx-auto mb-2 opacity-50" />
                                 <p className="text-sm">有問題嗎？問問 AI 助教吧！</p>
@@ -567,13 +562,13 @@ export default function AIChatPanel({
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
                                 onKeyPress={handleKeyPress}
-                                placeholder={ollamaConnected ? '輸入問題...' : 'Ollama 未連線'}
-                                disabled={!ollamaConnected || isLoading}
+                                placeholder={true ? '輸入問題...' : 'Ollama 未連線'}
+                                disabled={isLoading}
                                 className="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-slate-700 border-0 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50"
                             />
                             <button
                                 onClick={handleSend}
-                                disabled={!ollamaConnected || !input.trim() || isLoading}
+                                disabled={!input.trim() || isLoading}
                                 className="px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50"
                             >
                                 <Send className="w-4 h-4" />

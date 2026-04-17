@@ -1,5 +1,16 @@
-import { ollamaService } from './ollamaService';
-import { taskService } from './taskService';
+import { generateLocalEmbedding } from './embeddingService';
+
+function cosineSimilarity(a: number[], b: number[]): number {
+    if (a.length !== b.length) return 0;
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+    }
+    const denom = Math.sqrt(normA) * Math.sqrt(normB);
+    return denom === 0 ? 0 : dot / denom;
+}
 
 export interface PageEmbedding {
     pageNumber: number;
@@ -67,15 +78,14 @@ class AutoAlignmentService {
             // 生成緩衝區的 Embedding
             // 取最後一段文本進行匹配
             const textToCheck = this.transcriptionBuffer.slice(-this.bufferWindowSize);
-            const EMBEDDING_MODEL = 'nomic-embed-text';
-            const bufferEmbedding = await taskService.generateEmbedding(textToCheck, EMBEDDING_MODEL);
+            const bufferEmbedding = await generateLocalEmbedding(textToCheck);
 
             let bestPage = -1;
             let maxSimilarity = -1;
 
             // 與每一頁進行比對
             for (const page of this.pageEmbeddings) {
-                let similarity = ollamaService.cosineSimilarity(bufferEmbedding, page.embedding);
+                let similarity = cosineSimilarity(bufferEmbedding, page.embedding);
 
                 // Locality Bias: 給當前頁和相鄰頁一點加成，防止亂跳
                 // 如果是當前頁或下一頁，加成 5%

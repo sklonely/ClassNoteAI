@@ -6,7 +6,8 @@
 
 import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
-import { ollamaService } from './ollamaService';
+import { generateLocalEmbedding } from './embeddingService';
+import { chat as llmChat } from './llm';
 import { ocrService } from './ocrService';
 import { pdfToImageService } from './pdfToImageService';
 
@@ -78,11 +79,9 @@ class RAGService {
             const texts = allChunks.map(c => c.text);
             const embeddings: number[][] = [];
 
-            // 使用 Ollama 遠程 nomic-embed-text 模型生成嵌入向量
-            const EMBEDDING_MODEL = 'nomic-embed-text';
-
+            // Embed locally via the Candle-backed nomic-embed-text-v1 model.
             for (let i = 0; i < texts.length; i++) {
-                const embedding = await ollamaService.generateEmbedding(texts[i], EMBEDDING_MODEL);
+                const embedding = await generateLocalEmbedding(texts[i]);
                 embeddings.push(embedding);
 
                 onProgress?.({
@@ -239,7 +238,6 @@ class RAGService {
             // 階段 3: 生成嵌入向量
             await embeddingStorageService.deleteByLecture(lectureId);
 
-            const EMBEDDING_MODEL = 'nomic-embed-text';
             const embeddings: number[][] = [];
 
             for (let i = 0; i < allChunks.length; i++) {
@@ -250,7 +248,7 @@ class RAGService {
                     message: `生成嵌入向量 ${i + 1}/${allChunks.length}...`,
                 });
 
-                const embedding = await ollamaService.generateEmbedding(allChunks[i].text, EMBEDDING_MODEL);
+                const embedding = await generateLocalEmbedding(allChunks[i].text);
                 embeddings.push(embedding);
             }
 
@@ -340,7 +338,6 @@ class RAGService {
         options?: {
             topK?: number;
             systemPrompt?: string;
-            model?: string;
             currentPage?: number; // 當前頁面，用於優先檢索
             chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>; // 對話歷史
         }
@@ -367,11 +364,11 @@ class RAGService {
         }
         messages.push({ role: 'user', content: question });
 
-        // 使用對話式生成
-        const answer = await ollamaService.chat(messages, {
-            system: enhancedSystemPrompt,
-            model: options?.model,
-        });
+        // Route through the user's configured LLM provider
+        const answer = await llmChat([
+            { role: 'system', content: enhancedSystemPrompt },
+            ...messages,
+        ]);
 
         return {
             answer,

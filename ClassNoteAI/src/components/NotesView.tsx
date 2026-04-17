@@ -8,9 +8,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { storageService } from "../services/storageService";
-import { ollamaService } from "../services/ollamaService";
-import { taskService } from "../services/taskService";
 import { summarize as llmSummarize } from "../services/llm";
+import { generateLocalEmbedding } from "../services/embeddingService";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -62,7 +61,6 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
-  const [ollamaConnected, setOllamaConnected] = useState(false);
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -258,22 +256,6 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     handleSeek(Math.max(0, seekTime));
   };
 
-  // Check Ollama Connection
-  useEffect(() => {
-    const checkOllama = async () => {
-      try {
-        const connected = await ollamaService.checkConnection();
-        setOllamaConnected(connected);
-      } catch {
-        setOllamaConnected(false);
-      }
-    };
-    checkOllama();
-    // Re-check every 30 seconds
-    const interval = setInterval(checkOllama, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
   // Update transcript content when note changes
   useEffect(() => {
     if (selectedNote?.sections) {
@@ -343,33 +325,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           const bufferCopy = pdfData.slice(0);
           const pages = await pdfService.extractAllPagesText(bufferCopy);
 
-          // Map to server format
-          const pageData = pages.map(p => ({ page_number: p.page, text: p.text }));
-
           if (currentLectureData) {
-            console.log('[NotesView] Triggering server-side PDF indexing...');
-            const task = await taskService.triggerIndexing(currentLectureData.id, pageData);
-
-            if (!task) {
-              console.log('[NotesView] Indexing queued (offline).');
-              return;
+            console.log('[NotesView] Generating per-page embeddings locally for alignment...');
+            const alignmentEmbeddings = [] as Array<{ pageNumber: number; text: string; embedding: number[] }>;
+            for (const p of pages) {
+              if (!p.text?.trim()) continue;
+              const embedding = await generateLocalEmbedding(p.text);
+              alignmentEmbeddings.push({ pageNumber: p.page, text: p.text, embedding });
             }
-
-            console.log('[NotesView] Indexing task started:', task.id);
-
-            await taskService.pollUntilCompletion(task.id);
-            console.log('[NotesView] Indexing task completed. Fetching embeddings...');
-
-            const serverEmbeddings = await taskService.getLectureEmbeddings(currentLectureData.id);
-
-            const alignmentEmbeddings = serverEmbeddings.map(e => ({
-              pageNumber: e.page_number,
-              text: e.content,
-              embedding: e.embedding
-            }));
-
             autoAlignmentService.setPageEmbeddings(alignmentEmbeddings);
-            console.log("PDF alignment data ready (from server)");
+            console.log(`PDF alignment ready (${alignmentEmbeddings.length} pages)`);
           } else {
             console.warn('Cannot index PDF: Lecture ID not available');
           }
@@ -1310,11 +1275,9 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             onClick={() => setIsAIChatOpen(!isAIChatOpen)}
             className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isAIChatOpen
               ? 'bg-purple-500 text-white'
-              : ollamaConnected
-                ? 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 hover:bg-purple-100'
-                : 'bg-gray-100 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
+              : 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 hover:bg-purple-100'
               }`}
-            title={ollamaConnected ? 'AI 助教' : 'Ollama 未連線'}
+            title="AI 助教"
           >
             <Bot size={18} />
             <span className="hidden sm:inline">AI 助教</span>
@@ -1653,7 +1616,6 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             transcriptText: transcriptContent,
             pdfData: pdfData || undefined,
           }}
-          ollamaConnected={ollamaConnected}
           currentPage={currentPage}
           onNavigateToPage={(page) => pdfViewerRef.current?.scrollToPage(page)}
         />

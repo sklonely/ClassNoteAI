@@ -20,8 +20,6 @@ import {
 import { Course, Lecture } from '../types';
 import { storageService } from '../services/storageService';
 import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
-import { syncService } from '../services/syncService';
-import { taskService } from '../services/taskService';
 import CourseCreationDialog from './CourseCreationDialog';
 
 interface CourseDetailViewProps {
@@ -48,48 +46,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
         loadData();
     }, [courseId]);
 
-    // SSE Event Listener for real-time updates
-    useEffect(() => {
-        let eventSource: EventSource | null = null;
-
-        const connectSSE = async () => {
-            const settings = await storageService.getAppSettings();
-            if (!settings?.server?.enabled) return;
-
-            console.log('[CourseDetailView] Connecting to SSE...');
-            eventSource = await taskService.startEventStream(async (event) => {
-                if (event.status === 'completed' || event.status === 'failed') {
-                    console.log('[CourseDetailView] Task update received:', event);
-
-                    // Simple strategy: If ANY task completes, try to pull updates.
-                    // Optimizations can filter by event.task_type later.
-                    if (settings.sync?.username) {
-                        try {
-                            console.log('[CourseDetailView] Syncing updated data...');
-                            await syncService.pullData(settings.server.url, settings.sync.username);
-
-                            // Reload local data
-                            await loadData();
-                            console.log('[CourseDetailView] Data reloaded.');
-                        } catch (err) {
-                            console.error('[CourseDetailView] Sync failed after SSE event:', err);
-                        }
-                    }
-                }
-            });
-        };
-
-        connectSSE();
-
-        return () => {
-            if (eventSource) {
-                console.log('[CourseDetailView] Closing SSE connection');
-                eventSource.close();
-            }
-        };
-    }, [courseId]);
-
-    // 點擊外部關閉菜單（但不在刪除確認期間）
+// 點擊外部關閉菜單（但不在刪除確認期間）
     useEffect(() => {
         const handleClickOutside = () => {
             if (!isDeleting) {
