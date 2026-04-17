@@ -1477,14 +1477,29 @@ fn convert_with_libreoffice(
 
     let temp_dir = output_path.parent().ok_or("Invalid output path")?;
 
-    let soffice_cmd = if cfg!(target_os = "macos") {
+    let soffice_cmd: String = if cfg!(target_os = "macos") {
         if Path::new("/Applications/LibreOffice.app/Contents/MacOS/soffice").exists() {
-            "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+            "/Applications/LibreOffice.app/Contents/MacOS/soffice".to_string()
         } else {
-            "soffice"
+            "soffice".to_string()
         }
+    } else if cfg!(target_os = "windows") {
+        // LibreOffice on Windows isn't on PATH by default. Prefer soffice.com
+        // (the console wrapper that waits for completion) under the standard
+        // install directories, falling back to "soffice" on PATH.
+        const WIN_CANDIDATES: &[&str] = &[
+            r"C:\Program Files\LibreOffice\program\soffice.com",
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.com",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ];
+        WIN_CANDIDATES
+            .iter()
+            .find(|p| Path::new(p).exists())
+            .map(|p| (*p).to_string())
+            .unwrap_or_else(|| "soffice".to_string())
     } else {
-        "soffice"
+        "soffice".to_string()
     };
 
     println!("Using LibreOffice: {}", soffice_cmd);
