@@ -1,20 +1,21 @@
 /**
  * GitHub Models provider.
  *
- * Uses the user's GitHub Personal Access Token (with `models:read` scope)
- * or a Copilot Pro/Business/Enterprise subscription to call the
- * OpenAI-compatible inference endpoint at https://models.github.ai.
+ * Uses the user's GitHub Personal Access Token (with `models:read` scope).
+ * Quota included with Copilot Pro/Business/Enterprise subscription.
  *
- * Model catalog is a curated subset — GitHub Models hosts dozens of
- * models but only a handful are useful for transcription refinement.
+ * Wire format is OpenAI-compatible, so we delegate to the shared helper.
  */
 
-import { fetch } from '@tauri-apps/plugin-http';
 import { keyStore } from '../keyStore';
-import { parseSSE } from '../sse';
+import {
+  completeOpenAICompatible,
+  smokeTestOpenAICompatible,
+  streamOpenAICompatible,
+  type OpenAICompatConfig,
+} from '../openai-compat';
 import {
   LLMError,
-  LLMErrorKind,
   LLMModelInfo,
   LLMProvider,
   LLMProviderDescriptor,
@@ -44,18 +45,21 @@ export const githubModelsDescriptor: LLMProviderDescriptor = {
   notes: 'Uses your GitHub PAT (scope: models:read). Quota included with Copilot Pro/Business/Enterprise subscription.',
 };
 
-function errorKindFromStatus(status: number): LLMErrorKind {
-  if (status === 401 || status === 403) return 'auth';
-  if (status === 429) return 'rate_limit';
-  if (status >= 500) return 'provider';
-  return 'unknown';
-}
-
 export class GitHubModelsProvider implements LLMProvider {
   readonly descriptor = githubModelsDescriptor;
 
-  private pat(): string | null {
-    return keyStore.get(PROVIDER_ID, AUTH_FIELD);
+  private config(): OpenAICompatConfig {
+    const pat = keyStore.get(PROVIDER_ID, AUTH_FIELD);
+    if (!pat) throw new LLMError('GitHub PAT not configured', 'auth', PROVIDER_ID);
+    return {
+      endpoint: ENDPOINT,
+      providerId: PROVIDER_ID,
+      headers: {
+        Authorization: `Bearer ${pat}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+    };
   }
 
   async isConfigured(): Promise<boolean> {
@@ -63,25 +67,10 @@ export class GitHubModelsProvider implements LLMProvider {
   }
 
   async testConnection(): Promise<LLMTestResult> {
-    const pat = this.pat();
-    if (!pat) return { ok: false, message: 'No PAT saved.' };
-
-    try {
-      const res = await fetch(ENDPOINT, {
-        method: 'POST',
-        headers: this.buildHeaders(pat),
-        body: JSON.stringify({
-          model: CURATED_MODELS[0].id,
-          messages: [{ role: 'user', content: 'ping' }],
-          max_tokens: 1,
-        }),
-      });
-      if (res.ok) return { ok: true, message: `Authenticated against ${ENDPOINT}` };
-      const body = await res.text();
-      return { ok: false, message: `HTTP ${res.status}: ${body.slice(0, 200)}` };
-    } catch (err) {
-      return { ok: false, message: String(err) };
+    if (!keyStore.has(PROVIDER_ID, AUTH_FIELD)) {
+      return { ok: false, message: 'No PAT saved.' };
     }
+    return smokeTestOpenAICompatible(this.config(), CURATED_MODELS[0].id);
   }
 
   async listModels(): Promise<LLMModelInfo[]> {
@@ -89,96 +78,10 @@ export class GitHubModelsProvider implements LLMProvider {
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
-    const pat = this.requirePat();
-    const res = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: this.buildHeaders(pat),
-      body: JSON.stringify(this.buildBody(request, false)),
-      signal: request.signal,
-    });
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw new LLMError(`HTTP ${res.status}: ${body.slice(0, 200)}`, errorKindFromStatus(res.status), PROVIDER_ID);
-    }
-
-    const data = await res.json();
-    const choice = data.choices?.[0];
-    return {
-      content: choice?.message?.content ?? '',
-      model: data.model ?? request.model,
-      finishReason: choice?.finish_reason,
-      usage: data.usage && {
-        inputTokens: data.usage.prompt_tokens ?? 0,
-        outputTokens: data.usage.completion_tokens ?? 0,
-      },
-    };
+    return completeOpenAICompatible(this.config(), request);
   }
 
   async *stream(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
-    const pat = this.requirePat();
-    const res = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: this.buildHeaders(pat),
-      body: JSON.stringify(this.buildBody(request, true)),
-      signal: request.signal,
-    });
-
-    if (!res.ok || !res.body) {
-      const body = !res.ok ? await res.text().catch(() => '') : '';
-      throw new LLMError(`HTTP ${res.status}: ${body.slice(0, 200)}`, errorKindFromStatus(res.status), PROVIDER_ID);
-    }
-
-    let lastUsage: LLMStreamChunk['usage'];
-    let lastFinish: LLMStreamChunk['finishReason'];
-
-    for await (const payload of parseSSE(res.body, request.signal)) {
-      let parsed: any;
-      try {
-        parsed = JSON.parse(payload);
-      } catch {
-        continue;
-      }
-      const choice = parsed.choices?.[0];
-      const delta = choice?.delta?.content ?? '';
-      if (choice?.finish_reason) lastFinish = choice.finish_reason;
-      if (parsed.usage) {
-        lastUsage = {
-          inputTokens: parsed.usage.prompt_tokens ?? 0,
-          outputTokens: parsed.usage.completion_tokens ?? 0,
-        };
-      }
-      if (delta) yield { delta, done: false };
-    }
-
-    yield { delta: '', done: true, usage: lastUsage, finishReason: lastFinish };
-  }
-
-  // ---------- helpers ----------
-
-  private requirePat(): string {
-    const pat = this.pat();
-    if (!pat) throw new LLMError('GitHub PAT not configured', 'auth', PROVIDER_ID);
-    return pat;
-  }
-
-  private buildHeaders(pat: string): Record<string, string> {
-    return {
-      Authorization: `Bearer ${pat}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
-  }
-
-  private buildBody(request: LLMRequest, stream: boolean): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      model: request.model,
-      messages: request.messages,
-      stream,
-    };
-    if (request.temperature !== undefined) body.temperature = request.temperature;
-    if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
-    if (request.jsonMode) body.response_format = { type: 'json_object' };
-    return body;
+    yield* streamOpenAICompatible(this.config(), request);
   }
 }

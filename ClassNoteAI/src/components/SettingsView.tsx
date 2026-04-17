@@ -5,6 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 
 import WhisperModelManager from './WhisperModelManager';
 import TranslationModelManager from './TranslationModelManager';
+import AIProviderSettings from './AIProviderSettings';
 import { ollamaService, OllamaModel } from "../services/ollamaService";
 
 import { storageService } from "../services/storageService";
@@ -648,6 +649,21 @@ export default function SettingsView({ }: SettingsViewProps) {
       case 'ollama-settings':
         return (
           <div className="space-y-6 animate-in fade-in duration-300">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/50">
+                <h3 className="text-lg font-medium flex items-center gap-2">
+                  <Brain className="w-5 h-5 text-indigo-500" />
+                  雲端 AI Providers
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  配置 LLM 訂閱或 API key，供翻譯、摘要、Q&amp;A 等功能使用（接入於 v0.5.0+）。
+                </p>
+              </div>
+              <div className="p-6">
+                <AIProviderSettings />
+              </div>
+            </div>
+
             <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900/50">
                 <h3 className="text-lg font-medium flex items-center gap-2">
