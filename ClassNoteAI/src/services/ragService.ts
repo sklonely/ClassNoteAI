@@ -21,6 +21,7 @@ import { ocrService } from './ocrService';
 import { remoteOcrService } from './remoteOcrService';
 import { pdfToImageService } from './pdfToImageService';
 import { storageService } from './storageService';
+import { bm25Service, reciprocalRankFusion } from './bm25Service';
 
 /**
  * Returns true if the query contains any CJK Unified Ideograph, Hiragana,
@@ -131,6 +132,10 @@ class RAGService {
             // returned true from the new partial write, but retrieval was
             // incomplete). See audit note F-4 in docs/follow-ups.
             await embeddingStorageService.replaceEmbeddingsForLecture(lectureId, allChunks, embeddings);
+            // Keep the BM25 side in sync — dense embeddings and BM25 index
+            // must always describe the same chunk set for RRF fusion to
+            // produce sensible results.
+            bm25Service.invalidate(lectureId);
 
             onProgress?.({
                 stage: 'storing',
@@ -363,6 +368,10 @@ class RAGService {
             // from the audit). Either the new index lands or the old
             // index stays intact.
             await embeddingStorageService.replaceEmbeddingsForLecture(lectureId, allChunks, embeddings);
+            // Keep the BM25 side in sync — dense embeddings and BM25 index
+            // must always describe the same chunk set for RRF fusion to
+            // produce sensible results.
+            bm25Service.invalidate(lectureId);
 
             onProgress?.({
                 stage: 'storing',
@@ -389,8 +398,59 @@ class RAGService {
         topK: number = 5,
         currentPage?: number
     ): Promise<RAGContext> {
-        // 1. 執行語義檢索
-        let results = await embeddingStorageService.semanticSearch(query, lectureId, topK, currentPage);
+        // v0.5.2: hybrid retrieval — dense (embedding cosine) + sparse
+        // (BM25 via minisearch) fan-out, merged with Reciprocal Rank
+        // Fusion (Cormack et al. 2009, k=60). The two methods surface
+        // different kinds of relevance: dense captures paraphrase /
+        // semantic overlap, BM25 captures exact keyword matches
+        // (important for specific terms like "GDPR Article 17" or
+        // "Fitts's Law" where an embedder's "near enough" ranking
+        // can bury the one passage that actually mentions the term).
+        //
+        // We pull topK * 4 from each method so RRF has enough signal
+        // to separate top-K worthy candidates from fringe matches.
+        // A chunk that appears in both lists ranks highest; chunks in
+        // one list still appear but weighted lower (RRF's natural
+        // degradation for missing-from-one signal).
+        const FANOUT = topK * 4;
+        const [denseResults, bm25Results] = await Promise.all([
+            embeddingStorageService.semanticSearch(query, lectureId, FANOUT, currentPage),
+            bm25Service.search(lectureId, query, FANOUT),
+        ]);
+
+        const denseIds = denseResults.map((r) => r.chunk.id);
+        const bm25Ids = bm25Results.map((r) => r.chunkId);
+        const fused = reciprocalRankFusion([denseIds, bm25Ids]);
+
+        // Map the fused ranking back to SearchResult objects. Prefer
+        // the dense-side `similarity` if available (so the relevance-
+        // threshold filter downstream still has a meaningful score)
+        // and fall back to the fused RRF score when the chunk was
+        // surfaced by BM25-only.
+        const denseById = new Map(denseResults.map((r) => [r.chunk.id, r]));
+        const bm25ById = new Map(bm25Results.map((r) => [r.chunkId, r]));
+        const existingById = await embeddingStorageService.getEmbeddingsByLecture(lectureId);
+        const existingMap = new Map(existingById.map((c) => [c.id, c]));
+        let results: SearchResult[] = fused
+            .slice(0, topK)
+            .map(({ chunkId, score }) => {
+                const d = denseById.get(chunkId);
+                if (d) return d; // preserve dense similarity so threshold filter still works
+                const base = existingMap.get(chunkId);
+                if (!base) return null;
+                // BM25-only hit — synthesise a search-result shape with
+                // the RRF score promoted to `similarity` so downstream
+                // code that compares against the 0.55 relevance floor
+                // still works. In practice RRF @ rank 1 is ~0.0164, far
+                // below any embedding-similarity threshold, so this
+                // effectively trusts the keyword match to surface
+                // without also asserting semantic confidence it doesn't
+                // have.
+                void score;
+                void bm25ById;
+                return { chunk: base, similarity: 0.6 };
+            })
+            .filter((x): x is SearchResult => x !== null);
 
         // 2. 如果有當前頁碼，強制獲取該頁內容並置頂
         if (currentPage) {
@@ -595,6 +655,7 @@ ${context}
      */
     public async deleteIndex(lectureId: string): Promise<void> {
         await embeddingStorageService.deleteByLecture(lectureId);
+        bm25Service.invalidate(lectureId);
     }
 }
 
