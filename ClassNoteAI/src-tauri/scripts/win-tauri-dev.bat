@@ -62,10 +62,19 @@ if not defined VS_VCVARS (
 call "%VS_VCVARS%" >nul
 
 REM ---- Locate libclang ------------------------------------------------------
-if not defined LIBCLANG_PATH (
-    if exist "%USERPROFILE%\llvm18\bin\libclang.dll" (
-        set "LIBCLANG_PATH=%USERPROFILE%\llvm18\bin"
-    ) else if exist "C:\Program Files\LLVM\bin\libclang.dll" (
+REM llvm18 wins unconditionally if present. Any externally-set
+REM LIBCLANG_PATH (e.g. pointing at scoop's LLVM 22) is deliberately
+REM overridden — newer libclang produces a different bindgen translation
+REM for whisper.cpp's function-pointer-laden `whisper_full_params`
+REM (emits opaque `_address` instead of real fields), which makes
+REM `whisper-rs-sys 0.9.0` / `whisper-rs 0.11.1` fail to compile with
+REM "no field `progress_callback_user_data` on type `whisper_full_params`".
+REM Keeping this override pinned to libclang 18 is the one thing that
+REM guarantees a clean cargo build in this project.
+if exist "%USERPROFILE%\llvm18\bin\libclang.dll" (
+    set "LIBCLANG_PATH=%USERPROFILE%\llvm18\bin"
+) else if not defined LIBCLANG_PATH (
+    if exist "C:\Program Files\LLVM\bin\libclang.dll" (
         set "LIBCLANG_PATH=C:\Program Files\LLVM\bin"
     )
 )
