@@ -137,6 +137,30 @@ class RAGService {
         forceRefresh: boolean = false // 是否強制刷新 (忽略緩存)
     ): Promise<{ chunksCount: number; success: boolean }> {
         try {
+            // Pre-flight: if Ollama is not reachable in ≤2.5 s, don't run
+            // the 32×60s-per-page OCR marathon — fall back directly to the
+            // pdfjs-only text path that indexLecture() uses. Without this,
+            // users without Ollama see "OCR 識別頁面 X/32..." stuck for
+            // ~100 min before it gives up page-by-page.
+            if (pdfData) {
+                const ollamaReady = await ocrService.isAvailable();
+                if (!ollamaReady) {
+                    console.warn(
+                        '[RAGService] Ollama deepseek-ocr unavailable — falling back to pdfjs text extraction',
+                    );
+                    onProgress?.({
+                        stage: 'chunking',
+                        current: 0,
+                        total: 1,
+                        message: '未偵測到 Ollama OCR，改用 PDF 文字提取',
+                    });
+                    // pdfjs-only path: renderPages() is OCR-free; ragService
+                    // already knows how to handle chunks from pdfToImageService.
+                    const pdfText = await pdfToImageService.extractAllText(pdfData.slice(0));
+                    return this.indexLecture(lectureId, pdfText, transcriptText, onProgress);
+                }
+            }
+
             const allChunks: TextChunk[] = [];
 
             // 階段 1: OCR 識別 PDF 頁面

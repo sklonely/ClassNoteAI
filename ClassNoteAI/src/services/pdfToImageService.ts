@@ -170,6 +170,26 @@ class PdfToImageService {
             .map((item: any) => item.str)
             .join(' ');
     }
+
+    /**
+     * Extract all plain text from a PDF via pdfjs (no OCR). Used as the
+     * pre-flight fallback when Ollama deepseek-ocr isn't reachable —
+     * avoids spending minutes on per-page OCR timeouts.
+     *
+     * Pages are joined with form-feed so downstream chunking can still
+     * see page boundaries; caller usually splits again on its own.
+     */
+    public async extractAllText(pdfData: ArrayBuffer): Promise<string> {
+        const loadingTask = pdfjsLib.getDocument({ data: pdfData.slice(0) });
+        const pdf = await loadingTask.promise;
+        const pages: string[] = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            pages.push(textContent.items.map((it: any) => it.str).join(' '));
+        }
+        return pages.join('\n\n');
+    }
 }
 
 export const pdfToImageService = new PdfToImageService();

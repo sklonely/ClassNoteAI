@@ -16,16 +16,26 @@ export interface OCRResult {
 
 class OCRService {
     private model = 'deepseek-ocr';
+    // Cache a negative `isAvailable()` result for this TTL so repeated
+    // RAG-indexing attempts don't each spend 2 s probing an Ollama host
+    // we already know is down. Positive results also cached so we don't
+    // hammer the /api/tags endpoint.
+    private availabilityCache: { result: boolean; at: number } | null = null;
+    private static readonly AVAILABILITY_TTL_MS = 60_000;
 
     /**
-     * 獲取 Ollama Host 地址
+     * Get the configured Ollama host. Returns empty string if the user
+     * hasn't configured one — callers should treat that as "OCR disabled"
+     * and skip straight to the pdfjs fallback. The previous hardcoded
+     * Tailscale IP (`100.118.7.50`) was a dev-machine artifact that made
+     * every production user spin forever on connection timeouts. See
+     * AI 助教 indexing hang report (v0.5.2 user feedback).
      */
-    private async getHost(): Promise<string> {
+    private async getHost(): Promise<string | null> {
         const settings = await storageService.getAppSettings();
-        let host = settings?.ollama?.host || 'http://100.118.7.50:11434';
-        if (host.endsWith('/')) {
-            host = host.slice(0, -1);
-        }
+        let host = settings?.ollama?.host?.trim() || '';
+        if (!host) return null;
+        if (host.endsWith('/')) host = host.slice(0, -1);
         return host;
     }
 
@@ -43,6 +53,9 @@ class OCRService {
     public async recognizePage(imageBase64: string, pageNumber: number, retries: number = 2): Promise<OCRResult> {
         try {
             const host = await this.getHost();
+            if (!host) {
+                throw new Error('Ollama host not configured — skipping OCR');
+            }
 
             // 設置 60 秒超時
             const controller = new AbortController();
@@ -201,21 +214,43 @@ class OCRService {
     }
 
     /**
-     * 檢查 OCR 模型是否可用
+     * Check whether an Ollama instance with `deepseek-ocr` is reachable.
+     * Cheap (≤ 2.5 s) and cached — safe to call as a pre-flight from
+     * buildIndex() without adding perceptible UI latency. Negative
+     * results are cached for `AVAILABILITY_TTL_MS` so the 2.5 s probe
+     * doesn't repeat for every page of a 30-page PDF.
      */
     public async isAvailable(): Promise<boolean> {
+        const now = Date.now();
+        if (
+            this.availabilityCache &&
+            now - this.availabilityCache.at < OCRService.AVAILABILITY_TTL_MS
+        ) {
+            return this.availabilityCache.result;
+        }
+
+        const set = (result: boolean) => {
+            this.availabilityCache = { result, at: now };
+            return result;
+        };
+
         try {
             const host = await this.getHost();
-            const response = await fetch(`${host}/api/tags`);
+            if (!host) return set(false);
 
-            if (!response.ok) return false;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-            const data = await response.json() as { models?: Array<{ name: string }> };
-            const models = data.models || [];
+            const response = await fetch(`${host}/api/tags`, { signal: controller.signal });
+            clearTimeout(timeoutId);
 
-            return models.some(m => m.name.includes('deepseek-ocr'));
+            if (!response.ok) return set(false);
+
+            const data = (await response.json()) as { models?: Array<{ name: string }> };
+            const hasModel = (data.models || []).some((m) => m.name.includes('deepseek-ocr'));
+            return set(hasModel);
         } catch {
-            return false;
+            return set(false);
         }
     }
 }
