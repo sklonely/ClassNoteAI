@@ -22,6 +22,38 @@ import { storageService } from '../services/storageService';
 import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
 import CourseCreationDialog from './CourseCreationDialog';
 
+/**
+ * LLM syllabus output is best-effort JSON. Even with strict prompts,
+ * fields we typed as `string` occasionally come back as objects or
+ * arrays (e.g. `teaching_assistants` returned as
+ * `[{name, email, office_hours}, ...]`). Rendering those directly
+ * triggers React's "Objects are not valid as a React child" error
+ * and crashes the whole CourseDetailView via ErrorBoundary.
+ *
+ * Normalize anything to a human-readable string before render.
+ */
+function toDisplayString(v: unknown): string {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (Array.isArray(v)) return v.map(toDisplayString).filter(Boolean).join('; ');
+    if (typeof v === 'object') {
+        // Prefer common name-like keys so objects render as something
+        // human before falling back to key=value joins.
+        const o = v as Record<string, unknown>;
+        const nameish = o.name ?? o.display_name ?? o.title;
+        const parts: string[] = [];
+        if (nameish) parts.push(String(nameish));
+        for (const [k, val] of Object.entries(o)) {
+            if (k === 'name' || k === 'display_name' || k === 'title') continue;
+            if (val == null || val === '') continue;
+            parts.push(`${k}: ${toDisplayString(val)}`);
+        }
+        return parts.join(' — ');
+    }
+    return String(v);
+}
+
 interface CourseDetailViewProps {
     courseId: string;
     onBack: () => void;
@@ -44,6 +76,20 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
 
     useEffect(() => {
         loadData();
+    }, [courseId]);
+
+    // 當背景任務（syllabus 抽取 / summary 生成）寫回 storage 後，storageService
+    // 會發 `classnote-course-updated` event。如果正在看的就是這個 course，重 fetch
+    // 一次，讓「AI 正在生成課程大綱...」spinner 換成結構化內容。
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const detail = (e as CustomEvent).detail as { courseId?: string } | undefined;
+            if (detail?.courseId && detail.courseId === courseId) {
+                loadData();
+            }
+        };
+        window.addEventListener('classnote-course-updated', handler);
+        return () => window.removeEventListener('classnote-course-updated', handler);
     }, [courseId]);
 
 // 點擊外部關閉菜單（但不在刪除確認期間）
@@ -220,7 +266,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                     {syllabus_info.topic && (
                                         <div>
                                             <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">課程主題</h3>
-                                            <p className="text-sm text-gray-700 dark:text-gray-300">{syllabus_info.topic}</p>
+                                            <p className="text-sm text-gray-700 dark:text-gray-300">{toDisplayString(syllabus_info.topic)}</p>
                                         </div>
                                     )}
 
@@ -230,7 +276,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                                 <Clock className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
                                                 <div>
                                                     <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">時間</h3>
-                                                    <p className="text-sm text-gray-700 dark:text-gray-300">{syllabus_info.time}</p>
+                                                    <p className="text-sm text-gray-700 dark:text-gray-300">{toDisplayString(syllabus_info.time)}</p>
                                                 </div>
                                             </div>
                                         )}
@@ -239,16 +285,16 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                                 <User className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
                                                 <div>
                                                     <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">講師 & 助教</h3>
-                                                    <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">{syllabus_info.instructor}</p>
+                                                    <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">{toDisplayString(syllabus_info.instructor)}</p>
                                                     {syllabus_info.office_hours && (
                                                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-                                                            辦公時間: {syllabus_info.office_hours}
+                                                            辦公時間: {toDisplayString(syllabus_info.office_hours)}
                                                         </p>
                                                     )}
                                                     {syllabus_info.teaching_assistants && (
                                                         <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700/50">
                                                             <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                                <span className="font-medium">助教:</span> {syllabus_info.teaching_assistants}
+                                                                <span className="font-medium">助教:</span> {toDisplayString(syllabus_info.teaching_assistants)}
                                                             </p>
                                                         </div>
                                                     )}
@@ -260,7 +306,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                                 <MapPin className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
                                                 <div>
                                                     <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">地點</h3>
-                                                    <p className="text-sm text-gray-700 dark:text-gray-300">{syllabus_info.location}</p>
+                                                    <p className="text-sm text-gray-700 dark:text-gray-300">{toDisplayString(syllabus_info.location)}</p>
                                                 </div>
                                             </div>
                                         )}
@@ -283,8 +329,8 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                                     <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
                                                         {syllabus_info.grading.map((item, index) => (
                                                             <tr key={index}>
-                                                                <td className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300">{item.item}</td>
-                                                                <td className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300 text-right font-medium">{item.percentage}</td>
+                                                                <td className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300">{toDisplayString(item.item)}</td>
+                                                                <td className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300 text-right font-medium">{toDisplayString(item.percentage)}</td>
                                                             </tr>
                                                         ))}
                                                     </tbody>
@@ -303,7 +349,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                                 {syllabus_info.schedule.map((item, index) => (
                                                     <li key={index} className="text-sm text-gray-700 dark:text-gray-300 flex items-start gap-2">
                                                         <span className="text-gray-400 text-xs mt-0.5">•</span>
-                                                        <span>{item}</span>
+                                                        <span>{toDisplayString(item)}</span>
                                                     </li>
                                                 ))}
                                             </ul>

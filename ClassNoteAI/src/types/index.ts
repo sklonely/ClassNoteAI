@@ -108,15 +108,22 @@ export interface AppSettings {
     source_language?: 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
     target_language?: string; // 目標語言 (e.g. "zh-TW", "en")。v0.5.1 預設 zh-TW。
   };
+  /**
+   * @deprecated Remnant of the pre-v0.5.0 Ollama-backed setup. Only the
+   * optional `host` field is still consulted (by `ocrService.ts` — if a
+   * user has a local deepseek-ocr running, RAG indexing will use it).
+   * All other sub-fields are unread. Kept in the type so existing users'
+   * persisted JSON doesn't produce `unknown-key` warnings on migration.
+   */
   ollama?: {
-    host: string;
-    model: string;
-    enabled: boolean;
+    host?: string;
+    model?: string;
+    enabled?: boolean;
     aiModels?: {
-      embedding: string;  // Embedding 模型 (e.g., nomic-embed-text)
-      light: string;      // 輕量任務 (關鍵詞、對話壓縮)
-      standard: string;   // 標準任務 (RAG、對話)
-      heavy: string;      // 重量任務 (總結)
+      embedding?: string;
+      light?: string;
+      standard?: string;
+      heavy?: string;
     };
   };
   sync?: {

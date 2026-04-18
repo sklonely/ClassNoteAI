@@ -1588,8 +1588,19 @@ fn get_temp_dir() -> String {
 
 #[tauri::command]
 async fn write_temp_file(path: String, data: Vec<u8>) -> Result<(), String> {
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::Write;
+    use std::path::Path;
+
+    // Create parent directory if it doesn't exist — lets callers that
+    // want to drop files under a new subfolder (e.g. `lecture-pdfs/`)
+    // just hand us the final path without a separate mkdir dance.
+    if let Some(parent) = Path::new(&path).parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create parent dir: {}", e))?;
+        }
+    }
 
     let mut file = File::create(&path).map_err(|e| format!("Failed to create file: {}", e))?;
 
@@ -1668,6 +1679,7 @@ pub fn run() {
             load_translation_model_by_name,
             // OAuth callback listener
             oauth::oauth_listen_for_code,
+            oauth::oauth_cancel,
             // 數據存儲相關
             save_course,
             get_course,

@@ -8,7 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { storageService } from "../services/storageService";
-import { summarize as llmSummarize } from "../services/llm";
+import { summarize as llmSummarize, usageTracker } from "../services/llm";
 import { generateLocalEmbedding } from "../services/embeddingService";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
@@ -115,7 +115,9 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           console.log('[NotesView] Whisper model loaded');
         }
 
-        // Embedding Model: 使用 Ollama 遠程 nomic-embed-text，無需本地加載
+        // Embedding Model: local Candle nomic-embed-text-v1 (shipped
+        // via the embedding-model download flow in Settings). No remote
+        // Ollama call — stale comment was fixed in v0.5.2.
         console.log('[NotesView] Using local Candle nomic-embed-text-v1 for auto-alignment');
         // Load Translation Model if provider is local
         const translationProvider = settings?.translation?.provider || 'local';
@@ -931,14 +933,30 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       };
       reader.readAsArrayBuffer(file);
     } else {
-      // Direct PDF load
+      // Direct PDF load — persist the bytes to app data so the PDF
+      // survives a page reload or re-entry to the lecture. Prior to
+      // v0.5.2 the dropped ArrayBuffer lived only in React state and
+      // evaporated on reload, so users lost their slide deck every
+      // time HMR (or an explicit reload) kicked in.
       const reader = new FileReader();
       reader.onload = async (event) => {
-        if (event.target?.result) {
-          setPdfData(event.target.result as ArrayBuffer);
-          // Note: Dropped files might not have a persistent path we can use easily
-          // unless we save them. For now, we just show them.
-          // If we want persistence for dropped PDFs, we should save them to app data.
+        if (!event.target?.result) return;
+        const arrayBuffer = event.target.result as ArrayBuffer;
+        setPdfData(arrayBuffer);
+        try {
+          const appData = await invoke<string>('get_app_data_dir');
+          const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
+          const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
+          const target = `${appData}${sep}lecture-pdfs${sep}${Date.now()}-${safeName}`;
+          await invoke('write_temp_file', {
+            path: target,
+            data: Array.from(new Uint8Array(arrayBuffer)),
+          });
+          setPdfPath(target);
+          await updateLecturePDF(target);
+        } catch (err) {
+          console.error('[NotesView] Failed to persist dropped PDF:', err);
+          // Fallback: at least the in-memory buffer still drives the viewer
           setPdfPath(null);
         }
       };
@@ -1048,7 +1066,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       const updatedNote = { ...selectedNote, summary };
       await storageService.saveNote(updatedNote);
       setSelectedNote(updatedNote);
-      alert('Summary generated successfully!');
+      const usage = usageTracker.latest('summarize');
+      const usageStr = usage
+        ? `（in ${usage.inputTokens} · out ${usage.outputTokens} tokens）`
+        : '';
+      alert(`Summary generated successfully! ${usageStr}`);
 
     } catch (error) {
       console.error('Failed to generate summary:', error);

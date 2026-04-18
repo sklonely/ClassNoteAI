@@ -7,19 +7,19 @@
  * rather than a code change.
  */
 
-import { AnthropicProvider } from './providers/anthropic';
 import { ChatGPTOAuthProvider } from './providers/chatgpt-oauth';
-import { GeminiProvider } from './providers/gemini';
 import { GitHubModelsProvider } from './providers/github-models';
-import { OpenAIProvider } from './providers/openai';
 import { LLMProvider, LLMProviderDescriptor } from './types';
 
+// v0.5.2 ships only the two providers we've actually verified end-to-end:
+// GitHub Models (Copilot subscription PAT) and ChatGPT OAuth (Codex flow).
+// Anthropic / OpenAI / Gemini API-key providers exist in git history and
+// are re-addable when each is independently verified — removing them from
+// the picker keeps us from silently shipping broken options. See README /
+// CHANGELOG for the re-add roadmap.
 const PROVIDERS: Record<string, () => LLMProvider> = {
   'github-models': () => new GitHubModelsProvider(),
   'chatgpt-oauth': () => new ChatGPTOAuthProvider(),
-  anthropic: () => new AnthropicProvider(),
-  openai: () => new OpenAIProvider(),
-  gemini: () => new GeminiProvider(),
 };
 
 /** Cached instances so provider state (e.g. cached tokens) sticks around. */

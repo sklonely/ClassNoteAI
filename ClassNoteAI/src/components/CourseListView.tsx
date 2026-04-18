@@ -16,6 +16,25 @@ import { storageService } from '../services/storageService';
 import CourseCreationDialog from './CourseCreationDialog';
 import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
 
+/** Same defensive normalization as CourseDetailView — LLM JSON sometimes
+ *  emits objects where we expect strings. Keeps the card from crashing. */
+function toDisplayString(v: unknown): string {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    if (Array.isArray(v)) return v.map(toDisplayString).filter(Boolean).join('; ');
+    if (typeof v === 'object') {
+        const o = v as Record<string, unknown>;
+        const nameish = o.name ?? o.display_name ?? o.title;
+        if (nameish) return String(nameish);
+        return Object.entries(o)
+            .filter(([, val]) => val != null && val !== '')
+            .map(([k, val]) => `${k}: ${toDisplayString(val)}`)
+            .join(' — ');
+    }
+    return String(v);
+}
+
 interface CourseListViewProps {
     onSelectCourse: (courseId: string) => void;
 }
@@ -251,7 +270,7 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                                 {course.syllabus_info?.topic ? (
                                     <div className="space-y-2">
                                         <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-3 font-medium">
-                                            {course.syllabus_info.topic}
+                                            {toDisplayString(course.syllabus_info.topic)}
                                         </p>
                                     </div>
                                 ) : (
@@ -268,20 +287,20 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                                         {course.syllabus_info.instructor && (
                                             <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
                                                 <User className="w-3.5 h-3.5 text-blue-500" />
-                                                <span className="line-clamp-1">{course.syllabus_info.instructor}</span>
+                                                <span className="line-clamp-1">{toDisplayString(course.syllabus_info.instructor)}</span>
                                             </div>
                                         )}
                                         <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
                                             {course.syllabus_info.time && (
                                                 <div className="flex items-center gap-1.5 flex-shrink-0">
                                                     <Clock className="w-3.5 h-3.5 text-green-500" />
-                                                    <span className="line-clamp-1 max-w-[100px]">{course.syllabus_info.time}</span>
+                                                    <span className="line-clamp-1 max-w-[100px]">{toDisplayString(course.syllabus_info.time)}</span>
                                                 </div>
                                             )}
                                             {course.syllabus_info.location && (
                                                 <div className="flex items-center gap-1.5 flex-shrink-0">
                                                     <MapPin className="w-3.5 h-3.5 text-red-500" />
-                                                    <span className="line-clamp-1 max-w-[80px]">{course.syllabus_info.location}</span>
+                                                    <span className="line-clamp-1 max-w-[80px]">{toDisplayString(course.syllabus_info.location)}</span>
                                                 </div>
                                             )}
                                         </div>

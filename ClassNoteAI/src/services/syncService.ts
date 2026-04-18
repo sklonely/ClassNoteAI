@@ -184,10 +184,14 @@ export class SyncService {
                 }
             }
 
-            // Collect Settings (only syncable keys)
+            // Collect Settings (only syncable keys). v0.5.2: dropped
+            // `server.url` / `ollama.*` from the sync set — those were
+            // remnants of the pre-v0.5.0 ClassNoteServer + Ollama setup
+            // which no current Settings surface writes to, so syncing
+            // them just moves stale defaults around.
             const SYNCABLE_SETTING_KEYS = [
-                'server.url', 'ollama.host', 'ollama.model', 'ollama.aiModels',
                 'translation.provider', 'translation.google_api_key',
+                'translation.source_language', 'translation.target_language',
                 'subtitle.font_size', 'subtitle.font_color', 'subtitle.display_mode',
                 'subtitle.position', 'theme'
             ];

@@ -16,9 +16,11 @@
 
 import { fetch } from '@tauri-apps/plugin-http';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { keyStore } from '../keyStore';
 import { randomState, randomVerifier, sha256Challenge } from '../pkce';
+import { parseSSE } from '../sse';
 import {
   LLMError,
   LLMErrorKind,
@@ -39,8 +41,13 @@ const PROVIDER_ID = 'chatgpt-oauth';
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OAUTH_AUTHORIZE = 'https://auth.openai.com/oauth/authorize';
 const OAUTH_TOKEN = 'https://auth.openai.com/oauth/token';
+// Codex's OAuth client has `http://localhost:1455/auth/callback` registered
+// as its ONLY valid redirect_uri server-side. Falling back to 1456+ makes
+// auth.openai.com reject the callback with "unknown_error" (see issue #36).
+// So we try 1455 exactly once; if it's held (often by VS Code's WebView
+// debugger or a previous dev session in TIME_WAIT) the user has to free it.
 const PREFERRED_CALLBACK_PORT = 1455;
-const CALLBACK_PORT_MAX_ATTEMPTS = 16;
+const CALLBACK_PORT_MAX_ATTEMPTS = 1;
 const CALLBACK_PATH = '/auth/callback';
 const OAUTH_SCOPES = 'openid profile email offline_access';
 const CALLBACK_TIMEOUT_SECS = 180;
@@ -57,14 +64,34 @@ interface OAuthListenResult {
 // Responses API endpoint on the ChatGPT backend (not api.openai.com).
 const RESPONSES_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
 
+// Model catalog — the server requires a `client_version` query param.
+// Any well-formed version string is accepted; Codex CLI sends its crate
+// version so we send a placeholder here.
+const MODELS_ENDPOINT = 'https://chatgpt.com/backend-api/codex/models';
+const CLIENT_VERSION = '0.1.0';
+
+// The Responses endpoint rejects POSTs missing `instructions`. If the
+// caller didn't pass a system message we fall back to this minimal prompt
+// so the request validates. Callers who want control should pass a real
+// system message.
+const DEFAULT_INSTRUCTIONS = 'You are a helpful assistant.';
+
 // Storage keys.
 const FIELD_ACCESS_TOKEN = 'accessToken';
 const FIELD_REFRESH_TOKEN = 'refreshToken';
 const FIELD_EXPIRES_AT = 'expiresAt';
 
+// Last-ditch fallback if the dynamic catalog fetch fails (network, expired
+// token, endpoint rotated, etc.). `gpt-5.2` is the only model Codex+ChatGPT
+// accounts can hit as of 2026-04; listing it alone here makes the picker
+// not-empty in the degraded case.
 const CURATED_MODELS: LLMModelInfo[] = [
-  { id: 'gpt-5', displayName: 'GPT-5', contextWindow: 272_000, capabilities: { streaming: true, jsonMode: true, vision: true } },
-  { id: 'gpt-5-codex', displayName: 'GPT-5 Codex', contextWindow: 272_000, capabilities: { streaming: true, jsonMode: true } },
+  {
+    id: 'gpt-5.2',
+    displayName: 'gpt-5.2',
+    contextWindow: 272_000,
+    capabilities: { streaming: true, vision: true },
+  },
 ];
 
 export const chatGPTOAuthDescriptor: LLMProviderDescriptor = {
@@ -80,9 +107,16 @@ interface OAuthTokens {
   expiresAt?: number; // ms since epoch
 }
 
-function errorKindFromStatus(status: number): LLMErrorKind {
+function errorKindFromStatus(status: number, body?: string): LLMErrorKind {
   if (status === 401 || status === 403) return 'auth';
   if (status === 429) return 'rate_limit';
+  // ChatGPT backend returns 404 (not 429) when the account's quota is
+  // exhausted — observed field names `usage_limit_reached`,
+  // `usage_not_included`. Promote these to `rate_limit` so UI shows the
+  // right message instead of "endpoint not found".
+  if (status === 404 && body && /usage_limit|usage_not_included|quota/i.test(body)) {
+    return 'rate_limit';
+  }
   if (status >= 500) return 'provider';
   return 'unknown';
 }
@@ -104,27 +138,44 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     const challenge = await sha256Challenge(verifier);
     const state = randomState();
 
-    // Start the callback listener first so a fast-clicking user can't
-    // race past it. The listener will pick an actual port (preferred
-    // 1455, falls back to 1456..1470 if something is lingering from a
-    // previous attempt) and return both it and the callback path.
+    // 1) Subscribe to the `oauth:bound` event BEFORE kicking the
+    //    listener invoke, so we can't miss it on a fast bind.
+    let unlisten: UnlistenFn | undefined;
+    const boundPort = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unlisten?.();
+        reject(
+          new LLMError(
+            'OAuth listener did not bind to port 1455 (held by another app — often VS Code). Close it and try again.',
+            'auth',
+            PROVIDER_ID,
+          ),
+        );
+      }, 10_000);
+      listen<number>('oauth:bound', (e) => {
+        clearTimeout(timer);
+        unlisten?.();
+        resolve(e.payload);
+      })
+        .then((u) => {
+          unlisten = u;
+        })
+        .catch(reject);
+    });
+
+    // 2) Start the callback listener. It'll emit `oauth:bound` with the
+    //    port it actually bound to — possibly a fallback if 1455 was held
+    //    (e.g. VS Code). Issue #30 / #36.
     const listenPromise = invoke<OAuthListenResult>('oauth_listen_for_code', {
       port: PREFERRED_CALLBACK_PORT,
       timeoutSecs: CALLBACK_TIMEOUT_SECS,
       maxAttempts: CALLBACK_PORT_MAX_ATTEMPTS,
     });
 
-    // We need the actual bound port to build the authorize URL, so race
-    // a tiny "listener is ready" signal before opening the browser.
-    // Pragmatic approach: the Rust listener binds synchronously before
-    // its first select, so a ~50 ms delay is enough, but we avoid that
-    // and instead assume the preferred port is bound 99% of the time.
-    // If the listener ultimately ended up on a different port, the
-    // callback URL built below won't match and the user will see the
-    // provider's default "mismatched redirect_uri" error — in that
-    // rare case they can just click sign-in again (second attempt
-    // almost always gets the preferred port).
-    const redirectUri = redirectUriFor(PREFERRED_CALLBACK_PORT);
+    // 3) Wait for Rust to tell us which port it's actually on, THEN open
+    //    the browser with a matching redirect_uri.
+    const actualPort = await boundPort;
+    const redirectUri = redirectUriFor(actualPort);
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: OAUTH_CLIENT_ID,
@@ -133,6 +184,12 @@ export class ChatGPTOAuthProvider implements LLMProvider {
       state,
       code_challenge: challenge,
       code_challenge_method: 'S256',
+      // Codex-flow query params (mirror the official Codex CLI). Without
+      // these the login page may silently fall back to a buggier older
+      // flow that doesn't include org selection / simplified prompts.
+      id_token_add_organizations: 'true',
+      codex_cli_simplified_flow: 'true',
+      originator: 'codex_cli_rs',
     });
     const authUrl = `${OAUTH_AUTHORIZE}?${params.toString()}`;
     await openUrl(authUrl);
@@ -158,6 +215,20 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     keyStore.clear(PROVIDER_ID, FIELD_EXPIRES_AT);
   }
 
+  /**
+   * Abort an in-flight `signIn()` — tells the Rust callback listener to
+   * stop waiting. The pending `signIn()` promise rejects shortly after
+   * with `'OAuth sign-in cancelled.'`, which the caller can surface as
+   * a friendly message.
+   */
+  async cancelSignIn(): Promise<void> {
+    try {
+      await invoke('oauth_cancel');
+    } catch (err) {
+      console.warn('[ChatGPTOAuth] cancel failed:', err);
+    }
+  }
+
   async testConnection(): Promise<LLMTestResult> {
     if (!(await this.isConfigured())) return { ok: false, message: 'Not signed in.' };
     try {
@@ -168,54 +239,128 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     }
   }
 
+  /**
+   * Pulls the live list of ChatGPT-subscription-accessible models from
+   * `/backend-api/codex/models`. The server filters by account tier, so
+   * a Plus user gets a different list than a Pro / Enterprise user.
+   * Falls back to the single-entry `CURATED_MODELS` if the endpoint is
+   * unreachable (offline, token expired, etc.) so the picker isn't empty.
+   */
   async listModels(): Promise<LLMModelInfo[]> {
-    return CURATED_MODELS;
+    const token = await this.freshAccessToken().catch(() => null);
+    if (!token) return CURATED_MODELS;
+    try {
+      const url = `${MODELS_ENDPOINT}?client_version=${encodeURIComponent(CLIENT_VERSION)}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      });
+      if (!res.ok) return CURATED_MODELS;
+      const data = (await res.json()) as { models?: Array<Record<string, unknown>> };
+      if (!Array.isArray(data.models) || data.models.length === 0) return CURATED_MODELS;
+      return data.models.map((m) => {
+        const modalities = (m.input_modalities as string[] | undefined) ?? [];
+        return {
+          id: (m.slug as string) ?? 'unknown',
+          displayName: (m.display_name as string) ?? (m.slug as string) ?? 'unknown',
+          contextWindow: (m.context_window as number | undefined),
+          capabilities: {
+            streaming: true,
+            vision: modalities.includes('image'),
+          },
+        };
+      });
+    } catch {
+      return CURATED_MODELS;
+    }
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
+    // The Codex Responses endpoint ONLY accepts stream=true. We honor
+    // that server-side requirement by always streaming, and — for
+    // non-streaming callers — aggregate deltas ourselves.
+    let text = '';
+    let lastChunk: LLMStreamChunk | undefined;
+    for await (const chunk of this.stream(request)) {
+      if (chunk.delta) text += chunk.delta;
+      if (chunk.done) lastChunk = chunk;
+    }
+    return {
+      content: text,
+      model: request.model,
+      finishReason: lastChunk?.finishReason,
+      usage: lastChunk?.usage,
+    };
+  }
+
+  async *stream(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
     const token = await this.freshAccessToken();
-    const body = this.buildResponsesBody(request, false);
+    const body = this.buildResponsesBody(request, true);
 
     const res = await fetch(RESPONSES_ENDPOINT, {
       method: 'POST',
-      headers: this.authHeaders(token),
+      headers: {
+        ...this.authHeaders(token),
+        Accept: 'text/event-stream',
+      },
       body: JSON.stringify(body),
       signal: request.signal,
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
+    if (!res.ok || !res.body) {
+      const errText = !res.ok ? await res.text().catch(() => '') : '';
       throw new LLMError(
         `HTTP ${res.status}: ${errText.slice(0, 200)}`,
-        errorKindFromStatus(res.status),
-        PROVIDER_ID
+        errorKindFromStatus(res.status, errText),
+        PROVIDER_ID,
       );
     }
 
-    const data = await res.json();
-    return {
-      content: extractResponsesText(data),
-      model: data.model ?? request.model,
-      finishReason: mapStatus(data.status ?? data.output?.[0]?.status),
-      usage: data.usage && {
-        inputTokens: data.usage.input_tokens ?? 0,
-        outputTokens: data.usage.output_tokens ?? 0,
-      },
-    };
-  }
+    let usage: LLMStreamChunk['usage'];
+    let finishReason: LLMStreamChunk['finishReason'];
 
-  async *stream(_request: LLMRequest): AsyncIterable<LLMStreamChunk> {
-    // Streaming against the Codex Responses API uses a slightly different
-    // event format than Chat Completions SSE; left as follow-up work.
-    // For now, surface a clear error so callers know to fall back to
-    // non-streaming `complete()`.
-    throw new LLMError(
-      'Streaming not yet wired for ChatGPT OAuth provider. Use complete() or another provider for now.',
-      'provider',
-      PROVIDER_ID
-    );
-    // eslint-disable-next-line no-unreachable
-    yield { delta: '', done: true };
+    for await (const payload of parseSSE(res.body, request.signal)) {
+      let parsed: any;
+      try {
+        parsed = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+      // Responses-API event envelope format:
+      //   - response.output_text.delta  → { delta: "...text..." }
+      //   - response.completed          → { response: { usage, status, ... } }
+      // Other events (response.created / response.content_part.added /
+      // response.output_text.done / ...) are informational.
+      switch (parsed.type) {
+        case 'response.output_text.delta':
+          if (typeof parsed.delta === 'string' && parsed.delta.length > 0) {
+            yield { delta: parsed.delta, done: false };
+          }
+          break;
+        case 'response.completed': {
+          const r = parsed.response;
+          if (r?.usage) {
+            usage = {
+              inputTokens: r.usage.input_tokens ?? 0,
+              outputTokens: r.usage.output_tokens ?? 0,
+            };
+          }
+          finishReason = mapStatus(r?.status);
+          break;
+        }
+        case 'response.failed':
+        case 'error':
+          throw new LLMError(
+            `Stream error: ${JSON.stringify(parsed).slice(0, 200)}`,
+            'provider',
+            PROVIDER_ID,
+          );
+      }
+    }
+
+    yield { delta: '', done: true, usage, finishReason };
   }
 
   // ---------- internals ----------
@@ -277,7 +422,7 @@ export class ChatGPTOAuthProvider implements LLMProvider {
       const errText = await res.text().catch(() => '');
       throw new LLMError(
         `Token exchange failed: HTTP ${res.status} ${errText.slice(0, 200)}`,
-        errorKindFromStatus(res.status),
+        errorKindFromStatus(res.status, errText),
         PROVIDER_ID
       );
     }
@@ -307,7 +452,7 @@ export class ChatGPTOAuthProvider implements LLMProvider {
       const errText = await res.text().catch(() => '');
       throw new LLMError(
         `Token refresh failed: HTTP ${res.status} ${errText.slice(0, 200)}`,
-        errorKindFromStatus(res.status),
+        errorKindFromStatus(res.status, errText),
         PROVIDER_ID
       );
     }
@@ -326,7 +471,10 @@ export class ChatGPTOAuthProvider implements LLMProvider {
       'Content-Type': 'application/json',
       Accept: 'application/json',
       // The Codex CLI sends these; the backend rejects unknown clients.
+      // `originator` identifies us to the backend as a Codex-family caller
+      // so feature-gates match the official CLI.
       'OpenAI-Beta': 'responses=v1',
+      originator: 'codex_cli_rs',
     };
   }
 
@@ -362,28 +510,32 @@ export class ChatGPTOAuthProvider implements LLMProvider {
       input,
       store: false,
       stream,
+      // Server rejects requests missing `instructions` (400 "Instructions
+      // are required"). If no system message was supplied we fall back to
+      // a minimal neutral prompt so validation passes.
+      instructions: systems.length ? systems.join('\n\n') : DEFAULT_INSTRUCTIONS,
+      // Reasoning-capable Codex models (gpt-5.2 etc.) need encrypted
+      // reasoning state included in stateless mode (store=false). Sending
+      // this always is cheap on non-reasoning paths and matches what the
+      // official Codex CLI ships.
+      include: ['reasoning.encrypted_content'],
     };
-    if (systems.length) body.instructions = systems.join('\n\n');
-    if (request.temperature !== undefined) body.temperature = request.temperature;
-    if (request.maxTokens !== undefined) body.max_output_tokens = request.maxTokens;
+    // Responses API uses `text.format`, not Chat Completions'
+    // `response_format`. When the caller asked for jsonMode, force the
+    // model to emit a valid top-level JSON object instead of prose — this
+    // makes extractSyllabus / future JSON tasks robust against the model
+    // drifting into markdown code fences.
+    if (request.jsonMode) {
+      body.text = { format: { type: 'json_object' } };
+    }
+    // NOTE: Codex's Responses backend rejects several parameters the
+    // public Responses API accepts (observed 2026-04: `max_output_tokens`
+    // → 400, `temperature` → 400 on gpt-5.2). The account-tier-filtered
+    // model set seems to hard-code most inference params server-side,
+    // leaving us effectively read-only on sampling. Don't add these back
+    // without re-probing — start with the minimum required body.
     return body;
   }
-}
-
-/** Pulls text out of a Responses API response object. */
-function extractResponsesText(data: any): string {
-  if (typeof data.output_text === 'string') return data.output_text;
-  if (!Array.isArray(data.output)) return '';
-  const parts: string[] = [];
-  for (const item of data.output) {
-    if (!item || !Array.isArray(item.content)) continue;
-    for (const block of item.content) {
-      if (block?.type === 'output_text' && typeof block.text === 'string') {
-        parts.push(block.text);
-      }
-    }
-  }
-  return parts.join('');
 }
 
 function mapStatus(status: string | undefined): LLMResponse['finishReason'] {

@@ -255,8 +255,14 @@ export class TranscriptionService {
 
       if (!hasSpeech) {
         this.silenceCounter++;
-        // 如果連續靜音超過一定次數（例如 2次 * 0.8s = 1.6s），且有未提交的文本，則提交它
-        if (this.silenceCounter > 2 && this.lastPartialText) {
+        // v0.5.2: bumped the silence commit threshold from 2 → 3 ticks
+        // (≈ 1.6s → 2.4s) so a speaker taking a natural mid-sentence
+        // breath no longer causes us to cut and commit a half-clause.
+        // User feedback: the rough M2M100 translation quality tracks
+        // segmentation quality; fragmented inputs produce garbage
+        // translations. Letting slightly-longer pauses accumulate
+        // yields complete sentences and much better translations.
+        if (this.silenceCounter > 3 && this.lastPartialText) {
           this.commitStableText(this.lastPartialText);
           this.lastPartialText = '';
           // 清空緩衝區，準備下一句話
@@ -413,8 +419,13 @@ export class TranscriptionService {
       this.stabilityCounter++;
       console.log(`[TranscriptionService] 文本穩定計數: ${this.stabilityCounter}`);
 
-      // 如果穩定超過閾值（例如 2 次 = 約 1.6 秒），則提交
-      if (this.stabilityCounter >= 2) {
+      // v0.5.2: bumped stability threshold from 2 → 3 ticks (≈ 1.6s → 2.4s).
+      // Rough Whisper typically takes 2-3 ticks to settle on its final
+      // word-level output; committing at 2 ticks catches mid-correction
+      // text, feeds garbage into M2M100 and bakes the error into a
+      // fine-refinement batch. Waiting one more tick costs ~0.8s of
+      // latency but sharply improves both rough and fine quality.
+      if (this.stabilityCounter >= 3) {
         console.log('[TranscriptionService] 文本已穩定，執行提交');
 
         if (this.isValidText(cleaned)) {
@@ -660,9 +671,22 @@ export class TranscriptionService {
     const batch = this.fineQueue.splice(0, this.fineQueue.length);
 
     try {
-      const { refineTranscripts } = await import('./llm');
+      const { refineTranscripts, usageTracker } = await import('./llm');
       const refinements = await refineTranscripts(batch);
       if (!refinements.length) return;
+
+      // Grab the batch-level usage event that refineTranscripts just
+      // recorded so each segment in the batch can display its share.
+      // We split the batch total across segments so the inline hint
+      // next to the "✓ 已精修" badge feels proportional rather than
+      // slapping the whole batch total on every row.
+      const batchUsage = usageTracker.latest('fineRefine');
+      const perSegIn = batchUsage
+        ? Math.round(batchUsage.inputTokens / Math.max(1, batch.length))
+        : 0;
+      const perSegOut = batchUsage
+        ? Math.round(batchUsage.outputTokens / Math.max(1, batch.length))
+        : 0;
 
       const byId = new Map(refinements.map((r) => [r.id, r]));
       for (const item of batch) {
@@ -676,6 +700,9 @@ export class TranscriptionService {
           translatedText: r.zh,
           translationSource: 'fine',
           source: 'fine',
+          fineUsage: batchUsage
+            ? { inputTokens: perSegIn, outputTokens: perSegOut }
+            : undefined,
         });
 
         const pending = this.pendingSubtitles.find((s) => s.id === item.id);

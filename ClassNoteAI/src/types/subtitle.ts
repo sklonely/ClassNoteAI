@@ -28,7 +28,12 @@ export interface SubtitleSegment {
   
   // 精層狀態
   fineStatus?: 'pending' | 'transcribing' | 'translating' | 'completed' | 'failed';
-  
+
+  /** Per-segment share of a fine-refinement batch's LLM token cost.
+   *  Rendered inline next to the "✓ 已精修" badge so the user can see
+   *  how expensive the LLM pass was without opening a separate panel. */
+  fineUsage?: { inputTokens: number; outputTokens: number };
+
   // 向後兼容（保留舊字段）
   text?: string; // 已廢棄，使用 displayText
   translatedText?: string; // 已廢棄，使用 displayTranslation

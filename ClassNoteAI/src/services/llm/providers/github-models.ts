@@ -201,10 +201,43 @@ export class GitHubModelsProvider implements LLMProvider {
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
-    return completeOpenAICompatible(this.config(), request);
+    try {
+      return await completeOpenAICompatible(this.config(), request);
+    } catch (err) {
+      throw rewriteNoAccess(err, request.model);
+    }
   }
 
   async *stream(request: LLMRequest): AsyncIterable<LLMStreamChunk> {
-    yield* streamOpenAICompatible(this.config(), request);
+    try {
+      yield* streamOpenAICompatible(this.config(), request);
+    } catch (err) {
+      throw rewriteNoAccess(err, request.model);
+    }
   }
+}
+
+/**
+ * Turn the raw `HTTP 403: {"error":{"code":"no_access",...}}` from the
+ * inference endpoint into something a user can act on. The token is
+ * usually fine (catalog reads work); what's missing is one of several
+ * account-level enrollments. We observed this on 2026-04 while verifying
+ * the provider end-to-end: catalog returned 43 models, every inference
+ * call returned no_access until the account was enrolled in GitHub
+ * Models via marketplace + Copilot settings.
+ */
+function rewriteNoAccess(err: unknown, modelId: string): unknown {
+  if (!(err instanceof LLMError)) return err;
+  if (err.kind !== 'auth') return err;
+  if (!/no_access/i.test(err.message) && !/403/.test(err.message)) return err;
+  return new LLMError(
+    `GitHub 帳號尚未啟用 Models inference（model: ${modelId}）。請依序確認：\n` +
+      `1. 到 https://github.com/settings/copilot 看最上方是否顯示 Copilot Free / Pro 為 active\n` +
+      `2. 到 https://github.com/marketplace/models 點進任一模型的 Playground 並互動過一次（自動接受 ToS）\n` +
+      `3. 若你在 organization 下，Org Owner 需在 Org Settings → Copilot → Models 開啟 inference\n\n` +
+      `診斷指令（CLI）： gh models run openai/gpt-4o-mini "hi"\n` +
+      `—— 若 CLI 也回 no_access，代表是帳號 entitlement 問題，跟此 app 無關。`,
+    'auth',
+    PROVIDER_ID,
+  );
 }

@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap, Plus, History, Trash2 } from 'lucide-react';
+import { Bot, Send, X, Loader2, Minus, Maximize2, Database, Zap, Plus, History, Trash2 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
-import { chat as llmChat } from '../services/llm';
+import { chat as llmChat, usageTracker } from '../services/llm';
 
 // 重新導出 ChatMessage 類型供其他組件使用
 export type { ChatMessage } from '../services/chatSessionService';
@@ -300,11 +300,17 @@ export default function AIChatPanel({
                     })),
                 ]);
 
+                // Grab the usage event the llm/tasks layer just recorded
+                // for this chat call so we can paint it next to the reply.
+                const lastUsage = usageTracker.latest('chat');
                 assistantMessage = {
                     id: crypto.randomUUID(),
                     role: 'assistant',
                     content: response,
                     timestamp: new Date().toISOString(),
+                    usage: lastUsage
+                        ? { inputTokens: lastUsage.inputTokens, outputTokens: lastUsage.outputTokens }
+                        : undefined,
                 };
             }
 
@@ -422,13 +428,6 @@ export default function AIChatPanel({
                 <>
                     {/* Messages */}
                     <div className="flex-1 overflow-y-auto p-3 space-y-3">
-                        {false && (
-                            <div className="flex items-center gap-2 p-2 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 rounded-lg text-xs">
-                                <AlertCircle className="w-3 h-3 flex-shrink-0" />
-                                <span>Ollama 未連線</span>
-                            </div>
-                        )}
-
                         {/* RAG 索引狀態 */}
                         {(
                             <div className="flex items-center justify-between p-2 bg-gray-50 dark:bg-slate-700/50 rounded-lg text-xs">
@@ -537,6 +536,11 @@ export default function AIChatPanel({
                                                     </div>
                                                 </div>
                                             )}
+                                            {msg.usage && (
+                                                <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                                                    in {msg.usage.inputTokens} · out {msg.usage.outputTokens} tokens
+                                                </div>
+                                            )}
                                         </>
                                     )}
                                 </div>
@@ -562,7 +566,7 @@ export default function AIChatPanel({
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
                                 onKeyPress={handleKeyPress}
-                                placeholder={true ? '輸入問題...' : 'Ollama 未連線'}
+                                placeholder="輸入問題..."
                                 disabled={isLoading}
                                 className="flex-1 px-3 py-2 text-sm bg-gray-100 dark:bg-slate-700 border-0 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none disabled:opacity-50"
                             />

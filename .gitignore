@@ -68,3 +68,6 @@ test_translation*.sh
 *.db-shm
 *.db-wal
 ClassNoteServer/uploads/
+
+# Agent research cache (subagent fetches for code review / inspiration)
+.research/

@@ -1,7 +1,13 @@
 /**
- * RAG (Retrieval-Augmented Generation) 服務
- * 整合文本分塊、向量嵌入和語義檢索
- * 使用 Ollama 遠程 nomic-embed-text 模型
+ * RAG (Retrieval-Augmented Generation) service.
+ *
+ * Embeddings: local Candle `nomic-embed-text-v1` (shipped via the
+ * embedding-model download flow in Settings). No network calls to
+ * Ollama — earlier versions fetched embeddings remotely, v0.5.0+ runs
+ * everything on-device.
+ *
+ * OCR: optional Ollama `deepseek-ocr` for complex slide decks. If not
+ * reachable, we pre-flight-skip and fall back to pdfjs text extraction.
  */
 
 import { chunkingService, TextChunk } from './chunkingService';
@@ -137,6 +143,30 @@ class RAGService {
         forceRefresh: boolean = false // 是否強制刷新 (忽略緩存)
     ): Promise<{ chunksCount: number; success: boolean }> {
         try {
+            // Pre-flight: if Ollama is not reachable in ≤2.5 s, don't run
+            // the 32×60s-per-page OCR marathon — fall back directly to the
+            // pdfjs-only text path that indexLecture() uses. Without this,
+            // users without Ollama see "OCR 識別頁面 X/32..." stuck for
+            // ~100 min before it gives up page-by-page.
+            if (pdfData) {
+                const ollamaReady = await ocrService.isAvailable();
+                if (!ollamaReady) {
+                    console.warn(
+                        '[RAGService] Ollama deepseek-ocr unavailable — falling back to pdfjs text extraction',
+                    );
+                    onProgress?.({
+                        stage: 'chunking',
+                        current: 0,
+                        total: 1,
+                        message: '未偵測到 Ollama OCR，改用 PDF 文字提取',
+                    });
+                    // pdfjs-only path: renderPages() is OCR-free; ragService
+                    // already knows how to handle chunks from pdfToImageService.
+                    const pdfText = await pdfToImageService.extractAllText(pdfData.slice(0));
+                    return this.indexLecture(lectureId, pdfText, transcriptText, onProgress);
+                }
+            }
+
             const allChunks: TextChunk[] = [];
 
             // 階段 1: OCR 識別 PDF 頁面
@@ -329,6 +359,19 @@ class RAGService {
     }
 
     /**
+     * Minimum cosine similarity to consider a retrieved chunk actually
+     * relevant to the query. Below this we drop the chunk. nomic-embed-
+     * text-v1 produces scores in the ~0.3-0.9 range for related content
+     * in practice; queries with no semantic overlap at all (pure
+     * greetings, off-topic chit-chat, single-word inputs that happen to
+     * match the course title) hover near 0.4-0.5, where the model is
+     * clearly stretching to find "closest" chunks that aren't really
+     * relevant. 0.55 lands a usable separation between "this query is
+     * about the course" and "this query has nothing to do with it".
+     */
+    private static readonly RELEVANCE_THRESHOLD = 0.55;
+
+    /**
      * RAG 增強問答
      * @param chatHistory 對話歷史 (可選，用於延續對話)
      */
@@ -343,18 +386,38 @@ class RAGService {
         }
     ): Promise<{ answer: string; sources: SearchResult[] }> {
         const topK = options?.topK || 5;
+        const basePrompt = options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
 
         // 檢索相關上下文 (傳入當前頁面優先檢索)
         const context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
 
-        // 構建增強的系統提示 (包含當前頁面位置和 RAG 上下文)
-        const enhancedSystemPrompt = context.chunks.length > 0
+        // Only enhance the prompt with retrieved context when at least one
+        // chunk passes the relevance threshold. If the user typed a plain
+        // greeting ("HI", "你好", "?"), semantic search will return top-K
+        // chunks but their similarity scores will all be low — injecting
+        // them anyway turns a greeting into a forced essay because the
+        // enhanced prompt tells the LLM to use the context. Filtering here
+        // is the structural fix; prior prompt-engineering workarounds
+        // (telling the LLM "if greeting, reply short") were band-aids
+        // that don't generalize to off-topic / ambiguous inputs.
+        const relevantChunks = context.chunks.filter(
+            (c) => c.similarity >= RAGService.RELEVANCE_THRESHOLD,
+        );
+        const useContext = relevantChunks.length > 0;
+        const enhancedSystemPrompt = useContext
             ? this.buildEnhancedPrompt(
-                options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。',
-                context.formattedContext,
-                options?.currentPage
+                basePrompt,
+                this.formatContext(relevantChunks),
+                options?.currentPage,
             )
-            : options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
+            : basePrompt;
+        if (!useContext && context.chunks.length > 0) {
+            console.log(
+                `[RAGService] Dropping ${context.chunks.length} retrieved chunks — top similarity ` +
+                    `${context.chunks[0]?.similarity?.toFixed(3)} < threshold ` +
+                    `${RAGService.RELEVANCE_THRESHOLD}. Falling back to plain chat for off-topic query.`,
+            );
+        }
 
         // 組合消息：歷史 + 當前問題
         const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
@@ -372,7 +435,9 @@ class RAGService {
 
         return {
             answer,
-            sources: context.chunks,
+            // Return only the chunks we actually showed the LLM so the
+            // UI's "來源" badges match the reply's grounding.
+            sources: useContext ? relevantChunks : [],
         };
     }
 
