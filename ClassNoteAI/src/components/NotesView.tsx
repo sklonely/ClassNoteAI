@@ -931,14 +931,30 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       };
       reader.readAsArrayBuffer(file);
     } else {
-      // Direct PDF load
+      // Direct PDF load — persist the bytes to app data so the PDF
+      // survives a page reload or re-entry to the lecture. Prior to
+      // v0.5.2 the dropped ArrayBuffer lived only in React state and
+      // evaporated on reload, so users lost their slide deck every
+      // time HMR (or an explicit reload) kicked in.
       const reader = new FileReader();
       reader.onload = async (event) => {
-        if (event.target?.result) {
-          setPdfData(event.target.result as ArrayBuffer);
-          // Note: Dropped files might not have a persistent path we can use easily
-          // unless we save them. For now, we just show them.
-          // If we want persistence for dropped PDFs, we should save them to app data.
+        if (!event.target?.result) return;
+        const arrayBuffer = event.target.result as ArrayBuffer;
+        setPdfData(arrayBuffer);
+        try {
+          const appData = await invoke<string>('get_app_data_dir');
+          const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
+          const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
+          const target = `${appData}${sep}lecture-pdfs${sep}${Date.now()}-${safeName}`;
+          await invoke('write_temp_file', {
+            path: target,
+            data: Array.from(new Uint8Array(arrayBuffer)),
+          });
+          setPdfPath(target);
+          await updateLecturePDF(target);
+        } catch (err) {
+          console.error('[NotesView] Failed to persist dropped PDF:', err);
+          // Fallback: at least the in-memory buffer still drives the viewer
           setPdfPath(null);
         }
       };

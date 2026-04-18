@@ -255,8 +255,14 @@ export class TranscriptionService {
 
       if (!hasSpeech) {
         this.silenceCounter++;
-        // 如果連續靜音超過一定次數（例如 2次 * 0.8s = 1.6s），且有未提交的文本，則提交它
-        if (this.silenceCounter > 2 && this.lastPartialText) {
+        // v0.5.2: bumped the silence commit threshold from 2 → 3 ticks
+        // (≈ 1.6s → 2.4s) so a speaker taking a natural mid-sentence
+        // breath no longer causes us to cut and commit a half-clause.
+        // User feedback: the rough M2M100 translation quality tracks
+        // segmentation quality; fragmented inputs produce garbage
+        // translations. Letting slightly-longer pauses accumulate
+        // yields complete sentences and much better translations.
+        if (this.silenceCounter > 3 && this.lastPartialText) {
           this.commitStableText(this.lastPartialText);
           this.lastPartialText = '';
           // 清空緩衝區，準備下一句話
@@ -413,8 +419,13 @@ export class TranscriptionService {
       this.stabilityCounter++;
       console.log(`[TranscriptionService] 文本穩定計數: ${this.stabilityCounter}`);
 
-      // 如果穩定超過閾值（例如 2 次 = 約 1.6 秒），則提交
-      if (this.stabilityCounter >= 2) {
+      // v0.5.2: bumped stability threshold from 2 → 3 ticks (≈ 1.6s → 2.4s).
+      // Rough Whisper typically takes 2-3 ticks to settle on its final
+      // word-level output; committing at 2 ticks catches mid-correction
+      // text, feeds garbage into M2M100 and bakes the error into a
+      // fine-refinement batch. Waiting one more tick costs ~0.8s of
+      // latency but sharply improves both rough and fine quality.
+      if (this.stabilityCounter >= 3) {
         console.log('[TranscriptionService] 文本已穩定，執行提交');
 
         if (this.isValidText(cleaned)) {
