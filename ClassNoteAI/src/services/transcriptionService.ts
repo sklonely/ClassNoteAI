@@ -129,7 +129,27 @@ export class TranscriptionService {
     }
     // Fire one last fine-refinement flush so trailing segments also get
     // the LLM pass before we persist them.
-    void this.flushFineRefinement().finally(() => this.savePendingSubtitles());
+    //
+    // v0.5.2 audit follow-up: the old form
+    // `void this.flushFineRefinement().finally(() => this.savePendingSubtitles())`
+    // swallowed BOTH exceptions silently. If the fine-refinement LLM
+    // call 429'd or the persist call hit a DB lock, no retry, no log,
+    // no visible error. Now we explicitly log each leg so `console.error`
+    // produces actionable output, and the save still fires regardless
+    // of refinement outcome (saving rough-only subtitles is strictly
+    // better than saving nothing).
+    void (async () => {
+      try {
+        await this.flushFineRefinement();
+      } catch (err) {
+        console.error('[TranscriptionService] final flushFineRefinement failed:', err);
+      }
+      try {
+        await this.savePendingSubtitles();
+      } catch (err) {
+        console.error('[TranscriptionService] final savePendingSubtitles failed:', err);
+      }
+    })();
   }
 
   private async savePendingSubtitles(): Promise<void> {

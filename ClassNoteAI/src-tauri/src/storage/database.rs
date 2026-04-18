@@ -2,6 +2,35 @@ use crate::storage::models::{Course, Lecture, Note, Setting, Subtitle};
 use chrono::Utc;
 use rusqlite::{Connection, Result as SqlResult};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+/// Global queue of "things the user deserves to know about" that ran
+/// during DB init — principally irreversible migrations that touched
+/// user data (e.g. dropping stale embedding vectors on the v0.5.2
+/// model swap). The frontend drains this via `consume_migration_notices`
+/// on app-ready and toasts each entry, so the user finds out about
+/// a silent background change instead of discovering it weeks later.
+/// Drops are logged to stdout in addition so the record survives the
+/// consume-once flow.
+static MIGRATION_NOTICES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+fn migration_notices() -> &'static Mutex<Vec<String>> {
+    MIGRATION_NOTICES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn record_migration_notice(msg: String) {
+    if let Ok(mut v) = migration_notices().lock() {
+        v.push(msg);
+    }
+}
+
+pub fn drain_migration_notices() -> Vec<String> {
+    if let Ok(mut v) = migration_notices().lock() {
+        std::mem::take(&mut *v)
+    } else {
+        Vec::new()
+    }
+}
 
 /// 數據庫管理器
 pub struct Database {
@@ -521,6 +550,10 @@ impl Database {
                 "DELETE FROM embeddings WHERE LENGTH(embedding) != ?1",
                 [EXPECTED_EMBEDDING_BYTES],
             )?;
+            record_migration_notice(format!(
+                "v0.5.2: 已清除 {} 筆舊 embedding 向量（768→384 維模型切換）。該堂課的 AI 助教功能在首次打開時會自動重新索引。",
+                mismatched
+            ));
         }
 
         Ok(())

@@ -80,6 +80,18 @@ pub fn get_documents_dir() -> Result<PathBuf, String> {
     Ok(get_app_data_dir()?.join("documents"))
 }
 
+/// Get the lecture-PDFs directory.
+///
+/// Returns: {app_data_dir}/lecture-pdfs/
+///
+/// Where the frontend writes a PDF the user drops onto a lecture. The
+/// filename convention since v0.5.2 is `lecture_<id>_<unix_ms>_<name>.pdf`
+/// so `try_recover_pdf_path` can reverse-map a file back to its lecture
+/// when the DB column was never populated (write-succeeded-DB-save-failed).
+pub fn get_lecture_pdfs_dir() -> Result<PathBuf, String> {
+    Ok(get_app_data_dir()?.join("lecture-pdfs"))
+}
+
 /// Get the audio directory
 ///
 /// Returns: {app_data_dir}/audio/

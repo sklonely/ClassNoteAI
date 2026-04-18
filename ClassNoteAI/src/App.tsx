@@ -51,6 +51,33 @@ function App() {
     initTheme();
   }, []);
 
+  // v0.5.2 audit follow-up: surface migration notices to the user.
+  // The DB init runs migrations eagerly (e.g. dropping stale embedding
+  // vectors on model swaps). Previously those only hit stdout, so users
+  // had no way to know their RAG index silently got wiped until they
+  // noticed AI 助教 stopped returning relevant passages. Now we drain
+  // the in-memory notice queue on app-ready and toast each one.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    const t = setTimeout(async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const notices = await invoke<string[]>('consume_migration_notices');
+        if (notices.length > 0) {
+          const { toastService } = await import('./services/toastService');
+          for (const msg of notices) {
+            // `durationMs: 0` → sticky; these are important enough that
+            // auto-dismiss would be the wrong default.
+            toastService.show({ message: '資料庫遷移通知', detail: msg, type: 'warning', durationMs: 0 });
+          }
+        }
+      } catch (err) {
+        console.warn('[App] consume_migration_notices failed (non-fatal):', err);
+      }
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [appState]);
+
   // v0.5.2: crash-recovery scan on launch. If the app died mid-
   // recording last session, there's a .pcm file on disk and a DB row
   // stuck at status='recording'. We populate `recoverableSessions`
