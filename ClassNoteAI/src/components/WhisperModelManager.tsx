@@ -8,6 +8,7 @@ import {
   checkModelFile,
   downloadModel,
   loadModel,
+  getCurrentModel,
   getModelSize,
   getModelDisplayName,
   type ModelType,
@@ -61,6 +62,17 @@ export default function WhisperModelManager({ onModelLoaded }: WhisperModelManag
       const isSavedModel = settings?.models?.whisper === selectedModel;
 
       if (isSavedModel) {
+        // Skip reload if the backend already has this exact model loaded.
+        // Before this guard, every Settings-tab remount re-issued
+        // load_whisper_model, which took several seconds and spammed
+        // the "loading..." indicator in the header.
+        if (getCurrentModel() === selectedModel) {
+          setModelStatus('loaded');
+          setStatusMessage('模型已加載');
+          onModelLoaded?.();
+          return;
+        }
+
         // 檢查模型文件是否存在
         const exists = await checkModelFile(selectedModel);
 
