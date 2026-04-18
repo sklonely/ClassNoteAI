@@ -19,6 +19,7 @@ import {
     HardDrive
 } from 'lucide-react';
 import { setupService } from '../services/setupService';
+import AIProviderSettings from './AIProviderSettings';
 import {
     SetupStatus,
     Requirement,
@@ -34,7 +35,15 @@ interface SetupWizardProps {
     onComplete: () => void;
 }
 
-type WizardStep = 'welcome' | 'language' | 'checking' | 'review' | 'installing' | 'complete';
+type WizardStep =
+    | 'welcome'
+    | 'language'
+    | 'ai-provider'   // v0.5.2: pick GitHub Models vs ChatGPT (or skip)
+    | 'ai-config'     // v0.5.2: configure the chosen provider (PAT / OAuth)
+    | 'checking'
+    | 'review'
+    | 'installing'
+    | 'complete';
 
 type SourceLang = 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
 
@@ -51,6 +60,13 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     // the user eventually starts a lecture.
     const [sourceLang, setSourceLang] = useState<SourceLang>('auto');
     const [targetLang, setTargetLang] = useState<string>('zh-TW');
+    // v0.5.2: wizard LLM steps. `selectedProviderId` is null on ai-provider
+    // until the user picks a card; once set, we advance to ai-config and
+    // pass it as `forceProviderId` to AIProviderSettings so the user only
+    // sees the picked provider's config form (not both). Splitting these
+    // into two steps was a review fix — the combined step overflowed the
+    // wizard container and the "Continue" button got clipped off-screen.
+    const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
 
     // Check requirements when entering checking step
     const checkRequirements = useCallback(async () => {
@@ -220,15 +236,19 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 之後隨時可以在「設定 → 轉錄與翻譯」修改。
             </p>
 
-            <div style={{ width: '100%', maxWidth: 480, margin: '1.5rem auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <label style={{ display: 'block' }}>
-                    <span style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 6 }}>
+            {/* v0.5.2 styling fix: the prior inline `background: 'white'`
+                + no explicit `color` produced white-on-white selected text
+                in the dark-themed wizard. Switch to a dark-native styled
+                select so the chosen option is actually visible. */}
+            <div className="w-full max-w-md mx-auto mt-6 mb-4 flex flex-col gap-4 text-left">
+                <label className="block">
+                    <span className="block text-sm font-medium mb-1.5 text-white/90">
                         講者語言（來源）
                     </span>
                     <select
                         value={sourceLang}
                         onChange={(e) => setSourceLang(e.target.value as SourceLang)}
-                        style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white' }}
+                        className="w-full px-3 py-2.5 rounded-lg border border-white/20 bg-slate-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     >
                         <option value="auto">自動偵測（推薦）</option>
                         <option value="en">English</option>
@@ -242,14 +262,14 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                     </select>
                 </label>
 
-                <label style={{ display: 'block' }}>
-                    <span style={{ display: 'block', fontSize: 14, fontWeight: 500, marginBottom: 6 }}>
+                <label className="block">
+                    <span className="block text-sm font-medium mb-1.5 text-white/90">
                         目標語言
                     </span>
                     <select
                         value={targetLang}
                         onChange={(e) => setTargetLang(e.target.value)}
-                        style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid #d1d5db', background: 'white' }}
+                        className="w-full px-3 py-2.5 rounded-lg border border-white/20 bg-slate-800 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     >
                         <option value="zh-TW">繁體中文 (Traditional Chinese)</option>
                         <option value="zh-CN">簡體中文 (Simplified Chinese)</option>
@@ -279,11 +299,148 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                     } catch (e) {
                         console.warn('[SetupWizard] Could not persist language pair:', e);
                     }
-                    await checkRequirements();
+                    // v0.5.2: route to the AI provider-pick step next, not
+                    // straight into environment checks. Users can still
+                    // skip AI config there.
+                    setStep('ai-provider');
                 }}
             >
                 繼續 <ArrowRight className="w-5 h-5" />
             </button>
+        </div>
+    );
+
+    // v0.5.2: LLM provider PICK step.
+    //
+    // Kept deliberately minimal — two big cards (GitHub Models, ChatGPT
+    // OAuth) + a Skip button — so the wizard viewport isn't crowded and
+    // the Continue button always stays visible. Picking a card advances
+    // to the `ai-config` step where the actual PAT input / OAuth flow
+    // lives, filtered to JUST the picked provider.
+    //
+    // Review context: combining pick + config on one step caused the
+    // Save/Test buttons and the wizard's own "Continue" button to fall
+    // below the 700 px-max-width container's viewport — users couldn't
+    // even finish the step they'd already completed.
+    const renderAIProvider = () => {
+        const PROVIDERS = [
+            {
+                id: 'github-models',
+                title: 'GitHub Models',
+                tagline: '使用你的 GitHub PAT（Copilot Pro / Business / Enterprise 訂閱包含額度）',
+                caveat: '需要 scope: models:read 的 fine-grained token',
+            },
+            {
+                id: 'chatgpt-oauth',
+                title: 'ChatGPT Subscription',
+                tagline: '用你的 ChatGPT Plus / Pro / Enterprise 帳號登入（非官方管道 — Codex 流程）',
+                caveat: '第一次登入會開一個瀏覽器 OAuth 視窗',
+            },
+        ];
+
+        return (
+            <div className="setup-step welcome-step">
+                <div className="setup-icon-container">
+                    <div className="setup-icon">
+                        <Zap className="w-16 h-16 text-purple-500" />
+                    </div>
+                </div>
+                <h2 className="setup-subtitle">選擇 AI 服務提供商（可選）</h2>
+                <p className="setup-description">
+                    AI 助教問答、自動摘要、關鍵字提取、字幕精修、跨語言 RAG 檢索 都需要雲端 LLM。<br />
+                    <strong>可以先跳過</strong>，之後在「設定 → 雲端 AI 助理」也能配置。
+                </p>
+
+                <div className="w-full max-w-md mx-auto my-4 flex flex-col gap-3 text-left">
+                    {PROVIDERS.map((p) => (
+                        <button
+                            key={p.id}
+                            onClick={() => {
+                                setSelectedProviderId(p.id);
+                                setStep('ai-config');
+                            }}
+                            className="group p-4 rounded-lg border border-white/20 bg-white/5 hover:bg-white/10 hover:border-blue-400 transition-colors text-left"
+                        >
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex-1 min-w-0">
+                                    <div className="font-semibold text-white">{p.title}</div>
+                                    <div className="text-xs text-white/60 mt-1">{p.tagline}</div>
+                                    <div className="text-[11px] text-white/40 mt-1">{p.caveat}</div>
+                                </div>
+                                <ArrowRight className="w-4 h-4 text-white/50 group-hover:text-blue-400 group-hover:translate-x-0.5 transition-transform flex-shrink-0 mt-1" />
+                            </div>
+                        </button>
+                    ))}
+                </div>
+
+                <div className="setup-actions">
+                    <button
+                        className="setup-button secondary"
+                        onClick={async () => {
+                            // Skip — still check requirements so the
+                            // rest of the wizard runs. User can come
+                            // back via Settings → 雲端 AI 助理.
+                            await checkRequirements();
+                        }}
+                    >
+                        跳過此步驟 <ArrowRight className="w-4 h-4" />
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
+    // v0.5.2: LLM provider CONFIG step.
+    //
+    // Renders `AIProviderSettings` filtered to the single provider the
+    // user picked on the prior step. All the existing PAT save / OAuth
+    // sign-in / test-connection logic is reused — we just hide the
+    // cross-provider picker row. User can hit "返回" to reselect or
+    // "下一步" to advance to environment checks (requirements download).
+    const renderAIConfig = () => (
+        <div className="setup-step welcome-step">
+            <div className="setup-icon-container">
+                <div className="setup-icon">
+                    <Zap className="w-16 h-16 text-purple-500" />
+                </div>
+            </div>
+            <h2 className="setup-subtitle">
+                設定 {selectedProviderId === 'chatgpt-oauth' ? 'ChatGPT' : 'GitHub Models'}
+            </h2>
+            <p className="setup-description">
+                填入 token 或登入 OAuth 後，點「下一步」繼續。
+            </p>
+
+            <div className="w-full max-w-lg mx-auto my-4 text-left">
+                {selectedProviderId && <AIProviderSettings forceProviderId={selectedProviderId} />}
+            </div>
+
+            <div className="setup-actions">
+                <button
+                    className="setup-button secondary"
+                    onClick={() => {
+                        setSelectedProviderId(null);
+                        setStep('ai-provider');
+                    }}
+                >
+                    返回
+                </button>
+                <button
+                    className="setup-button primary"
+                    onClick={async () => {
+                        // Advance regardless of whether the user saved
+                        // credentials or not — the `configured` / ✓ badge
+                        // on the provider form already tells the user
+                        // their state. A conditional label here was just
+                        // noise (and was also buggy: state was only
+                        // polled after click, so a successful config
+                        // still showed "先不管、繼續").
+                        await checkRequirements();
+                    }}
+                >
+                    繼續 <ArrowRight className="w-5 h-5" />
+                </button>
+            </div>
         </div>
     );
 
@@ -504,21 +661,30 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     return (
         <div className="setup-wizard">
             <div className="setup-container">
-                {/* Progress indicator */}
-                <div className="step-indicator">
-                    {(['welcome', 'language', 'checking', 'review', 'installing', 'complete'] as const).map((s, i) => (
-                        <div
-                            key={s}
-                            className={`step-dot ${s === step ? 'active' :
-                                (['welcome', 'language', 'checking', 'review', 'installing', 'complete'] as const).indexOf(step) > i ? 'done' : ''
-                                }`}
-                        />
-                    ))}
-                </div>
+                {/* Progress indicator — the two ai-* steps share a single
+                    dot since the user experience is "one thing" (configure
+                    an LLM) split across two screens for viewport reasons. */}
+                {(() => {
+                    const visualSteps: WizardStep[] = ['welcome', 'language', 'ai-provider', 'checking', 'review', 'installing', 'complete'];
+                    const normalisedStep: WizardStep = step === 'ai-config' ? 'ai-provider' : step;
+                    const currentIdx = visualSteps.indexOf(normalisedStep);
+                    return (
+                        <div className="step-indicator">
+                            {visualSteps.map((s, i) => (
+                                <div
+                                    key={s}
+                                    className={`step-dot ${s === normalisedStep ? 'active' : currentIdx > i ? 'done' : ''}`}
+                                />
+                            ))}
+                        </div>
+                    );
+                })()}
 
                 {/* Step content */}
                 {step === 'welcome' && renderWelcome()}
                 {step === 'language' && renderLanguage()}
+                {step === 'ai-provider' && renderAIProvider()}
+                {step === 'ai-config' && renderAIConfig()}
                 {step === 'checking' && renderChecking()}
                 {step === 'review' && renderReview()}
                 {step === 'installing' && renderInstalling()}

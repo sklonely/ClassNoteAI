@@ -30,11 +30,16 @@ impl WhisperService {
     }
 
     /// 轉錄音頻數據
+    ///
+    /// `language` accepts BCP-47-ish tags ("en", "zh-TW", "auto") or
+    /// None; see `transcribe::normalize_language` for the mapping into
+    /// whisper.cpp's two-letter codes.
     pub async fn transcribe(
         &self,
         audio_data: &[i16],
         sample_rate: u32,
         initial_prompt: Option<&str>,
+        language: Option<&str>,
         options: Option<transcribe::TranscriptionOptions>,
     ) -> Result<transcribe::TranscriptionResult> {
         let model = self
@@ -42,7 +47,15 @@ impl WhisperService {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("模型未加載"))?;
 
-        transcribe::transcribe_audio(model, audio_data, sample_rate, initial_prompt, options).await
+        transcribe::transcribe_audio(
+            model,
+            audio_data,
+            sample_rate,
+            initial_prompt,
+            language,
+            options,
+        )
+        .await
     }
 
     /// 檢查模型是否已加載

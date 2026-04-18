@@ -32,12 +32,42 @@ pub struct TranscriptionOptions {
     pub patience: Option<f32>,
 }
 
+/// Normalise a user-facing language tag into what whisper.cpp expects.
+///
+/// whisper.cpp's language codes are ISO-639-1 two-letter tags ("en",
+/// "zh", "ja"). The app's settings UI carries BCP-47-ish forms like
+/// "zh-TW" / "zh-CN", plus the sentinel "auto" which means "let
+/// whisper detect". This helper exists so callers can pass whatever
+/// the UI has and get the right thing on the wire — and so future
+/// devs don't silently regress back to hardcoding "en".
+///
+/// Returns `None` for `auto` / `None` / empty input (whisper will
+/// then run its language detector on the first 30s of audio).
+pub(crate) fn normalize_language(language: Option<&str>) -> Option<String> {
+    let raw = language?.trim();
+    if raw.is_empty() || raw.eq_ignore_ascii_case("auto") {
+        return None;
+    }
+    // Strip region subtag: "zh-TW" / "zh-cn" / "en-US" → "zh" / "en".
+    let primary = raw
+        .split(&['-', '_'][..])
+        .next()
+        .unwrap_or(raw)
+        .to_lowercase();
+    if primary.is_empty() {
+        None
+    } else {
+        Some(primary)
+    }
+}
+
 /// 轉錄音頻數據
 pub async fn transcribe_audio(
     model: &WhisperModel,
     audio_data: &[i16],
     sample_rate: u32,
     initial_prompt: Option<&str>,
+    language: Option<&str>,
     options: Option<TranscriptionOptions>,
 ) -> Result<TranscriptionResult> {
     println!(
@@ -76,8 +106,24 @@ pub async fn transcribe_audio(
     // 允許更多線程以提高性能（但不超過 8 個，避免過度使用 CPU）
     params.set_n_threads((num_cpus::get().min(8)) as i32);
     params.set_translate(false); // 不翻譯，只轉錄
-    let language_str = "en"; // 設置語言為英文
-    params.set_language(Some(language_str));
+    // Language selection. Prior to v0.5.2 this was hardcoded to "en" and
+    // the UI's language setting was silently ignored — any user with a
+    // Chinese or auto-detect preference still got English-only
+    // transcription. Now the caller's preference flows through.
+    //   None  → whisper.cpp auto-detect (first 30s)
+    //   Some  → force that language (e.g. "en", "zh", "ja")
+    let whisper_lang = normalize_language(language);
+    match whisper_lang.as_deref() {
+        Some(lang) => {
+            println!("[Whisper] Language set to: {}", lang);
+            params.set_language(Some(lang));
+        }
+        None => {
+            println!("[Whisper] Language: auto-detect");
+            // whisper-rs treats None as "auto" on the language field.
+            params.set_language(None);
+        }
+    }
     params.set_suppress_blank(true); // 抑制空白
     params.set_suppress_non_speech_tokens(true); // 抑制非語音標記
 
@@ -88,7 +134,7 @@ pub async fn transcribe_audio(
     }
 
     // 保存語言字符串供後續使用
-    let detected_language = Some(language_str.to_string());
+    let detected_language = whisper_lang.clone();
 
     // 將 i16 音頻數據轉換為 f32（Whisper 需要的格式）
     // i16 範圍: -32768 到 32767
@@ -196,4 +242,56 @@ pub async fn transcribe_audio(
         language,
         duration_ms,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the v0.5.2 bug where [`transcribe_audio`]
+    /// hardcoded `params.set_language(Some("en"))` on every call,
+    /// silently overriding whatever the UI had selected. Any user
+    /// recording Chinese or Japanese content got English-only
+    /// transcription.
+    ///
+    /// This test doesn't invoke whisper.cpp (that needs a real model
+    /// file and an audio buffer — covered by nightly integration
+    /// tests). Instead it pins the [`normalize_language`] contract
+    /// that drives what eventually reaches whisper: any future refactor
+    /// that breaks this mapping will fail CI instead of silently
+    /// restoring the "every lecture is English" behaviour.
+    #[test]
+    fn normalize_language_preserves_bcp47_primary_subtag() {
+        assert_eq!(normalize_language(Some("en")), Some("en".into()));
+        assert_eq!(normalize_language(Some("zh")), Some("zh".into()));
+        assert_eq!(normalize_language(Some("zh-TW")), Some("zh".into()));
+        assert_eq!(normalize_language(Some("zh-CN")), Some("zh".into()));
+        assert_eq!(normalize_language(Some("en-US")), Some("en".into()));
+        assert_eq!(normalize_language(Some("ja_JP")), Some("ja".into()));
+    }
+
+    #[test]
+    fn normalize_language_uppercases_are_lowercased() {
+        // Whisper.cpp's language table is lower-case only — "ZH" or "EN"
+        // from a sloppy caller must still work, not silently no-op.
+        assert_eq!(normalize_language(Some("ZH")), Some("zh".into()));
+        assert_eq!(normalize_language(Some("EN-us")), Some("en".into()));
+    }
+
+    #[test]
+    fn normalize_language_auto_becomes_none_for_whisper_autodetect() {
+        // "auto" is the UI sentinel for "let whisper pick". Returning
+        // None tells the caller to pass None to params.set_language,
+        // which activates whisper's built-in language detector.
+        assert_eq!(normalize_language(Some("auto")), None);
+        assert_eq!(normalize_language(Some("AUTO")), None);
+        assert_eq!(normalize_language(Some("")), None);
+        assert_eq!(normalize_language(Some("   ")), None);
+        assert_eq!(normalize_language(None), None);
+    }
+
+    #[test]
+    fn normalize_language_trims_whitespace() {
+        assert_eq!(normalize_language(Some("  zh-TW  ")), Some("zh".into()));
+    }
 }

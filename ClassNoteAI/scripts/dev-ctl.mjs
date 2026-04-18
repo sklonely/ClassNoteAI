@@ -98,7 +98,15 @@ class CDP {
         try {
           cb(msg.params);
         } catch (e) {
-          console.error("[dev-ctl] listener for %s threw:", String(msg.method), e);
+          // Use positional args instead of a template-literal format
+          // string. CodeQL flagged the previous form
+          // (`console.error(\`... ${msg.method} ...\`, e)`) as
+          // "externally-controlled format string" — msg.method comes
+          // from the CDP websocket and could theoretically contain
+          // printf-style specifiers (%s, %d) that console.error honours
+          // before the ...rest args are consumed. Impact on a dev-only
+          // script is nil, but an import for linter-happy commit.
+          console.error('[dev-ctl] listener threw:', msg.method, e);
         }
       }
     }

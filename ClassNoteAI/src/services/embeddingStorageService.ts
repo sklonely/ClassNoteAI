@@ -145,6 +145,40 @@ class EmbeddingStorageService {
         await invoke('save_embeddings', { inputs });
     }
 
+    /**
+     * Atomically replace every embedding for a lecture with a fresh set.
+     *
+     * Uses a single Rust-side transaction (BEGIN; DELETE; INSERT...; COMMIT)
+     * so a crash mid-insert rolls back the delete and leaves the prior
+     * index intact. Before v0.5.2 the JS-side flow was
+     * `deleteByLecture` → loop `save_embedding`, and a crash in the
+     * insert loop silently left the lecture with zero embeddings. See
+     * audit F-4.
+     */
+    public async replaceEmbeddingsForLecture(
+        lectureId: string,
+        chunks: TextChunk[],
+        embeddings: number[][],
+    ): Promise<void> {
+        if (chunks.length !== embeddings.length) {
+            throw new Error('chunks 和 embeddings 數量不匹配');
+        }
+        const now = new Date().toISOString();
+        const inputs = chunks.map((chunk, i) =>
+            toBackend({
+                id: chunk.id,
+                lectureId: chunk.lectureId,
+                chunkText: chunk.text,
+                embedding: embeddings[i],
+                sourceType: chunk.sourceType,
+                position: chunk.position,
+                pageNumber: chunk.pageNumber,
+                createdAt: now,
+            })
+        );
+        await invoke('replace_embeddings_for_lecture', { lectureId, inputs });
+    }
+
     public async getEmbeddingsByLecture(lectureId: string): Promise<EmbeddingRecord[]> {
         await this.migrateLegacyIfNeeded(lectureId);
         const rows = await invoke<BackendEmbeddingRow[]>('get_embeddings_by_lecture', {

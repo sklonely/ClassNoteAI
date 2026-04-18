@@ -284,10 +284,16 @@ export class TranscriptionService {
       }
 
       // 2. 轉錄當前緩衝區
+      // `this.sourceLang` comes from setLanguages() (default 'auto'). It's
+      // normalised on the Rust side — "auto" / undefined → whisper detects
+      // the language from the first 30s, anything else ("en", "zh-TW", ...)
+      // forces that language. Pre-v0.5.2 this was hardcoded to "en" and
+      // the UI's selection was silently ignored.
       const result = await transcribeAudio(
         this.rollingBuffer,
         CONFIG.SAMPLE_RATE,
         this.initialPrompt || this.stableText.slice(-100), // 使用最近的穩定文本作為提示
+        this.sourceLang,
         {
           strategy: 'beam_search',
           beam_size: 5,

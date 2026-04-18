@@ -63,7 +63,18 @@ function ackKey(providerId: string): string {
   return `${UNOFFICIAL_ACK_KEY}.${providerId}`;
 }
 
-export default function AIProviderSettings() {
+/**
+ * @param forceProviderId  When set, the top provider-picker row is hidden
+ *   and the given provider is forced as the "selected" one. Used by
+ *   SetupWizard to split the combined "pick + configure" UX into two
+ *   wizard steps (v0.5.2 review: the combined flow overflowed the
+ *   wizard's viewport — Save/Test buttons were off-screen).
+ */
+interface AIProviderSettingsProps {
+  forceProviderId?: string;
+}
+
+export default function AIProviderSettings({ forceProviderId }: AIProviderSettingsProps = {}) {
   const [states, setStates] = useState<ProviderState[]>(() =>
     listProviders().map((d) => {
       const field = AUTH_FIELD_BY_PROVIDER[d.id];
@@ -83,6 +94,11 @@ export default function AIProviderSettings() {
   // in the v0.5.2 redesign — the UI now forces you to pick one provider at a
   // time via the card-picker, and that selection is persisted as the default.
   const [selectedProviderId, setSelectedProviderId] = useState<string>(() => {
+    // When parent forces a provider (SetupWizard ai-config step), always
+    // respect it regardless of localStorage. Otherwise fall back to the
+    // user's saved default, else the first already-configured one, else
+    // the first in the catalog.
+    if (forceProviderId) return forceProviderId;
     const saved = localStorage.getItem(DEFAULT_PROVIDER_KEY);
     const all = listProviders();
     if (saved && all.some((p) => p.id === saved)) return saved;
@@ -189,42 +205,45 @@ export default function AIProviderSettings() {
   return (
     <>
       <div className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-2">服務提供商</label>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
-            {states.map((s) => {
-              const active = s.descriptor.id === selectedProviderId;
-              return (
-                <button
-                  key={s.descriptor.id}
-                  type="button"
-                  onClick={() => setSelectedProviderId(s.descriptor.id)}
-                  className={`relative px-3 py-3 rounded-lg border text-sm text-left transition ${
-                    active
+        {/* Provider picker — hidden when the parent forced a specific
+            provider (wizard ai-config step chose one already). */}
+        {!forceProviderId && (
+          <div>
+            <label className="block text-sm font-medium mb-2">服務提供商</label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+              {states.map((s) => {
+                const active = s.descriptor.id === selectedProviderId;
+                return (
+                  <button
+                    key={s.descriptor.id}
+                    type="button"
+                    onClick={() => setSelectedProviderId(s.descriptor.id)}
+                    className={`relative px-3 py-3 rounded-lg border text-sm text-left transition ${active
                       ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 ring-2 ring-blue-500/40'
                       : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-900 hover:border-gray-300 dark:hover:border-gray-600'
-                  }`}
-                >
-                  <div className="font-medium leading-tight">
-                    {s.descriptor.displayName}
-                  </div>
-                  <div className="mt-1 flex items-center gap-1 text-[11px]">
-                    {s.saved ? (
-                      <span className="text-green-600 dark:text-green-400">
-                        ● 已設定
-                      </span>
-                    ) : (
-                      <span className="text-gray-400">○ 未設定</span>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
+                      }`}
+                  >
+                    <div className="font-medium leading-tight">
+                      {s.descriptor.displayName}
+                    </div>
+                    <div className="mt-1 flex items-center gap-1 text-[11px]">
+                      {s.saved ? (
+                        <span className="text-green-600 dark:text-green-400">
+                          ● 已設定
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">○ 未設定</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+              點選一個作為主要 LLM 提供商。被選中的就是摘要、Q&A、關鍵字預設使用的服務。
+            </p>
           </div>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
-            點選一個作為主要 LLM 提供商。被選中的就是摘要、Q&A、關鍵字預設使用的服務。
-          </p>
-        </div>
+        )}
 
         {selected && (
           <ProviderCard

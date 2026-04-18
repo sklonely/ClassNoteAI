@@ -87,6 +87,18 @@ pub fn get_audio_dir() -> Result<PathBuf, String> {
     Ok(get_app_data_dir()?.join("audio"))
 }
 
+/// Get the in-progress recording directory.
+///
+/// Returns: {app_data_dir}/audio/in-progress/
+///
+/// This is where raw PCM fragments are appended during an active
+/// recording, so a crash before the user hits Stop still leaves
+/// something on disk for recovery. See `src/recording/` for the
+/// lifecycle (append → finalize / recover / discard).
+pub fn get_in_progress_audio_dir() -> Result<PathBuf, String> {
+    Ok(get_audio_dir()?.join("in-progress"))
+}
+
 /// Get the database file path
 ///
 /// Returns: {app_data_dir}/classnoteai.db
@@ -129,6 +141,7 @@ pub fn init_app_dirs() -> Result<(), String> {
         get_embedding_models_dir()?,
         get_documents_dir()?,
         get_audio_dir()?,
+        get_in_progress_audio_dir()?,
         get_cache_dir()?,
     ];
 

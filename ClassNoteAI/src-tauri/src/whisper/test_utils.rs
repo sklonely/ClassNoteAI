@@ -24,9 +24,16 @@ pub async fn test_transcription(
     let model = WhisperModel::load(model_path).await?;
     println!("[測試] 模型加載成功");
 
-    // 執行轉錄
-    let result =
-        transcribe::transcribe_audio(&model, audio_data, sample_rate, initial_prompt, None).await?;
+    // 執行轉錄 (language=None → auto-detect)
+    let result = transcribe::transcribe_audio(
+        &model,
+        audio_data,
+        sample_rate,
+        initial_prompt,
+        None,
+        None,
+    )
+    .await?;
 
     // 輸出結果
     println!("[測試] 轉錄完成");

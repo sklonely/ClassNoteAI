@@ -51,11 +51,16 @@ class RefinementService {
         try {
             console.log(`[RefinementService] 開始精修片段: ${task.id}`);
 
-            // 使用 Beam Search 進行精修
+            // 使用 Beam Search 進行精修。
+            // language=undefined lets whisper auto-detect on the refined
+            // chunk — refinement runs on already-committed segments where
+            // the original sourceLang is fine, but we don't have easy
+            // access to it here; auto-detect is the safer default.
             const result = await transcribeAudio(
                 task.audioData,
                 this.SAMPLE_RATE,
                 task.keywords, // 使用關鍵詞作為提示
+                undefined,
                 {
                     strategy: 'beam_search',
                     beam_size: 5,

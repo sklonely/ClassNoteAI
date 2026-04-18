@@ -3,6 +3,7 @@
  * 使用 Web Audio API 實現麥克風音頻錄製
  */
 
+import { invoke } from '@tauri-apps/api/core';
 import { AudioProcessor } from '../utils/audioProcessor';
 
 export interface AudioRecorderConfig {
@@ -35,6 +36,29 @@ export class AudioRecorder {
   // 測試用途：存儲錄製的音頻數據
   private recordedChunks: Int16Array[] = [];
   private recordingSampleRate: number = 0;
+
+  // Crash-safe persistence (v0.5.2): while a lecture is being recorded,
+  // raw PCM is flushed to {app_data}/audio/in-progress/{lecture_id}.pcm
+  // every ~5s via the `append_pcm_chunk` Tauri command. If the app
+  // crashes or the window closes before Stop, that file survives and
+  // can be wrapped into a WAV on the next launch. Null means
+  // persistence is disabled (e.g. during a mic-test / calibration run).
+  private persistLectureId: string | null = null;
+  private persistPending: Int16Array[] = [];
+  private persistTimer: ReturnType<typeof setInterval> | null = null;
+  /** Consecutive flush failures. After N in a row we disable persistence
+   *  for the rest of the session instead of silently accumulating samples
+   *  in JS heap until the tab OOMs. The session's in-memory
+   *  `recordedChunks` → `getWavData()` fallback still works on Stop. */
+  private persistConsecutiveFailures = 0;
+  private persistDisabled = false;
+  private static readonly PERSIST_FLUSH_MS = 5_000;
+  private static readonly PERSIST_MAX_CONSECUTIVE_FAILURES = 5;
+  /** Hard cap on how many samples we'll hold in memory waiting to be
+   *  flushed. ~10 minutes of 48 kHz mono i16 = ~55 MB; above that we
+   *  refuse to retry and fall back to in-memory-only persistence so
+   *  the tab stays responsive. */
+  private static readonly PERSIST_MAX_PENDING_SAMPLES = 48_000 * 60 * 10;
 
   // 音頻處理器（用於格式轉換）
   private audioProcessor!: AudioProcessor;
@@ -162,6 +186,12 @@ export class AudioRecorder {
     if (this.recordingSampleRate === 0) {
       this.recordingSampleRate = inputBuffer.sampleRate;
     }
+    // Queue a copy for crash-safe disk flush. The queue is drained by
+    // the periodic timer; we don't invoke Tauri per chunk because that
+    // would bombard the IPC bus every ~20-40ms.
+    if (this.persistLectureId && !this.persistDisabled) {
+      this.persistPending.push(originalPcmData);
+    }
 
     // 計算時間戳
     const timestamp = Date.now() - this.startTime;
@@ -184,6 +214,132 @@ export class AudioRecorder {
    */
   onChunk(callback: (chunk: AudioChunk) => void): void {
     this.onChunkCallback = callback;
+  }
+
+  /**
+   * Turn on crash-safe PCM persistence for the given lecture.
+   *
+   * Call this right before `start()`. The recorder will append newly-
+   * captured audio to `{app_data}/audio/in-progress/{lectureId}.pcm`
+   * every ~5 s so that if the app dies before `stop()` / `finalizeToDisk()`,
+   * the partial recording is still on disk and can be recovered on
+   * next launch via `find_orphaned_recordings`.
+   *
+   * Safe to call while already recording — the timer is idempotent.
+   */
+  public enablePersistence(lectureId: string): void {
+    this.persistLectureId = lectureId;
+    this.persistPending = [];
+    this.persistConsecutiveFailures = 0;
+    this.persistDisabled = false;
+    if (this.persistTimer) return;
+    this.persistTimer = setInterval(() => {
+      void this.flushPersistPending();
+    }, AudioRecorder.PERSIST_FLUSH_MS);
+  }
+
+  /** Stop periodic persistence without finalizing. Keeps the .pcm
+   *  on disk — use `finalizeToDisk` to wrap & move, or
+   *  `discard_orphaned_recording` to throw away. */
+  public disablePersistence(): void {
+    if (this.persistTimer) {
+      clearInterval(this.persistTimer);
+      this.persistTimer = null;
+    }
+    this.persistLectureId = null;
+    this.persistPending = [];
+  }
+
+  /** Drain the pending queue to disk immediately. Invoked by the timer
+   *  and by finalize / stop.
+   *
+   *  Failure policy (v0.5.2 review fix): retry on transient failures but
+   *  give up after N consecutive failures OR when the pending buffer
+   *  exceeds PERSIST_MAX_PENDING_SAMPLES. Without this, a persistently-
+   *  broken Rust side (disk full, permission denied, deleted dir) would
+   *  cause the pending array to grow without bound — each 5s tick
+   *  re-serialising the whole thing and ballooning memory until the tab
+   *  died. After the hard cap, persistence is disabled for the rest of
+   *  the session; recording continues in-memory and the old
+   *  `getWavData()` path on Stop still saves the audio. */
+  private async flushPersistPending(): Promise<void> {
+    if (!this.persistLectureId || this.persistDisabled) return;
+    if (this.persistPending.length === 0) return;
+
+    const pending = this.persistPending;
+    this.persistPending = [];
+    const total = pending.reduce((n, c) => n + c.length, 0);
+    const merged = new Int16Array(total);
+    let offset = 0;
+    for (const c of pending) {
+      merged.set(c, offset);
+      offset += c.length;
+    }
+    const sr = this.recordingSampleRate || this.config.sampleRate;
+    try {
+      await invoke('append_pcm_chunk', {
+        lectureId: this.persistLectureId,
+        data: Array.from(merged),
+        sampleRate: sr,
+        channels: 1,
+      });
+      // Success — reset the failure counter so a later hiccup gets N
+      // fresh chances instead of using up a budget burnt earlier.
+      this.persistConsecutiveFailures = 0;
+    } catch (err) {
+      this.persistConsecutiveFailures += 1;
+      console.warn(
+        `[AudioRecorder] persist flush failed (${this.persistConsecutiveFailures}/${AudioRecorder.PERSIST_MAX_CONSECUTIVE_FAILURES}):`,
+        err,
+      );
+
+      // Decide whether to retry. Retrying means putting samples back at
+      // the head; giving up means dropping them from the persist queue
+      // (they remain in `recordedChunks` for the in-memory WAV fallback).
+      const hitFailureCap =
+        this.persistConsecutiveFailures >= AudioRecorder.PERSIST_MAX_CONSECUTIVE_FAILURES;
+      const projectedPending =
+        merged.length + this.persistPending.reduce((n, c) => n + c.length, 0);
+      const hitSizeCap = projectedPending > AudioRecorder.PERSIST_MAX_PENDING_SAMPLES;
+
+      if (hitFailureCap || hitSizeCap) {
+        console.error(
+          `[AudioRecorder] Giving up on disk persistence for this session ` +
+            `(failures=${this.persistConsecutiveFailures}, pending_samples=${projectedPending}). ` +
+            `Recording continues in memory; Stop will still produce a WAV via the in-memory fallback.`,
+        );
+        this.persistDisabled = true;
+        // Drop the merged samples — they're already in recordedChunks.
+        return;
+      }
+
+      // Transient retry: re-prepend the merged buffer. Losing 5 s of
+      // already-in-memory audio on a disk hiccup is worse than the
+      // memory cost of keeping it for one more tick.
+      this.persistPending.unshift(merged);
+    }
+  }
+
+  /**
+   * Final-flush any pending samples, then wrap the on-disk `.pcm` into
+   * a WAV at the provided absolute path. Returns the final path on
+   * success, or null if no persistence was active. Callers should
+   * prefer this over `getWavData()` + `write_binary_file` when
+   * persistence is on — it avoids holding the entire 90-minute buffer
+   * in JS memory on the way out.
+   */
+  public async finalizeToDisk(finalPath: string): Promise<string | null> {
+    if (!this.persistLectureId) return null;
+    const lectureId = this.persistLectureId;
+    await this.flushPersistPending();
+    this.disablePersistence();
+    try {
+      await invoke('finalize_recording', { lectureId, finalPath });
+      return finalPath;
+    } catch (err) {
+      console.error('[AudioRecorder] finalize_recording failed:', err);
+      throw err;
+    }
   }
 
   /**

@@ -114,54 +114,41 @@ impl EmbeddingService {
         let config: Config = serde_json::from_str(&bert_config_json)
             .map_err(|e| anyhow!("Failed to parse converted config: {}", e))?;
 
-        // Sanity-check the safetensors file. Nomic-embed-text-v1 is
-        // ~137 MB; a truncated download (e.g. user quit the app mid-
-        // download) typically weighs <5 MB and triggers
-        //   "cannot find tensor embeddings.position_embeddings.weight"
-        // from Candle's BertModel::load, which is confusing — the
-        // tensor isn't missing, the file is just incomplete.
-        const MIN_PLAUSIBLE_SIZE: u64 = 80 * 1024 * 1024; // 80 MB
+        // Sanity-check the safetensors file. BAAI/bge-small-en-v1.5 is
+        // ~33 MB; a truncated download (e.g. user quit mid-download)
+        // typically weighs <2 MB and would later surface a confusing
+        // "cannot find tensor …" error from Candle's BertModel::load.
+        // Catching it here gives a direct, actionable message instead.
+        const MIN_PLAUSIBLE_SIZE: u64 = 20 * 1024 * 1024; // 20 MB
         let metadata = std::fs::metadata(model_path)
             .map_err(|e| anyhow!("Failed to stat model file: {}", e))?;
         if metadata.len() < MIN_PLAUSIBLE_SIZE {
             return Err(anyhow!(
-                "Embedding 模型檔案疑似損壞或下載未完成（僅 {} MB，預期 ~137 MB）。\
-                 請到「設定 → AI 模型 → Embedding」重新下載 nomic-embed-text-v1。",
+                "Embedding 模型檔案疑似損壞或下載未完成（僅 {} MB，預期 ~33 MB）。\
+                 請到「設定 → AI 模型 → Embedding」重新下載 bge-small-en-v1.5。",
                 metadata.len() / 1024 / 1024
             ));
         }
 
-        // Load model weights from safetensors. Some HF exports wrap
-        // everything under `bert.*` (standard BERT checkpoints) while
-        // nomic's own export publishes tensors at the top level —
-        // `BertModel::load` picks the right layout via trial-and-error.
+        // Load model weights. bge-small-en-v1.5 is a standard BERT export
+        // where tensor names match Candle's `BertModel::load` expectations
+        // (e.g. `embeddings.word_embeddings.weight`,
+        // `embeddings.position_embeddings.weight`, etc.) with no prefix.
+        // v0.5.1 had a retry-with-`bert.`-prefix fallback to paper over
+        // nomic-embed-text-v1's incompatibility; since we've now replaced
+        // nomic outright, that fallback is removed. If future devs swap
+        // in another model, prefer a model that BertModel::load accepts
+        // cleanly rather than reviving the fallback — see the test
+        // `load_bge_small_en_v15_succeeds` for the contract we want.
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[model_path], DType::F32, &device)? };
 
-        let model = match BertModel::load(vb, &config) {
-            Ok(m) => m,
-            Err(first_err) => {
-                // Retry with a `bert.` prefix scope — some checkpoints
-                // (e.g. the HF `bert-base-uncased` safetensors import)
-                // put every tensor under that namespace.
-                let vb_scoped = unsafe {
-                    VarBuilder::from_mmaped_safetensors(&[model_path], DType::F32, &device)?
-                };
-                match BertModel::load(vb_scoped.pp("bert"), &config) {
-                    Ok(m) => m,
-                    Err(_) => {
-                        // Both layouts failed → surface the *first* (top-
-                        // level) error because that matches the format
-                        // nomic-embed-text-v1 actually ships, so the
-                        // original message is more diagnostic.
-                        return Err(anyhow!(
-                            "Embedding 模型加載失敗（檢查檔案完整性或重新下載）：{}",
-                            first_err
-                        ));
-                    }
-                }
-            }
-        };
+        let model = BertModel::load(vb, &config).map_err(|err| {
+            anyhow!(
+                "Embedding 模型加載失敗（標準 BERT 架構不相容 — 檢查檔案或重新下載）：{}",
+                err
+            )
+        })?;
 
         Ok(Self {
             model,

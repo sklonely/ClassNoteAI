@@ -9,7 +9,33 @@
 
 import { fetch } from '@tauri-apps/plugin-http';
 import { parseSSE } from './sse';
-import { LLMError, LLMErrorKind, LLMRequest, LLMResponse, LLMStreamChunk } from './types';
+import { LLMError, LLMErrorKind, LLMMessage, LLMRequest, LLMResponse, LLMStreamChunk } from './types';
+
+/**
+ * Translate our provider-neutral `LLMMessage` to the Chat Completions
+ * wire shape. Plain strings pass through unchanged; multimodal content
+ * arrays become `[{type:'text', text}, {type:'image_url', image_url:{url, detail?}}]`.
+ *
+ * Kept as a pure function so provider authors don't hand-roll the
+ * conversion and accidentally diverge. A separate translator lives in
+ * `chatgpt-oauth.ts` because the Responses API uses different type
+ * names (`input_text` / `input_image`).
+ */
+export function toOpenAIChatMessage(msg: LLMMessage): Record<string, unknown> {
+  if (typeof msg.content === 'string') {
+    return { role: msg.role, content: msg.content };
+  }
+  const parts = msg.content.map((p) => {
+    if (p.type === 'text') {
+      return { type: 'text', text: p.text };
+    }
+    // image
+    const image: Record<string, unknown> = { url: p.imageUrl };
+    if (p.detail && p.detail !== 'auto') image.detail = p.detail;
+    return { type: 'image_url', image_url: image };
+  });
+  return { role: msg.role, content: parts };
+}
 
 export interface OpenAICompatConfig {
   endpoint: string;
@@ -53,7 +79,7 @@ export function errorKindFromStatus(status: number, body?: string): LLMErrorKind
 function buildBody(request: LLMRequest, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: request.messages,
+    messages: request.messages.map(toOpenAIChatMessage),
     stream,
   };
   if (request.temperature !== undefined) body.temperature = request.temperature;

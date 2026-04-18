@@ -216,16 +216,30 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
 
         // Use [System.IO.DriveInfo] to get free bytes. Works on every
         // supported Windows build without needing wmic or fsutil.
-        // Pass the path via $args rather than string-interpolating it into
-        // the -Command body so backticks/$/apostrophes in APPDATA (which
-        // can legally appear in a Windows username) cannot be interpreted
-        // by PowerShell.
+        //
+        // The probe path is passed as a PowerShell script-block parameter
+        // (`& { param($p) ... } "<path>"`). The earlier form used
+        // `$args[0]` inside a plain -Command string, but `$args` is ONLY
+        // populated when PowerShell is invoked with -File (or a script
+        // block) — under -Command "<string>" the trailing positional
+        // arguments get tokenised as additional script statements, which
+        // fails with `ParserError: UnexpectedToken 'C:\'`. This quirk
+        // silently broke disk-space detection on every Windows install:
+        // the PowerShell call exited 1, RequirementStatus became Error,
+        // and the setup wizard showed "insufficient disk space" to users
+        // who actually had hundreds of GB free (reported: 2026-04-18).
+        //
+        // Using a script block with `param($p)` explicitly binds the
+        // positional arg to a variable, which works under both -Command
+        // and -File, and cleanly sidesteps any interpretation of
+        // backticks / $ / apostrophes that might appear in a Windows
+        // path with an unusual username.
         match Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "[System.IO.DriveInfo]::new($args[0]).AvailableFreeSpace",
+                "& { param($p) [System.IO.DriveInfo]::new($p).AvailableFreeSpace }",
                 &probe_path,
             ])
             .output()
@@ -387,10 +401,13 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
         install_source: Some("https://github.com/sklonely/ClassNoteAI/releases/download/v0.1.2-models/m2m100-418M-ct2-int8.zip".to_string()),
     });
 
-    // Embedding model - nomic-embed-text-v1 for PDF auto-alignment
-    // 使用統一路徑: {app_data}/models/embedding/
+    // Embedding model - BAAI/bge-small-en-v1.5 (standard BERT, Candle-compatible).
+    // v0.5.2: replaced nomic-embed-text-v1, which uses the NomicBert architecture
+    // that Candle's stock BertModel::load cannot decode. Cross-lingual
+    // zh-query → en-content retrieval is handled by translating the query
+    // upstream before embedding, so an English-only embedder is appropriate.
     let embedding_dir = crate::paths::get_embedding_models_dir()?;
-    let embedding_path = embedding_dir.join("nomic-embed-text-v1");
+    let embedding_path = embedding_dir.join("bge-small-en-v1.5");
     let embedding_status = check_model(
         &embedding_path,
         &["model.safetensors", "tokenizer.json", "config.json"],
@@ -399,13 +416,13 @@ pub async fn check_all_requirements() -> Result<Vec<Requirement>, String> {
 
     requirements.push(Requirement {
         id: "embedding_model".to_string(),
-        name: "Nomic Embedding 模型".to_string(),
-        description: "文本嵌入模型，用於 PDF 自動對齊功能 (~137MB)".to_string(),
+        name: "BGE-small-en Embedding 模型".to_string(),
+        description: "文本嵌入模型，用於 RAG 檢索與 PDF 對齊 (~33MB，標準 BERT)".to_string(),
         category: RequirementCategory::Model,
         status: embedding_status,
         is_optional: true, // Optional - PDF alignment feature
-        install_size_mb: 137,
-        install_source: Some("https://huggingface.co/nomic-ai/nomic-embed-text-v1".to_string()),
+        install_size_mb: 33,
+        install_source: Some("https://huggingface.co/BAAI/bge-small-en-v1.5".to_string()),
     });
 
     Ok(requirements)
@@ -444,6 +461,30 @@ mod tests {
     fn test_check_disk_space() {
         let status = check_disk_space(1024);
         println!("Disk space status: {:?}", status);
+    }
+
+    /// Regression test: CI runners have hundreds of GB free, so a 1 MB
+    /// required amount MUST return Installed on every platform.
+    /// Anything else means the probe itself is broken — which is the
+    /// exact bug we shipped in v0.5.2: PowerShell's `$args` variable
+    /// doesn't work with `-Command` on Windows, so the subprocess
+    /// exited non-zero with a `ParserError: UnexpectedToken 'C:\'`
+    /// every time, and the wizard told every user with a 500 GB SSD
+    /// that they had "insufficient disk space".
+    ///
+    /// Uses 1 MB because CI runners always have more than that —
+    /// if THIS test fails on a dev machine it's a disk-space issue,
+    /// not a probe issue.
+    #[test]
+    fn check_disk_space_returns_installed_when_space_clearly_available() {
+        let status = check_disk_space(1);
+        match status {
+            RequirementStatus::Installed => {}
+            other => panic!(
+                "Expected Installed for a 1 MB requirement on any system with >1 MB free; got: {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
