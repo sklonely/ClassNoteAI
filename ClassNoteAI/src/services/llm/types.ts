@@ -7,9 +7,42 @@
 
 export type LLMRole = 'system' | 'user' | 'assistant';
 
+/**
+ * Multimodal content parts. Kept provider-neutral — each provider
+ * translates these into its own wire format:
+ *   - GitHub Models (Chat Completions): `{type:'text'}` / `{type:'image_url', image_url:{url}}`
+ *   - ChatGPT OAuth (Codex Responses API): `{type:'input_text'}` / `{type:'input_image', image_url: <url>}`
+ *   - Assistant replies come back as `output_text` in Responses API, plain string in Chat Completions.
+ */
+export interface LLMTextPart {
+  type: 'text';
+  text: string;
+}
+
+export interface LLMImagePart {
+  type: 'image';
+  /** Data URL (`data:image/png;base64,...`) or publicly fetchable http(s) URL.
+   *  Providers will pass it through to the model as a vision input. */
+  imageUrl: string;
+  /** Many vision APIs support a `low` / `high` detail hint to trade tokens
+   *  vs resolution. Default is `auto` (provider decides). */
+  detail?: 'low' | 'high' | 'auto';
+}
+
+export type LLMContentPart = LLMTextPart | LLMImagePart;
+
 export interface LLMMessage {
   role: LLMRole;
-  content: string;
+  /** Plain string (legacy / single-text messages) or an array of content
+   *  parts (multimodal). Providers that don't support vision will reject
+   *  image parts at the wire-format translation layer. */
+  content: string | LLMContentPart[];
+}
+
+/** Returns true if the message contains any image part — useful for
+ *  providers to decide whether the chosen model supports vision. */
+export function messageHasImage(msg: LLMMessage): boolean {
+  return Array.isArray(msg.content) && msg.content.some((p) => p.type === 'image');
 }
 
 export interface LLMRequest {

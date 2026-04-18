@@ -5,8 +5,10 @@ import {
   Download,
   CheckCircle,
   Cpu,
+  RotateCcw,
 } from "lucide-react";
 import { Card } from "./shared";
+import { setupService } from "../../services/setupService";
 
 interface Props {
   appVersion: string;
@@ -73,6 +75,30 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
       await invoke("open_devtools");
     } catch (e) {
       console.error("Failed to open devtools:", e);
+    }
+  };
+
+  const [isResettingSetup, setIsResettingSetup] = useState(false);
+  const handleResetSetup = async () => {
+    if (
+      !window.confirm(
+        "重置 Setup Wizard？\n\n" +
+          "下次啟動時會重新顯示新手引導（語言選擇、AI 配置、模型下載檢查）。\n" +
+          "你的課堂、筆記、設定不會被刪除，只是 setup_complete.json 標記會被清掉。"
+      )
+    ) {
+      return;
+    }
+    setIsResettingSetup(true);
+    try {
+      await setupService.resetStatus();
+      window.alert("Setup wizard 已重置。重新載入 app 後會出現引導流程。");
+      // 重新整理讓 App.tsx 馬上重新檢查 setup 狀態
+      window.location.reload();
+    } catch (e) {
+      window.alert(`重置失敗：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIsResettingSetup(false);
     }
   };
 
@@ -201,6 +227,33 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
             <Cpu className="w-4 h-4" />
             開啟開發者工具（DevTools）
           </button>
+
+          {/* v0.5.2: re-run Setup Wizard. Calls setupService.resetStatus
+              (which removes `setup_complete.json`) then reloads. User
+              data is untouched — only the first-run marker gets cleared. */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">
+              重置新手引導，用於測試或確認最新的 wizard 流程。
+              只會清掉 setup 完成標記，不會刪你的課堂、筆記、設定。
+            </p>
+            <button
+              onClick={handleResetSetup}
+              disabled={isResettingSetup}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white dark:bg-slate-800 border border-orange-300 dark:border-orange-700 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
+            >
+              {isResettingSetup ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  重置中...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="w-4 h-4" />
+                  重置 Setup Wizard（保留資料）
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </Card>
     </div>

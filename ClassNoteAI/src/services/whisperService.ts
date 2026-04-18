@@ -193,6 +193,17 @@ export async function transcribeAudio(
   audioData: Int16Array,
   sampleRate: number,
   initialPrompt?: string,
+  /**
+   * BCP-47-ish language tag ("en", "zh-TW", "auto") or undefined.
+   * The Rust side normalises this via `normalize_language` into
+   * whisper.cpp's two-letter codes. Passing undefined / "auto" /
+   * empty string lets whisper auto-detect from the first 30s of audio.
+   *
+   * v0.5.2: this used to be hardcoded to "en" in the Rust backend,
+   * ignoring whatever the UI had — any user recording Chinese content
+   * got English transcription regardless of their settings.
+   */
+  language?: string,
   options?: TranscriptionOptions
 ): Promise<any> {
   try {
@@ -203,6 +214,7 @@ export async function transcribeAudio(
       audioData: audioArray,
       sampleRate,
       initialPrompt,
+      language,
       options,
     });
 

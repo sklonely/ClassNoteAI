@@ -1,10 +1,13 @@
 /**
  * RAG (Retrieval-Augmented Generation) service.
  *
- * Embeddings: local Candle `nomic-embed-text-v1` (shipped via the
- * embedding-model download flow in Settings). No network calls to
- * Ollama — earlier versions fetched embeddings remotely, v0.5.0+ runs
- * everything on-device.
+ * Embeddings: local Candle `BAAI/bge-small-en-v1.5` (shipped via the
+ * embedding-model download flow in Settings). Switched from
+ * nomic-embed-text-v1 in v0.5.2 — nomic uses NomicBert (rotary +
+ * SwiGLU) which Candle's stock BertModel::load cannot decode. English
+ * content + a translate-query step for Chinese user queries gives
+ * better MTEB scores than a multilingual 384-d encoder could.
+ * No network calls — everything runs on-device.
  *
  * OCR: optional Ollama `deepseek-ocr` for complex slide decks. If not
  * reachable, we pre-flight-skip and fall back to pdfjs text extraction.
@@ -13,9 +16,23 @@
 import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
 import { generateLocalEmbedding } from './embeddingService';
-import { chat as llmChat } from './llm';
+import { chat as llmChat, translateForRetrieval } from './llm';
 import { ocrService } from './ocrService';
+import { remoteOcrService } from './remoteOcrService';
 import { pdfToImageService } from './pdfToImageService';
+import { storageService } from './storageService';
+
+/**
+ * Returns true if the query contains any CJK Unified Ideograph, Hiragana,
+ * Katakana, or Hangul. Used as a cheap trigger for the translate-query
+ * cross-lingual path: if the user typed Chinese but the course content
+ * is English, we route the query through LLM translation before
+ * embedding to avoid the ~20-point MTEB retrieval gap you'd see from
+ * a multilingual embedder. ASCII-only queries skip translation.
+ */
+function containsCJK(s: string): boolean {
+    return /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(s);
+}
 
 export interface RAGContext {
     chunks: SearchResult[];
@@ -85,7 +102,7 @@ class RAGService {
             const texts = allChunks.map(c => c.text);
             const embeddings: number[][] = [];
 
-            // Embed locally via the Candle-backed nomic-embed-text-v1 model.
+            // Embed locally via the Candle-backed bge-small-en-v1.5 model.
             for (let i = 0; i < texts.length; i++) {
                 const embedding = await generateLocalEmbedding(texts[i]);
                 embeddings.push(embedding);
@@ -106,11 +123,14 @@ class RAGService {
                 message: '正在存儲索引...',
             });
 
-            // 先清除舊的嵌入向量
-            await embeddingStorageService.deleteByLecture(lectureId);
-
-            // 存儲新的嵌入向量
-            await embeddingStorageService.storeEmbeddings(allChunks, embeddings);
+            // Atomicity: a single Rust-side transaction that deletes the old
+            // lecture embeddings AND inserts the new ones. Prior version did
+            // a JS-side delete-then-store; a failure in storeEmbeddings left
+            // the user with NO index at all (old deleted, new aborted) and
+            // the bug surfaced as a silent zero-embedding state (hasEmbeddings
+            // returned true from the new partial write, but retrieval was
+            // incomplete). See audit note F-4 in docs/follow-ups.
+            await embeddingStorageService.replaceEmbeddingsForLecture(lectureId, allChunks, embeddings);
 
             onProgress?.({
                 stage: 'storing',
@@ -143,28 +163,76 @@ class RAGService {
         forceRefresh: boolean = false // 是否強制刷新 (忽略緩存)
     ): Promise<{ chunksCount: number; success: boolean }> {
         try {
-            // Pre-flight: if Ollama is not reachable in ≤2.5 s, don't run
-            // the 32×60s-per-page OCR marathon — fall back directly to the
-            // pdfjs-only text path that indexLecture() uses. Without this,
-            // users without Ollama see "OCR 識別頁面 X/32..." stuck for
-            // ~100 min before it gives up page-by-page.
+            // v0.5.2 OCR decision tree. Settings → `ocr.mode` picks the
+            // strategy; defaults to `auto` (remote preferred, local
+            // fallback, pdfjs last resort). See src/types/index.ts for
+            // the mode semantics. The picked backend implements the
+            // same `recognizePages(pages, onProgress)` contract so the
+            // downstream OCR loop below doesn't branch.
+            type OcrRecognize = (
+                pages: { pageNumber: number; imageBase64: string }[],
+                onProgress?: (current: number, total: number) => void,
+                _concurrency?: number,
+                _lectureId?: string,
+                _forceRefresh?: boolean,
+            ) => Promise<Array<{ pageNumber: number; text: string; success: boolean; error?: string }>>;
+            type OcrBackend = { name: 'remote' | 'local'; recognize: OcrRecognize } | null;
+
+            let backend: OcrBackend = null;
+
             if (pdfData) {
-                const ollamaReady = await ocrService.isAvailable();
-                if (!ollamaReady) {
-                    console.warn(
-                        '[RAGService] Ollama deepseek-ocr unavailable — falling back to pdfjs text extraction',
-                    );
+                const settings = await storageService.getAppSettings().catch(() => null);
+                const mode = settings?.ocr?.mode ?? 'auto';
+
+                if (mode !== 'off') {
+                    const wantRemote = mode === 'auto' || mode === 'remote';
+                    const wantLocal = mode === 'auto' || mode === 'local';
+
+                    // Try remote first (cloud LLM vision). Fast availability
+                    // check — doesn't do a real request, just probes
+                    // `resolveActiveProvider` + listModels capabilities.
+                    if (wantRemote) {
+                        const remoteReady = await remoteOcrService.isAvailable();
+                        if (remoteReady) {
+                            backend = {
+                                name: 'remote',
+                                recognize: (pages, cb) =>
+                                    remoteOcrService.recognizePages(pages, cb),
+                            };
+                        }
+                    }
+                    // Fall through to Ollama if allowed by mode.
+                    if (!backend && wantLocal) {
+                        const ollamaReady = await ocrService.isAvailable();
+                        if (ollamaReady) {
+                            backend = {
+                                name: 'local',
+                                recognize: (pages, cb, _conc, lecId, force) =>
+                                    ocrService.recognizePages(pages, cb, 1, lecId, force),
+                            };
+                        }
+                    }
+                }
+
+                if (!backend) {
+                    // pdfjs-only fallback. Either OCR is off, or neither
+                    // remote nor local backend is ready. No 32×60s
+                    // wait-for-timeout like the pre-v0.5.2 code — we
+                    // bailed fast on the availability probes.
+                    const reason = mode === 'off'
+                        ? '已停用 OCR，改用 PDF 文字提取'
+                        : '未偵測到可用 OCR，改用 PDF 文字提取';
+                    console.warn(`[RAGService] ${reason}`);
                     onProgress?.({
                         stage: 'chunking',
                         current: 0,
                         total: 1,
-                        message: '未偵測到 Ollama OCR，改用 PDF 文字提取',
+                        message: reason,
                     });
-                    // pdfjs-only path: renderPages() is OCR-free; ragService
-                    // already knows how to handle chunks from pdfToImageService.
                     const pdfText = await pdfToImageService.extractAllText(pdfData.slice(0));
                     return this.indexLecture(lectureId, pdfText, transcriptText, onProgress);
                 }
+                console.log(`[RAGService] Using OCR backend: ${backend.name}`);
             }
 
             const allChunks: TextChunk[] = [];
@@ -196,20 +264,30 @@ class RAGService {
                     }
                 );
 
-                // OCR 識別
-                const ocrResults = await ocrService.recognizePages(
+                // OCR 識別 — dispatch via whichever backend was picked
+                // in the decision tree above (remote LLM vision vs local
+                // Ollama). Progress label mentions the backend so users
+                // can tell which path they're on.
+                if (!backend) {
+                    // Defensive: decision tree should have populated
+                    // `backend` or returned before this point. If not,
+                    // fall back to pdfjs silently.
+                    throw new Error('OCR backend not selected');
+                }
+                const backendLabel = backend.name === 'remote' ? '雲端' : '本機';
+                const ocrResults = await backend.recognize(
                     pageImages,
                     (current, total) => {
                         onProgress?.({
                             stage: 'chunking',
                             current: pageImages.length + current,
                             total: pageImages.length + total,
-                            message: `OCR 識別頁面 ${current}/${total}...`,
+                            message: `OCR 識別頁面 ${current}/${total}（${backendLabel}）...`,
                         });
                     },
-                    1, // 改回單線程處理，避免 Ollama 內部資源競爭
-                    lectureId, // 啟用緩存
-                    forceRefresh // 是否強制刷新
+                    1,
+                    lectureId,
+                    forceRefresh,
                 );
 
                 // 分塊處理 OCR 結果
@@ -266,8 +344,6 @@ class RAGService {
             }
 
             // 階段 3: 生成嵌入向量
-            await embeddingStorageService.deleteByLecture(lectureId);
-
             const embeddings: number[][] = [];
 
             for (let i = 0; i < allChunks.length; i++) {
@@ -282,8 +358,11 @@ class RAGService {
                 embeddings.push(embedding);
             }
 
-            // 階段 4: 存儲
-            await embeddingStorageService.storeEmbeddings(allChunks, embeddings);
+            // 階段 4: 存儲 — atomic replace so a crash here doesn't leave
+            // the lecture with zero embeddings (the delete-then-store bug
+            // from the audit). Either the new index lands or the old
+            // index stays intact.
+            await embeddingStorageService.replaceEmbeddingsForLecture(lectureId, allChunks, embeddings);
 
             onProgress?.({
                 stage: 'storing',
@@ -360,8 +439,8 @@ class RAGService {
 
     /**
      * Minimum cosine similarity to consider a retrieved chunk actually
-     * relevant to the query. Below this we drop the chunk. nomic-embed-
-     * text-v1 produces scores in the ~0.3-0.9 range for related content
+     * relevant to the query. Below this we drop the chunk. bge-small-en
+     * -v1.5 produces scores in the ~0.3-0.9 range for related content
      * in practice; queries with no semantic overlap at all (pure
      * greetings, off-topic chit-chat, single-word inputs that happen to
      * match the course title) hover near 0.4-0.5, where the model is
@@ -388,8 +467,25 @@ class RAGService {
         const topK = options?.topK || 5;
         const basePrompt = options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
 
+        // Cross-lingual retrieval: if the question is Chinese but the
+        // course content is (mostly) English, translate the query to
+        // English before embedding. We use an English-only embedder
+        // (bge-small-en-v1.5) which outperforms any 384-d multilingual
+        // model on English retrieval by ~20 MTEB points. The original
+        // Chinese question is still passed to the answering LLM so the
+        // user sees a Chinese answer — only the retrieval side sees
+        // the translation.
+        const retrievalQuery = containsCJK(question)
+            ? await translateForRetrieval(question, 'en')
+            : question;
+        if (retrievalQuery !== question) {
+            console.log(
+                `[RAGService] cross-lingual: "${question}" → "${retrievalQuery}" (for retrieval only)`,
+            );
+        }
+
         // 檢索相關上下文 (傳入當前頁面優先檢索)
-        const context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
+        const context = await this.retrieveContext(retrievalQuery, lectureId, topK, options?.currentPage);
 
         // Only enhance the prompt with retrieved context when at least one
         // chunk passes the relevance threshold. If the user typed a plain

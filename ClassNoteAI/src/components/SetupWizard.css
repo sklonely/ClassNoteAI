@@ -18,6 +18,14 @@
     max-width: 700px;
     width: 100%;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    /* v0.5.2 review fix: on smaller viewports (or steps that embed a
+       lot of form content — e.g. the AI config step) the container
+       could extend past the viewport and the Continue / Next button
+       would end up off-screen with no way to click it. Cap the height
+       and scroll internally so the outer viewport never clips the
+       step's action buttons. */
+    max-height: calc(100vh - 4rem);
+    overflow-y: auto;
 }
 
 /* Step Indicator */

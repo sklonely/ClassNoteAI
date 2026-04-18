@@ -20,6 +20,8 @@ pub mod downloads;
 mod sync;
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
 mod oauth;
+// Crash-safe recording — incremental PCM persistence + orphan recovery
+pub mod recording;
 
 use embedding::EmbeddingService;
 use tauri::Emitter;
@@ -96,6 +98,7 @@ async fn transcribe_audio(
     audio_data: Vec<i16>,
     sample_rate: u32,
     initial_prompt: Option<String>,
+    language: Option<String>,
     options: Option<whisper::transcribe::TranscriptionOptions>,
 ) -> Result<whisper::transcribe::TranscriptionResult, String> {
     let service_guard = WHISPER_SERVICE.lock().await;
@@ -105,7 +108,13 @@ async fn transcribe_audio(
         .ok_or_else(|| "模型未加載".to_string())?;
 
     service
-        .transcribe(&audio_data, sample_rate, initial_prompt.as_deref(), options)
+        .transcribe(
+            &audio_data,
+            sample_rate,
+            initial_prompt.as_deref(),
+            language.as_deref(),
+            options,
+        )
         .await
         .map_err(|e| format!("轉錄失敗: {}", e))
 }
@@ -710,6 +719,23 @@ async fn update_lecture_status(id: String, status: String) -> Result<(), String>
     Ok(())
 }
 
+/// List lectures still marked 'recording' — crash-recovery boot entry point.
+/// Returned rows should be cross-referenced with `find_orphaned_recordings`
+/// (the on-disk side) to decide whether audio is recoverable.
+#[tauri::command]
+async fn list_orphaned_recording_lectures() -> Result<Vec<storage::Lecture>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    db.list_orphaned_recording_lectures()
+        .map_err(|e| format!("查詢 orphan lectures 失敗: {}", e))
+}
+
 /// 保存字幕
 #[tauri::command]
 async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
@@ -940,6 +966,46 @@ async fn save_embeddings(inputs: Vec<EmbeddingInput>) -> Result<(), String> {
     Ok(())
 }
 
+/// Atomically replace all embeddings for a lecture. Old rows are
+/// deleted and new ones inserted in a single SQLite transaction; if
+/// any insert fails, the transaction rolls back and the existing
+/// index stays intact.
+///
+/// This exists because the v0.5.1-and-earlier re-indexing flow did a
+/// JS-side `delete → loop insert`, so a crash partway through the
+/// insert loop left the lecture with ZERO embeddings (old gone, new
+/// incomplete) and `hasEmbeddings` returned true because some rows
+/// had been written — silent broken-retrieval state until the user
+/// noticed AI 助教 was worse.
+#[tauri::command]
+async fn replace_embeddings_for_lecture(
+    lecture_id: String,
+    inputs: Vec<EmbeddingInput>,
+) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    // EmbeddingInput (deser) → EmbeddingRow (storage's internal shape).
+    // Identical field set; exists only because the deser type lives in
+    // this crate and the DB type lives in storage.
+    let rows: Vec<storage::EmbeddingRow> = inputs
+        .into_iter()
+        .map(|i| storage::EmbeddingRow {
+            id: i.id,
+            lecture_id: i.lecture_id,
+            chunk_text: i.chunk_text,
+            embedding: i.embedding,
+            source_type: i.source_type,
+            position: i.position,
+            page_number: i.page_number,
+            created_at: i.created_at,
+        })
+        .collect();
+    db.replace_embeddings_for_lecture(&lecture_id, &rows)
+        .map_err(|e| format!("replace embeddings: {}", e))
+}
+
 #[tauri::command]
 async fn get_embeddings_by_lecture(lecture_id: String) -> Result<Vec<storage::EmbeddingRow>, String> {
     let manager = storage::get_db_manager()
@@ -1107,8 +1173,14 @@ async fn download_embedding_model_cmd(
     // Get models directory using unified path
     let models_dir = paths::get_embedding_models_dir()?;
 
-    // Create config for nomic-embed-text-v1 (recommended model)
-    let config = EmbeddingModelConfig::nomic_embed(models_dir);
+    // Use bge-small-en-v1.5 (standard BERT, Candle-compatible, ~33 MB).
+    // Replaces nomic-embed-text-v1 in v0.5.2 — nomic uses the NomicBert
+    // architecture with rotary position embeddings + SwiGLU, which
+    // Candle's stock `BertModel::load` cannot load (it hard-requires
+    // `embeddings.position_embeddings.weight` which nomic doesn't have).
+    // Cross-lingual zh→en retrieval is handled upstream in ragService.ts
+    // by translating the query to English before embedding.
+    let config = EmbeddingModelConfig::bge_small(models_dir);
 
     // Progress callback
     let progress_callback = Box::new(move |downloaded: u64, total: u64| {
@@ -1707,6 +1779,7 @@ pub fn run() {
             // Embeddings (local RAG)
             save_embedding,
             save_embeddings,
+            replace_embeddings_for_lecture,
             get_embeddings_by_lecture,
             delete_embeddings_by_lecture,
             count_embeddings,
@@ -1768,79 +1841,149 @@ pub fn run() {
             get_all_chat_messages,
             save_chat_message,
             delete_chat_messages_by_session,
+            // Crash-safe recording (v0.5.2): incremental PCM persistence + recovery
+            recording::append_pcm_chunk,
+            recording::finalize_recording,
+            recording::find_orphaned_recordings,
+            recording::discard_orphaned_recording,
+            list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
-/// 嘗試恢復丟失的 audio_path
+/// 嘗試恢復丟失的 audio_path.
+///
+/// v0.5.2: extended to also recover from orphaned `.pcm` files in the
+/// in-progress recording directory. The previous version only scanned
+/// the audio dir for `.wav` files matching `lecture_<id>_*.wav`, so if
+/// the Stop-handler's finalize step failed (for whatever reason — disk
+/// full, permission, race), the audio data sitting on disk as a
+/// `<id>.pcm` was invisible to recovery. User report:
+/// "東西存在就應該要找得到，而不該是找不到的問題" — audio existed on
+/// disk, lecture row had null audio_path, no way to reach it.
+///
+/// Recovery order:
+///   1. DB already has a non-empty audio_path → return it as-is.
+///   2. Scan audio_dir for `lecture_<id>_*.wav`; pick the NEWEST (by
+///      mtime) so re-recordings on the same lecture don't silently
+///      lose audio to an older file.
+///   3. Scan in-progress dir for `<id>.pcm`; finalize it into a new
+///      `lecture_<id>_<now>.wav` under audio_dir, then return that.
+///      Finalization removes the `.pcm` + meta after success so the
+///      same file can't get recovered twice.
+///   4. Nothing found → Ok(None).
 #[tauri::command]
 async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, String> {
     use std::fs;
-    
-    // 1. 檢查 DB 中是否確實缺失
+
+    // Step 1: check DB state. If audio_path is already populated, nothing to recover.
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("DB Error: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("DB Connection Error: {}", e))?;
-    
-    let lecture_opt = db.get_lecture(&lecture_id).map_err(|e| format!("Get Lecture Error: {}", e))?;
-    
-    if let Some(lecture) = lecture_opt {
-        if let Some(path) = lecture.audio_path {
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("DB Connection Error: {}", e))?;
+
+    let lecture_opt = db
+        .get_lecture(&lecture_id)
+        .map_err(|e| format!("Get Lecture Error: {}", e))?;
+
+    if let Some(ref lecture) = lecture_opt {
+        if let Some(ref path) = lecture.audio_path {
             if !path.is_empty() {
-                return Ok(Some(path)); // 已存在，直接返回
+                return Ok(Some(path.clone()));
             }
         }
     } else {
-        return Ok(None); // Lecture 不存在
-    }
-
-    // 2. 掃描目錄
-    let audio_dir = paths::get_audio_dir().map_err(|e| format!("Path Error: {}", e))?;
-    if !audio_dir.exists() {
         return Ok(None);
     }
 
-    let prefix = format!("lecture_{}_", lecture_id);
-    let mut found_path: Option<std::path::PathBuf> = None;
+    let audio_dir = paths::get_audio_dir().map_err(|e| format!("Path Error: {}", e))?;
 
-    if let Ok(entries) = fs::read_dir(&audio_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with(&prefix) && name.ends_with(".wav") {
-                        found_path = Some(path);
-                        break; // 找到一個即可（通常只有一個，或者取最新的）
-                    }
+    // Step 2: scan audio_dir for matching .wav files, pick the newest.
+    let mut recovered_path: Option<std::path::PathBuf> = None;
+    if audio_dir.exists() {
+        let prefix = format!("lecture_{}_", lecture_id);
+        let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&audio_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(s) => s,
+                    None => continue,
+                };
+                if !(name.starts_with(&prefix) && name.ends_with(".wav")) {
+                    continue;
+                }
+                // Prefer the newest re-recording over an older one. An
+                // older loop did `break` on the first match, so a user
+                // who re-recorded on the same lecture could silently end
+                // up playing the PREVIOUS attempt.
+                let mtime = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                candidates.push((path, mtime));
+            }
+        }
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        recovered_path = candidates.into_iter().next().map(|(p, _)| p);
+    }
+
+    // Step 3: if no .wav was found, check for an orphaned .pcm in the
+    // in-progress dir and finalize it. The Stop-handler failure path
+    // (or a mid-session crash that never hit the crash-recovery modal)
+    // can leave a .pcm with the actual audio data sitting here.
+    if recovered_path.is_none() {
+        let in_progress_dir = paths::get_in_progress_audio_dir()
+            .map_err(|e| format!("Path Error: {}", e))?;
+        let pcm_path = in_progress_dir.join(format!("{}.pcm", lecture_id));
+        if pcm_path.exists() {
+            // Synthesise a new timestamped WAV target under audio_dir.
+            let ts = chrono::Utc::now().timestamp_millis();
+            let wav_path = audio_dir.join(format!("lecture_{}_{}.wav", lecture_id, ts));
+            fs::create_dir_all(&audio_dir)
+                .map_err(|e| format!("Failed to create audio dir: {}", e))?;
+            match recording::finalize_recording_inner(&in_progress_dir, &lecture_id, &wav_path) {
+                Ok(_bytes) => {
+                    println!(
+                        "[Recovery] Finalised orphaned PCM for lecture {} → {:?}",
+                        lecture_id, wav_path
+                    );
+                    recovered_path = Some(wav_path);
+                }
+                Err(e) => {
+                    println!(
+                        "[Recovery] Could not finalise PCM for {}: {} (non-fatal)",
+                        lecture_id, e
+                    );
                 }
             }
         }
     }
 
-    // 3. 更新 DB
-    if let Some(path) = found_path {
+    // Step 4: persist the recovered path into the DB so subsequent loads
+    // don't have to re-scan.
+    if let Some(path) = recovered_path {
         let path_str = path.to_string_lossy().to_string();
         println!("[Recovery] 找到丟失的音頻文件: {}", path_str);
-        
-        // 我們需要一個更新 audio_path 的方法，或者直接用 save_lecture
-        // 由於我們剛才更新了 save_lecture 支持 audio_path，重新保存一次即可
-        // 但需要先獲取完整 lecture 對象
+
         if let Some(mut lecture) = db.get_lecture(&lecture_id).unwrap_or(None) {
             lecture.audio_path = Some(path_str.clone());
-            // 更新狀態為 completed 如果是 recording
             if lecture.status == "recording" {
                 lecture.status = "completed".to_string();
             }
-            // Fetch user_id from course
             let user_id = if let Some(course) = db.get_course(&lecture.course_id).unwrap_or(None) {
                 course.user_id
             } else {
-                "default_user".to_string() // Should not happen if foreign keys are enforced, but safe fallback
+                "default_user".to_string()
             };
-            
-            db.save_lecture(&lecture, &user_id).map_err(|e| format!("Update DB Error: {}", e))?;
+            db.save_lecture(&lecture, &user_id)
+                .map_err(|e| format!("Update DB Error: {}", e))?;
             return Ok(Some(path_str));
         }
     }

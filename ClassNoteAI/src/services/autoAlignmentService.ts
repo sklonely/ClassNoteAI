@@ -153,6 +153,34 @@ class AutoAlignmentService {
         this.transcriptionBuffer = '';
         this.pageEmbeddings = [];
     }
+
+    /**
+     * Pure similarity query used by Auto Follow during playback.
+     *
+     * Returns the best-matching page for a pre-computed query embedding,
+     * without side-effects on the recording-side state (currentPage /
+     * stabilityCounter / lastBestPage). Safe to call repeatedly.
+     *
+     * Returns null if page embeddings haven't been loaded yet, so
+     * callers can fall back to "do nothing" instead of scrolling to a
+     * wrong page.
+     */
+    public findBestPage(queryEmbedding: number[]): { page: number; similarity: number } | null {
+        if (this.pageEmbeddings.length === 0) return null;
+        let best: { page: number; similarity: number } | null = null;
+        for (const pe of this.pageEmbeddings) {
+            const sim = cosineSimilarity(queryEmbedding, pe.embedding);
+            if (!best || sim > best.similarity) {
+                best = { page: pe.pageNumber, similarity: sim };
+            }
+        }
+        return best;
+    }
+
+    /** True once setPageEmbeddings has been called with a non-empty set. */
+    public hasPageEmbeddings(): boolean {
+        return this.pageEmbeddings.length > 0;
+    }
 }
 
 export const autoAlignmentService = new AutoAlignmentService();

@@ -4,6 +4,9 @@ import MainWindow from "./components/MainWindow";
 import LoginScreen from "./components/LoginScreen";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
+import RecoveryPromptModal from "./components/RecoveryPromptModal";
+import ToastContainer from "./components/ToastContainer";
+import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
 import { syncService } from "./services/syncService";
@@ -13,6 +16,7 @@ type AppState = 'loading' | 'setup' | 'ready';
 
 function App() {
   const [appState, setAppState] = useState<AppState>('loading');
+  const [recoverableSessions, setRecoverableSessions] = useState<RecoverableSession[]>([]);
   const { user } = useAuth();
 
   // Check setup status on mount
@@ -46,6 +50,55 @@ function App() {
     };
     initTheme();
   }, []);
+
+  // v0.5.2: crash-recovery scan on launch. If the app died mid-
+  // recording last session, there's a .pcm file on disk and a DB row
+  // stuck at status='recording'. We populate `recoverableSessions`
+  // state; `RecoveryPromptModal` renders a proper React UI when there
+  // are sessions to resolve. Cleanup of rows-without-pcm and pcm-
+  // without-rows happens silently.
+  useEffect(() => {
+    const checkRecordingRecovery = async () => {
+      if (appState !== 'ready') return;
+      try {
+        const { recordingRecoveryService } = await import('./services/recordingRecoveryService');
+        const scan = await recordingRecoveryService.scan();
+
+        if (scan.recoverable.length > 0) {
+          setRecoverableSessions(scan.recoverable);
+        }
+
+        // Clean up any PCM orphans that have no lecture row — these are
+        // dead weight and the user has nothing to recover to.
+        for (const pcm of scan.pcmOrphansWithoutLecture) {
+          try {
+            await recordingRecoveryService.discardOrphanPcm(pcm.lectureId);
+          } catch (err) {
+            console.warn(`[App] Failed to clean orphan PCM ${pcm.lectureId}:`, err);
+          }
+        }
+
+        // And clean up lecture rows whose audio was never written to
+        // disk at all (pre-v0.5.2 sessions, or recordings that crashed
+        // before the first 5s flush): flip them to 'completed' silently
+        // rather than showing a "recover nothing" dialog.
+        for (const lec of scan.lectureOrphansWithoutPcm) {
+          try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('update_lecture_status', { id: lec.id, status: 'completed' });
+            console.log(`[App] Flipped zombie lecture ${lec.id} to completed (no audio on disk)`);
+          } catch (err) {
+            console.warn(`[App] Failed to reconcile zombie lecture ${lec.id}:`, err);
+          }
+        }
+      } catch (err) {
+        console.warn('[App] Crash-recovery scan failed (non-fatal):', err);
+      }
+    };
+    // Fire after initial render settles so we don't block first paint.
+    const t = setTimeout(checkRecordingRecovery, 1500);
+    return () => clearTimeout(t);
+  }, [appState]);
 
   // 啟動時靜默檢查更新
   useEffect(() => {
@@ -136,6 +189,14 @@ function App() {
   return (
     <ErrorBoundary>
       <MainWindow />
+      <RecoveryPromptModal
+        sessions={recoverableSessions}
+        onSessionResolved={(id) =>
+          setRecoverableSessions((prev) => prev.filter((s) => s.lectureId !== id))
+        }
+        onAllResolved={() => setRecoverableSessions([])}
+      />
+      <ToastContainer />
     </ErrorBoundary>
   );
 }

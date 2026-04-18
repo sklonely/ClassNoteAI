@@ -1,0 +1,6 @@
+# Generated per-run reports. Only the aggregated daily report
+# (reports/YYYY-MM-DD.md) is committed by the nightly workflow.
+# Per-metric intermediates stay untracked.
+reports/asr-wer-*.md
+reports/rag-mrr-*.md
+reports/summary-*.md

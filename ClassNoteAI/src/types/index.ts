@@ -126,6 +126,23 @@ export interface AppSettings {
       heavy?: string;
     };
   };
+  /**
+   * OCR / slide-text-extraction strategy for RAG indexing (v0.5.2+).
+   *
+   *   - `auto`  — prefer remote (cloud LLM vision), fall back to local
+   *               Ollama deepseek-ocr, fall back to pdfjs text layer
+   *   - `remote`— cloud LLM vision only; pdfjs if no LLM configured
+   *   - `local` — Ollama deepseek-ocr only; pdfjs if Ollama not running
+   *   - `off`   — skip OCR entirely, always use pdfjs text layer
+   *
+   * Default is `auto`. Users who care about privacy can switch to
+   * `local` or `off` from Settings → 資料管理. Users who don't have
+   * Ollama (~99% of installs) get remote OCR for the first time in
+   * v0.5.2; previously they silently got pdfjs-only.
+   */
+  ocr?: {
+    mode?: 'auto' | 'remote' | 'local' | 'off';
+  };
   sync?: {
     username: string;
     deviceId?: string;

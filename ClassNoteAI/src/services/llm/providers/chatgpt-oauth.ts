@@ -489,21 +489,51 @@ export class ChatGPTOAuthProvider implements LLMProvider {
    */
   private buildResponsesBody(request: LLMRequest, stream: boolean): Record<string, unknown> {
     const systems: string[] = [];
-    const input: Array<{ role: 'user' | 'assistant'; content: Array<{ type: string; text: string }> }> = [];
+    // Responses API content parts have a different type union than
+    // Chat Completions: `input_text` / `input_image` for user messages,
+    // `output_text` for assistant turns. See
+    // https://platform.openai.com/docs/api-reference/responses
+    type ResponsesPart =
+      | { type: 'input_text'; text: string }
+      | { type: 'output_text'; text: string }
+      | { type: 'input_image'; image_url: string; detail?: 'low' | 'high' | 'auto' };
+    const input: Array<{ role: 'user' | 'assistant'; content: ResponsesPart[] }> = [];
     for (const m of request.messages) {
+      // System messages collapse into top-level `instructions` — they
+      // don't support multipart content in the Responses API, and
+      // passing images to a system role would be meaningless anyway.
       if (m.role === 'system') {
-        systems.push(m.content);
+        const text = typeof m.content === 'string'
+          ? m.content
+          : m.content
+              .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+              .map((p) => p.text)
+              .join('\n');
+        systems.push(text);
         continue;
       }
-      input.push({
-        role: m.role,
-        content: [
-          {
-            type: m.role === 'assistant' ? 'output_text' : 'input_text',
-            text: m.content,
-          },
-        ],
-      });
+      const parts: ResponsesPart[] = [];
+      if (typeof m.content === 'string') {
+        parts.push({
+          type: m.role === 'assistant' ? 'output_text' : 'input_text',
+          text: m.content,
+        });
+      } else {
+        for (const p of m.content) {
+          if (p.type === 'text') {
+            parts.push({
+              type: m.role === 'assistant' ? 'output_text' : 'input_text',
+              text: p.text,
+            });
+          } else {
+            // Responses API takes image_url as a string (not {url:...}).
+            const part: ResponsesPart = { type: 'input_image', image_url: p.imageUrl };
+            if (p.detail && p.detail !== 'auto') part.detail = p.detail;
+            parts.push(part);
+          }
+        }
+      }
+      input.push({ role: m.role, content: parts });
     }
     const body: Record<string, unknown> = {
       model: request.model,

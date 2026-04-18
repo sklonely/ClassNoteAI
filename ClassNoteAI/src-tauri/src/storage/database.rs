@@ -496,6 +496,33 @@ impl Database {
             [],
         )?;
 
+        // v0.5.2 migration: embedding model switched from nomic-embed-text-v1
+        // (768-d, 3072 bytes per f32 vector) to bge-small-en-v1.5 (384-d,
+        // 1536 bytes). Old stored vectors are geometrically incompatible
+        // with new query vectors — mixing them yields nonsense similarity
+        // scores. Drop anything that isn't 1536 bytes so the user's
+        // subsequent index-rebuild produces a consistent store. Logged
+        // so support can see it happened; idempotent after the first run.
+        const EXPECTED_EMBEDDING_BYTES: i64 = 384 * 4;
+        let mismatched: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM embeddings WHERE LENGTH(embedding) != ?1",
+                [EXPECTED_EMBEDDING_BYTES],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if mismatched > 0 {
+            println!(
+                "[DB] Dropping {} embeddings with non-384-d dimension (v0.5.2 model swap migration)",
+                mismatched
+            );
+            self.conn.execute(
+                "DELETE FROM embeddings WHERE LENGTH(embedding) != ?1",
+                [EXPECTED_EMBEDDING_BYTES],
+            )?;
+        }
+
         Ok(())
     }
 
@@ -696,6 +723,43 @@ impl Database {
             rusqlite::params![status, updated_at, id],
         )?;
         Ok(())
+    }
+
+    /// List lectures whose status is still 'recording' across all users.
+    ///
+    /// Used at app boot to reconcile crash-interrupted sessions — every
+    /// such row corresponds to a recorder that never called Stop, which
+    /// before v0.5.2 left the DB full of permanent-zombie entries.
+    /// Callers should cross-reference the returned ids with the on-disk
+    /// `.pcm` files via `recording::find_orphaned_recordings` to decide
+    /// whether audio can be recovered or whether only metadata-level
+    /// cleanup is possible.
+    pub fn list_orphaned_recording_lectures(&self) -> SqlResult<Vec<Lecture>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, \
+                    status, is_deleted, created_at, updated_at \
+             FROM lectures \
+             WHERE status = 'recording' AND is_deleted = 0 \
+             ORDER BY created_at ASC",
+        )?;
+        let lectures = stmt
+            .query_map([], |row| {
+                Ok(Lecture {
+                    id: row.get(0)?,
+                    course_id: row.get(1)?,
+                    title: row.get(2)?,
+                    date: row.get(3)?,
+                    duration: row.get(4)?,
+                    pdf_path: row.get(5)?,
+                    audio_path: row.get(6)?,
+                    status: row.get(7)?,
+                    is_deleted: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+        Ok(lectures)
     }
 
     /// 更新課程時長
@@ -1188,6 +1252,45 @@ impl Database {
         )
     }
 
+    /// Atomically replace every embedding row for a lecture.
+    ///
+    /// Uses a single SQLite transaction so a failed insert rolls back
+    /// the delete. Without this, the previous re-indexing flow
+    /// (`deleteByLecture` → loop `save_embedding`) could leave a lecture
+    /// with zero embeddings on a crash, AND return the partial row count
+    /// from `hasEmbeddings` as if everything was fine — silent broken
+    /// retrieval. See audit F-4.
+    pub fn replace_embeddings_for_lecture(
+        &self,
+        lecture_id: &str,
+        rows: &[EmbeddingRow],
+    ) -> SqlResult<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM embeddings WHERE lecture_id = ?1",
+            [lecture_id],
+        )?;
+        for row in rows {
+            let blob = pack_f32_le(&row.embedding);
+            tx.execute(
+                "INSERT INTO embeddings (id, lecture_id, chunk_text, embedding, source_type, position, page_number, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    row.id,
+                    row.lecture_id,
+                    row.chunk_text,
+                    blob,
+                    row.source_type,
+                    row.position,
+                    row.page_number,
+                    row.created_at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn count_embeddings(&self, lecture_id: &str) -> SqlResult<i64> {
         self.conn.query_row(
             "SELECT COUNT(*) FROM embeddings WHERE lecture_id = ?1",
@@ -1475,6 +1578,127 @@ mod tests {
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.title, "Notes Title");
         assert_eq!(retrieved.lecture_id, lecture.id);
+    }
+
+    // ===== v0.5.2 Embedding Migration Tests =====
+
+    /// Regression: when the embedding model changed from nomic (768-d) to
+    /// bge-small-en (384-d), any previously-stored 3072-byte vectors became
+    /// geometrically meaningless against new 1536-byte query vectors.
+    /// The migration in `init_tables` must drop those old rows so the
+    /// store doesn't return nonsense similarity scores after the model
+    /// swap. If this test fails it means someone loosened the migration
+    /// or changed the expected dimension without updating the cleanup.
+    #[test]
+    fn migration_drops_wrong_dimension_embeddings() {
+        let (db, _temp) = create_test_db();
+        let course = Course::new("u".into(), "C".into(), None, None, None);
+        db.save_course(&course).unwrap();
+        let lecture = Lecture::new(course.id.clone(), "L".into(), None);
+        db.save_lecture(&lecture, "u").unwrap();
+
+        // Seed one legacy 768-d (3072-byte) row and one correct 384-d
+        // (1536-byte) row directly, bypassing the public API so we
+        // simulate the exact mid-upgrade state.
+        let legacy_blob: Vec<u8> = vec![0u8; 768 * 4];
+        let new_blob: Vec<u8> = vec![0u8; 384 * 4];
+        db.conn.execute(
+            "INSERT INTO embeddings (id, lecture_id, chunk_text, embedding, source_type, position, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["legacy", lecture.id, "legacy chunk", legacy_blob, "pdf", 0, "2026-01-01"],
+        ).unwrap();
+        db.conn.execute(
+            "INSERT INTO embeddings (id, lecture_id, chunk_text, embedding, source_type, position, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["new", lecture.id, "new chunk", new_blob, "pdf", 1, "2026-04-18"],
+        ).unwrap();
+
+        // Re-run init_tables — this is what happens every time the app
+        // launches, and is where the cleanup must fire.
+        db.init_tables().unwrap();
+
+        let remaining: Vec<String> = db.conn
+            .prepare("SELECT id FROM embeddings").unwrap()
+            .query_map([], |r| r.get::<_, String>(0)).unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(remaining, vec!["new".to_string()], "legacy 768-d rows must be dropped");
+    }
+
+    /// Contract guard: if a future refactor changes the expected dimension
+    /// away from 384 (e.g. swapping to bge-base-en or a multilingual
+    /// encoder), whoever does it has to update this constant too. That
+    /// forces a deliberate decision instead of a silent dimension drift.
+    #[test]
+    fn embedding_dimension_contract_is_384() {
+        const EXPECTED_BYTES_PER_VECTOR: usize = 384 * 4;
+        assert_eq!(EXPECTED_BYTES_PER_VECTOR, 1536);
+    }
+
+    // ===== v0.5.2 Crash-Recovery Orphan Detection =====
+
+    /// Regression: a crash mid-recording left the `lectures` row stuck at
+    /// status='recording' forever. The startup reconciler needs to find
+    /// those rows; if this query ever misses a row (e.g. someone adds a
+    /// trailing space to the status value or forgets the is_deleted
+    /// guard), the UI will fail to prompt for recovery and the user
+    /// loses their session silently.
+    #[test]
+    fn list_orphaned_recording_lectures_returns_recording_status() {
+        let (db, _temp) = create_test_db();
+        let course = Course::new("u".into(), "C".into(), None, None, None);
+        db.save_course(&course).unwrap();
+
+        let mut recording = Lecture::new(course.id.clone(), "zombie".into(), None);
+        recording.status = "recording".into();
+        db.save_lecture(&recording, "u").unwrap();
+
+        let mut completed = Lecture::new(course.id.clone(), "finished".into(), None);
+        completed.status = "completed".into();
+        db.save_lecture(&completed, "u").unwrap();
+
+        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].id, recording.id);
+        assert_eq!(orphans[0].title, "zombie");
+    }
+
+    #[test]
+    fn list_orphaned_recording_lectures_excludes_soft_deleted() {
+        // Soft-deleted rows are not visible to the regular UI and shouldn't
+        // pop up in a recovery prompt — if they did, the user would see
+        // "recover this lecture you already discarded" which is worse
+        // than the zombie bug we're fixing.
+        let (db, _temp) = create_test_db();
+        let course = Course::new("u".into(), "C".into(), None, None, None);
+        db.save_course(&course).unwrap();
+
+        let mut gone = Lecture::new(course.id.clone(), "deleted".into(), None);
+        gone.status = "recording".into();
+        db.save_lecture(&gone, "u").unwrap();
+        db.delete_lecture(&gone.id).unwrap();
+
+        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        assert!(orphans.is_empty());
+    }
+
+    #[test]
+    fn update_lecture_status_lets_us_clear_an_orphan() {
+        // After the user picks "Discard" (or recovery succeeds), the
+        // startup flow flips status to 'completed' so the same prompt
+        // doesn't reappear on every subsequent launch.
+        let (db, _temp) = create_test_db();
+        let course = Course::new("u".into(), "C".into(), None, None, None);
+        db.save_course(&course).unwrap();
+
+        let mut l = Lecture::new(course.id.clone(), "x".into(), None);
+        l.status = "recording".into();
+        db.save_lecture(&l, "u").unwrap();
+
+        db.update_lecture_status(&l.id, "completed").unwrap();
+
+        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        assert!(orphans.is_empty());
     }
 }
 

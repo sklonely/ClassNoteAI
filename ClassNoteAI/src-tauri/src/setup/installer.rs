@@ -236,13 +236,18 @@ pub async fn install_requirements(
                 ).await?;
             }
             "embedding_model" => {
-                // Embedding model from Hugging Face (individual files)
-                // 使用統一路徑: {app_data}/models/embedding/
+                // Embedding model from Hugging Face (individual files).
+                // v0.5.2: switched from nomic-embed-text-v1 to BAAI/bge-small-en-v1.5.
+                // Reason: nomic uses NomicBert (rotary embeddings + SwiGLU), which
+                // Candle's stock BertModel::load cannot decode — it always fails
+                // with "cannot find tensor embeddings.position_embeddings.weight".
+                // bge-small-en-v1.5 is a standard BERT (384-d, ~33 MB) that loads
+                // cleanly. Cross-lingual zh→en queries are translated upstream.
                 let embedding_dir = crate::paths::get_embedding_models_dir()?;
-                let dest_dir = embedding_dir.join("nomic-embed-text-v1");
+                let dest_dir = embedding_dir.join("bge-small-en-v1.5");
                 std::fs::create_dir_all(&dest_dir).map_err(|e| format!("創建目錄失敗: {}", e))?;
 
-                let base_url = "https://huggingface.co/nomic-ai/nomic-embed-text-v1/resolve/main";
+                let base_url = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
                 let files = [
                     ("model.safetensors", "model.safetensors"),
                     ("tokenizer.json", "tokenizer.json"),

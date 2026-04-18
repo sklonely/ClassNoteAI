@@ -7,8 +7,32 @@ import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+
+/**
+ * ReactMarkdown + rehype-raw parses raw HTML inside markdown, which is
+ * necessary because the app's own "[[頁碼:N]]" convention and some LLMs
+ * use inline HTML for tables / details / sup / sub. BUT — the markdown
+ * here comes from an LLM whose output we don't fully control, and
+ * ReactMarkdown renders the result into the same DOM that holds
+ * localStorage-backed chat history, OAuth access tokens, and the
+ * Tauri invoke bridge. A stored-XSS payload like
+ * `<img src=x onerror="invoke('reset_app_data')">` would be catastrophic.
+ *
+ * rehype-sanitize runs after rehype-raw and strips anything outside the
+ * default schema (script/on* handlers/javascript: URIs/etc.) while
+ * keeping all the formatting tags a normal study note needs. The
+ * schema extension below re-allows the `<summary>` / `<details>` tags
+ * some models use for collapsible sections.
+ */
+const markdownSanitizeSchema = {
+    ...defaultSchema,
+    tagNames: [...(defaultSchema.tagNames ?? []), 'details', 'summary'],
+};
 import { storageService } from "../services/storageService";
-import { summarize as llmSummarize, usageTracker } from "../services/llm";
+import { extractKeywords } from "../utils/pdfKeywordExtractor";
+import { summarizeStream, usageTracker } from "../services/llm";
+import { toastService } from "../services/toastService";
 import { generateLocalEmbedding } from "../services/embeddingService";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
@@ -64,6 +88,29 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
+  // Pieces of the Whisper initial_prompt. Stored separately so
+  // `handleTextExtract` (PDF side) and `loadLecture` (course side)
+  // can each contribute without stomping on the other's contribution.
+  // The combined prompt is assembled in `buildAndSetInitialPrompt`.
+  const [courseContextPrompt, setCourseContextPrompt] = useState<string>('');
+  const [courseAndLectureKeywords, setCourseAndLectureKeywords] = useState<string>('');
+  const [pdfDerivedKeywords, setPdfDerivedKeywords] = useState<string>('');
+  // Live progress surface for the map-reduce summariser. Empty string
+  // means either idle or single-pass (in which case the old spinner is
+  // enough). Populated during map phase as "第 3/5 段…".
+  const [summaryProgress, setSummaryProgress] = useState<string>('');
+  const [streamingSummary, setStreamingSummary] = useState<string>('');
+  // v0.5.2 Auto Follow: during playback in Review mode, keep the PDF
+  // viewer + subtitle list in sync with what was being said at the
+  // current audio timestamp. Off = plain audio playback.
+  const [autoFollow, setAutoFollow] = useState<boolean>(true);
+  // Sorted (ascending by start time) timeline of page jumps. Built once
+  // per playback session when autoFollow is on and pageEmbeddings have
+  // loaded. Each entry is `{ t: seconds_into_lecture, page: 1-based }`.
+  // Lookup is a binary search at each time-update so the sync is cheap.
+  const [pageTimeline, setPageTimeline] = useState<{ t: number; page: number }[]>([]);
+  const [isBuildingTimeline, setIsBuildingTimeline] = useState<boolean>(false);
+  const [lastAutoFollowPage, setLastAutoFollowPage] = useState<number>(0);
 
   // Note Editing State
   const [isEditingNote, setIsEditingNote] = useState(false);
@@ -115,10 +162,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           console.log('[NotesView] Whisper model loaded');
         }
 
-        // Embedding Model: local Candle nomic-embed-text-v1 (shipped
+        // Embedding Model: local Candle bge-small-en-v1.5 (shipped
         // via the embedding-model download flow in Settings). No remote
         // Ollama call — stale comment was fixed in v0.5.2.
-        console.log('[NotesView] Using local Candle nomic-embed-text-v1 for auto-alignment');
+        console.log('[NotesView] Using local Candle bge-small-en-v1.5 for auto-alignment');
         // Load Translation Model if provider is local
         const translationProvider = settings?.translation?.provider || 'local';
         if (translationProvider === 'local') {
@@ -286,7 +333,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
     recorder.onError((error) => {
       console.error('[NotesView] Audio recorder error:', error);
-      alert(`Recording error: ${error.message}`);
+      toastService.error('錄音錯誤', error.message);
     });
 
     recorder.onChunk((chunk) => {
@@ -347,6 +394,132 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     };
     initAlignment();
   }, [pdfData, modelLoaded]);
+
+  // v0.5.2 Auto Follow — precompute a (timestamp, page) timeline.
+  //
+  // Runs when we're in Review mode, autoFollow is on, and both
+  // subtitles + page embeddings are ready. For each subtitle segment,
+  // we embed the text, ask autoAlignmentService which page best
+  // matches, and record `{ t: startSec, page }`. The playback-side
+  // effect below then binary-searches this sorted list at each time
+  // update to scroll the PDF.
+  //
+  // Building once upfront (vs. per-tick similarity scoring) keeps the
+  // playback path cheap. Typical cost: N embedding calls for N
+  // subtitles. On a 90-min lecture with ~500 segments that's noticeable
+  // (~30 s one-time), so we show a small spinner.
+  useEffect(() => {
+    // Off-path: clear the timeline AND the spinner state. Without the
+    // explicit `setIsBuildingTimeline(false)` an in-flight build that
+    // was cancelled mid-loop would leave the spinner stuck on "建立
+    // 時間軸中..." until the next re-enable toggle.
+    if (!autoFollow || viewMode !== 'review' || !autoAlignmentService.hasPageEmbeddings()) {
+      setPageTimeline([]);
+      setIsBuildingTimeline(false);
+      return;
+    }
+    const segments = subtitleService.getSegments();
+    if (segments.length === 0) {
+      setIsBuildingTimeline(false);
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      setIsBuildingTimeline(true);
+      try {
+        const timeline: { t: number; page: number }[] = [];
+        for (const seg of segments) {
+          if (cancelled) return;
+          const text = (seg.displayText || seg.roughText || seg.text || '').trim();
+          if (!text) continue;
+          try {
+            const emb = await generateLocalEmbedding(text);
+            const match = autoAlignmentService.findBestPage(emb);
+            // Low-similarity matches are noise — skip so they don't
+            // cause distracting "jump to page X for one second" flicker.
+            if (match && match.similarity > 0.3) {
+              timeline.push({ t: seg.startTime / 1000, page: match.page });
+            }
+          } catch {
+            // Embedding failures are non-fatal; just drop that segment
+            // from the timeline and keep going.
+          }
+        }
+        // Deduplicate consecutive same-page entries — no point adding
+        // a timeline marker at t=10s for "still on page 3" when t=5s
+        // already said page 3.
+        const deduped = timeline.filter((e, i, arr) => i === 0 || arr[i - 1].page !== e.page);
+        if (!cancelled) setPageTimeline(deduped);
+      } finally {
+        if (!cancelled) setIsBuildingTimeline(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [autoFollow, viewMode, pdfData, modelLoaded, currentLectureData?.id]);
+
+  // Sync PDF to the current playback time when Auto Follow is on.
+  // Debounced via "last page scrolled" so we don't thrash the PDF
+  // viewer on every timeupdate (which fires ~4x/s).
+  useEffect(() => {
+    if (!autoFollow) return;
+    if (viewMode !== 'review') return;
+    if (!isPlaying) return;
+    if (pageTimeline.length === 0) return;
+
+    // Binary search for largest timeline entry with t <= currentTime.
+    let lo = 0;
+    let hi = pageTimeline.length - 1;
+    let best = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (pageTimeline[mid].t <= audioCurrentTime) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    if (best < 0) return;
+    const targetPage = pageTimeline[best].page;
+    if (targetPage === lastAutoFollowPage) return;
+    setLastAutoFollowPage(targetPage);
+    if (pdfViewerRef.current) {
+      pdfViewerRef.current.scrollToPage(targetPage);
+    }
+  }, [audioCurrentTime, autoFollow, isPlaying, viewMode, pageTimeline, lastAutoFollowPage]);
+
+  // Assemble the Whisper initial_prompt from three sources:
+  //   1. Course context (topic from syllabus)
+  //   2. Course-level + lecture-level keywords (from DB)
+  //   3. PDF-derived keywords (extracted on text load)
+  //
+  // Whisper's initial_prompt caps at ~224 tokens and only applies to
+  // the first 30 s of audio, so we keep the context tight — a dense
+  // term list does more for ASR accuracy on technical English than a
+  // verbose sentence would. This replaces the pre-v0.5.2 flow where
+  // `extractKeywordsFromPDF` was commented out and only the course-
+  // side context was used.
+  useEffect(() => {
+    const pieces: string[] = [];
+    if (courseContextPrompt) pieces.push(courseContextPrompt);
+
+    const kwList: string[] = [];
+    if (courseAndLectureKeywords) kwList.push(courseAndLectureKeywords);
+    if (pdfDerivedKeywords) kwList.push(pdfDerivedKeywords);
+    if (kwList.length > 0) {
+      // Rough budget: ~150 chars of keywords stays well under 224 tokens.
+      const joined = kwList.join(', ').slice(0, 200);
+      pieces.push(`Key terms include: ${joined}.`);
+    }
+
+    const combined = pieces.join(' ').trim();
+    if (combined) {
+      transcriptionService.setInitialPrompt(combined, kwList.join(', '));
+    }
+  }, [courseContextPrompt, courseAndLectureKeywords, pdfDerivedKeywords]);
 
   // Listen to Alignment Suggestions
   useEffect(() => {
@@ -411,16 +584,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           }
         }
 
-        // Combine keywords
-        const allKeywords = [courseKeywords, lecture.keywords].filter(Boolean).join(', ');
-
-        // Append keywords to prompt in a natural way
-        if (allKeywords) {
-          contextPrompt += ` Key terms include: ${allKeywords}.`;
-        }
-
-        // Set initial prompt with natural language context
-        transcriptionService.setInitialPrompt(contextPrompt, allKeywords);
+        // Feed the two course-side pieces into state; a useEffect above
+        // combines them with `pdfDerivedKeywords` and calls
+        // `transcriptionService.setInitialPrompt`. Keeping the pieces
+        // split means later PDF-text extraction can add its keywords
+        // without clobbering the course context (v0.5.1 bug: PDF keyword
+        // path was commented out because it overwrote the course prompt).
+        setCourseContextPrompt(contextPrompt);
+        setCourseAndLectureKeywords(
+          [courseKeywords, lecture.keywords].filter(Boolean).join(', '),
+        );
 
         // Load PDF if available
         if (lecture.pdf_path) {
@@ -603,7 +776,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     try {
       if (!audioRecorderRef.current || !currentLectureData) return;
       if (!modelLoaded) {
-        alert('Please load Whisper model in settings first');
+        toastService.warning('請先到「設定 → 本地轉錄模型」下載 Whisper 模型');
         return;
       }
 
@@ -632,80 +805,135 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
       transcriptionService.start();
 
+      // v0.5.2 crash-safe persistence: enable BEFORE start() so the first
+      // audio chunk is already being captured to disk. If the app dies
+      // after this point but before handleStopRecording, the .pcm file
+      // is recoverable on next launch.
+      audioRecorderRef.current.enablePersistence(currentLectureData.id);
+
       await audioRecorderRef.current.start();
       setRecordingStatus("recording");
       setRecordingStartTime(Date.now());
     } catch (error) {
       console.error('Failed to start recording:', error);
-      alert('Failed to start recording');
+      toastService.error(
+        '無法開始錄音',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
   const handleStopRecording = async () => {
+    // v0.5.2 rewrite (audio-loss bug report):
+    //
+    // Prior version had a hard `throw` the moment `getWavData()` returned
+    // empty — which bypassed the `.pcm` → .wav finalize path entirely.
+    // An in-memory buffer being empty at Stop time (focus change, last
+    // ScriptProcessor chunk hadn't fired, etc.) doesn't mean audio
+    // doesn't exist: the 5-second .pcm flush runs throughout the session,
+    // so the disk side could have 45 minutes of audio already. Skipping
+    // finalize in that case left the .pcm orphaned in
+    // `audio/in-progress/<lecture_id>.pcm`, invisible to
+    // `try_recover_audio_path` (which only scans for
+    // `lecture_<id>_*.wav`), and the lecture got saved with
+    // `audio_path = null`. User-visible symptom: AudioPlayer shows
+    // 00:00 / 00:00 in Review mode.
+    //
+    // New order of operations:
+    //   1. Snapshot the in-memory WAV (no throw — null is fine).
+    //   2. Stop the recorder.
+    //   3. ALWAYS attempt finalize (.pcm → .wav). If persistence was
+    //      enabled, this is the lossless path covering the full session.
+    //   4. If finalize didn't produce a path, fall back to the in-memory
+    //      WAV (covers users upgrading from v0.5.1 where persistence is
+    //      disabled mid-session).
+    //   5. Whatever we end up with, persist the lecture row to the DB.
+    //      Status flips to 'completed' regardless so the row doesn't
+    //      stay stuck at 'recording' — that triggers the orphan-recovery
+    //      modal on next launch and becomes a loop.
+    //   6. If BOTH paths produced nothing, toast a specific error with
+    //      the underlying reason (file-not-found vs permission vs ...).
     try {
       if (!audioRecorderRef.current || !currentLectureData) return;
 
       transcriptionService.stop();
-      // Stop recorder and get the WAV data
-      // Get data BEFORE stopping to ensure we catch everything and buffers aren't cleared
-      // (Though stop() logic should be safe, this is more robust)
+
+      // Step 1: snapshot in-memory WAV. Empty is NOT fatal.
       let wavBuffer: ArrayBuffer | null = null;
       try {
         wavBuffer = await audioRecorderRef.current.getWavData();
-      } catch (err) {
-        console.warn('Failed to get WAV data before stop:', err);
+      } catch {
+        // Silently accept — .pcm on disk may still have the real audio.
+        // Worst case: steps 3 and 4 both fail, step 6 reports that.
       }
 
       await audioRecorderRef.current.stop();
-
-      // If wavBuffer failed, try again? OR rely on what we got.
-      // If it failed, likely empty.
-
       setRecordingStatus("stopped");
       setVolume(0);
 
-      if (!wavBuffer) {
-        throw new Error('No audio data captured');
-      }
+      const audioDir = await invoke<string>('get_audio_dir');
+      const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
+      const fullPath = `${audioDir}${sep}lecture_${currentLectureData.id}_${Date.now()}.wav`;
 
-      // Save Audio File
-      let audioPath = currentLectureData.audio_path;
+      let audioPath: string | undefined;
+      let saveErrorDetail: string | null = null;
+
+      // Step 3: finalize persisted .pcm → .wav (preferred — full session).
       try {
-        console.log('[NotesView] Saving audio file...');
-        const audioDir = await invoke<string>('get_audio_dir');
-        const filename = `lecture_${currentLectureData.id}_${Date.now()}.wav`; // Saved as .wav (16Hz PCM) which is what AudioRecorder produces (mostly) 
-        // Note: AudioRecorder produces WAV format in getWavData()
-
-        // Ensure path separator
-        const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
-        const fullPath = `${audioDir}${sep}${filename}`;
-
-        await invoke('write_binary_file', {
-          path: fullPath,
-          data: Array.from(new Uint8Array(wavBuffer))
-        });
-
-        console.log('[NotesView] Audio saved to:', fullPath);
-        audioPath = fullPath;
-      } catch (e) {
-        console.error('[NotesView] Failed to save audio file:', e);
-        alert('Failed to save audio recording');
+        const finalizedPath = await audioRecorderRef.current.finalizeToDisk(fullPath);
+        if (finalizedPath) {
+          audioPath = finalizedPath;
+          console.log('[NotesView] Audio finalized from on-disk PCM:', audioPath);
+        }
+      } catch (finalizeErr) {
+        saveErrorDetail = finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr);
+        console.warn('[NotesView] finalize_recording failed, will try in-memory fallback:', saveErrorDetail);
       }
 
-      // Update lecture with audio path immediately for the UI to update
+      // Step 4: fallback to in-memory WAV if finalize couldn't help.
+      if (!audioPath && wavBuffer) {
+        try {
+          await invoke('write_binary_file', {
+            path: fullPath,
+            data: Array.from(new Uint8Array(wavBuffer))
+          });
+          audioPath = fullPath;
+          saveErrorDetail = null;
+          console.log('[NotesView] Audio saved via in-memory WAV fallback:', audioPath);
+        } catch (fallbackErr) {
+          saveErrorDetail = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+          console.error('[NotesView] In-memory WAV fallback also failed:', saveErrorDetail);
+        }
+      }
+
+      // Step 5: persist the lecture row — even on save failure. Flipping
+      // status to 'completed' prevents the orphan-recovery modal from
+      // showing for this lecture on every subsequent launch. Preserve
+      // an existing audio_path if both save paths failed (better to
+      // keep a stale reference than nuke it to null).
       const updatedLecture = {
         ...currentLectureData,
-        audio_path: audioPath,
+        audio_path: audioPath ?? currentLectureData.audio_path,
         status: 'completed' as const,
         updated_at: new Date().toISOString()
       };
-
       setCurrentLectureData(updatedLecture);
       await handleSaveLecture(updatedLecture);
 
+      // Step 6: surface save-path failure AFTER the DB row is consistent.
+      if (!audioPath) {
+        toastService.error(
+          '錄音儲存失敗',
+          saveErrorDetail ?? '沒有可用的音訊資料（麥克風可能沒捕捉到任何聲音）',
+        );
+      }
     } catch (error) {
       console.error('Failed to stop recording:', error);
-      setRecordingStatus("stopped"); // Ensure status is stopped even on error
+      toastService.error(
+        '停止錄音時出錯',
+        error instanceof Error ? error.message : String(error),
+      );
+      setRecordingStatus("stopped");
     }
   };
 
@@ -902,7 +1130,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       fileName.endsWith('.doc') || fileName.endsWith('.docx');
 
     if (!isSupported) {
-      alert('Please drop a PDF, PPT, or Word file');
+      toastService.warning('請拖入 PDF、PPT、或 Word 檔案');
       return;
     }
 
@@ -927,7 +1155,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             await convertAndLoadDocument(tempPath);
           } catch (error) {
             console.error('Failed to save temp file:', error);
-            alert('Failed to process file. Please try selecting it instead.');
+            toastService.error('檔案處理失敗', '請試試用「選擇檔案」按鈕');
           }
         }
       };
@@ -984,25 +1212,36 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
     } catch (error) {
       console.error('[NotesView] Conversion failed:', error);
-      alert(`Failed to convert document: ${error}`);
+      toastService.error('文件轉換失敗', String(error));
     } finally {
       setIsConverting(false);
     }
   };
 
   const handleTextExtract = (text: string) => {
-    // Save PDF text for AI Chat context
+    // Save PDF text for AI Chat / RAG context.
     if (text && text.trim().length > 0) {
       setPdfTextContent(text);
+
+      // v0.5.2: derive Whisper-friendly keywords from the slides. These
+      // feed the `initial_prompt` via the useEffect upstream — giving
+      // whisper.cpp a 224-token hint with the lecture's technical
+      // vocabulary significantly improves recognition of domain terms
+      // (e.g. "heuristic evaluation", "affinity diagram") that the
+      // base model otherwise slurs into phonetic neighbours.
+      try {
+        const kws = extractKeywords(text);
+        if (kws.length > 0) {
+          setPdfDerivedKeywords(kws.join(', '));
+          console.log(
+            `[NotesView] Extracted ${kws.length} keywords from PDF for Whisper prompt.`,
+          );
+        }
+      } catch (e) {
+        console.warn('[NotesView] PDF keyword extraction failed:', e);
+      }
     }
     console.log('[NotesView] PDF text extracted for AI context.');
-
-    /* 
-    if (text && text.trim().length > 0) {
-      const initialPrompt = extractKeywordsFromPDF(text);
-      transcriptionService.setInitialPrompt(initialPrompt);
-    }
-    */
   };
 
   const handleBack = () => {
@@ -1055,26 +1294,61 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         console.warn('[NotesView] Pre-task sync failed, task might fail if lecture is missing on server:', e);
       }
 
-      // Generate summary via the user's configured LLM provider
-      const summary = await llmSummarize({
-        content,
-        language,
-        pdfContext,
-        title: selectedNote.title,
-      });
+      // Generate summary via the map-reduce streaming path. For short
+      // transcripts this degrades to a direct streaming call; for long
+      // ones (>12k chars) the provider is asked to summarise each
+      // section independently, then stitch, so we don't choke on a
+      // 90-minute transcript in one prompt. Progress events go to
+      // `summaryProgress` / `streamingSummary` so the UI shows live
+      // output instead of freezing for 30-60 s.
+      setSummaryProgress('準備摘要…');
+      setStreamingSummary('');
+      let summary = '';
+      try {
+        for await (const event of summarizeStream({
+          content,
+          language,
+          pdfContext,
+          title: selectedNote.title,
+        })) {
+          if (event.phase === 'map-start') {
+            setSummaryProgress(`段落分割完成（${event.sectionCount} 段），並行摘要中…`);
+          } else if (event.phase === 'map-section-done') {
+            setSummaryProgress(`段落摘要 ${event.sectionIndex}/${event.sectionCount}…`);
+          } else if (event.phase === 'reduce-start') {
+            setSummaryProgress('正在整合段落為完整筆記…');
+          } else if (event.phase === 'reduce-delta' && event.delta) {
+            summary += event.delta;
+            setStreamingSummary(summary);
+          } else if (event.phase === 'done') {
+            summary = event.fullText ?? summary;
+          }
+        }
+      } finally {
+        setSummaryProgress('');
+      }
 
       const updatedNote = { ...selectedNote, summary };
       await storageService.saveNote(updatedNote);
       setSelectedNote(updatedNote);
+      setStreamingSummary('');
       const usage = usageTracker.latest('summarize');
-      const usageStr = usage
-        ? `（in ${usage.inputTokens} · out ${usage.outputTokens} tokens）`
-        : '';
-      alert(`Summary generated successfully! ${usageStr}`);
+      // Non-blocking toast instead of a modal alert() — summary
+      // completion is informational, not a decision point, so there's
+      // no reason to freeze the UI until the user clicks OK.
+      toastService.success(
+        '摘要已生成',
+        usage
+          ? `in ${usage.inputTokens} · out ${usage.outputTokens} tokens`
+          : undefined,
+      );
 
     } catch (error) {
       console.error('Failed to generate summary:', error);
-      alert(`Failed to generate summary: ${error instanceof Error ? error.message : String(error)}`);
+      toastService.error(
+        '生成摘要失敗',
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setIsGeneratingSummary(false);
     }
@@ -1135,7 +1409,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
   const handleExport = async (format: "markdown" | "pdf") => {
     if (!currentLectureData || !selectedNote) {
-      alert('無法導出：數據不完整');
+      toastService.error('無法導出', '數據不完整');
       return;
     }
 
@@ -1189,11 +1463,14 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       } else {
-        alert('PDF 導出功能尚未實現');
+        toastService.info('PDF 導出功能尚未實現');
       }
     } catch (error) {
       console.error('導出失敗:', error);
-      alert(`導出失敗: ${error instanceof Error ? error.message : String(error)}`);
+      toastService.error(
+        '導出失敗',
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
@@ -1517,8 +1794,29 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                             </div>
                           </div>
 
+                          {/* Live progress from the map-reduce summariser (v0.5.2).
+                              Renders only while generation is in flight; shows
+                              the phase indicator + streamed partial markdown
+                              instead of a frozen spinner. */}
+                          {isGeneratingSummary && (summaryProgress || streamingSummary) && (
+                            <div className="p-5 bg-amber-50 dark:bg-amber-900/10 rounded-xl border border-amber-200 dark:border-amber-900/30">
+                              <h3 className="font-semibold text-amber-800 dark:text-amber-300 mb-2 uppercase text-xs tracking-wider flex items-center gap-2">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                正在生成摘要
+                              </h3>
+                              {summaryProgress && (
+                                <p className="text-xs text-amber-700 dark:text-amber-400 mb-2">{summaryProgress}</p>
+                              )}
+                              {streamingSummary && (
+                                <div className="prose prose-sm dark:prose-invert max-w-none opacity-90">
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema]]}>{streamingSummary}</ReactMarkdown>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {/* Summary */}
-                          {(selectedNote.summary || isEditingNote) && (
+                          {(selectedNote.summary || isEditingNote) && !isGeneratingSummary && (
                             <div className="p-5 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
                               <h3 className="font-semibold text-indigo-800 dark:text-indigo-300 mb-3 uppercase text-xs tracking-wider">Summary</h3>
                               {isEditingNote ? (
@@ -1529,7 +1827,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                                 />
                               ) : (
                                 <div className="prose prose-sm dark:prose-invert max-w-none">
-                                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{selectedNote.summary}</ReactMarkdown>
+                                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema]]}>{selectedNote.summary}</ReactMarkdown>
                                 </div>
                               )}
                             </div>
@@ -1600,16 +1898,55 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
             {/* Audio Player Bar */}
             {currentLectureData?.audio_path && (
-              <AudioPlayer
-                currentTime={audioCurrentTime}
-                duration={audioDuration}
-                isPlaying={isPlaying}
-                volume={playbackVolume}
-                onPlayPause={togglePlay}
-                onSeek={handleSeek}
-                onVolumeChange={setPlaybackVolume}
-                onSkip={(sec) => handleSeek(audioCurrentTime + sec)}
-              />
+              <div>
+                {/* Auto Follow toggle — only shown in Review mode. On
+                    enables PDF + subtitle sync to current playback
+                    timestamp; off is plain audio playback. */}
+                {viewMode === 'review' && (
+                  <div className="bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-gray-700 px-4 py-2 flex items-center justify-between text-sm">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={autoFollow}
+                        onChange={(e) => setAutoFollow(e.target.checked)}
+                        className="accent-blue-500 w-4 h-4"
+                      />
+                      <span className="text-gray-700 dark:text-gray-300 font-medium">
+                        Auto Follow
+                      </span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        播放時自動翻到對應 PDF 頁面與字幕
+                      </span>
+                    </label>
+                    {autoFollow && isBuildingTimeline && (
+                      <span className="text-xs text-blue-500 dark:text-blue-400 flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        建立時間軸中...
+                      </span>
+                    )}
+                    {autoFollow && !isBuildingTimeline && pageTimeline.length > 0 && (
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
+                        {pageTimeline.length} 個頁面切換點
+                      </span>
+                    )}
+                    {autoFollow && !isBuildingTimeline && pageTimeline.length === 0 && !autoAlignmentService.hasPageEmbeddings() && (
+                      <span className="text-xs text-amber-500">
+                        PDF 索引尚未準備好
+                      </span>
+                    )}
+                  </div>
+                )}
+                <AudioPlayer
+                  currentTime={audioCurrentTime}
+                  duration={audioDuration}
+                  isPlaying={isPlaying}
+                  volume={playbackVolume}
+                  onPlayPause={togglePlay}
+                  onSeek={handleSeek}
+                  onVolumeChange={setPlaybackVolume}
+                  onSkip={(sec) => handleSeek(audioCurrentTime + sec)}
+                />
+              </div>
             )}
 
             {/* Hidden Audio Element */}
