@@ -603,6 +603,23 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           try {
             // ...
           } catch (e) { /* ... */ }
+        } else {
+          // v0.5.2 audit follow-up: attempt PDF recovery when DB column
+          // is empty. `try_recover_pdf_path` looks for `lecture_<id>_*`
+          // files in the lecture-pdfs dir (the filename convention
+          // used for all newly-dropped PDFs since v0.5.2). If it finds
+          // one, DB is relinked and we use the recovered path.
+          try {
+            const recoveredPdf = await invoke<string | null>('try_recover_pdf_path', { lectureId: lecture.id });
+            if (recoveredPdf) {
+              console.log('[NotesView] PDF path recovered:', recoveredPdf);
+              lecture.pdf_path = recoveredPdf;
+              setPdfPath(recoveredPdf);
+              setCurrentLectureData({ ...lecture });
+            }
+          } catch (e) {
+            console.warn('[NotesView] PDF recovery attempt failed (non-fatal):', e);
+          }
         }
 
         // Try to recover audio path if missing (Fix for Schema migration issue)
@@ -1061,14 +1078,37 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           generated_at: now,
         };
 
-        try {
-          await storageService.saveNote(note);
+        // v0.5.2 audit follow-up: never show the user an in-UI note that
+        // isn't actually in the DB. The old path did
+        // `setSelectedNote(note)` in the catch block too, which meant
+        // the user could edit a "note" they saw, close the app, and
+        // the edits would vanish silently on reload. Now: if the save
+        // fails, we retry once (network blip / lock contention), and
+        // on second failure we toast an explicit error AND leave
+        // `selectedNote` at its prior value (which may be null —
+        // fine, the summary generator still works manually).
+        let noteSaved = false;
+        let lastSaveErr: unknown = null;
+        for (let attempt = 0; attempt < 2 && !noteSaved; attempt++) {
+          try {
+            await storageService.saveNote(note);
+            noteSaved = true;
+          } catch (noteError) {
+            lastSaveErr = noteError;
+            console.warn(`[NotesView] Note save attempt ${attempt + 1} failed:`, noteError);
+            if (attempt === 0) await new Promise((r) => setTimeout(r, 250));
+          }
+        }
+        if (noteSaved) {
           setSelectedNote(note);
           console.log('[NotesView] Note auto-generated with', sections.length, 'sections');
-        } catch (noteError) {
-          console.error('[NotesView] Failed to save auto-generated note:', noteError);
-          // Still show the note in UI even if DB save failed
-          setSelectedNote(note);
+        } else {
+          console.error('[NotesView] Auto-generated note save failed after retry:', lastSaveErr);
+          toastService.error(
+            '自動筆記儲存失敗',
+            '錄音和字幕已保存；重新打開此課堂時系統會再次嘗試產生筆記。' +
+              (lastSaveErr instanceof Error ? ` (${lastSaveErr.message})` : ''),
+          );
         }
         // ===== END AUTO-GENERATE NOTE =====
       }
@@ -1175,16 +1215,42 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           const appData = await invoke<string>('get_app_data_dir');
           const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
           const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
-          const target = `${appData}${sep}lecture-pdfs${sep}${Date.now()}-${safeName}`;
+          // v0.5.2 audit follow-up: prefix the filename with the
+          // lecture id. The prior scheme was `{ts}-{name}.pdf` which
+          // had no link back to the lecture, so a `write_temp_file`
+          // success followed by an `updateLecturePDF` DB failure left
+          // an orphan file we couldn't auto-recover. The new pattern
+          // `lecture_{id}_{ts}_{name}.pdf` mirrors the audio convention
+          // and is what `try_recover_pdf_path` (next commit) scans for.
+          const target = `${appData}${sep}lecture-pdfs${sep}lecture_${currentLectureData?.id ?? 'unknown'}_${Date.now()}_${safeName}`;
           await invoke('write_temp_file', {
             path: target,
             data: Array.from(new Uint8Array(arrayBuffer)),
           });
           setPdfPath(target);
-          await updateLecturePDF(target);
+          try {
+            await updateLecturePDF(target);
+          } catch (dbErr) {
+            // The FILE is already on disk at `target`. Surface the DB
+            // failure to the user so they know to retry — previously
+            // this was only `console.error`, so the UI showed the PDF
+            // loaded (from in-memory buffer) but the DB didn't know
+            // about it, and the PDF vanished on next reload. With the
+            // new filename pattern, `try_recover_pdf_path` will recover
+            // on next load anyway, but a loud toast prevents confusion.
+            console.error('[NotesView] PDF file written but DB save failed:', dbErr);
+            toastService.error(
+              'PDF 已儲存但資料庫更新失敗',
+              '下次開啟此課堂時系統會自動重新連結。' +
+                (dbErr instanceof Error ? ` (${dbErr.message})` : ''),
+            );
+          }
         } catch (err) {
           console.error('[NotesView] Failed to persist dropped PDF:', err);
-          // Fallback: at least the in-memory buffer still drives the viewer
+          toastService.error(
+            'PDF 儲存失敗',
+            err instanceof Error ? err.message : String(err),
+          );
           setPdfPath(null);
         }
       };

@@ -1822,6 +1822,8 @@ pub fn run() {
             get_audio_dir,
             get_documents_dir,
             try_recover_audio_path,
+            try_recover_pdf_path,
+            consume_migration_notices,
             // Offline Queue
             add_pending_action,
             list_pending_actions,
@@ -1850,6 +1852,102 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Returns + clears any migration notices the DB init queued up.
+///
+/// Called by the frontend at app-ready so the user sees a toast when
+/// an irreversible migration touched their data (e.g. v0.5.2's drop
+/// of old-dimension embedding vectors). Drain-once semantics — if
+/// the frontend calls twice without a new migration running, the
+/// second call returns empty.
+#[tauri::command]
+async fn consume_migration_notices() -> Result<Vec<String>, String> {
+    Ok(storage::drain_migration_notices())
+}
+
+/// Attempt to recover a missing `lecture.pdf_path`.
+///
+/// Mirrors `try_recover_audio_path`. If the DB column is empty but a
+/// file matching `lecture_<id>_*` exists in `{app_data}/lecture-pdfs/`,
+/// pick the newest and relink it. Orphans can happen when
+/// `write_temp_file` succeeded but the subsequent `save_lecture`
+/// failed (logged-only before v0.5.2 audit fix).
+#[tauri::command]
+async fn try_recover_pdf_path(lecture_id: String) -> Result<Option<String>, String> {
+    use std::fs;
+
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("DB Error: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("DB Connection Error: {}", e))?;
+
+    let lecture_opt = db
+        .get_lecture(&lecture_id)
+        .map_err(|e| format!("Get Lecture Error: {}", e))?;
+
+    if let Some(ref lecture) = lecture_opt {
+        if let Some(ref path) = lecture.pdf_path {
+            if !path.is_empty() {
+                return Ok(Some(path.clone()));
+            }
+        }
+    } else {
+        return Ok(None);
+    }
+
+    let pdfs_dir = paths::get_lecture_pdfs_dir().map_err(|e| format!("Path Error: {}", e))?;
+    if !pdfs_dir.exists() {
+        return Ok(None);
+    }
+
+    // Look for `lecture_<id>_*.pdf` (or any extension) — pick newest.
+    let prefix = format!("lecture_{}_", lecture_id);
+    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&pdfs_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+            if !name.starts_with(&prefix) {
+                continue;
+            }
+            let mtime = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            candidates.push((path, mtime));
+        }
+    }
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    let recovered = match candidates.into_iter().next() {
+        Some((p, _)) => p,
+        None => return Ok(None),
+    };
+
+    let path_str = recovered.to_string_lossy().to_string();
+    println!("[Recovery] 找到丟失的 PDF 文件: {}", path_str);
+
+    if let Some(mut lecture) = db.get_lecture(&lecture_id).unwrap_or(None) {
+        lecture.pdf_path = Some(path_str.clone());
+        let user_id = if let Some(course) = db.get_course(&lecture.course_id).unwrap_or(None) {
+            course.user_id
+        } else {
+            "default_user".to_string()
+        };
+        db.save_lecture(&lecture, &user_id)
+            .map_err(|e| format!("Update DB Error: {}", e))?;
+        return Ok(Some(path_str));
+    }
+
+    Ok(None)
 }
 
 /// 嘗試恢復丟失的 audio_path.
