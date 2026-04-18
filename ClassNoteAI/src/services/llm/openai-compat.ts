@@ -19,10 +19,33 @@ export interface OpenAICompatConfig {
   transformBody?: (body: Record<string, unknown>, request: LLMRequest) => Record<string, unknown>;
 }
 
-export function errorKindFromStatus(status: number): LLMErrorKind {
+/**
+ * Substrings that appear in 400-status error bodies from the major
+ * providers when the real cause is "prompt too long", not a malformed
+ * request. Ported from opencode's error.ts OVERFLOW_PATTERNS bank. Keep
+ * this list conservative — it's only consulted on HTTP 400 where the
+ * body ruling decides between `context_length` and `unknown`.
+ */
+const CONTEXT_OVERFLOW_PATTERNS = [
+  /context[_ ]length/i,
+  /context[_ ]window/i,
+  /too many tokens/i,
+  /maximum context/i,
+  /exceeds the maximum/i,
+  /input is too long/i,
+  /prompt is too long/i,
+  /reduce the length/i,
+];
+
+export function errorKindFromStatus(status: number, body?: string): LLMErrorKind {
   if (status === 401 || status === 403) return 'auth';
   if (status === 429) return 'rate_limit';
-  if (status === 413 || status === 400) return 'context_length'; // heuristic; caller can override
+  if (status === 413) return 'unknown'; // payload-too-large: caller sent too much, not a context_length issue
+  if (status === 400 && body) {
+    for (const re of CONTEXT_OVERFLOW_PATTERNS) {
+      if (re.test(body)) return 'context_length';
+    }
+  }
   if (status >= 500) return 'provider';
   return 'unknown';
 }
@@ -57,7 +80,7 @@ export async function completeOpenAICompatible(
     const errText = await res.text().catch(() => '');
     throw new LLMError(
       `HTTP ${res.status}: ${errText.slice(0, 200)}`,
-      errorKindFromStatus(res.status),
+      errorKindFromStatus(res.status, errText),
       config.providerId
     );
   }
@@ -93,7 +116,7 @@ export async function* streamOpenAICompatible(
     const errText = !res.ok ? await res.text().catch(() => '') : '';
     throw new LLMError(
       `HTTP ${res.status}: ${errText.slice(0, 200)}`,
-      errorKindFromStatus(res.status),
+      errorKindFromStatus(res.status, errText),
       config.providerId
     );
   }

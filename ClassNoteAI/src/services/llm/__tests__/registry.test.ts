@@ -5,13 +5,13 @@ import { getProvider, listProviders, resolveActiveProvider } from '../registry';
 describe('LLM registry', () => {
     beforeEach(() => {
         keyStore.clear('github-models', 'pat');
-        keyStore.clear('anthropic', 'apiKey');
+        keyStore.clear('chatgpt-oauth', 'accessToken');
     });
 
     it('lists known providers', () => {
         const ids = listProviders().map((d) => d.id);
         expect(ids).toContain('github-models');
-        expect(ids).toContain('anthropic');
+        expect(ids).toContain('chatgpt-oauth');
     });
 
     it('returns the same instance on repeated getProvider calls', () => {
@@ -29,15 +29,15 @@ describe('LLM registry', () => {
     });
 
     it('resolveActiveProvider prefers the configured one', async () => {
-        keyStore.set('anthropic', 'apiKey', 'sk-ant-x');
+        keyStore.set('github-models', 'pat', 'ghp_x');
         const active = await resolveActiveProvider();
-        expect(active?.descriptor.id).toBe('anthropic');
+        expect(active?.descriptor.id).toBe('github-models');
     });
 
     it('resolveActiveProvider honors preferredId if configured', async () => {
         keyStore.set('github-models', 'pat', 'ghp_x');
-        keyStore.set('anthropic', 'apiKey', 'sk-ant-x');
-        const active = await resolveActiveProvider('anthropic');
-        expect(active?.descriptor.id).toBe('anthropic');
+        keyStore.set('chatgpt-oauth', 'accessToken', 'tok_x');
+        const active = await resolveActiveProvider('chatgpt-oauth');
+        expect(active?.descriptor.id).toBe('chatgpt-oauth');
     });
 });

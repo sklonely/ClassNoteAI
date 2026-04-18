@@ -1668,6 +1668,7 @@ pub fn run() {
             load_translation_model_by_name,
             // OAuth callback listener
             oauth::oauth_listen_for_code,
+            oauth::oauth_cancel,
             // 數據存儲相關
             save_course,
             get_course,

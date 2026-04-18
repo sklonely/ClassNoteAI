@@ -2,7 +2,7 @@
  * High-level LLM tasks used across the app: summarisation, syllabus
  * extraction, keyword extraction, Q&A chat. Everything routes through
  * `resolveActiveProvider()` so the user's configured provider
- * (GitHub Models, ChatGPT OAuth, Anthropic, OpenAI, Gemini) transparently
+ * (GitHub Models PAT or ChatGPT subscription OAuth in v0.5.2) transparently
  * powers all of them.
  *
  * Replaces the pre-v0.5.0 taskService + ClassNoteServer round-trip.
