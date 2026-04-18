@@ -65,8 +65,18 @@ async function listFixtures(): Promise<string[]> {
 async function runFixture(name: string): Promise<FixtureResult> {
     const corpusPath = join(fixturesDir, `${name}.corpus.json`);
     const queriesPath = join(fixturesDir, `${name}.queries.json`);
+    // v0.5.2: accept pre-computed retrieval rankings in
+    // `<name>.retrieval.json`:
+    //   { "rankings": { "<query text>": ["chunk-id-1", "chunk-id-2", ...] } }
+    // Decouples "run the Tauri RAG pipeline" (which needs the runtime)
+    // from "score MRR + Recall" (pure math, portable). Missing rankings
+    // yield zero-score for that query, which is correct semantics for
+    // "model returned nothing".
+    const retrievalPath = join(fixturesDir, `${name}.retrieval.json`);
     let queries: RagQuery[] = [];
     let corpusSize = 0;
+    let rankings: Record<string, string[]> = {};
+    const noteFragments: string[] = [];
     try {
         const corpus = JSON.parse(await readFile(corpusPath, 'utf-8'));
         const q = JSON.parse(await readFile(queriesPath, 'utf-8'));
@@ -82,13 +92,18 @@ async function runFixture(name: string): Promise<FixtureResult> {
             note: `fixture parse error: ${err instanceof Error ? err.message : String(err)}`,
         };
     }
-    // TODO: run the real retrieval pipeline. Stubbed so empty reports
-    // are visible and shape is validated.
+    try {
+        const r = JSON.parse(await readFile(retrievalPath, 'utf-8'));
+        rankings = (r.rankings as Record<string, string[]>) || {};
+    } catch {
+        noteFragments.push(`missing ${name}.retrieval.json`);
+    }
     const ranks: number[] = [];
     const recalls: number[] = [];
-    for (const _q of queries) {
-        ranks.push(0);
-        recalls.push(0);
+    for (const q of queries) {
+        const ranked = rankings[q.query] ?? [];
+        ranks.push(reciprocalRank(ranked, q.gold));
+        recalls.push(recallAt(5, ranked, q.gold));
     }
     const mrr = ranks.length > 0 ? ranks.reduce((a, b) => a + b, 0) / ranks.length : 0;
     const recallAt5 = recalls.length > 0 ? recalls.reduce((a, b) => a + b, 0) / recalls.length : 0;
@@ -98,7 +113,7 @@ async function runFixture(name: string): Promise<FixtureResult> {
         corpusSize,
         mrr,
         recallAt5,
-        note: 'retrieval pipeline not wired yet — see evals/README.md',
+        note: noteFragments.join('; '),
     };
 }
 

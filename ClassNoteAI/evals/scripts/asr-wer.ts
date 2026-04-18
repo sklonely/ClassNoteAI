@@ -67,6 +67,7 @@ async function listFixtures(): Promise<string[]> {
 
 async function runFixture(name: string): Promise<FixtureResult> {
     const refPath = join(fixturesDir, `${name}.reference.txt`);
+    const hypPath = join(fixturesDir, `${name}.hypothesis.txt`);
     let reference = '';
     try {
         reference = await readFile(refPath, 'utf-8');
@@ -79,16 +80,29 @@ async function runFixture(name: string): Promise<FixtureResult> {
             note: `missing ${name}.reference.txt`,
         };
     }
-    // TODO: invoke whisper.cpp on the .wav and capture hypothesis.
-    // For now we stub the hypothesis as empty so fixtures are visible
-    // in the report with an explicit "not yet wired" note.
-    const hypothesis = '';
+    // v0.5.2: accept pre-computed hypotheses as `<name>.hypothesis.txt`.
+    // This decouples "run whisper on audio" (which needs either a
+    // standalone binary or the Tauri runtime — neither available in
+    // plain Node) from "score WER against reference" (pure math,
+    // easy to run anywhere). Automation that generates hypotheses
+    // lives separately; the harness here is usable with any source
+    // of hypothesis text. Empty / missing hypothesis → 100% WER,
+    // which is the correct scoring semantics for "model said nothing".
+    let hypothesis = '';
+    let hypNote = '';
+    try {
+        hypothesis = await readFile(hypPath, 'utf-8');
+    } catch {
+        hypNote = `missing ${name}.hypothesis.txt`;
+    }
+    const refWords = reference.trim().split(/\s+/).filter(Boolean).length;
+    const hypWords = hypothesis.trim().split(/\s+/).filter(Boolean).length;
     return {
         name,
-        referenceWords: reference.trim().split(/\s+/).filter(Boolean).length,
-        hypothesisWords: 0,
+        referenceWords: refWords,
+        hypothesisWords: hypWords,
         wer: computeWer(reference, hypothesis),
-        note: 'whisper invocation not wired yet — see evals/README.md',
+        note: hypNote || '',
     };
 }
 
