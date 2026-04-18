@@ -37,7 +37,22 @@ vi.mock('../embeddingStorageService', () => ({
         getStats: vi.fn(),
         deleteByLecture: vi.fn(),
         storeEmbeddings: vi.fn(),
+        // v0.5.2 hybrid retrieval fetches all chunk metadata so it can
+        // resolve BM25-only hits back to full records. Empty list is
+        // fine for this test — we're asserting the translate vs not
+        // dispatch, not ranking.
+        getEmbeddingsByLecture: vi.fn(() => Promise.resolve([])),
+        replaceEmbeddingsForLecture: vi.fn(),
+        getChunksByPage: vi.fn(() => Promise.resolve([])),
     },
+}));
+
+vi.mock('../bm25Service', () => ({
+    bm25Service: {
+        search: vi.fn(() => Promise.resolve([])),
+        invalidate: vi.fn(),
+    },
+    reciprocalRankFusion: vi.fn(() => []),
 }));
 
 vi.mock('../embeddingService', () => ({
@@ -79,10 +94,13 @@ describe('ragService.chat cross-lingual dispatch', () => {
         // Retrieval must receive the English form, not the original Chinese.
         // If this ever flips back to passing the Chinese query directly
         // to semanticSearch, cross-lingual recall drops ~30 points.
+        // v0.5.2 hybrid retrieval pulls FANOUT = topK * 4 from each
+        // side of the fusion (so RRF has enough signal to rerank),
+        // not just topK directly.
         expect(semanticSearchMock).toHaveBeenCalledWith(
             'What is heuristic evaluation?',
             'lecture-1',
-            5,
+            20,
             undefined,
         );
     });
@@ -91,10 +109,13 @@ describe('ragService.chat cross-lingual dispatch', () => {
         await ragService.chat('What is heuristic evaluation?', 'lecture-1');
 
         expect(translateMock).not.toHaveBeenCalled();
+        // v0.5.2 hybrid retrieval pulls FANOUT = topK * 4 from each
+        // side of the fusion (so RRF has enough signal to rerank),
+        // not just topK directly.
         expect(semanticSearchMock).toHaveBeenCalledWith(
             'What is heuristic evaluation?',
             'lecture-1',
-            5,
+            20,
             undefined,
         );
     });
