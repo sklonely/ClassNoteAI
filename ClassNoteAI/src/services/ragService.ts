@@ -1,7 +1,13 @@
 /**
- * RAG (Retrieval-Augmented Generation) 服務
- * 整合文本分塊、向量嵌入和語義檢索
- * 使用 Ollama 遠程 nomic-embed-text 模型
+ * RAG (Retrieval-Augmented Generation) service.
+ *
+ * Embeddings: local Candle `nomic-embed-text-v1` (shipped via the
+ * embedding-model download flow in Settings). No network calls to
+ * Ollama — earlier versions fetched embeddings remotely, v0.5.0+ runs
+ * everything on-device.
+ *
+ * OCR: optional Ollama `deepseek-ocr` for complex slide decks. If not
+ * reachable, we pre-flight-skip and fall back to pdfjs text extraction.
  */
 
 import { chunkingService, TextChunk } from './chunkingService';

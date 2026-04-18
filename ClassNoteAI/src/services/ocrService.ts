@@ -1,7 +1,15 @@
 /**
- * OCR 服務
- * 使用 Ollama deepseek-ocr 模型進行 PDF 頁面識別
- * 特別適合表格、數學公式等複雜排版
+ * OCR service (optional).
+ *
+ * If the user has a local Ollama running with `deepseek-ocr` loaded,
+ * this service renders each PDF page and hands it to that model for
+ * table/formula-aware OCR. Useful for slide decks with math, diagrams
+ * or non-selectable text.
+ *
+ * If Ollama is unreachable (which is the default on Windows + fresh
+ * installs), callers fall back to plain pdfjs text extraction via
+ * `pdfToImageService.extractAllText()`. See `ragService.ts` for the
+ * pre-flight + fallback path.
  */
 
 import { storageService } from './storageService';

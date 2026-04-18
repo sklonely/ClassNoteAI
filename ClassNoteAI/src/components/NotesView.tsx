@@ -115,7 +115,9 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           console.log('[NotesView] Whisper model loaded');
         }
 
-        // Embedding Model: 使用 Ollama 遠程 nomic-embed-text，無需本地加載
+        // Embedding Model: local Candle nomic-embed-text-v1 (shipped
+        // via the embedding-model download flow in Settings). No remote
+        // Ollama call — stale comment was fixed in v0.5.2.
         console.log('[NotesView] Using local Candle nomic-embed-text-v1 for auto-alignment');
         // Load Translation Model if provider is local
         const translationProvider = settings?.translation?.provider || 'local';

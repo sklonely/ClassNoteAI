@@ -46,7 +46,16 @@ class CDP {
 
   async connect() {
     const targets = await this._fetchJSON(`http://${HOST}:${PORT}/json`);
+    // Prefer the real app page (http/https), not a devtools:// target that
+    // also lives under the same CDP port once the user opens DevTools.
+    const isAppPage = (t) =>
+      t.type === "page" &&
+      t.webSocketDebuggerUrl &&
+      typeof t.url === "string" &&
+      (t.url.startsWith("http://") || t.url.startsWith("https://")) &&
+      !t.url.startsWith("devtools://");
     const target =
+      targets.find(isAppPage) ||
       targets.find((t) => t.type === "page" && t.webSocketDebuggerUrl) ||
       targets.find((t) => t.webSocketDebuggerUrl);
     if (!target) {

@@ -233,7 +233,7 @@ export default function CourseCreationDialog({
                 onClick={handleGenerateKeywords}
                 disabled={(!pdfData && !existingContext && !description.trim()) || isGeneratingKeywords}
                 className="px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                title="從 PDF 或課程大綱生成關鍵詞 (需 Ollama)"
+                title="從 PDF 或課程大綱生成關鍵詞"
               >
                 {isGeneratingKeywords ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
