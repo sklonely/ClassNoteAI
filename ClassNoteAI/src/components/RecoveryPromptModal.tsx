@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, Save, Trash2, X, Loader2 } from 'lucide-react';
+import { AlertTriangle, Save, Trash2, X, Loader2, Sparkles } from 'lucide-react';
 import {
     recordingRecoveryService,
     type RecoverableSession,
@@ -16,9 +16,10 @@ import {
  * - Non-dismissable by clicking outside. Recovery is a decision point
  *   that shouldn't be accidentally skipped — the .pcm on disk is
  *   dead weight until the user picks an action.
- * - Per-session recover/discard buttons instead of a bulk "recover
- *   all" — each session might be a different class, user may want to
- *   keep some and throw others.
+ * - Per-session recover/discard buttons. For >1 session, also show
+ *   bulk "Recover all" / "Discard all" in the header so a user
+ *   returning after multiple laptop-lid crashes isn't forced into N
+ *   sequential clicks (F5 polish).
  * - Shows approx duration + started-at so the user knows whether a
  *   given orphan is worth keeping (2 min of noise vs 45 min of class).
  */
@@ -116,6 +117,45 @@ export default function RecoveryPromptModal({
     };
 
     const remaining = sessions.filter((s) => !states[s.lectureId]?.done);
+    const anyInFlight = remaining.some((s) => states[s.lectureId]?.inFlight);
+
+    /** Bulk action helper: run recover or discard over every un-done
+     *  session sequentially, skipping ones that already failed (their
+     *  error state remains so the user can retry individually). */
+    const bulkRun = async (
+        fn: (s: RecoverableSession) => Promise<void>,
+    ) => {
+        for (const s of remaining) {
+            const cur = states[s.lectureId];
+            if (cur?.done || cur?.inFlight) continue;
+            // eslint-disable-next-line no-await-in-loop
+            await fn(s);
+        }
+    };
+
+    const handleRecoverAll = () => bulkRun(handleRecover);
+    const handleDiscardAll = async () => {
+        if (
+            !window.confirm(
+                `確定要丟棄全部 ${remaining.length} 筆未完成錄音嗎？此動作無法復原。`,
+            )
+        )
+            return;
+        await bulkRun(async (s) => {
+            setActionState(s.lectureId, { inFlight: true });
+            try {
+                await recordingRecoveryService.discard(s.lectureId, true);
+                setActionState(s.lectureId, { inFlight: false, done: true });
+                onSessionResolved(s.lectureId);
+            } catch (err) {
+                setActionState(s.lectureId, {
+                    inFlight: false,
+                    error: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+        if (remaining.every((s) => states[s.lectureId]?.done)) onAllResolved();
+    };
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -130,6 +170,31 @@ export default function RecoveryPromptModal({
                             上次錄音時 app 沒有正常結束。這些音檔還保存在磁碟上，可以選擇還原成 WAV，或直接丟棄。
                         </p>
                     </div>
+                    {/* Bulk actions. Only visible with >1 pending session —
+                        a single-session prompt already has per-row buttons
+                        that are closer to the info. */}
+                    {remaining.length > 1 && (
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                            <button
+                                onClick={handleRecoverAll}
+                                disabled={anyInFlight}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="還原每一筆未處理的錄音"
+                            >
+                                <Sparkles className="w-3 h-3" />
+                                全部還原
+                            </button>
+                            <button
+                                onClick={handleDiscardAll}
+                                disabled={anyInFlight}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                                title="丟棄每一筆未處理的錄音"
+                            >
+                                <Trash2 className="w-3 h-3" />
+                                全部丟棄
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="max-h-[60vh] overflow-y-auto p-4 space-y-3">
