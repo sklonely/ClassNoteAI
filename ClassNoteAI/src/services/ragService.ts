@@ -359,6 +359,19 @@ class RAGService {
     }
 
     /**
+     * Minimum cosine similarity to consider a retrieved chunk actually
+     * relevant to the query. Below this we drop the chunk. nomic-embed-
+     * text-v1 produces scores in the ~0.3-0.9 range for related content
+     * in practice; queries with no semantic overlap at all (pure
+     * greetings, off-topic chit-chat, single-word inputs that happen to
+     * match the course title) hover near 0.4-0.5, where the model is
+     * clearly stretching to find "closest" chunks that aren't really
+     * relevant. 0.55 lands a usable separation between "this query is
+     * about the course" and "this query has nothing to do with it".
+     */
+    private static readonly RELEVANCE_THRESHOLD = 0.55;
+
+    /**
      * RAG 增強問答
      * @param chatHistory 對話歷史 (可選，用於延續對話)
      */
@@ -373,18 +386,38 @@ class RAGService {
         }
     ): Promise<{ answer: string; sources: SearchResult[] }> {
         const topK = options?.topK || 5;
+        const basePrompt = options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
 
         // 檢索相關上下文 (傳入當前頁面優先檢索)
         const context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
 
-        // 構建增強的系統提示 (包含當前頁面位置和 RAG 上下文)
-        const enhancedSystemPrompt = context.chunks.length > 0
+        // Only enhance the prompt with retrieved context when at least one
+        // chunk passes the relevance threshold. If the user typed a plain
+        // greeting ("HI", "你好", "?"), semantic search will return top-K
+        // chunks but their similarity scores will all be low — injecting
+        // them anyway turns a greeting into a forced essay because the
+        // enhanced prompt tells the LLM to use the context. Filtering here
+        // is the structural fix; prior prompt-engineering workarounds
+        // (telling the LLM "if greeting, reply short") were band-aids
+        // that don't generalize to off-topic / ambiguous inputs.
+        const relevantChunks = context.chunks.filter(
+            (c) => c.similarity >= RAGService.RELEVANCE_THRESHOLD,
+        );
+        const useContext = relevantChunks.length > 0;
+        const enhancedSystemPrompt = useContext
             ? this.buildEnhancedPrompt(
-                options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。',
-                context.formattedContext,
-                options?.currentPage
+                basePrompt,
+                this.formatContext(relevantChunks),
+                options?.currentPage,
             )
-            : options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
+            : basePrompt;
+        if (!useContext && context.chunks.length > 0) {
+            console.log(
+                `[RAGService] Dropping ${context.chunks.length} retrieved chunks — top similarity ` +
+                    `${context.chunks[0]?.similarity?.toFixed(3)} < threshold ` +
+                    `${RAGService.RELEVANCE_THRESHOLD}. Falling back to plain chat for off-topic query.`,
+            );
+        }
 
         // 組合消息：歷史 + 當前問題
         const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
@@ -402,7 +435,9 @@ class RAGService {
 
         return {
             answer,
-            sources: context.chunks,
+            // Return only the chunks we actually showed the LLM so the
+            // UI's "來源" badges match the reply's grounding.
+            sources: useContext ? relevantChunks : [],
         };
     }
 
@@ -438,11 +473,11 @@ class RAGService {
 ${locationInfo}
 ${context}
 
-回答原則：
-1. 若使用者的訊息是**純問候或閒聊**（例如「Hi」「你好」「嗨」「?」「在嗎」等，字數短、沒有具體問題），請以一到兩句友善的繁體中文回應，**不要**硬把上述課程內容硬套進回覆。
-2. 若有具體問題，優先使用上述內容回答。
-3. 如果內容不足以回答，請說明。
-4. 回答具體問題時請標註來源頁碼，格式為 [[頁碼:X]]（例如 [[頁碼:5]]）。引用多頁時分別標註，例如 [[頁碼:5]] [[頁碼:8]]。純問候不需要標註頁碼。`;
+請注意：
+1. 優先使用上述內容回答問題
+2. 如果內容不足以回答，請說明
+3. 回答時請務必標註來源頁碼，格式為 [[頁碼:X]] (例如 [[頁碼:5]])，這將在界面上生成可點擊的跳轉鏈接。
+4. 如果引用了多個頁面，請分別標註，例如 [[頁碼:5]] [[頁碼:8]]。`;
     }
 
     /**

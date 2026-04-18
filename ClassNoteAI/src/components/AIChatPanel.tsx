@@ -259,9 +259,7 @@ export default function AIChatPanel({
                 console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'}, 歷史:${chatHistory.length}條)`);
                 const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
                     topK: 5,
-                    systemPrompt:
-                        '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。' +
-                        '遇到問候或閒聊（如「Hi」「你好」）時簡短回應即可，不要把大量課程內容硬塞進回覆。',
+                    systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
                     currentPage,
                     chatHistory: chatHistory.filter(m => m.role !== 'system') as Array<{ role: 'user' | 'assistant'; content: string }>,
                 });
@@ -281,9 +279,7 @@ export default function AIChatPanel({
             } else {
                 // 傳統模式：直接傳入全文
                 console.log('[AIChatPanel] 使用傳統模式');
-                let systemPrompt =
-                    '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。' +
-                    '遇到問候或閒聊（如「Hi」「你好」）時簡短回應即可，不要把大量課程內容硬塞進回覆。';
+                let systemPrompt = '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。';
 
                 if (context?.pdfText || context?.transcriptText) {
                     systemPrompt += '\n\n以下是課程相關內容供參考：\n';
