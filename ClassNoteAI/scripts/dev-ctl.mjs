@@ -98,7 +98,7 @@ class CDP {
         try {
           cb(msg.params);
         } catch (e) {
-          console.error(`[dev-ctl] listener for ${msg.method} threw:`, e);
+          console.error("[dev-ctl] listener for %s threw:", String(msg.method), e);
         }
       }
     }
