@@ -520,6 +520,14 @@ export class ChatGPTOAuthProvider implements LLMProvider {
       // official Codex CLI ships.
       include: ['reasoning.encrypted_content'],
     };
+    // Responses API uses `text.format`, not Chat Completions'
+    // `response_format`. When the caller asked for jsonMode, force the
+    // model to emit a valid top-level JSON object instead of prose — this
+    // makes extractSyllabus / future JSON tasks robust against the model
+    // drifting into markdown code fences.
+    if (request.jsonMode) {
+      body.text = { format: { type: 'json_object' } };
+    }
     // NOTE: Codex's Responses backend rejects several parameters the
     // public Responses API accepts (observed 2026-04: `max_output_tokens`
     // → 400, `temperature` → 400 on gpt-5.2). The account-tier-filtered

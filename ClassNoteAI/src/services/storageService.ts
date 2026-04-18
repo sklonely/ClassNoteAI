@@ -20,6 +20,12 @@ class StorageService {
       is_deleted: course.is_deleted ?? false
     };
     await invoke('save_course', { course: courseToSave });
+    // Broadcast so any open CourseDetailView / CourseListView that's
+    // already mounted can refetch. Used by background syllabus / summary
+    // tasks that complete after the user has already navigated away.
+    window.dispatchEvent(
+      new CustomEvent('classnote-course-updated', { detail: { courseId: course.id } }),
+    );
   }
 
   /**
