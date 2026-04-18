@@ -11,6 +11,32 @@
 import { resolveActiveProvider } from './registry';
 import type { LLMMessage } from './types';
 import { LLMError } from './types';
+import { usageTracker, type UsageTask } from './usageTracker';
+
+/**
+ * Record token usage from a provider response so the UI can render
+ * per-call hints and per-day aggregates. A no-op if the provider
+ * didn't populate usage (rare — ChatGPT OAuth and GitHub Models
+ * both return it in the streaming completion / chat response
+ * respectively).
+ */
+function trackUsage(
+  providerId: string,
+  model: string,
+  task: UsageTask,
+  usage: { inputTokens?: number; outputTokens?: number } | undefined,
+  segments?: number,
+) {
+  if (!usage) return;
+  usageTracker.record({
+    providerId,
+    model,
+    task,
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    segments,
+  });
+}
 
 const DEFAULT_PROVIDER_KEY = 'llm.defaultProvider';
 
@@ -75,6 +101,7 @@ export async function summarize(params: SummarizeParams): Promise<string> {
     temperature: 0.3,
     maxTokens: 4096,
   });
+  trackUsage(provider!.descriptor.id, model, 'summarize', res.usage);
   return res.content;
 }
 
@@ -93,6 +120,7 @@ export async function extractKeywords(text: string, max = 20): Promise<string[]>
     jsonMode: true,
     maxTokens: 1024,
   });
+  trackUsage(provider!.descriptor.id, model, 'keywords', res.usage);
   try {
     const parsed = JSON.parse(res.content);
     if (Array.isArray(parsed?.keywords)) {
@@ -144,6 +172,7 @@ export async function extractSyllabus(
     jsonMode: true,
     maxTokens: 2048,
   });
+  trackUsage(provider!.descriptor.id, model, 'syllabus', res.usage);
   try {
     return JSON.parse(res.content) as SyllabusInfo;
   } catch {
@@ -159,6 +188,7 @@ export async function chat(messages: LLMMessage[]): Promise<string> {
     temperature: 0.3,
     maxTokens: 2048,
   });
+  trackUsage(provider!.descriptor.id, model, 'chat', res.usage);
   return res.content;
 }
 
@@ -208,6 +238,7 @@ export async function refineTranscripts(batch: RoughSegment[]): Promise<FineRefi
     jsonMode: true,
     maxTokens: Math.min(8192, 512 * batch.length),
   });
+  trackUsage(provider!.descriptor.id, model, 'fineRefine', res.usage, batch.length);
 
   try {
     const parsed = JSON.parse(res.content);
@@ -226,6 +257,7 @@ export async function refineTranscripts(batch: RoughSegment[]): Promise<FineRefi
 /** Stream a chat response token-by-token. Caller receives incremental deltas. */
 export async function* chatStream(messages: LLMMessage[]): AsyncGenerator<string, void, void> {
   const { provider, model } = await activeProviderAndModel();
+  let finalUsage: { inputTokens?: number; outputTokens?: number } | undefined;
   for await (const chunk of provider!.stream({
     model,
     messages,
@@ -233,5 +265,9 @@ export async function* chatStream(messages: LLMMessage[]): AsyncGenerator<string
     maxTokens: 2048,
   })) {
     if (chunk.delta) yield chunk.delta;
+    if (chunk.done && chunk.usage) {
+      finalUsage = chunk.usage;
+    }
   }
+  trackUsage(provider!.descriptor.id, model, 'chatStream', finalUsage);
 }

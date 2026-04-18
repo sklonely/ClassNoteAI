@@ -14,6 +14,10 @@ export interface ChatMessage {
     content: string;
     timestamp: string;
     sources?: Array<{ text: string; sourceType: string; pageNumber?: number; similarity: number }>;
+    /** Optional token usage for this message — surfaced inline in the UI
+     *  as grey "in:N out:M" next to the message footer. Only populated on
+     *  the assistant side; user messages don't cost tokens. */
+    usage?: { inputTokens: number; outputTokens: number };
 }
 
 export interface ChatSession {

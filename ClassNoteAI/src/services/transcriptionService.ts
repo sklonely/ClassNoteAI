@@ -671,9 +671,22 @@ export class TranscriptionService {
     const batch = this.fineQueue.splice(0, this.fineQueue.length);
 
     try {
-      const { refineTranscripts } = await import('./llm');
+      const { refineTranscripts, usageTracker } = await import('./llm');
       const refinements = await refineTranscripts(batch);
       if (!refinements.length) return;
+
+      // Grab the batch-level usage event that refineTranscripts just
+      // recorded so each segment in the batch can display its share.
+      // We split the batch total across segments so the inline hint
+      // next to the "✓ 已精修" badge feels proportional rather than
+      // slapping the whole batch total on every row.
+      const batchUsage = usageTracker.latest('fineRefine');
+      const perSegIn = batchUsage
+        ? Math.round(batchUsage.inputTokens / Math.max(1, batch.length))
+        : 0;
+      const perSegOut = batchUsage
+        ? Math.round(batchUsage.outputTokens / Math.max(1, batch.length))
+        : 0;
 
       const byId = new Map(refinements.map((r) => [r.id, r]));
       for (const item of batch) {
@@ -687,6 +700,9 @@ export class TranscriptionService {
           translatedText: r.zh,
           translationSource: 'fine',
           source: 'fine',
+          fineUsage: batchUsage
+            ? { inputTokens: perSegIn, outputTokens: perSegOut }
+            : undefined,
         });
 
         const pending = this.pendingSubtitles.find((s) => s.id === item.id);

@@ -3,7 +3,7 @@ import { Bot, Send, X, AlertCircle, Loader2, Minus, Maximize2, Database, Zap, Pl
 import ReactMarkdown from 'react-markdown';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
-import { chat as llmChat } from '../services/llm';
+import { chat as llmChat, usageTracker } from '../services/llm';
 
 // 重新導出 ChatMessage 類型供其他組件使用
 export type { ChatMessage } from '../services/chatSessionService';
@@ -300,11 +300,17 @@ export default function AIChatPanel({
                     })),
                 ]);
 
+                // Grab the usage event the llm/tasks layer just recorded
+                // for this chat call so we can paint it next to the reply.
+                const lastUsage = usageTracker.latest('chat');
                 assistantMessage = {
                     id: crypto.randomUUID(),
                     role: 'assistant',
                     content: response,
                     timestamp: new Date().toISOString(),
+                    usage: lastUsage
+                        ? { inputTokens: lastUsage.inputTokens, outputTokens: lastUsage.outputTokens }
+                        : undefined,
                 };
             }
 
@@ -535,6 +541,11 @@ export default function AIChatPanel({
                                                             )
                                                         ))}
                                                     </div>
+                                                </div>
+                                            )}
+                                            {msg.usage && (
+                                                <div className="mt-1 text-[10px] text-gray-400 dark:text-gray-500">
+                                                    in {msg.usage.inputTokens} · out {msg.usage.outputTokens} tokens
                                                 </div>
                                             )}
                                         </>

@@ -13,3 +13,4 @@ export {
   type RoughSegment,
   type FineRefinement,
 } from './tasks';
+export { usageTracker, type UsageEvent, type UsageTask } from './usageTracker';

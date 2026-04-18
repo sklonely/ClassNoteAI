@@ -131,7 +131,14 @@ export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: Subti
                     </div>
                   )}
                   {segment.source === 'fine' && (
-                    <span className="text-xs text-green-600 dark:text-green-400">✓ 已精修</span>
+                    <span className="text-xs text-green-600 dark:text-green-400">
+                      ✓ 已精修
+                      {segment.fineUsage && (
+                        <span className="ml-1.5 text-gray-400 dark:text-gray-500 font-normal">
+                          · in {segment.fineUsage.inputTokens} · out {segment.fineUsage.outputTokens}
+                        </span>
+                      )}
+                    </span>
                   )}
                 </div>
               </div>

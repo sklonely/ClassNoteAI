@@ -8,7 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { storageService } from "../services/storageService";
-import { summarize as llmSummarize } from "../services/llm";
+import { summarize as llmSummarize, usageTracker } from "../services/llm";
 import { generateLocalEmbedding } from "../services/embeddingService";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
@@ -1064,7 +1064,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       const updatedNote = { ...selectedNote, summary };
       await storageService.saveNote(updatedNote);
       setSelectedNote(updatedNote);
-      alert('Summary generated successfully!');
+      const usage = usageTracker.latest('summarize');
+      const usageStr = usage
+        ? `（in ${usage.inputTokens} · out ${usage.outputTokens} tokens）`
+        : '';
+      alert(`Summary generated successfully! ${usageStr}`);
 
     } catch (error) {
       console.error('Failed to generate summary:', error);
