@@ -40,6 +40,8 @@ export interface UsageEvent {
 
 type Listener = (e: UsageEvent) => void;
 
+const STORAGE_KEY = 'llm.usageTracker.events.v1';
+
 class UsageTracker {
   private events: UsageEvent[] = [];
   private listeners = new Set<Listener>();
@@ -48,10 +50,56 @@ class UsageTracker {
   // long sessions.
   private static readonly RETENTION_MS = 24 * 60 * 60 * 1000;
 
+  constructor() {
+    this.loadFromStorage();
+  }
+
+  /**
+   * Load persisted events from localStorage on boot so users see
+   * cumulative usage across app restarts, not just the current session.
+   * Any parse error clears the slate — the tracker is a telemetry
+   * convenience, not source-of-truth billing.
+   */
+  private loadFromStorage() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        this.events = parsed.filter(
+          (e): e is UsageEvent =>
+            e &&
+            typeof e.providerId === 'string' &&
+            typeof e.model === 'string' &&
+            typeof e.task === 'string' &&
+            typeof e.inputTokens === 'number' &&
+            typeof e.outputTokens === 'number' &&
+            typeof e.at === 'number',
+        );
+        this.prune();
+      }
+    } catch (err) {
+      console.warn('[UsageTracker] localStorage parse failed; starting clean:', err);
+      this.events = [];
+    }
+  }
+
+  private persist() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.events));
+    } catch (err) {
+      // Quota / disabled storage — non-fatal; we just lose persistence.
+      console.warn('[UsageTracker] localStorage write failed:', err);
+    }
+  }
+
   record(e: Omit<UsageEvent, 'at'>): UsageEvent {
     const event: UsageEvent = { ...e, at: Date.now() };
     this.events.push(event);
     this.prune();
+    this.persist();
     for (const l of this.listeners) {
       try {
         l(event);
@@ -60,6 +108,19 @@ class UsageTracker {
       }
     }
     return event;
+  }
+
+  /** Wipe all persisted events. Used by Settings → "重置用量" button. */
+  clear() {
+    this.events = [];
+    this.persist();
+    for (const l of this.listeners) {
+      try {
+        l({ providerId: '', model: '', task: 'chat', inputTokens: 0, outputTokens: 0, at: 0 });
+      } catch {
+        // ignore
+      }
+    }
   }
 
   /** Most-recent event of a given task, useful for per-call inline

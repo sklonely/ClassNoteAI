@@ -1,6 +1,7 @@
 import { Brain } from "lucide-react";
 import AIProviderSettings from "../AIProviderSettings";
 import { Card } from "./shared";
+import UsageSummary from "./UsageSummary";
 
 export default function SettingsCloudAI() {
   return (
@@ -10,7 +11,10 @@ export default function SettingsCloudAI() {
         icon={<Brain className="w-5 h-5 text-indigo-500" />}
         subtitle="供摘要、Q&A、關鍵字使用。選一個服務即可 — 其他服務的設定會自動隱藏。"
       >
-        <AIProviderSettings />
+        <div className="space-y-4">
+          <AIProviderSettings />
+          <UsageSummary />
+        </div>
       </Card>
     </div>
   );
