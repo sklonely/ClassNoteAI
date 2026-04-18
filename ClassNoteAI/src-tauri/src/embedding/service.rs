@@ -114,11 +114,54 @@ impl EmbeddingService {
         let config: Config = serde_json::from_str(&bert_config_json)
             .map_err(|e| anyhow!("Failed to parse converted config: {}", e))?;
 
-        // Load model weights from safetensors
+        // Sanity-check the safetensors file. Nomic-embed-text-v1 is
+        // ~137 MB; a truncated download (e.g. user quit the app mid-
+        // download) typically weighs <5 MB and triggers
+        //   "cannot find tensor embeddings.position_embeddings.weight"
+        // from Candle's BertModel::load, which is confusing — the
+        // tensor isn't missing, the file is just incomplete.
+        const MIN_PLAUSIBLE_SIZE: u64 = 80 * 1024 * 1024; // 80 MB
+        let metadata = std::fs::metadata(model_path)
+            .map_err(|e| anyhow!("Failed to stat model file: {}", e))?;
+        if metadata.len() < MIN_PLAUSIBLE_SIZE {
+            return Err(anyhow!(
+                "Embedding 模型檔案疑似損壞或下載未完成（僅 {} MB，預期 ~137 MB）。\
+                 請到「設定 → AI 模型 → Embedding」重新下載 nomic-embed-text-v1。",
+                metadata.len() / 1024 / 1024
+            ));
+        }
+
+        // Load model weights from safetensors. Some HF exports wrap
+        // everything under `bert.*` (standard BERT checkpoints) while
+        // nomic's own export publishes tensors at the top level —
+        // `BertModel::load` picks the right layout via trial-and-error.
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[model_path], DType::F32, &device)? };
 
-        let model = BertModel::load(vb, &config)?;
+        let model = match BertModel::load(vb, &config) {
+            Ok(m) => m,
+            Err(first_err) => {
+                // Retry with a `bert.` prefix scope — some checkpoints
+                // (e.g. the HF `bert-base-uncased` safetensors import)
+                // put every tensor under that namespace.
+                let vb_scoped = unsafe {
+                    VarBuilder::from_mmaped_safetensors(&[model_path], DType::F32, &device)?
+                };
+                match BertModel::load(vb_scoped.pp("bert"), &config) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        // Both layouts failed → surface the *first* (top-
+                        // level) error because that matches the format
+                        // nomic-embed-text-v1 actually ships, so the
+                        // original message is more diagnostic.
+                        return Err(anyhow!(
+                            "Embedding 模型加載失敗（檢查檔案完整性或重新下載）：{}",
+                            first_err
+                        ));
+                    }
+                }
+            }
+        };
 
         Ok(Self {
             model,
