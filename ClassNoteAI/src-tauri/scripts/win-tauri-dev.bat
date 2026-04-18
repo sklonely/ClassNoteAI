@@ -64,7 +64,7 @@ call "%VS_VCVARS%" >nul
 REM ---- Locate libclang ------------------------------------------------------
 REM llvm18 wins unconditionally if present. Any externally-set
 REM LIBCLANG_PATH (e.g. pointing at scoop's LLVM 22) is deliberately
-REM overridden — newer libclang produces a different bindgen translation
+REM overridden -- newer libclang produces a different bindgen translation
 REM for whisper.cpp's function-pointer-laden `whisper_full_params`
 REM (emits opaque `_address` instead of real fields), which makes
 REM `whisper-rs-sys 0.9.0` / `whisper-rs 0.11.1` fail to compile with
@@ -80,7 +80,7 @@ if exist "%USERPROFILE%\llvm18\bin\libclang.dll" (
 )
 
 REM ---- CMake generator ------------------------------------------------------
-REM Pick based on _VS_TAG set above — no path-string reparse, no pipe-in-if.
+REM Pick based on _VS_TAG set above -- no path-string reparse, no pipe-in-if.
 if not defined CMAKE_GENERATOR (
     if "%_VS_TAG%"=="18" (
         set "CMAKE_GENERATOR=Visual Studio 18 2026"
@@ -92,10 +92,10 @@ set "CMAKE_TOOLCHAIN_FILE=%~dp0win-toolchain.cmake"
 
 REM ---- PATH prepend ---------------------------------------------------------
 REM `setlocal` above already scopes all env mutations to this single
-REM invocation, so the old cross-run stacking problem is already solved —
+REM invocation, so the old cross-run stacking problem is already solved --
 REM no dedup gymnastics needed. Plain prepend here adds ~70 chars onto
 REM vcvars's ~4.6 KB PATH, which is well under the 8191-char limit that
-REM bit us originally (that was a different codepath — pipe-in-if parsing,
+REM bit us originally (that was a different codepath -- pipe-in-if parsing,
 REM not PATH size per se).
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 if defined LIBCLANG_PATH set "PATH=%LIBCLANG_PATH%;%PATH%"
