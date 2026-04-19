@@ -506,85 +506,59 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
         </div>
     );
 
-    // v0.6.1: GPU-check step. Shows the user what acceleration they'll
-    // get (or not) BEFORE they wait through a ~1 GB model download.
-    // No install action here — we deliberately don't try to
-    // automate CUDA Toolkit installation: users don't need it, they
-    // just need the driver (usually already present from Windows
-    // Update / GeForce Experience). The runtime cudart DLL will ship
-    // inside the GPU-enabled app binary in Phase 4.
+    // v0.6.1: GPU-check step. Reuses the same `requirements-list` /
+    // `requirement-item` classes as the env-check step for visual
+    // consistency with the rest of the wizard (dark translucent cards
+    // on the gradient background). Previously used ad-hoc white
+    // cards that looked out of place.
     const renderGpuCheck = () => {
-        const cpuOnly =
-            !gpuDetection ||
-            (!gpuDetection.cuda && !gpuDetection.metal && !gpuDetection.vulkan);
+        const rows: { ok: boolean; label: string; detail: string }[] = gpuDetection
+            ? [
+                  {
+                      ok: !!gpuDetection.cuda,
+                      label: 'CUDA (NVIDIA)',
+                      detail: gpuDetection.cuda
+                          ? `${gpuDetection.cuda.gpu_name} · driver ${gpuDetection.cuda.driver_version}`
+                          : '未偵測到 NVIDIA 驅動',
+                  },
+                  {
+                      ok: gpuDetection.vulkan,
+                      label: 'Vulkan',
+                      detail: gpuDetection.vulkan
+                          ? 'Vulkan loader 已存在'
+                          : '未偵測到 Vulkan runtime',
+                  },
+                  {
+                      ok: gpuDetection.metal,
+                      label: 'Metal (macOS)',
+                      detail: gpuDetection.metal ? '原生支援' : '不適用此系統',
+                  },
+              ]
+            : [];
         return (
-            <div className="setup-step" style={{ maxWidth: '640px', margin: '0 auto' }}>
+            <div className="setup-step review-step">
                 <h2 className="setup-subtitle">硬體加速偵測</h2>
-                <p className="setup-description" style={{ marginBottom: '1rem' }}>
-                    找出這台裝置上可用的 Whisper 加速後端。{cpuOnly ? '未偵測到 GPU，將使用 CPU 運作。' : '好消息：偵測到可加速後端。'}
-                </p>
+                <p className="setup-description">可用的 Whisper 加速後端</p>
 
-                {gpuDetection && (
-                    <div
-                        style={{
-                            background: 'var(--bg-subtle, #f8fafc)',
-                            border: '1px solid var(--border-subtle, #e5e7eb)',
-                            borderRadius: '8px',
-                            padding: '1rem',
-                            marginBottom: '1rem',
-                            fontSize: '0.875rem',
-                        }}
-                    >
-                        <div style={{ marginBottom: '0.5rem' }}>
-                            <strong>
-                                {gpuDetection.cuda ? '✓ CUDA (NVIDIA)' : '✗ CUDA (NVIDIA)'}
-                            </strong>
-                            <span style={{ marginLeft: '0.5rem', color: 'var(--text-subtle, #6b7280)' }}>
-                                {gpuDetection.cuda
-                                    ? `${gpuDetection.cuda.gpu_name} · driver ${gpuDetection.cuda.driver_version}`
-                                    : '未偵測到 NVIDIA 驅動'}
-                            </span>
+                <div className="requirements-list">
+                    {rows.map((r) => (
+                        <div
+                            key={r.label}
+                            className={`requirement-item ${r.ok ? 'installed' : 'missing'}`}
+                        >
+                            <div className="requirement-info">
+                                {r.ok ? (
+                                    <CheckCircle className="w-5 h-5" style={{ color: '#22c55e' }} />
+                                ) : (
+                                    <XCircle className="w-5 h-5" style={{ color: 'rgba(255,255,255,0.3)' }} />
+                                )}
+                                <div className="requirement-details">
+                                    <span className="requirement-name">{r.label}</span>
+                                    <span className="requirement-desc">{r.detail}</span>
+                                </div>
+                            </div>
                         </div>
-                        <div style={{ marginBottom: '0.5rem' }}>
-                            <strong>
-                                {gpuDetection.vulkan ? '✓ Vulkan' : '✗ Vulkan'}
-                            </strong>
-                            <span style={{ marginLeft: '0.5rem', color: 'var(--text-subtle, #6b7280)' }}>
-                                {gpuDetection.vulkan ? 'Vulkan loader 已存在' : '未偵測到 Vulkan runtime'}
-                            </span>
-                        </div>
-                        <div>
-                            <strong>
-                                {gpuDetection.metal ? '✓ Metal' : '✗ Metal'}
-                            </strong>
-                            <span style={{ marginLeft: '0.5rem', color: 'var(--text-subtle, #6b7280)' }}>
-                                {gpuDetection.metal ? '原生支援' : '不適用此系統'}
-                            </span>
-                        </div>
-                    </div>
-                )}
-
-                <div
-                    style={{
-                        background: cpuOnly ? '#fef3c7' : '#d1fae5',
-                        color: cpuOnly ? '#92400e' : '#065f46',
-                        border: `1px solid ${cpuOnly ? '#fcd34d' : '#6ee7b7'}`,
-                        borderRadius: '8px',
-                        padding: '0.75rem 1rem',
-                        marginBottom: '1rem',
-                        fontSize: '0.85rem',
-                        lineHeight: '1.5',
-                    }}
-                >
-                    {cpuOnly ? (
-                        <>
-                            目前將以 CPU 模式運作。轉錄 1 小時影片約需 30-60 分鐘（large 模型）或 5-10 分鐘（base 模型，可在設定調整）。
-                        </>
-                    ) : (
-                        <>
-                            你不需要額外安裝 CUDA Toolkit。發布版內建必要的 runtime DLL；目前的 dev build 尚未包含 GPU backend，但偏好已經記錄，等 GPU build 上線後會自動啟用。
-                        </>
-                    )}
+                    ))}
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
