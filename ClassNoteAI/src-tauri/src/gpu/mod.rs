@@ -155,6 +155,38 @@ pub async fn detect_gpu_backends(preference: Option<String>) -> Result<GpuDetect
     Ok(detect(preference.as_deref()))
 }
 
+/// Which GPU feature set the binary was compiled with. Used by the
+/// updater (frontend) to pick the right artifact URL out of the merged
+/// `latest.json` — a CPU build has no business pulling a CUDA
+/// installer and vice-versa.
+///
+/// Priority of the `cfg` checks matches the CI matrix: exactly one of
+/// the three gpu features should be on in a release build, but if
+/// multiple are somehow on (dev override) we still pick deterministically.
+#[tauri::command]
+pub fn get_build_variant() -> &'static str {
+    #[cfg(feature = "gpu-cuda")]
+    {
+        return "cuda";
+    }
+    #[cfg(all(feature = "gpu-metal", not(feature = "gpu-cuda")))]
+    {
+        return "metal";
+    }
+    #[cfg(all(
+        feature = "gpu-vulkan",
+        not(feature = "gpu-cuda"),
+        not(feature = "gpu-metal")
+    ))]
+    {
+        return "vulkan";
+    }
+    #[cfg(not(any(feature = "gpu-cuda", feature = "gpu-metal", feature = "gpu-vulkan")))]
+    {
+        return "cpu";
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

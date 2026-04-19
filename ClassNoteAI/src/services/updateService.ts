@@ -11,6 +11,41 @@ import { openPath } from '@tauri-apps/plugin-opener';
 import { writeFile, BaseDirectory } from '@tauri-apps/plugin-fs';
 import { fetch } from '@tauri-apps/plugin-http';
 import { downloadDir, join } from '@tauri-apps/api/path';
+import { invoke } from '@tauri-apps/api/core';
+
+/**
+ * v0.6.1: the updater's `target` must match the platform key in the
+ * merged `latest.json`. Default Tauri mapping is `windows-x86_64` /
+ * `darwin-aarch64` etc., but we now ship two Windows variants (CPU vs
+ * CUDA). The CUDA binary reports build variant "cuda" via a compile-
+ * time cfg and we append `-cuda` to the platform key so the updater
+ * pulls the right artifact.
+ *
+ * macOS has a single build (Metal always on via `cfg(target_os =
+ * "macos")`) so no suffix needed. Returning undefined lets the plugin
+ * use its default auto-detected target.
+ */
+async function pickUpdaterTarget(): Promise<string | undefined> {
+    let variant: string;
+    try {
+        variant = await invoke<string>('get_build_variant');
+    } catch {
+        // Older binary without the command — fall back to default
+        // Tauri auto-detection.
+        return undefined;
+    }
+    switch (variant) {
+        case 'cuda':
+            return 'windows-x86_64-cuda';
+        case 'vulkan':
+            // Reserved for when we ship Windows/Linux Vulkan builds.
+            return 'windows-x86_64-vulkan';
+        case 'metal':
+        case 'cpu':
+        default:
+            return undefined; // auto-detect
+    }
+}
 
 export interface UpdateInfo {
     available: boolean;
@@ -42,8 +77,12 @@ class UpdateService {
         }
 
         try {
-            console.log('[UpdateService] Checking for updates...');
-            const update = await check();
+            const target = await pickUpdaterTarget();
+            console.log(
+                '[UpdateService] Checking for updates...',
+                target ? `(target=${target})` : '(default target)',
+            );
+            const update = await check(target ? { target } : undefined);
 
             if (update) {
                 this.currentUpdate = update;

@@ -88,21 +88,39 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ctx.outputs.tag }}
         run: |
+          # v0.6.1: Windows release ships TWO fragments — CPU and CUDA.
+          # Both platforms key into the same merged latest.json under
+          # different platform ids (windows-x86_64 vs windows-x86_64-cuda)
+          # so the client updater can pick the right one based on local
+          # GPU detection.
           gh release download "$TAG" \
             -R "${GITHUB_REPOSITORY}" \
             --pattern "latest-macos-aarch64.json" \
             --pattern "latest-windows-x86_64.json" \
+            --pattern "latest-windows-x86_64-cuda.json" \
             --clobber
+          # The CUDA fragment is optional: an older release from before
+          # the Windows-CUDA matrix existed won't have one, and that's
+          # fine — merge logic handles the absence below.
+          ls -la latest-*.json || true
 
       - name: Merge into latest.json
         if: steps.wait.outputs.ok == 'true'
         run: |
           # Take version/notes/pub_date from the macOS fragment (arbitrary —
-          # both fragments carry the same version for a given tag) and union
-          # the `platforms` objects.
-          jq -s '.[0] * {platforms: (.[0].platforms + .[1].platforms)}' \
-            latest-macos-aarch64.json \
-            latest-windows-x86_64.json \
+          # all fragments carry the same version for a given tag) and union
+          # the `platforms` objects across however many fragments exist.
+          # The CUDA fragment may be absent for old releases; fall back to
+          # merging just what's there.
+          FRAGMENTS=(latest-macos-aarch64.json latest-windows-x86_64.json)
+          if [ -f latest-windows-x86_64-cuda.json ]; then
+            FRAGMENTS+=(latest-windows-x86_64-cuda.json)
+          fi
+          # Use reduce to merge any number of fragments: first fragment
+          # carries the top-level metadata, subsequent ones just add
+          # their platform entries.
+          jq -s 'reduce .[1:][] as $f (.[0]; .platforms += $f.platforms)' \
+            "${FRAGMENTS[@]}" \
             > latest.json
           echo "--- merged latest.json ---"
           cat latest.json
@@ -110,8 +128,8 @@ jobs:
       - name: Sanity check merged manifest
         if: steps.wait.outputs.ok == 'true'
         run: |
-          # Both platform keys must be present, otherwise we would regress
-          # the very bug this workflow was added to fix.
+          # Both baseline platforms must be present. Windows-cuda is
+          # optional for back-compat with pre-v0.6.1 tags.
           for key in "darwin-aarch64" "windows-x86_64"; do
             if ! jq -e ".platforms[\"$key\"].url" latest.json > /dev/null; then
               echo "ERROR: merged latest.json missing platforms.$key.url"
@@ -119,7 +137,12 @@ jobs:
               exit 1
             fi
           done
-          echo "OK: latest.json has both platforms."
+          if jq -e '.platforms["windows-x86_64-cuda"].url' latest.json > /dev/null; then
+            echo "OK: latest.json includes Windows CUDA variant."
+          else
+            echo "NOTE: latest.json does not include Windows CUDA variant (expected on older tags)."
+          fi
+          echo "OK: latest.json has all required platforms."
 
       - name: Upload merged manifest
         if: steps.wait.outputs.ok == 'true'

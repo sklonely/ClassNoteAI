@@ -1,0 +1,13 @@
+# This directory is populated by CI when building with gpu-cuda.
+# For non-CUDA builds it stays empty; the tauri.conf.json resources
+# glob matches nothing and bundles nothing.
+#
+# On a CUDA CI run (release-windows.yml with matrix.variant.id == 'cuda')
+# the 'Stage CUDA runtime DLLs' step copies cudart64_12.dll,
+# cublas64_12.dll, cublasLt64_12.dll from $CUDA_PATH/bin into here
+# right before 'npx tauri build'. Tauri's bundler then picks them up
+# via the './resources/cuda/*' glob in tauri.conf.json and drops them
+# next to the exe in the installer.
+#
+# Keep this .gitkeep so the directory exists in a fresh checkout —
+# tauri will refuse to bundle from a non-existent resources path.

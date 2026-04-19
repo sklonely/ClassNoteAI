@@ -1894,6 +1894,7 @@ pub fn run() {
             recording::video_import::release_import_whisper,
             recording::video_import::resolve_whisper_model_path,
             gpu::detect_gpu_backends,
+            gpu::get_build_variant,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())

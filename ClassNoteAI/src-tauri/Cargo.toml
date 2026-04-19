@@ -45,9 +45,28 @@ candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 #   cargo build --features gpu-cuda                    # Windows + NVIDIA
 #   cargo build --features gpu-vulkan                  # Windows + AMD/Intel or Linux
 #   # (no extra flag on macOS — metal is wired via target-specific dep below)
-gpu-cuda = ["whisper-rs/cuda"]
+# Each GPU feature fans out to every crate that can benefit. User
+# directive: "GPU 的加速可以用在任何支援 GPU 加速的項目上。只要我們手邊
+# 有 GPU 資源，且執行速度比 CPU 快，就應該盡可能地使用". So:
+#   - whisper-rs: speech-to-text (the headline win).
+#   - candle-core/candle-nn/candle-transformers: BGE-small embedding
+#     for the RAG index. CPU batch on BGE-small is already fast, but
+#     on a 400-chunk lecture the GPU path still halves wall time.
+#   Vulkan doesn't have Candle support yet, so `gpu-vulkan` covers
+#   only the Whisper path.
+gpu-cuda = [
+    "whisper-rs/cuda",
+    "candle-core/cuda",
+    "candle-nn/cuda",
+    "candle-transformers/cuda",
+]
 gpu-vulkan = ["whisper-rs/vulkan"]
-gpu-metal = ["whisper-rs/metal"]
+gpu-metal = [
+    "whisper-rs/metal",
+    "candle-core/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "devtools"] }

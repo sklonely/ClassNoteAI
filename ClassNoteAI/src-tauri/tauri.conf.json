@@ -51,7 +51,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [],
+    "resources": {
+      "resources/cuda/*": "./"
+    },
     "macOS": {
       "entitlements": null,
       "exceptionDomain": "",
