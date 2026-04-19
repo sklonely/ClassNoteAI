@@ -89,10 +89,15 @@ anyhow = "1.0"
 num_cpus = "1.0"
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
 futures-util = "0.3"
-# Candle ML framework for embeddings (no protobuf conflict)
-candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
-candle-transformers = { version = "0.8", optional = true }
+# Candle ML framework for embeddings (no protobuf conflict).
+# Pinned to 0.9: bumped from 0.8 because 0.8's cudarc 0.13 hardcodes
+# a "supported CUDA toolkit" list that rejects 13.x. 0.9 uses cudarc
+# 0.16 which accepts CUDA 13 via the `cuda-version-from-build-system`
+# feature. No source changes needed for the 0.8→0.9 bump — the
+# Module / VarBuilder / tensor APIs we use are unchanged.
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
 # Hugging Face Hub for model downloads
 hf-hub = { version = "0.3", optional = true }
 # Tokenizer for text preprocessing
@@ -144,9 +149,9 @@ tempfile = "3.8"
 # make CPU CT2 competitive enough that this isn't a priority gap.
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", default-features = false, features = ["metal"] }
-candle-core = { version = "0.8", optional = true, features = ["metal"] }
-candle-nn = { version = "0.8", optional = true, features = ["metal"] }
-candle-transformers = { version = "0.8", optional = true, features = ["metal"] }
+candle-core = { version = "0.9", optional = true, features = ["metal"] }
+candle-nn = { version = "0.9", optional = true, features = ["metal"] }
+candle-transformers = { version = "0.9", optional = true, features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
