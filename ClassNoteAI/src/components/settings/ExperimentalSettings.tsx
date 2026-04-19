@@ -1,9 +1,17 @@
 import { useEffect, useState } from 'react';
-import { FlaskConical, Zap, Sparkles, Cpu } from 'lucide-react';
+import { FlaskConical, Zap, Sparkles, Cpu, CheckCircle2, XCircle } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { storageService } from '../../services/storageService';
 
 type Speed = 'fast' | 'standard';
 type Backend = 'auto' | 'cuda' | 'metal' | 'vulkan' | 'cpu';
+
+interface GpuDetection {
+    cuda: { gpu_name: string; driver_version: string } | null;
+    metal: boolean;
+    vulkan: boolean;
+    effective: string;
+}
 
 /**
  * v0.6.1 experimental / opt-in defaults for the video-import pipeline.
@@ -21,6 +29,7 @@ export default function ExperimentalSettings() {
     const [speed, setSpeed] = useState<Speed>('fast');
     const [refine, setRefine] = useState<boolean>(false);
     const [backend, setBackend] = useState<Backend>('auto');
+    const [detection, setDetection] = useState<GpuDetection | null>(null);
     const [loaded, setLoaded] = useState(false);
     const [savedAt, setSavedAt] = useState<number | null>(null);
 
@@ -32,6 +41,17 @@ export default function ExperimentalSettings() {
                 if (exp?.importSpeed) setSpeed(exp.importSpeed);
                 if (typeof exp?.importAiRefine === 'boolean') setRefine(exp.importAiRefine);
                 if (exp?.asrBackend) setBackend(exp.asrBackend);
+                // Kick off GPU detection in parallel — runs a couple of
+                // fork/exec + filesystem stats, ~10 ms. Safe to re-run
+                // per settings-page-open since it's pure inspection.
+                try {
+                    const d = await invoke<GpuDetection>('detect_gpu_backends', {
+                        preference: exp?.asrBackend ?? 'auto',
+                    });
+                    setDetection(d);
+                } catch {
+                    /* older binary without the command — leave null */
+                }
             } finally {
                 setLoaded(true);
             }
@@ -131,17 +151,56 @@ export default function ExperimentalSettings() {
                     </label>
                 </div>
 
-                {/* GPU backend selector — Phase 1 stub */}
+                {/* GPU backend selector — Phase 2: detection live,
+                    execution pending Phase 4 (GPU-enabled build). */}
                 <div>
                     <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         <Cpu className="w-4 h-4 text-blue-500" />
                         ASR 加速後端
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400 font-normal">
-                            尚未啟用
-                        </span>
                     </label>
+
+                    {/* Live detection readout — builds the right mental
+                        model: "your machine CAN do CUDA, but the app
+                        build you have right now doesn't include it." */}
+                    {detection && (
+                        <div className="mb-2 p-2.5 rounded-md bg-white dark:bg-slate-900/50 border border-gray-200 dark:border-gray-700 space-y-1">
+                            <DetRow
+                                ok={!!detection.cuda}
+                                label="CUDA (NVIDIA)"
+                                detail={
+                                    detection.cuda
+                                        ? `${detection.cuda.gpu_name} · driver ${detection.cuda.driver_version}`
+                                        : '未偵測到 NVIDIA 驅動'
+                                }
+                            />
+                            <DetRow
+                                ok={detection.metal}
+                                label="Metal (macOS)"
+                                detail={detection.metal ? '原生支援' : '不適用此系統'}
+                            />
+                            <DetRow
+                                ok={detection.vulkan}
+                                label="Vulkan"
+                                detail={
+                                    detection.vulkan
+                                        ? 'Vulkan loader 已存在'
+                                        : '未偵測到 Vulkan runtime'
+                                }
+                            />
+                            <div className="text-[11px] text-gray-500 dark:text-gray-400 pt-1 border-t border-gray-100 dark:border-gray-800 mt-1">
+                                目前版本使用：
+                                <span className="font-mono font-medium text-gray-700 dark:text-gray-300 ml-1">
+                                    CPU
+                                </span>
+                                <span className="ml-2 text-amber-600 dark:text-amber-500">
+                                    （GPU build 需等 Phase 4 的發布版，會內建 cudart DLL 自動啟用。你不需要自行安裝 CUDA Toolkit。）
+                                </span>
+                            </div>
+                        </div>
+                    )}
+
                     <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">
-                        選擇 Whisper 轉錄使用的後端。目前版本所有 build 都是 CPU，GPU 支援會在之後的版本啟用（需要 CUDA Toolkit 或 Vulkan SDK 打包）。現在設定值只會儲存，不會生效。
+                        設定你偏好的後端。等 GPU build 就緒後，這個選項會被 Whisper 實際採用；目前先儲存你的偏好。
                     </p>
                     <select
                         value={backend}
@@ -152,14 +211,40 @@ export default function ExperimentalSettings() {
                         }}
                         className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100"
                     >
-                        <option value="auto">自動（偵測可用 GPU，否則 CPU）</option>
-                        <option value="cuda">CUDA（NVIDIA）</option>
-                        <option value="metal">Metal（macOS）</option>
-                        <option value="vulkan">Vulkan（跨廠牌）</option>
+                        <option value="auto">自動（優先用最快的可用後端）</option>
+                        <option value="cuda" disabled={!detection?.cuda}>
+                            CUDA（NVIDIA）
+                            {detection && !detection.cuda ? ' — 未偵測' : ''}
+                        </option>
+                        <option value="metal" disabled={!detection?.metal}>
+                            Metal（macOS）
+                            {detection && !detection.metal ? ' — 不適用' : ''}
+                        </option>
+                        <option value="vulkan" disabled={!detection?.vulkan}>
+                            Vulkan（跨廠牌）
+                            {detection && !detection.vulkan ? ' — 未偵測' : ''}
+                        </option>
                         <option value="cpu">強制 CPU</option>
                     </select>
                 </div>
             </div>
+        </div>
+    );
+}
+
+/** Small status row inside the GPU detection readout. */
+function DetRow({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
+    return (
+        <div className="flex items-start gap-2 text-[11px]">
+            {ok ? (
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-500 mt-0.5 flex-shrink-0" />
+            ) : (
+                <XCircle className="w-3.5 h-3.5 text-gray-400 mt-0.5 flex-shrink-0" />
+            )}
+            <span className={ok ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'}>
+                <span className="font-medium">{label}</span>
+                <span className="ml-1">— {detail}</span>
+            </span>
         </div>
     );
 }

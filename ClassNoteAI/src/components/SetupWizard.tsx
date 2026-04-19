@@ -41,9 +41,17 @@ type WizardStep =
     | 'ai-provider'   // v0.5.2: pick GitHub Models vs ChatGPT (or skip)
     | 'ai-config'     // v0.5.2: configure the chosen provider (PAT / OAuth)
     | 'checking'
+    | 'gpu-check'     // v0.6.1: detect NVIDIA/Vulkan/Metal + save preference
     | 'review'
     | 'installing'
     | 'complete';
+
+interface GpuDetection {
+    cuda: { gpu_name: string; driver_version: string } | null;
+    metal: boolean;
+    vulkan: boolean;
+    effective: string;
+}
 
 type SourceLang = 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
 
@@ -68,7 +76,14 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     // wizard container and the "Continue" button got clipped off-screen.
     const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
 
-    // Check requirements when entering checking step
+    // v0.6.1: GPU backend detection state for the `gpu-check` step.
+    const [gpuDetection, setGpuDetection] = useState<GpuDetection | null>(null);
+
+    // Check requirements when entering checking step. v0.6.1: after
+    // the env check we insert `gpu-check` so users see their hardware
+    // story (CUDA / Vulkan / Metal / CPU) before committing to a
+    // multi-GB model download — avoids the "why is this so slow?"
+    // surprise post-install.
     const checkRequirements = useCallback(async () => {
         setStep('checking');
         setError(null);
@@ -76,19 +91,57 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
         try {
             const setupStatus = await setupService.checkStatus();
             setStatus(setupStatus);
+            // Kick off GPU detection in parallel with the env check so
+            // the gpu-check step has data ready when we transition.
+            // Swallow errors: older binaries missing the command just
+            // skip the GPU step content gracefully.
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                const d = await invoke<GpuDetection>('detect_gpu_backends', {
+                    preference: 'auto',
+                });
+                setGpuDetection(d);
+            } catch {
+                /* detection unavailable — step still renders a CPU fallback notice */
+            }
 
-            // If everything is already installed, skip to complete
+            // If everything is already installed, skip past review
+            // but still show the GPU summary so the user knows what
+            // backend they're on.
             if (setupStatus.is_complete) {
-                await setupService.markComplete();
-                setStep('complete');
+                setStep('gpu-check');
             } else {
-                setStep('review');
+                setStep('gpu-check');
             }
         } catch (err) {
             setError(`環境檢查失敗: ${err}`);
             setStep('review');
         }
     }, []);
+
+    const continueFromGpuCheck = useCallback(async () => {
+        // Persist the auto preference so the ImportModal / settings
+        // both pick it up on first open. User can override in settings.
+        try {
+            const { storageService } = await import('../services/storageService');
+            const existing = (await storageService.getAppSettings()) ?? {} as any;
+            await storageService.saveAppSettings({
+                ...existing,
+                experimental: {
+                    ...(existing.experimental ?? {}),
+                    asrBackend: 'auto',
+                },
+            });
+        } catch {
+            /* non-fatal; settings can be set later */
+        }
+        if (status?.is_complete) {
+            await setupService.markComplete();
+            setStep('complete');
+        } else {
+            setStep('review');
+        }
+    }, [status]);
 
     // Start installation
     const startInstallation = useCallback(async () => {
@@ -453,6 +506,99 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
         </div>
     );
 
+    // v0.6.1: GPU-check step. Shows the user what acceleration they'll
+    // get (or not) BEFORE they wait through a ~1 GB model download.
+    // No install action here — we deliberately don't try to
+    // automate CUDA Toolkit installation: users don't need it, they
+    // just need the driver (usually already present from Windows
+    // Update / GeForce Experience). The runtime cudart DLL will ship
+    // inside the GPU-enabled app binary in Phase 4.
+    const renderGpuCheck = () => {
+        const cpuOnly =
+            !gpuDetection ||
+            (!gpuDetection.cuda && !gpuDetection.metal && !gpuDetection.vulkan);
+        return (
+            <div className="setup-step" style={{ maxWidth: '640px', margin: '0 auto' }}>
+                <h2 className="setup-subtitle">硬體加速偵測</h2>
+                <p className="setup-description" style={{ marginBottom: '1rem' }}>
+                    找出這台裝置上可用的 Whisper 加速後端。{cpuOnly ? '未偵測到 GPU，將使用 CPU 運作。' : '好消息：偵測到可加速後端。'}
+                </p>
+
+                {gpuDetection && (
+                    <div
+                        style={{
+                            background: 'var(--bg-subtle, #f8fafc)',
+                            border: '1px solid var(--border-subtle, #e5e7eb)',
+                            borderRadius: '8px',
+                            padding: '1rem',
+                            marginBottom: '1rem',
+                            fontSize: '0.875rem',
+                        }}
+                    >
+                        <div style={{ marginBottom: '0.5rem' }}>
+                            <strong>
+                                {gpuDetection.cuda ? '✓ CUDA (NVIDIA)' : '✗ CUDA (NVIDIA)'}
+                            </strong>
+                            <span style={{ marginLeft: '0.5rem', color: 'var(--text-subtle, #6b7280)' }}>
+                                {gpuDetection.cuda
+                                    ? `${gpuDetection.cuda.gpu_name} · driver ${gpuDetection.cuda.driver_version}`
+                                    : '未偵測到 NVIDIA 驅動'}
+                            </span>
+                        </div>
+                        <div style={{ marginBottom: '0.5rem' }}>
+                            <strong>
+                                {gpuDetection.vulkan ? '✓ Vulkan' : '✗ Vulkan'}
+                            </strong>
+                            <span style={{ marginLeft: '0.5rem', color: 'var(--text-subtle, #6b7280)' }}>
+                                {gpuDetection.vulkan ? 'Vulkan loader 已存在' : '未偵測到 Vulkan runtime'}
+                            </span>
+                        </div>
+                        <div>
+                            <strong>
+                                {gpuDetection.metal ? '✓ Metal' : '✗ Metal'}
+                            </strong>
+                            <span style={{ marginLeft: '0.5rem', color: 'var(--text-subtle, #6b7280)' }}>
+                                {gpuDetection.metal ? '原生支援' : '不適用此系統'}
+                            </span>
+                        </div>
+                    </div>
+                )}
+
+                <div
+                    style={{
+                        background: cpuOnly ? '#fef3c7' : '#d1fae5',
+                        color: cpuOnly ? '#92400e' : '#065f46',
+                        border: `1px solid ${cpuOnly ? '#fcd34d' : '#6ee7b7'}`,
+                        borderRadius: '8px',
+                        padding: '0.75rem 1rem',
+                        marginBottom: '1rem',
+                        fontSize: '0.85rem',
+                        lineHeight: '1.5',
+                    }}
+                >
+                    {cpuOnly ? (
+                        <>
+                            目前將以 CPU 模式運作。轉錄 1 小時影片約需 30-60 分鐘（large 模型）或 5-10 分鐘（base 模型，可在設定調整）。
+                        </>
+                    ) : (
+                        <>
+                            你不需要額外安裝 CUDA Toolkit。發布版內建必要的 runtime DLL；目前的 dev build 尚未包含 GPU backend，但偏好已經記錄，等 GPU build 上線後會自動啟用。
+                        </>
+                    )}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                        className="btn-primary"
+                        onClick={continueFromGpuCheck}
+                    >
+                        繼續 <ArrowRight className="w-5 h-5" />
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
     // Render review step
     const renderReview = () => {
         if (!status) return null;
@@ -686,6 +832,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 {step === 'ai-provider' && renderAIProvider()}
                 {step === 'ai-config' && renderAIConfig()}
                 {step === 'checking' && renderChecking()}
+                {step === 'gpu-check' && renderGpuCheck()}
                 {step === 'review' && renderReview()}
                 {step === 'installing' && renderInstalling()}
                 {step === 'complete' && renderComplete()}

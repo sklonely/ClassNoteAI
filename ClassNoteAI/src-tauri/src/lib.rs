@@ -22,6 +22,8 @@ mod sync;
 mod oauth;
 // Crash-safe recording — incremental PCM persistence + orphan recovery
 pub mod recording;
+// GPU backend detection (CUDA via nvidia-smi, Metal via cfg, Vulkan via filesystem)
+mod gpu;
 
 use embedding::EmbeddingService;
 use tauri::Emitter;
@@ -1891,6 +1893,7 @@ pub fn run() {
             recording::video_import::delete_temp_pcm,
             recording::video_import::release_import_whisper,
             recording::video_import::resolve_whisper_model_path,
+            gpu::detect_gpu_backends,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())
