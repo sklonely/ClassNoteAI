@@ -485,15 +485,25 @@ export const videoImportService = {
                 if (chunkSubtitles.length > 0) {
                     const tSave = performance.now();
                     try {
+                        // Save EN silently — persistence for crash
+                        // safety + AI index. Deliberately NO
+                        // `subtitlesChanged` emit here: we only refresh
+                        // the visible subtitle panel once translation
+                        // lands so EN and ZH always appear together.
+                        // Prior behaviour fired EN-only refreshes and
+                        // users saw minutes of English with ZH trailing
+                        // awkwardly as translate backed up.
                         await storageService.saveSubtitles(chunkSubtitles);
                         saveMs = performance.now() - tSave;
+                        // Still emit a progress message (no
+                        // subtitlesChanged) so the header progress
+                        // indicator keeps ticking.
                         emit({
                             stage: 'transcribing',
                             message: `轉錄第 ${i + 1}/${total} 段中（已完成 ${transcribed}，翻譯 ${translated}/${total}）`,
                             transcribedChunks: transcribed,
                             translatedChunks: translated,
                             totalChunks: total,
-                            subtitlesChanged: true,
                         });
                     } catch (err) {
                         saveMs = performance.now() - tSave;
