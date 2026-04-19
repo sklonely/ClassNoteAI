@@ -36,6 +36,10 @@ export interface Lecture {
   updated_at: string; // ISO 8601 - 必需字段
   audio_path?: string;
   audio_hash?: string;
+  /** v0.6.0: path to an imported video file (under {app_data}/videos/).
+   *  When present, Notes Review mode renders a <video> player and the
+   *  transcript + RAG index are derived from the video's audio track. */
+  video_path?: string;
   subtitles?: Subtitle[]; // 可選，用於前端顯示，數據庫中不存儲
   notes?: Note; // 可選，用於前端顯示，數據庫中不存儲
   is_deleted?: boolean; // Soft Delete

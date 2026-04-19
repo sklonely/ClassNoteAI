@@ -1,5 +1,10 @@
 //! Crash-safe recording: incremental raw-PCM persistence + orphan recovery.
 //!
+//! Also hosts `video_import` — extracting 16kHz mono i16 PCM out of a
+//! pre-recorded video file (ffmpeg shell-out) so imported lectures
+//! feed the same Whisper transcription pipeline as live recordings.
+pub mod video_import;
+//!
 //! Before v0.5.2, audio only lived in the frontend `recordedChunks: Int16Array[]`
 //! buffer until the user hit Stop — a crash, power loss, or accidental window
 //! close in the middle of an 80-minute lecture wiped the whole session. The

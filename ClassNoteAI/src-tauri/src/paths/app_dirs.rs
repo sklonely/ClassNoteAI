@@ -111,6 +111,18 @@ pub fn get_in_progress_audio_dir() -> Result<PathBuf, String> {
     Ok(get_audio_dir()?.join("in-progress"))
 }
 
+/// Get the imported-video directory.
+///
+/// Returns: {app_data_dir}/videos/
+///
+/// Where v0.6.0 lecture video imports are staged. We copy the
+/// user-selected source file in so playback has a stable path owned
+/// by the app (user moving/deleting the original doesn't kill the
+/// lecture).
+pub fn get_video_dir() -> Result<PathBuf, String> {
+    Ok(get_app_data_dir()?.join("videos"))
+}
+
 /// Get the database file path
 ///
 /// Returns: {app_data_dir}/classnoteai.db

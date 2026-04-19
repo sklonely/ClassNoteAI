@@ -1867,6 +1867,8 @@ pub fn run() {
             recording::finalize_recording,
             recording::find_orphaned_recordings,
             recording::discard_orphaned_recording,
+            recording::video_import::import_video_for_lecture,
+            recording::video_import::extract_pcm_from_video,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())

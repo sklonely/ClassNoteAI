@@ -80,6 +80,14 @@ pub struct Lecture {
     pub duration: i64,
     pub pdf_path: Option<String>,
     pub audio_path: Option<String>,
+    /// v0.6.0+: imported video file path. Staged under
+    /// `{app_data}/videos/{lecture_id}.{ext}` by
+    /// `import_video_for_lecture`. When populated, Notes Review mode
+    /// renders a `<video>` player in place of the audio scrubber and
+    /// the subtitles/RAG index are derived from the video's audio
+    /// track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_path: Option<String>,
     pub status: String,
     pub is_deleted: bool, // Soft Delete
     pub created_at: String,
@@ -97,6 +105,7 @@ impl Lecture {
             duration: 0,
             pdf_path,
             audio_path: None,
+            video_path: None,
             status: "recording".to_string(),
             is_deleted: false,
             created_at: now.clone(),
@@ -121,6 +130,11 @@ impl TryFrom<&Row<'_>> for Lecture {
             created_at: row.get(8)?,
             updated_at: row.get(9)?,
             is_deleted: row.get(10).unwrap_or(false), // Append is_deleted at the end (index 10)
+            // video_path was added in v0.6.0. Existing SELECTs may not
+            // include it yet (column index 11 on updated queries;
+            // absent on old ones). Default to None so pre-migration
+            // rows don't error.
+            video_path: row.get::<_, Option<String>>(11).unwrap_or(None),
         })
     }
 }

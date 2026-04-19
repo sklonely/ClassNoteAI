@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot } from "lucide-react";
+import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot, Film } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from 'react-markdown';
@@ -37,6 +37,8 @@ import { toastService } from "../services/toastService";
 import { generateLocalEmbedding } from "../services/embeddingService";
 import { embeddingStorageService } from "../services/embeddingStorageService";
 import { openDetachedAiTutor } from "../services/aiTutorWindow";
+import { videoImportService } from "../services/videoImportService";
+import { selectVideoFile } from "../services/fileService";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -87,6 +89,9 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
   const [isConverting, setIsConverting] = useState(false);
+  // v0.6.0 video import state
+  const [isImportingVideo, setIsImportingVideo] = useState(false);
+  const [importProgressMessage, setImportProgressMessage] = useState<string>('');
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
@@ -228,7 +233,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  // v0.6.0: `audioRef` is now HTMLMediaElement so the same ref can
+  // point at either the hidden <audio> (live-recorded lecture) or the
+  // visible <video> (imported video lecture). All existing playback
+  // helpers (togglePlay, handleSeek, handleTimeUpdate) work off
+  // HTMLMediaElement members so the branch is purely render-side.
+  const audioRef = useRef<HTMLMediaElement>(null);
   const [playbackVolume, setPlaybackVolume] = useState(100); // Output volume for playback
 
   // Initialize audio when review mode starts or lecture loads
@@ -1054,6 +1064,37 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
+  // v0.6.0: pick a video, copy it into app data, transcribe it,
+  // translate, save subtitles, index for RAG. User can leave the
+  // window; when they come back, Notes Review mode shows the video
+  // with subtitles + AI 助教 fully indexed.
+  const handleImportVideo = async () => {
+    if (!lectureId || isImportingVideo) return;
+    const sourcePath = await selectVideoFile();
+    if (!sourcePath) return;
+    setIsImportingVideo(true);
+    setImportProgressMessage('開始匯入…');
+    try {
+      const result = await videoImportService.importVideo(lectureId, sourcePath, {
+        language: 'auto',
+        onProgress: (p) => setImportProgressMessage(p.message),
+      });
+      // Refresh lecture state so the Notes Review mode picks up
+      // video_path + new subtitles immediately.
+      const fresh = await storageService.getLecture(lectureId);
+      if (fresh) setCurrentLectureData(fresh);
+      toastService.success(
+        '影片匯入完成',
+        `共 ${result.segmentCount} 段字幕，可到 Notes Review 看播放。`,
+      );
+    } catch (err) {
+      toastService.error('影片匯入失敗', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsImportingVideo(false);
+      setImportProgressMessage('');
+    }
+  };
+
   const handleSaveLecture = async (lectureOverride?: any) => {
     // Determine which lecture data to use (current state or override)
     // React Event objects might be passed as first arg if used in onClick
@@ -1725,6 +1766,25 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             </button>
           )}
 
+          {/* v0.6.0: Import Video button — runs the imported-video
+              pipeline (ffmpeg → Whisper → subtitles → RAG index)
+              and ends with the lecture ready to review in Notes
+              Review mode. Shown only in recording mode, alongside
+              Save. */}
+          {viewMode === 'recording' && lectureId && (
+            <button
+              onClick={handleImportVideo}
+              disabled={isImportingVideo}
+              className="flex items-center gap-2 px-3 py-2 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors disabled:opacity-50"
+              title="匯入已錄製的影片，自動轉錄 + 翻譯 + 建立 AI 助教索引"
+            >
+              {isImportingVideo ? <Loader2 size={18} className="animate-spin" /> : <Film size={18} />}
+              <span className="hidden sm:inline">
+                {isImportingVideo ? (importProgressMessage || '處理中…') : '匯入影片'}
+              </span>
+            </button>
+          )}
+
           {/* Summary & Export Buttons (Visible in Review Mode) */}
           {viewMode === 'review' && selectedNote && (
             <>
@@ -2141,13 +2201,34 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               </div>
             )}
 
-            {/* Hidden Audio Element */}
-            <audio
-              ref={audioRef}
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onEnded={() => setIsPlaying(false)}
-            />
+            {/* Media element — <video> when a video was imported for
+                this lecture (v0.6.0), otherwise the original hidden
+                <audio>. We swap ref targets only; the existing
+                playback control wiring (togglePlay / handleSeek /
+                subtitle sync) is media-type agnostic. Video path uses
+                Tauri's asset:// protocol via convertFileSrc so we
+                stream the file off disk instead of pulling the whole
+                thing into a blob URL -- a 1 GB lecture recording
+                wouldn't survive that. */}
+            {currentLectureData?.video_path ? (
+              <video
+                ref={audioRef as React.RefObject<HTMLVideoElement>}
+                src={convertFileSrc(currentLectureData.video_path)}
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onEnded={() => setIsPlaying(false)}
+                controls
+                className="w-full rounded-lg bg-black"
+                style={{ maxHeight: '50vh' }}
+              />
+            ) : (
+              <audio
+                ref={audioRef as React.RefObject<HTMLAudioElement>}
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onEnded={() => setIsPlaying(false)}
+              />
+            )}
           </div>
         )}
             </div>
