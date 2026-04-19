@@ -1076,6 +1076,38 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // translate, save subtitles, index for RAG. User can leave the
   // window; when they come back, Notes Review mode shows the video
   // with subtitles + AI 助教 fully indexed.
+  /** Reload subtitles from DB into subtitleService so the Review
+   *  mode subtitle panel reflects progressive video-import progress.
+   *  Called from the import progress callback whenever a chunk has
+   *  just been saved — cheap enough (single SQLite query) to rerun
+   *  per chunk for a 70-min lecture (70 chunks). */
+  const reloadSubtitlesFromDb = async (lid: string) => {
+    try {
+      const subs = await storageService.getSubtitles(lid);
+      subtitleService.clear();
+      subtitleService.setLectureId(lid);
+      for (const sub of subs) {
+        subtitleService.addSegment({
+          id: sub.id,
+          roughText: sub.text_en,
+          roughTranslation: sub.text_zh,
+          displayText: sub.text_en,
+          displayTranslation: sub.text_zh,
+          startTime: sub.timestamp * 1000,
+          endTime: (sub.timestamp + 5) * 1000,
+          source: sub.type === 'fine' ? 'fine' : 'rough',
+          translationSource: sub.text_zh
+            ? (sub.type === 'fine' ? 'fine' : 'rough')
+            : undefined,
+          text: sub.text_en,
+          translatedText: sub.text_zh,
+        });
+      }
+    } catch (err) {
+      console.warn('[NotesView] reloadSubtitlesFromDb failed:', err);
+    }
+  };
+
   const runVideoImport = async (
     sourcePath: string,
     language: VideoLanguage = 'auto',
@@ -1088,15 +1120,40 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       const result = await videoImportService.importVideo(lectureId, sourcePath, {
         language,
         quality,
-        onProgress: (p) => setImportProgressMessage(p.message),
+        onProgress: async (p) => {
+          setImportProgressMessage(p.message);
+          // Step 1 just completed — the video is playable from its
+          // final path. Refresh the lecture row into state so the
+          // Notes Review mode picks up video_path, then close the
+          // import modal. User can now watch while transcription
+          // continues in the background (see progressive caption
+          // pattern above). Also flip to Review mode if they're
+          // still on Recording so the video is actually visible.
+          if (p.stage === 'video_ready') {
+            const fresh = await storageService.getLecture(lectureId);
+            if (fresh) setCurrentLectureData(fresh);
+            setIsImportModalOpen(false);
+            setViewMode('review');
+            toastService.success(
+              '影片已就緒',
+              '可以開始觀看，字幕會隨轉錄逐步填入。',
+            );
+          }
+          // A chunk just persisted new subtitles (or translations).
+          // Reload the in-memory subtitle set so the display updates
+          // without waiting for the whole pipeline to finish.
+          if (p.subtitlesChanged) {
+            await reloadSubtitlesFromDb(lectureId);
+          }
+        },
       });
       const fresh = await storageService.getLecture(lectureId);
       if (fresh) setCurrentLectureData(fresh);
+      await reloadSubtitlesFromDb(lectureId);
       toastService.success(
         '影片匯入完成',
-        `共 ${result.segmentCount} 段字幕，可到 Notes Review 看播放。`,
+        `共 ${result.segmentCount} 段字幕，AI 助教已索引完畢。`,
       );
-      setIsImportModalOpen(false);
     } catch (err) {
       toastService.error('影片匯入失敗', err instanceof Error ? err.message : String(err));
     } finally {

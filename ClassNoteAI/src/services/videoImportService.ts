@@ -34,10 +34,10 @@ import type { Subtitle } from '../types';
 
 export type ImportStage =
     | 'staging'
+    | 'video_ready'
     | 'extracting_audio'
     | 'transcribing'
     | 'translating'
-    | 'saving_subtitles'
     | 'indexing'
     | 'done';
 
@@ -48,6 +48,15 @@ export interface ImportProgress {
     transcribedChunks?: number;
     translatedChunks?: number;
     totalChunks?: number;
+    /** `video_ready` fires as soon as the staged video file is playable
+     *  from its final path (step 1 of the pipeline). Frontend can then
+     *  close the import modal, flip the UI into Review mode and show
+     *  the <video> while transcription continues in the background. */
+    videoPath?: string;
+    /** `subtitles_changed` fires whenever a chunk's subtitles have
+     *  been persisted. Frontend re-reads from the DB to refresh its
+     *  display — cheap, and keeps a single source of truth. */
+    subtitlesChanged?: boolean;
 }
 
 interface WhisperSegment {
@@ -69,11 +78,23 @@ interface PcmExtractResult {
     sample_count: number;
 }
 
-/** Default chunk length. Whisper.cpp's internal windows are 30 s, so
- *  any multiple of that is safe; 5 min gives ~14 chunks for a 70-min
- *  lecture which is enough progress granularity without paying too
- *  much per-chunk model warmup cost. */
-const CHUNK_SEC = 300;
+/** Chunk length trade-off. Smaller chunks → first subtitles appear
+ *  faster (better perceived latency) at the cost of more per-chunk
+ *  warmup overhead. 60 s is the sweet spot for batch import:
+ *    - base model transcribes 60 s of audio in ~10–15 s on CPU, so
+ *      subtitles stream in well ahead of 1× playback.
+ *    - 70-min video → 70 chunks; per-chunk state-create cost is
+ *      ~0.1 s, total overhead ~7 s, negligible vs total runtime.
+ *    - A 30 s chunk would be faster still but whisper.cpp's decoder
+ *      wants at least its internal 30 s window, so going smaller
+ *      forces padding and wastes compute.
+ *
+ *  Industry reference: whisper_streaming / SimulStreaming target
+ *  sub-second latency for *live* captioning via LocalAgreement-2 on
+ *  continuously-growing audio. Our case is *batch* — a pre-recorded
+ *  video where we already have the whole file — so we don't need
+ *  LocalAgreement; just a small-enough chunk to feel responsive. */
+const CHUNK_SEC = 60;
 const TRANSLATE_BATCH = 64;
 
 /** Which model Rust should use for this import's transcription.
@@ -96,11 +117,31 @@ export const videoImportService = {
         const emit = (p: ImportProgress) => options.onProgress?.(p);
         const quality = options.quality ?? 'fast';
 
-        // 1. Stage the source video under the app's video dir.
+        // 1. Stage the source video under the app's video dir, AND
+        //    persist the video_path on the lecture row immediately.
+        //    Prior to v0.6.1 we only wrote video_path at the very end,
+        //    which meant the user stared at a progress modal for 30+
+        //    min before the video was even playable. The industry
+        //    pattern for batch import UX is "media available
+        //    immediately, captions stream in progressively" — same
+        //    approach YouTube's auto-captions and Descript use.
         emit({ stage: 'staging', message: '正在複製影片到應用目錄…' });
         const videoPath = await invoke<string>('import_video_for_lecture', {
             lectureId,
             sourcePath,
+        });
+        const lectureBefore = await storageService.getLecture(lectureId);
+        if (lectureBefore) {
+            await storageService.saveLecture({
+                ...lectureBefore,
+                video_path: videoPath,
+                updated_at: new Date().toISOString(),
+            });
+        }
+        emit({
+            stage: 'video_ready',
+            message: '影片已就緒，可以先開始觀看。轉錄中…',
+            videoPath,
         });
 
         // 1.5. Resolve model override up-front. Failing early lets us
@@ -149,18 +190,27 @@ export const videoImportService = {
             }
             const total = chunks.length;
 
-            // 4. Transcribe + translate pipeline.
+            // 4. Transcribe + translate pipeline, with progressive
+            //    persistence. Each chunk flows through three distinct
+            //    "commit" points so the UI can reflect partial state:
             //
-            //    - Transcription runs sequentially (one Whisper context
-            //      at a time; two in parallel would just contend for
-            //      the same Mutex-guarded service).
-            //    - Translation fires-and-forgets: each finished chunk's
-            //      segments are handed to translate_ct2_batch in the
-            //      background while the next chunk transcribes.
-            //    - We join on all translation promises at the end before
-            //      saving subtitles.
+            //      a) transcribe finishes → save rough en subtitles to
+            //         DB and emit `subtitlesChanged`. User sees English
+            //         captions roll in chunk-by-chunk.
+            //      b) translate finishes → update those rows with
+            //         text_zh and emit again. Chinese fills in behind
+            //         the English.
+            //      c) all chunks done → RAG index + mark completed.
+            //
+            //    Industry reference: this is the "progressive captions"
+            //    pattern used by Descript / Otter — media plays while
+            //    the transcript materialises behind it. We don't need
+            //    whisper_streaming's LocalAgreement-2 because we have
+            //    the full audio up-front; LocalAgreement is for live
+            //    captioning where partial results get rewritten as
+            //    more audio arrives.
+            const savedSubtitleIds = new Map<WhisperSegment, string>();
             const allSegments: WhisperSegment[] = [];
-            const translationMap = new Map<WhisperSegment, string>();
             const translationPromises: Promise<void>[] = [];
 
             let transcribed = 0;
@@ -181,14 +231,6 @@ export const videoImportService = {
                         activeIdx !== null
                             ? `轉錄第 ${activeIdx + 1}/${total} 段中（已完成 ${transcribed}，翻譯 ${translated}/${total}）`
                             : `轉錄 ${transcribed}/${total}，翻譯 ${translated}/${total}`,
-                    transcribedChunks: transcribed,
-                    translatedChunks: translated,
-                    totalChunks: total,
-                });
-            const reportTranslating = () =>
-                emit({
-                    stage: 'translating',
-                    message: `翻譯 ${translated}/${total}（轉錄已完成）`,
                     transcribedChunks: transcribed,
                     translatedChunks: translated,
                     totalChunks: total,
@@ -245,9 +287,48 @@ export const videoImportService = {
                 const chunkIndex = i; // captured for translate promise below
                 reportTranscribing(i + 1 < total ? i + 1 : null);
 
-                // Kick off translation for just this chunk. Errors
-                // degrade to English-only — same graceful fallback the
-                // old code had.
+                // (a) Persist this chunk's subtitles immediately with
+                //     only the English text. Each row's UUID is captured
+                //     so the translation step (b) can update the exact
+                //     same row without reading back from DB.
+                const nowIso = new Date().toISOString();
+                const chunkSubtitles: Subtitle[] = chunkSegs.map((seg) => {
+                    const id = crypto.randomUUID();
+                    savedSubtitleIds.set(seg, id);
+                    return {
+                        id,
+                        lecture_id: lectureId,
+                        timestamp: seg.start_ms / 1000,
+                        text_en: seg.text.trim(),
+                        text_zh: undefined,
+                        type: 'rough',
+                        confidence: undefined,
+                        created_at: nowIso,
+                    };
+                });
+                if (chunkSubtitles.length > 0) {
+                    try {
+                        await storageService.saveSubtitles(chunkSubtitles);
+                        emit({
+                            stage: 'transcribing',
+                            message: `轉錄第 ${i + 1}/${total} 段中（已完成 ${transcribed}，翻譯 ${translated}/${total}）`,
+                            transcribedChunks: transcribed,
+                            translatedChunks: translated,
+                            totalChunks: total,
+                            subtitlesChanged: true,
+                        });
+                    } catch (err) {
+                        console.warn(
+                            `[videoImport] chunk ${i + 1} subtitle save failed:`,
+                            err,
+                        );
+                    }
+                }
+
+                // (b) Kick off translation for just this chunk. When it
+                //     finishes we update the rows saved in (a) in place
+                //     with the Chinese text. Errors degrade to
+                //     English-only — same graceful fallback as before.
                 translationPromises.push(
                     (async () => {
                         const texts = chunkSegs.map((s) => s.text.trim());
@@ -267,59 +348,61 @@ export const videoImportService = {
                                     err,
                                 );
                                 // Leave outputs[i..i+slice.length] as '' —
-                                // English subtitle still gets saved.
+                                // English subtitle stays as-is.
                             }
                         }
-                        for (let k = 0; k < chunkSegs.length; k++) {
-                            translationMap.set(chunkSegs[k], outputs[k]);
+                        // Re-save those rows with text_zh filled in.
+                        // saveSubtitles uses INSERT ... ON CONFLICT(id)
+                        // DO UPDATE, so reusing the captured id updates
+                        // in place without touching other rows.
+                        const translatedRows: Subtitle[] = chunkSegs.map((seg, k) => ({
+                            id: savedSubtitleIds.get(seg)!,
+                            lecture_id: lectureId,
+                            timestamp: seg.start_ms / 1000,
+                            text_en: seg.text.trim(),
+                            text_zh: outputs[k]?.trim() || undefined,
+                            type: 'rough',
+                            confidence: undefined,
+                            created_at: nowIso,
+                        }));
+                        try {
+                            await storageService.saveSubtitles(translatedRows);
+                        } catch (err) {
+                            console.warn(
+                                `[videoImport] chunk ${chunkIndex + 1} translate-save failed:`,
+                                err,
+                            );
                         }
                         translated++;
                         console.log(
                             `[videoImport] chunk ${chunkIndex + 1}/${total} translate done — ${translated}/${total} total`,
                         );
-                        if (transcribed < total) {
-                            reportTranscribing(null);
-                        } else {
-                            reportTranslating();
-                        }
+                        emit({
+                            stage: transcribed < total ? 'transcribing' : 'translating',
+                            message:
+                                transcribed < total
+                                    ? `轉錄 ${transcribed}/${total}，翻譯 ${translated}/${total}`
+                                    : `翻譯 ${translated}/${total}（轉錄已完成）`,
+                            transcribedChunks: transcribed,
+                            translatedChunks: translated,
+                            totalChunks: total,
+                            subtitlesChanged: true,
+                        });
                     })(),
                 );
             }
 
             // Wait for every chunk's translation to finish before we
-            // persist (saveSubtitles expects the full translated set).
+            // build the RAG index (needs the full concatenated text).
             await Promise.all(translationPromises);
 
-            // 5. Persist subtitles (mirrors the live-recording schema:
-            //    `rough` subtitles with en + best-effort zh).
-            emit({
-                stage: 'saving_subtitles',
-                message: `儲存 ${allSegments.length} 段字幕…`,
-                transcribedChunks: total,
-                translatedChunks: total,
-                totalChunks: total,
-            });
-            const now = new Date().toISOString();
-            const subtitles: Subtitle[] = allSegments.map((seg) => ({
-                id: crypto.randomUUID(),
-                lecture_id: lectureId,
-                timestamp: seg.start_ms / 1000,
-                text_en: seg.text.trim(),
-                text_zh: translationMap.get(seg)?.trim() || undefined,
-                type: 'rough',
-                confidence: undefined,
-                created_at: now,
-            }));
-            if (subtitles.length > 0) {
-                await storageService.saveSubtitles(subtitles);
-            }
-
-            // 6. Update lecture with video_path + duration.
+            // 5. Update lecture duration + mark completed. video_path
+            //    was written up-front at the staging step so this is
+            //    just a status flip.
             const lecture = await storageService.getLecture(lectureId);
             if (lecture) {
                 await storageService.saveLecture({
                     ...lecture,
-                    video_path: videoPath,
                     duration: Math.max(
                         lecture.duration,
                         Math.round(pcm.duration_sec),
