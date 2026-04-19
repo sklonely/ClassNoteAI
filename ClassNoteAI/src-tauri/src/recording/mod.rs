@@ -3,7 +3,6 @@
 //! Also hosts `video_import` — extracting 16kHz mono i16 PCM out of a
 //! pre-recorded video file (ffmpeg shell-out) so imported lectures
 //! feed the same Whisper transcription pipeline as live recordings.
-pub mod video_import;
 //!
 //! Before v0.5.2, audio only lived in the frontend `recordedChunks: Int16Array[]`
 //! buffer until the user hit Stop — a crash, power loss, or accidental window
@@ -32,6 +31,8 @@ pub mod video_import;
 //!   operates on a `&Path` instead of reading the global paths module. This
 //!   is what makes the recovery / stitching logic actually testable from
 //!   `cargo test --lib`, which is the whole point of PR #38.
+
+pub mod video_import;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
