@@ -22,6 +22,10 @@ export type UsageTask =
   | 'keywords'
   | 'chat'
   | 'chatStream'
+  // Short LLM-backed query-translation used by RAG cross-lingual
+  // retrieval. Kept separate from 'chat' so the AI 助教 token
+  // counter doesn't get polluted by these small helper calls.
+  | 'translate'
   | 'fineRefine';
 
 export interface UsageEvent {

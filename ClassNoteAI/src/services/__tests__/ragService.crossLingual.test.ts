@@ -91,33 +91,35 @@ describe('ragService.chat cross-lingual dispatch', () => {
 
         expect(translateMock).toHaveBeenCalledTimes(1);
         expect(translateMock).toHaveBeenCalledWith('什麼是啟發式評估法？', 'en');
-        // Retrieval must receive the English form, not the original Chinese.
-        // If this ever flips back to passing the Chinese query directly
-        // to semanticSearch, cross-lingual recall drops ~30 points.
-        // v0.5.2 hybrid retrieval pulls FANOUT = topK * 4 from each
-        // side of the fusion (so RRF has enough signal to rerank),
-        // not just topK directly.
-        expect(semanticSearchMock).toHaveBeenCalledWith(
-            'What is heuristic evaluation?',
-            'lecture-1',
-            20,
-            undefined,
-        );
+        // v0.5.3 layers two fixes on top of v0.5.2's hybrid retrieval:
+        //   1. `semanticSearch(lectureId, query, ...)` -- fixed argument
+        //      order. The old `(query, lectureId, ...)` call was
+        //      embedding UUIDs and searching for lectures whose id
+        //      equalled the user's question, always returning zero
+        //      chunks.
+        //   2. CJK queries run retrieval BOTH with the original and the
+        //      LLM-translated form in parallel and union by chunk id.
+        //      Content is typically mixed English-PDF + Chinese-
+        //      transcript; a single-form retrieval misses half the
+        //      corpus. Hybrid pulls FANOUT = topK * 4 per side so the
+        //      expected topK in the mock assertion is 20, not 5.
+        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', '什麼是啟發式評估法？', 20, undefined);
+        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', 'What is heuristic evaluation?', 20, undefined);
+        expect(semanticSearchMock).toHaveBeenCalledTimes(2);
     });
 
     it('does not translate a pure-English query', async () => {
         await ragService.chat('What is heuristic evaluation?', 'lecture-1');
 
         expect(translateMock).not.toHaveBeenCalled();
-        // v0.5.2 hybrid retrieval pulls FANOUT = topK * 4 from each
-        // side of the fusion (so RRF has enough signal to rerank),
-        // not just topK directly.
+        // English-only path: one hybrid retrieval call, FANOUT=20.
         expect(semanticSearchMock).toHaveBeenCalledWith(
-            'What is heuristic evaluation?',
             'lecture-1',
+            'What is heuristic evaluation?',
             20,
             undefined,
         );
+        expect(semanticSearchMock).toHaveBeenCalledTimes(1);
     });
 
     it('passes the ORIGINAL question (not the translation) to the answering LLM', async () => {

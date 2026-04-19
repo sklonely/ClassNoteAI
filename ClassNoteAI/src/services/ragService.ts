@@ -15,11 +15,27 @@
 
 import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
-import { generateLocalEmbedding } from './embeddingService';
-import { chat as llmChat, translateForRetrieval } from './llm';
+import { generateLocalEmbedding, generateLocalEmbeddingsBatch } from './embeddingService';
+import { chat as llmChat, chatStream as llmChatStream, translateForRetrieval } from './llm';
 import { ocrService } from './ocrService';
 import { remoteOcrService } from './remoteOcrService';
 import { pdfToImageService } from './pdfToImageService';
+// `pdfService` pulls in pdfjs-dist at module load, which needs the
+// DOMMatrix browser API. Vitest's jsdom env doesn't polyfill that,
+// so a static import here would break every test that touches
+// ragService (ragService.crossLingual.test.ts etc.). We use a
+// deferred dynamic import in the one path that actually needs
+// per-page text extraction (the no-OCR fallback in
+// `indexLectureWithOCR`). At runtime in the app bundle this is a
+// no-op since Vite already pre-bundles pdfjs.
+let _pdfServiceCache: typeof import('./pdfService')['pdfService'] | null = null;
+async function getPdfService() {
+    if (!_pdfServiceCache) {
+        const mod = await import('./pdfService');
+        _pdfServiceCache = mod.pdfService;
+    }
+    return _pdfServiceCache;
+}
 import { storageService } from './storageService';
 import { bm25Service, reciprocalRankFusion } from './bm25Service';
 
@@ -101,18 +117,23 @@ class RAGService {
             });
 
             const texts = allChunks.map(c => c.text);
+            // Batch-embed in groups of 16 chunks. Batch-size hand-picked:
+            // small enough that the padded attention tensor stays within
+            // CPU L2 (16 × 512 tokens × 768 hidden = 6 MB f32), large
+            // enough to amortize the per-call overhead that was eating
+            // 70% of wall time before batching (tokenizer lock acquire
+            // + Tauri IPC serialize/deserialize × 100 chunks).
+            const BATCH = 16;
             const embeddings: number[][] = [];
-
-            // Embed locally via the Candle-backed bge-small-en-v1.5 model.
-            for (let i = 0; i < texts.length; i++) {
-                const embedding = await generateLocalEmbedding(texts[i]);
-                embeddings.push(embedding);
-
+            for (let i = 0; i < texts.length; i += BATCH) {
+                const slice = texts.slice(i, i + BATCH);
+                const vecs = await generateLocalEmbeddingsBatch(slice);
+                embeddings.push(...vecs);
                 onProgress?.({
                     stage: 'embedding',
-                    current: i + 1,
+                    current: Math.min(i + BATCH, texts.length),
                     total: texts.length,
-                    message: `生成嵌入向量 (${i + 1}/${texts.length})`,
+                    message: `生成嵌入向量 (${Math.min(i + BATCH, texts.length)}/${texts.length})`,
                 });
             }
 
@@ -148,6 +169,69 @@ class RAGService {
             return { chunksCount: allChunks.length, success: true };
         } catch (error) {
             console.error('[RAGService] 索引失敗:', error);
+            return { chunksCount: 0, success: false };
+        }
+    }
+
+    /**
+     * Page-aware variant of indexLecture. Unlike the plain version
+     * above which chunks a flat pdfText string (losing pageNumber),
+     * this one chunks each page separately via chunkPdfByPages so
+     * every resulting chunk carries its source page. Auto-Follow
+     * alignment derives per-page embeddings by grouping on that
+     * field, so without it the whole slide-following feature is
+     * silently broken.
+     */
+    public async indexLectureFromPages(
+        lectureId: string,
+        pages: { pageNumber: number; text: string }[],
+        transcriptText: string | null,
+        onProgress?: (progress: IndexingProgress) => void
+    ): Promise<{ chunksCount: number; success: boolean }> {
+        try {
+            const allChunks: TextChunk[] = [];
+
+            onProgress?.({ stage: 'chunking', current: 0, total: 2, message: '正在分割 PDF 頁面...' });
+            if (pages.length > 0) {
+                const pdfChunks = chunkingService.chunkPdfByPages(pages, lectureId);
+                allChunks.push(...pdfChunks);
+                console.log(`[RAGService] PDF 分塊完成 (page-aware): ${pdfChunks.length} 個 chunks / ${pages.length} 頁`);
+            }
+
+            onProgress?.({ stage: 'chunking', current: 1, total: 2, message: '正在分割轉錄文本...' });
+            if (transcriptText && transcriptText.trim().length > 0) {
+                const transcriptChunks = chunkingService.chunkText(transcriptText, lectureId, 'transcript');
+                allChunks.push(...transcriptChunks);
+            }
+
+            if (allChunks.length === 0) {
+                return { chunksCount: 0, success: true };
+            }
+
+            onProgress?.({ stage: 'embedding', current: 0, total: allChunks.length, message: '正在生成嵌入向量...' });
+            const BATCH = 16;
+            const texts = allChunks.map((c) => c.text);
+            const embeddings: number[][] = [];
+            for (let i = 0; i < texts.length; i += BATCH) {
+                const slice = texts.slice(i, i + BATCH);
+                const vecs = await generateLocalEmbeddingsBatch(slice);
+                embeddings.push(...vecs);
+                onProgress?.({
+                    stage: 'embedding',
+                    current: Math.min(i + BATCH, texts.length),
+                    total: texts.length,
+                    message: `生成嵌入向量 (${Math.min(i + BATCH, texts.length)}/${texts.length})`,
+                });
+            }
+
+            onProgress?.({ stage: 'storing', current: 0, total: 1, message: '正在存儲索引...' });
+            await embeddingStorageService.replaceEmbeddingsForLecture(lectureId, allChunks, embeddings);
+            onProgress?.({ stage: 'storing', current: 1, total: 1, message: '索引完成' });
+
+            console.log(`[RAGService] 課堂 ${lectureId} page-aware 索引完成: ${allChunks.length} chunks`);
+            return { chunksCount: allChunks.length, success: true };
+        } catch (error) {
+            console.error('[RAGService] page-aware 索引失敗:', error);
             return { chunksCount: 0, success: false };
         }
     }
@@ -222,7 +306,7 @@ class RAGService {
                 if (!backend) {
                     // pdfjs-only fallback. Either OCR is off, or neither
                     // remote nor local backend is ready. No 32×60s
-                    // wait-for-timeout like the pre-v0.5.2 code — we
+                    // wait-for-timeout like the pre-v0.5.2 code -- we
                     // bailed fast on the availability probes.
                     const reason = mode === 'off'
                         ? '已停用 OCR，改用 PDF 文字提取'
@@ -234,8 +318,19 @@ class RAGService {
                         total: 1,
                         message: reason,
                     });
-                    const pdfText = await pdfToImageService.extractAllText(pdfData.slice(0));
-                    return this.indexLecture(lectureId, pdfText, transcriptText, onProgress);
+                    // Per-page extraction instead of one flat string so
+                    // chunks keep pageNumber metadata. Auto-Follow later
+                    // derives page-level embeddings by grouping on that
+                    // field -- without it, the PDF index is unusable for
+                    // slide alignment.
+                    const pdfSvc = await getPdfService();
+                    const pagesText = await pdfSvc.extractAllPagesText(pdfData.slice(0));
+                    return this.indexLectureFromPages(
+                        lectureId,
+                        pagesText.filter((p) => p.text.trim().length > 0).map((p) => ({ pageNumber: p.page, text: p.text })),
+                        transcriptText,
+                        onProgress,
+                    );
                 }
                 console.log(`[RAGService] Using OCR backend: ${backend.name}`);
             }
@@ -412,9 +507,15 @@ class RAGService {
         // A chunk that appears in both lists ranks highest; chunks in
         // one list still appear but weighted lower (RRF's natural
         // degradation for missing-from-one signal).
+        //
+        // v0.5.3: fixed the semanticSearch argument order --
+        // `(lectureId, query, ...)`, not `(query, lectureId, ...)`.
+        // The old wrong order embedded the UUID as the query and
+        // searched for a lecture whose id equalled the user's
+        // question, returning zero chunks on every call.
         const FANOUT = topK * 4;
         const [denseResults, bm25Results] = await Promise.all([
-            embeddingStorageService.semanticSearch(query, lectureId, FANOUT, currentPage),
+            embeddingStorageService.semanticSearch(lectureId, query, FANOUT, currentPage),
             bm25Service.search(lectureId, query, FANOUT),
         ]);
 
@@ -527,25 +628,41 @@ class RAGService {
         const topK = options?.topK || 5;
         const basePrompt = options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
 
-        // Cross-lingual retrieval: if the question is Chinese but the
-        // course content is (mostly) English, translate the query to
-        // English before embedding. We use an English-only embedder
-        // (bge-small-en-v1.5) which outperforms any 384-d multilingual
-        // model on English retrieval by ~20 MTEB points. The original
-        // Chinese question is still passed to the answering LLM so the
-        // user sees a Chinese answer — only the retrieval side sees
-        // the translation.
-        const retrievalQuery = containsCJK(question)
-            ? await translateForRetrieval(question, 'en')
-            : question;
-        if (retrievalQuery !== question) {
+        // Cross-lingual retrieval. Course content is routinely mixed:
+        // PDF slides in English, translated transcript chunks in
+        // Chinese. Running only one query form misses half the corpus:
+        //   - English-only query "what is this class about" matches
+        //     English PDFs (sim ~0.52) but not Chinese transcripts.
+        //   - Chinese-only query "這堂課在幹嘛" matches Chinese
+        //     transcripts (sim ~0.60) but misses English PDFs.
+        // So for CJK questions we run BOTH the original and the
+        // English-translated form in parallel, then union by chunk id
+        // keeping the higher similarity. The answering LLM still only
+        // sees the user's original question so the reply language
+        // matches what they typed.
+        let context: RAGContext;
+        if (containsCJK(question)) {
+            const translatedQuery = await translateForRetrieval(question, 'en');
             console.log(
-                `[RAGService] cross-lingual: "${question}" → "${retrievalQuery}" (for retrieval only)`,
+                `[RAGService] cross-lingual retrieval with both forms: ` +
+                    `"${question}" + "${translatedQuery}"`,
             );
+            const [ctxOrig, ctxTrans] = await Promise.all([
+                this.retrieveContext(question, lectureId, topK, options?.currentPage),
+                this.retrieveContext(translatedQuery, lectureId, topK, options?.currentPage),
+            ]);
+            const byId = new Map<string, SearchResult>();
+            for (const r of [...ctxOrig.chunks, ...ctxTrans.chunks]) {
+                const prev = byId.get(r.chunk.id);
+                if (!prev || r.similarity > prev.similarity) byId.set(r.chunk.id, r);
+            }
+            const merged = Array.from(byId.values())
+                .sort((a, b) => b.similarity - a.similarity)
+                .slice(0, topK);
+            context = { chunks: merged, formattedContext: this.formatContext(merged) };
+        } else {
+            context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
         }
-
-        // 檢索相關上下文 (傳入當前頁面優先檢索)
-        const context = await this.retrieveContext(retrievalQuery, lectureId, topK, options?.currentPage);
 
         // Only enhance the prompt with retrieved context when at least one
         // chunk passes the relevance threshold. If the user typed a plain
@@ -595,6 +712,89 @@ class RAGService {
             // UI's "來源" badges match the reply's grounding.
             sources: useContext ? relevantChunks : [],
         };
+    }
+
+    /**
+     * Streaming counterpart of `chat()`. Same retrieval + prompt-assembly
+     * logic; emits a single `sources` event up-front so the UI can render
+     * the grounding badges immediately, then pipes token deltas.
+     *
+     * Yielding retrieval metadata before the first token lets the chat
+     * panel append an empty assistant message with its source list
+     * locked in, then append deltas into that same message as they
+     * arrive. The old non-streaming path blocks for 5-10 seconds on
+     * typical prompts; streaming makes the app feel alive.
+     */
+    public async *chatStream(
+        question: string,
+        lectureId: string,
+        options?: {
+            topK?: number;
+            systemPrompt?: string;
+            currentPage?: number;
+            chatHistory?: Array<{ role: 'user' | 'assistant'; content: string }>;
+        }
+    ): AsyncGenerator<
+        | { type: 'sources'; sources: SearchResult[] }
+        | { type: 'delta'; delta: string }
+        | { type: 'done' },
+        void,
+        void
+    > {
+        const topK = options?.topK || 5;
+        const basePrompt = options?.systemPrompt || '你是一個專業的課程助教，請用繁體中文回答。';
+
+        let context: RAGContext;
+        if (containsCJK(question)) {
+            const translatedQuery = await translateForRetrieval(question, 'en');
+            console.log(
+                `[RAGService] cross-lingual retrieval with both forms: ` +
+                    `"${question}" + "${translatedQuery}"`,
+            );
+            const [ctxOrig, ctxTrans] = await Promise.all([
+                this.retrieveContext(question, lectureId, topK, options?.currentPage),
+                this.retrieveContext(translatedQuery, lectureId, topK, options?.currentPage),
+            ]);
+            const byId = new Map<string, SearchResult>();
+            for (const r of [...ctxOrig.chunks, ...ctxTrans.chunks]) {
+                const prev = byId.get(r.chunk.id);
+                if (!prev || r.similarity > prev.similarity) byId.set(r.chunk.id, r);
+            }
+            const merged = Array.from(byId.values())
+                .sort((a, b) => b.similarity - a.similarity)
+                .slice(0, topK);
+            context = { chunks: merged, formattedContext: this.formatContext(merged) };
+        } else {
+            context = await this.retrieveContext(question, lectureId, topK, options?.currentPage);
+        }
+
+        const relevantChunks = context.chunks.filter(
+            (c) => c.similarity >= RAGService.RELEVANCE_THRESHOLD,
+        );
+        const useContext = relevantChunks.length > 0;
+        const enhancedSystemPrompt = useContext
+            ? this.buildEnhancedPrompt(
+                basePrompt,
+                this.formatContext(relevantChunks),
+                options?.currentPage,
+            )
+            : basePrompt;
+
+        yield { type: 'sources', sources: useContext ? relevantChunks : [] };
+
+        const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
+        if (options?.chatHistory && options.chatHistory.length > 0) {
+            messages.push(...options.chatHistory);
+        }
+        messages.push({ role: 'user', content: question });
+
+        for await (const delta of llmChatStream([
+            { role: 'system', content: enhancedSystemPrompt },
+            ...messages,
+        ])) {
+            if (delta) yield { type: 'delta', delta };
+        }
+        yield { type: 'done' };
     }
 
     /**

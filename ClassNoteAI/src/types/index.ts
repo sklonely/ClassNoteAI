@@ -143,6 +143,19 @@ export interface AppSettings {
   ocr?: {
     mode?: 'auto' | 'remote' | 'local' | 'off';
   };
+  /**
+   * AI 助教 (RAG chat) window mode.
+   *   - `floating` — draggable/resizable panel overlaying the notes
+   *                  view. Default for backwards-compat with v0.5.x.
+   *   - `sidebar`  — docked column to the right of the notes, no
+   *                  drag/resize, follows app layout.
+   *   - `detached` — separate OS window. Useful on multi-monitor setups
+   *                  so the chat stays visible while the lecture video
+   *                  plays full-screen.
+   */
+  aiTutor?: {
+    displayMode?: 'floating' | 'sidebar' | 'detached';
+  };
   sync?: {
     username: string;
     deviceId?: string;

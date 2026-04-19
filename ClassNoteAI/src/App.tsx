@@ -6,6 +6,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
 import RecoveryPromptModal from "./components/RecoveryPromptModal";
 import ToastContainer from "./components/ToastContainer";
+import AIChatWindow from "./components/AIChatWindow";
 import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
@@ -18,6 +19,23 @@ function App() {
   const [appState, setAppState] = useState<AppState>('loading');
   const [recoverableSessions, setRecoverableSessions] = useState<RecoverableSession[]>([]);
   const { user } = useAuth();
+
+  // Detached AI 助教 webview: spawned by openDetachedAiTutor with the
+  // `?aiTutorWindow=1` query flag. That window shares this bundle
+  // (Tauri serves the same `/` index.html) so we branch at the top of
+  // App to render a minimal standalone shell instead of MainWindow.
+  // Skips setup/login checks -- the main window already passed them
+  // when the user clicked the AI 助教 button.
+  const aiTutorWindow = typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('aiTutorWindow') === '1';
+  if (aiTutorWindow) {
+    return (
+      <ErrorBoundary>
+        <AIChatWindow />
+        <ToastContainer />
+      </ErrorBoundary>
+    );
+  }
 
   // Check setup status on mount
   useEffect(() => {

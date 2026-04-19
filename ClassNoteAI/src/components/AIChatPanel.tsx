@@ -3,7 +3,7 @@ import { Bot, Send, X, Loader2, Minus, Maximize2, Database, Zap, Plus, History, 
 import ReactMarkdown from 'react-markdown';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
-import { chat as llmChat, usageTracker } from '../services/llm';
+import { chatStream as llmChatStream, usageTracker } from '../services/llm';
 
 // 重新導出 ChatMessage 類型供其他組件使用
 export type { ChatMessage } from '../services/chatSessionService';
@@ -19,6 +19,16 @@ interface AIChatPanelProps {
     };
     currentPage?: number;
     onNavigateToPage?: (page: number) => void; // 回調跳轉到指定頁面
+    // Fired after a successful (re)build so the parent NotesView can
+    // re-derive Auto-Follow page embeddings from the fresh RAG index.
+    onIndexRebuilt?: () => void;
+    /**
+     * Chrome variant:
+     *   - `floating` (default) — absolute-positioned draggable panel.
+     *   - `sidebar`  — inline column, no drag/resize, fills parent.
+     *   - `detached` — mounted in AIChatWindow.tsx; fills its window.
+     */
+    displayMode?: 'floating' | 'sidebar' | 'detached';
 }
 
 const DEFAULT_WIDTH = 360;
@@ -33,6 +43,8 @@ export default function AIChatPanel({
     context,
     currentPage,
     onNavigateToPage,
+    onIndexRebuilt,
+    displayMode = 'floating',
 }: AIChatPanelProps) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [input, setInput] = useState('');
@@ -109,6 +121,9 @@ export default function AIChatPanel({
             }
             setHasIndex(true);
             setIndexingProgress(null);
+            // Tell the parent so Auto-Follow can re-hydrate page
+            // embeddings from the fresh SQLite rows.
+            onIndexRebuilt?.();
         } catch (error) {
             console.error('[AIChatPanel] 建立索引失敗:', error);
         } finally {
@@ -186,7 +201,24 @@ export default function AIChatPanel({
             const allSessions = await chatSessionService.getSessionsByLecture(lectureId);
             setSessions(allSessions);
 
-            const lectureSession = allSessions.find(s => s.lectureId === lectureId);
+            // Priority order for "which session to open by default":
+            //   1. A session whose lectureId matches this panel's prop.
+            //   2. As a fallback, the most-recent global (null lectureId)
+            //      session that was updated within the last 24h. This
+            //      catches sessions that got saved as global due to an
+            //      FK mismatch in createSession (see note there). If the
+            //      user's intent was to chat about this lecture but the
+            //      session ended up global for DB reasons, treat it as
+            //      theirs rather than showing an empty panel.
+            //   3. Otherwise: start with no session (user's first chat).
+            let lectureSession = allSessions.find(s => s.lectureId === lectureId);
+            if (!lectureSession) {
+                const ONE_DAY = 24 * 60 * 60 * 1000;
+                const cutoff = Date.now() - ONE_DAY;
+                lectureSession = allSessions.find(
+                    (s) => s.lectureId === null && new Date(s.updatedAt).getTime() > cutoff
+                );
+            }
             if (lectureSession) {
                 setCurrentSession(lectureSession);
                 setMessages(lectureSession.messages);
@@ -248,39 +280,53 @@ export default function AIChatPanel({
         setInput('');
         setIsLoading(true);
 
-        try {
-            let assistantMessage: ChatMessage;
+        // Pre-create the assistant message with empty content, append it
+        // to the UI immediately, then stream deltas into its `content`.
+        // Keeping a stable id lets us target the same message on each
+        // delta without re-rendering the whole list.
+        const assistantId = crypto.randomUUID();
+        const assistantBase: ChatMessage = {
+            id: assistantId,
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString(),
+        };
+        setMessages([...updatedMessages, assistantBase]);
 
-            // 獲取壓縮後的對話歷史
+        let finalContent = '';
+        let finalSources: ChatMessage['sources'] = undefined;
+
+        try {
             const chatHistory = await chatSessionService.getHistoryForLLM(session.id);
 
             if (useRAG && hasIndex) {
-                // 使用 RAG 增強問答 (傳入對話歷史)
                 console.log(`[AIChatPanel] 使用 RAG 模式 (當前頁:${currentPage || 'N/A'}, 歷史:${chatHistory.length}條)`);
-                const { answer, sources } = await ragService.chat(input.trim(), lectureId, {
+                for await (const ev of ragService.chatStream(input.trim(), lectureId, {
                     topK: 5,
                     systemPrompt: '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。',
                     currentPage,
                     chatHistory: chatHistory.filter(m => m.role !== 'system') as Array<{ role: 'user' | 'assistant'; content: string }>,
-                });
-
-                assistantMessage = {
-                    id: crypto.randomUUID(),
-                    role: 'assistant',
-                    content: answer,
-                    timestamp: new Date().toISOString(),
-                    sources: sources.map(s => ({
-                        text: s.chunk.chunkText.slice(0, 100) + '...',
-                        sourceType: s.chunk.sourceType,
-                        pageNumber: s.chunk.pageNumber,
-                        similarity: s.similarity,
-                    })),
-                };
+                })) {
+                    if (ev.type === 'sources') {
+                        finalSources = ev.sources.map(s => ({
+                            text: s.chunk.chunkText.slice(0, 100) + '...',
+                            sourceType: s.chunk.sourceType,
+                            pageNumber: s.chunk.pageNumber,
+                            similarity: s.similarity,
+                        }));
+                        setMessages(prev => prev.map(m =>
+                            m.id === assistantId ? { ...m, sources: finalSources } : m
+                        ));
+                    } else if (ev.type === 'delta') {
+                        finalContent += ev.delta;
+                        setMessages(prev => prev.map(m =>
+                            m.id === assistantId ? { ...m, content: finalContent } : m
+                        ));
+                    }
+                }
             } else {
-                // 傳統模式：直接傳入全文
                 console.log('[AIChatPanel] 使用傳統模式');
                 let systemPrompt = '你是一個專業的課程助教，幫助學生理解課程內容。請用繁體中文回答。';
-
                 if (context?.pdfText || context?.transcriptText) {
                     systemPrompt += '\n\n以下是課程相關內容供參考：\n';
                     if (context.pdfText) {
@@ -291,44 +337,49 @@ export default function AIChatPanel({
                     }
                 }
 
-                // Route Q&A through the user's configured LLM provider
-                const response = await llmChat([
+                for await (const delta of llmChatStream([
                     { role: 'system', content: systemPrompt },
                     ...chatHistory.map((m: { role: string; content: string }) => ({
                         role: m.role as 'user' | 'assistant' | 'system',
                         content: m.content,
                     })),
-                ]);
-
-                // Grab the usage event the llm/tasks layer just recorded
-                // for this chat call so we can paint it next to the reply.
-                const lastUsage = usageTracker.latest('chat');
-                assistantMessage = {
-                    id: crypto.randomUUID(),
-                    role: 'assistant',
-                    content: response,
-                    timestamp: new Date().toISOString(),
-                    usage: lastUsage
-                        ? { inputTokens: lastUsage.inputTokens, outputTokens: lastUsage.outputTokens }
-                        : undefined,
-                };
+                ])) {
+                    if (delta) {
+                        finalContent += delta;
+                        setMessages(prev => prev.map(m =>
+                            m.id === assistantId ? { ...m, content: finalContent } : m
+                        ));
+                    }
+                }
             }
 
-            // 保存助手消息
+            // Read 'chatStream' first because streaming is the default
+            // path now. 'chat' fallback covers legacy non-streaming
+            // callers. NEVER read 'translate' here -- that's the tiny
+            // cross-lingual helper and would underreport the real chat.
+            const lastUsage = usageTracker.latest('chatStream') || usageTracker.latest('chat');
+            const usage = lastUsage
+                ? { inputTokens: lastUsage.inputTokens, outputTokens: lastUsage.outputTokens }
+                : undefined;
+            const assistantMessage: ChatMessage = {
+                ...assistantBase,
+                content: finalContent,
+                sources: finalSources,
+                usage,
+            };
+            setMessages(prev => prev.map(m => (m.id === assistantId ? assistantMessage : m)));
             await chatSessionService.addMessage(session.id, assistantMessage);
-
-            const finalMessages = [...updatedMessages, assistantMessage];
-            setMessages(finalMessages);
         } catch (error) {
             console.error('[AIChatPanel] 生成回答失敗:', error);
+            // Replace the in-flight placeholder rather than appending a
+            // new message — otherwise the user sees the empty skeleton
+            // next to the error, which looks like two replies.
             const errorMessage: ChatMessage = {
-                id: crypto.randomUUID(),
-                role: 'assistant',
+                ...assistantBase,
                 content: `抱歉，生成回答時發生錯誤：${error instanceof Error ? error.message : String(error)}`,
-                timestamp: new Date().toISOString(),
             };
+            setMessages(prev => prev.map(m => (m.id === assistantId ? errorMessage : m)));
             await chatSessionService.addMessage(session.id, errorMessage);
-            setMessages([...updatedMessages, errorMessage]);
         } finally {
             setIsLoading(false);
         }
@@ -343,20 +394,40 @@ export default function AIChatPanel({
 
     if (!isOpen) return null;
 
+    // Shell depends on displayMode:
+    //   - floating: absolute-positioned, draggable, stateful size/position
+    //   - sidebar:  fills parent cell in a grid, docks to right (adds
+    //               left border as visual separator from notes view)
+    //   - detached: fills the viewport of its own OS window -- no
+    //               border chrome since the OS window already has one
+    const isFloating = displayMode === 'floating';
+    let shellClass: string;
+    if (isFloating) {
+        shellClass = 'fixed flex flex-col bg-white dark:bg-slate-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-600 z-50 overflow-hidden';
+    } else if (displayMode === 'sidebar') {
+        shellClass = 'flex flex-col bg-white dark:bg-slate-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden w-full h-full';
+    } else {
+        // detached
+        shellClass = 'flex flex-col bg-white dark:bg-slate-800 overflow-hidden w-full h-full';
+    }
+    const shellStyle = isFloating
+        ? {
+              left: position.x,
+              top: position.y,
+              width: isMinimized ? 200 : size.width,
+              height: isMinimized ? 48 : size.height,
+          }
+        : undefined;
+
     return (
         <div
             ref={panelRef}
-            className="fixed flex flex-col bg-white dark:bg-slate-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-600 z-50 overflow-hidden"
-            style={{
-                left: position.x,
-                top: position.y,
-                width: isMinimized ? 200 : size.width,
-                height: isMinimized ? 48 : size.height,
-            }}
-            onMouseDown={handleMouseDown}
+            className={shellClass}
+            style={shellStyle}
+            onMouseDown={isFloating ? handleMouseDown : undefined}
         >
-            {/* Header - 可拖曳 */}
-            <div className="drag-handle flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-500 to-blue-500 cursor-move select-none">
+            {/* Header - drag handle only when floating */}
+            <div className={`${isFloating ? 'drag-handle cursor-move' : ''} flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-500 to-blue-500 select-none`}>
                 <div className="flex items-center gap-2 text-white">
                     <Bot className="w-4 h-4" />
                     <span className="font-medium text-sm">AI 助教</span>
@@ -376,13 +447,15 @@ export default function AIChatPanel({
                     >
                         <History className="w-3 h-3" />
                     </button>
-                    <button
-                        onClick={() => setIsMinimized(!isMinimized)}
-                        className="p-1 hover:bg-white/20 rounded transition-colors text-white"
-                        title={isMinimized ? '展開' : '最小化'}
-                    >
-                        {isMinimized ? <Maximize2 className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
-                    </button>
+                    {isFloating && (
+                        <button
+                            onClick={() => setIsMinimized(!isMinimized)}
+                            className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                            title={isMinimized ? '展開' : '最小化'}
+                        >
+                            {isMinimized ? <Maximize2 className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
+                        </button>
+                    )}
                     <button
                         onClick={onClose}
                         className="p-1 hover:bg-white/20 rounded transition-colors text-white"
@@ -580,15 +653,17 @@ export default function AIChatPanel({
                         </div>
                     </div>
 
-                    {/* Resize Handle */}
-                    <div
-                        className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
-                        onMouseDown={handleResizeStart}
-                    >
-                        <svg className="w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M22 22H20V20H22V22ZM22 18H18V22H22V18ZM18 22H14V18H18V22Z" />
-                        </svg>
-                    </div>
+                    {/* Resize Handle — floating mode only */}
+                    {isFloating && (
+                        <div
+                            className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
+                            onMouseDown={handleResizeStart}
+                        >
+                            <svg className="w-4 h-4 text-gray-400" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M22 22H20V20H22V22ZM22 18H18V22H22V18ZM18 22H14V18H18V22Z" />
+                            </svg>
+                        </div>
+                    )}
                 </>
             )}
         </div>

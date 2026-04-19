@@ -562,11 +562,27 @@ impl Database {
     // --- Course CRUD ---
 
     /// 保存科目
+    ///
+    /// CRITICAL: use `INSERT ... ON CONFLICT DO UPDATE` NOT `INSERT OR REPLACE`.
+    /// SQLite REPLACE is DELETE-then-INSERT, which fires ON DELETE CASCADE on
+    /// child tables. `lectures.course_id` cascades on delete, and each lecture
+    /// in turn cascades to `subtitles`, `notes`, and `embeddings`. A plain
+    /// `INSERT OR REPLACE INTO courses` triggered by a simple title edit or
+    /// sync-time updated_at bump would silently wipe EVERY lecture and all
+    /// their data under this course. See feedback memory rule 10a.
     pub fn save_course(&self, course: &Course) -> SqlResult<()> {
         let syllabus_str = course.syllabus_info.as_ref().map(|v| v.to_string());
         self.conn.execute(
-            "INSERT OR REPLACE INTO courses (id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO courses (id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
+                title = excluded.title,
+                description = excluded.description,
+                keywords = excluded.keywords,
+                syllabus_info = excluded.syllabus_info,
+                updated_at = excluded.updated_at,
+                is_deleted = excluded.is_deleted",
             rusqlite::params![
                 course.id,
                 course.user_id,
@@ -657,9 +673,28 @@ impl Database {
              return Err(rusqlite::Error::QueryReturnedNoRows); // Or ignore
         }
 
+        // CRITICAL: same reasoning as save_course — a plain
+        // `INSERT OR REPLACE INTO lectures` would DELETE-then-INSERT,
+        // cascading through `subtitles.lecture_id`, `notes.lecture_id`,
+        // and `embeddings.lecture_id` (all ON DELETE CASCADE), and
+        // nulling out `chat_sessions.lecture_id` (ON DELETE SET NULL).
+        // Every lecture save — which happens constantly during
+        // recording (status bumps), on note edits, and on title renames
+        // — would wipe all subtitles, notes, and the RAG index, and
+        // orphan the AI chat history for this lecture.
         self.conn.execute(
-            "INSERT OR REPLACE INTO lectures (id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO lectures (id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                course_id = excluded.course_id,
+                title = excluded.title,
+                date = excluded.date,
+                duration = excluded.duration,
+                pdf_path = excluded.pdf_path,
+                audio_path = excluded.audio_path,
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                is_deleted = excluded.is_deleted",
             rusqlite::params![
                 lecture.id,
                 lecture.course_id,
@@ -1128,9 +1163,29 @@ impl Database {
 
     /// 保存聊天會話
     pub fn save_chat_session(&self, id: &str, lecture_id: Option<&str>, user_id: &str, title: &str, summary: Option<&str>, created_at: &str, updated_at: &str, is_deleted: bool) -> SqlResult<()> {
+        // CRITICAL: use `INSERT ... ON CONFLICT DO UPDATE` NOT `INSERT OR REPLACE`.
+        //
+        // SQLite implements REPLACE as DELETE-then-INSERT, which fires
+        // `ON DELETE CASCADE` on child tables. `chat_messages.session_id`
+        // has exactly such a cascade (see CREATE TABLE chat_messages),
+        // so every update of a session via save_chat_session (which
+        // `chatSessionService.addMessage` calls every time it bumps
+        // title/updatedAt) would silently wipe all messages belonging
+        // to that session. The user-visible symptom: "I chatted, closed
+        // the sidebar, reopened and my conversation was gone."
+        //
+        // The upsert below mutates the existing row in place instead,
+        // keeping child messages intact.
         self.conn.execute(
-            "INSERT OR REPLACE INTO chat_sessions (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) 
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO chat_sessions (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                lecture_id = excluded.lecture_id,
+                user_id = excluded.user_id,
+                title = excluded.title,
+                summary = excluded.summary,
+                updated_at = excluded.updated_at,
+                is_deleted = excluded.is_deleted",
             rusqlite::params![id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted as i32]
         )?;
         Ok(())

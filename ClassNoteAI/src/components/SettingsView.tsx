@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Save,
   CheckCircle,
@@ -231,6 +231,23 @@ export default function SettingsView({}: Props) {
     }
   };
 
+  // Auto-save whenever settings or device selection change. The
+  // initial-load useEffect above populates state from storage, so we
+  // guard with `didHydrate` to avoid an immediate round-trip
+  // re-save on first mount. 300ms debounce collapses rapid edits
+  // (e.g. dragging a slider) into a single write.
+  const didHydrate = useRef(false);
+  useEffect(() => {
+    if (!didHydrate.current) {
+      // Mark hydrated once the first storage-load populates state.
+      if (settings !== DEFAULT_SETTINGS) didHydrate.current = true;
+      return;
+    }
+    const t = setTimeout(() => { handleSave(); }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings, selectedDeviceId]);
+
   const current = ALL_NAV.find((i) => i.id === activeTab);
 
   const renderContent = () => {
@@ -328,20 +345,23 @@ export default function SettingsView({}: Props) {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {saveStatus === "saving" && (
+              <span className="flex items-center gap-1 text-gray-500 dark:text-gray-400 text-sm">
+                <Save size={14} className="animate-pulse" />
+                儲存中...
+              </span>
+            )}
             {saveStatus === "success" && (
               <span className="flex items-center gap-1 text-green-600 dark:text-green-400 text-sm animate-in fade-in slide-in-from-right-4">
                 <CheckCircle size={16} />
                 已保存
               </span>
             )}
-            <button
-              onClick={handleSave}
-              disabled={saveStatus === "saving"}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-            >
-              <Save size={18} />
-              {saveStatus === "saving" ? "保存中..." : "保存設置"}
-            </button>
+            {saveStatus === "error" && (
+              <span className="flex items-center gap-1 text-red-500 text-sm">
+                儲存失敗
+              </span>
+            )}
           </div>
         </div>
 
