@@ -126,14 +126,27 @@ ndarray = "0.15"
 [dev-dependencies]
 tempfile = "3.8"
 
-# macOS-only auto-enable of Whisper's Metal backend. This keeps the
-# default-feature story simple on Windows/Linux (CPU unless the
-# packager opts into gpu-cuda/gpu-vulkan) while giving every macOS
-# build GPU acceleration with zero extra build flags — Metal is
+# macOS-only auto-enable of the Metal backends for every crate that
+# supports it. This keeps the default-feature story simple on
+# Windows/Linux (CPU unless the packager opts into gpu-cuda/gpu-vulkan)
+# while giving every macOS build GPU acceleration across Whisper AND
+# the BGE embedding model with zero extra build flags — Metal is
 # universally available on every Mac since ~2016 so there's no
 # detection story to worry about.
+#
+# Cargo unifies features between the main `[dependencies]` block and
+# these target-specific overrides, so `candle-core` (already declared
+# above as `optional = true`) gets its `metal` feature union'd in
+# when building for macOS.
+#
+# ct2rs has no Metal backend (CUDA-only for GPU), so local translation
+# stays on CPU on macOS. Apple Silicon's NEON + Accelerate framework
+# make CPU CT2 competitive enough that this isn't a priority gap.
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.16", default-features = false, features = ["metal"] }
+candle-core = { version = "0.8", optional = true, features = ["metal"] }
+candle-nn = { version = "0.8", optional = true, features = ["metal"] }
+candle-transformers = { version = "0.8", optional = true, features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
