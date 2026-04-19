@@ -16,6 +16,7 @@ const TASK_LABELS: Record<UsageEvent['task'], string> = {
   keywords: '關鍵字',
   chat: 'AI 助教對話',
   chatStream: 'AI 助教對話（串流）',
+  translate: 'RAG 檢索翻譯',
   fineRefine: '字幕精修',
 };
 
