@@ -74,6 +74,12 @@ tempfile = "3.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+# Prevents the app from spawning a second window / process. The app
+# holds exclusive resources (SQLite, Candle model, audio device, port
+# 9222 for CDP dev) so a second instance would either error out on
+# conflicting locks or silently corrupt state. The plugin's callback
+# pulls the already-running window to the front instead.
+tauri-plugin-single-instance = "2"
 
 # Windows-only build fix: remove ct2rs's forced /MT static CRT so it matches
 # the rest of the build (default /MD). No-op on macOS (inside `if os == Os::Win` block).

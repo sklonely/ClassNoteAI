@@ -1728,6 +1728,19 @@ pub fn run() {
     utils::sys_proxy::apply_system_proxy_env();
 
     tauri::Builder::default()
+        // Single-instance MUST be the first plugin so it intercepts
+        // before any other plugin grabs a resource lock. Second launch
+        // calls the callback with the new argv and exits; we pull the
+        // existing main window to the front. See Cargo.toml note on
+        // why this app can't run two instances concurrently.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
