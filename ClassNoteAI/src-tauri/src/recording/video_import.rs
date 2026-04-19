@@ -349,6 +349,11 @@ pub async fn transcribe_pcm_file_slice(
     language: Option<String>,
     options: Option<crate::whisper::transcribe::TranscriptionOptions>,
 ) -> Result<crate::whisper::transcribe::TranscriptionResult, String> {
+    let t0 = std::time::Instant::now();
+    println!(
+        "[video_import] slice start: {:.1}..{:.1}s, lang={:?}, pcm={}",
+        start_sec, end_sec, language, pcm_path
+    );
     if end_sec <= start_sec {
         return Err("end_sec must be > start_sec".to_string());
     }
@@ -372,6 +377,11 @@ pub async fn transcribe_pcm_file_slice(
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect();
+    println!(
+        "[video_import] slice read {} samples in {:.2}s — calling whisper…",
+        samples.len(),
+        t0.elapsed().as_secs_f64()
+    );
 
     if samples.is_empty() {
         return Ok(crate::whisper::transcribe::TranscriptionResult {
@@ -382,10 +392,17 @@ pub async fn transcribe_pcm_file_slice(
         });
     }
 
+    let t_lock = std::time::Instant::now();
     let service_guard = crate::WHISPER_SERVICE.lock().await;
     let service = service_guard
         .as_ref()
         .ok_or_else(|| "Whisper 模型未加載".to_string())?;
+    println!(
+        "[video_import] slice acquired WHISPER_SERVICE lock in {:.2}s",
+        t_lock.elapsed().as_secs_f64()
+    );
+
+    let t_whisper = std::time::Instant::now();
     let mut result = service
         .transcribe(
             &samples,
@@ -396,6 +413,13 @@ pub async fn transcribe_pcm_file_slice(
         )
         .await
         .map_err(|e| format!("轉錄失敗: {}", e))?;
+    println!(
+        "[video_import] slice whisper done in {:.2}s — segments={} lang={:?}, total slice {:.2}s",
+        t_whisper.elapsed().as_secs_f64(),
+        result.segments.len(),
+        result.language,
+        t0.elapsed().as_secs_f64()
+    );
 
     let offset_ms = (start_sec * 1000.0) as u64;
     for seg in result.segments.iter_mut() {

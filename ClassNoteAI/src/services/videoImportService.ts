@@ -139,21 +139,44 @@ export const videoImportService = {
                     ? options.language
                     : null;
 
-            const report = (stage: ImportStage) =>
+            const reportTranscribing = (activeIdx: number | null) =>
                 emit({
-                    stage,
+                    stage: 'transcribing',
                     message:
-                        stage === 'translating'
-                            ? `翻譯 ${translated}/${total}（轉錄已完成）`
+                        activeIdx !== null
+                            ? `轉錄第 ${activeIdx + 1}/${total} 段中（已完成 ${transcribed}，翻譯 ${translated}/${total}）`
                             : `轉錄 ${transcribed}/${total}，翻譯 ${translated}/${total}`,
                     transcribedChunks: transcribed,
                     translatedChunks: translated,
                     totalChunks: total,
                 });
+            const reportTranslating = () =>
+                emit({
+                    stage: 'translating',
+                    message: `翻譯 ${translated}/${total}（轉錄已完成）`,
+                    transcribedChunks: transcribed,
+                    translatedChunks: translated,
+                    totalChunks: total,
+                });
 
-            report('transcribing');
+            console.log(
+                '[videoImport] pipeline start — total chunks:',
+                total,
+                'duration:',
+                pcm.duration_sec.toFixed(1),
+                's, pcm:',
+                pcm.pcm_path,
+            );
+            reportTranscribing(null);
 
-            for (const chunk of chunks) {
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                const t0 = performance.now();
+                console.log(
+                    `[videoImport] chunk ${i + 1}/${total} transcribe start — ${chunk.start.toFixed(1)}..${chunk.end.toFixed(1)}s, lang=${currentLang ?? 'auto'}`,
+                );
+                reportTranscribing(i);
+
                 const result = await invoke<TranscriptionResult>(
                     'transcribe_pcm_file_slice',
                     {
@@ -166,19 +189,25 @@ export const videoImportService = {
                     },
                 );
 
+                const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                console.log(
+                    `[videoImport] chunk ${i + 1}/${total} transcribe done in ${elapsed}s — segments=${result.segments.length}, lang=${result.language ?? 'unknown'}`,
+                );
+
                 // Cache first successful language detection so later
                 // chunks don't redo it (and more importantly so they
                 // don't drift between languages if audio briefly goes
                 // quiet).
                 if (!currentLang && result.language) {
                     currentLang = result.language;
-                    console.log('[videoImport] language detected:', currentLang);
+                    console.log('[videoImport] language cached as:', currentLang);
                 }
 
                 const chunkSegs = result.segments.slice();
                 allSegments.push(...chunkSegs);
                 transcribed++;
-                report('transcribing');
+                const chunkIndex = i; // captured for translate promise below
+                reportTranscribing(i + 1 < total ? i + 1 : null);
 
                 // Kick off translation for just this chunk. Errors
                 // degrade to English-only — same graceful fallback the
@@ -205,11 +234,18 @@ export const videoImportService = {
                                 // English subtitle still gets saved.
                             }
                         }
-                        for (let i = 0; i < chunkSegs.length; i++) {
-                            translationMap.set(chunkSegs[i], outputs[i]);
+                        for (let k = 0; k < chunkSegs.length; k++) {
+                            translationMap.set(chunkSegs[k], outputs[k]);
                         }
                         translated++;
-                        report(transcribed < total ? 'transcribing' : 'translating');
+                        console.log(
+                            `[videoImport] chunk ${chunkIndex + 1}/${total} translate done — ${translated}/${total} total`,
+                        );
+                        if (transcribed < total) {
+                            reportTranscribing(null);
+                        } else {
+                            reportTranslating();
+                        }
                     })(),
                 );
             }
