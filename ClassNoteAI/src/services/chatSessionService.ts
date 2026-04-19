@@ -198,18 +198,53 @@ class ChatSessionService {
             updatedAt: now,
         };
 
-        await invoke('save_chat_session', {
-            id: session.id,
-            lectureId: session.lectureId,
-            userId: this.userId,
-            title: session.title,
-            summary: null,
-            createdAt: session.createdAt,
-            updatedAt: session.updatedAt,
-            isDeleted: false,
-        });
+        // The chat_sessions table has an FK on lecture_id referencing
+        // lectures(id) with ON DELETE SET NULL. If the caller passes a
+        // lectureId whose row doesn't exist (which happens when the
+        // current NotesView is showing a lecture that was deleted
+        // out-of-band, or when the lecture row hasn't been committed
+        // yet for some reason), SQLite rejects the INSERT with a hard
+        // FK error. The result the user sees: they type a question,
+        // it fails silently, next reopen shows empty history. Catch
+        // the FK error and re-save as a global (null lectureId)
+        // session so the chat is preserved; the follow-up migration
+        // step in loadChatHistory will adopt this session for the
+        // current lecture on next mount.
+        try {
+            await invoke('save_chat_session', {
+                id: session.id,
+                lectureId: session.lectureId,
+                userId: this.userId,
+                title: session.title,
+                summary: null,
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt,
+                isDeleted: false,
+            });
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            if (/FOREIGN KEY|foreign key/i.test(msg)) {
+                console.warn(
+                    `[ChatSessionService] lecture_id ${lectureId} FK failed; saving as global session. ` +
+                        `This usually means the lecture row was deleted or never committed.`
+                );
+                session.lectureId = null;
+                await invoke('save_chat_session', {
+                    id: session.id,
+                    lectureId: null,
+                    userId: this.userId,
+                    title: session.title,
+                    summary: null,
+                    createdAt: session.createdAt,
+                    updatedAt: session.updatedAt,
+                    isDeleted: false,
+                });
+            } else {
+                throw e;
+            }
+        }
 
-        console.log(`[ChatSessionService] 創建對話: ${session.id}`);
+        console.log(`[ChatSessionService] 創建對話: ${session.id} (lectureId=${session.lectureId})`);
         return session;
     }
 

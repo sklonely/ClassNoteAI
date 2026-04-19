@@ -164,7 +164,13 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
         }
     };
 
-    const handleUpdateCourse = async (title: string, keywords: string, _pdfData?: ArrayBuffer, description?: string) => {
+    const handleUpdateCourse = async (
+        title: string,
+        keywords: string,
+        _pdfData?: ArrayBuffer,
+        description?: string,
+        shouldClose: boolean = true,
+    ) => {
         if (!course) return;
         try {
             let syllabusInfo = undefined;
@@ -194,7 +200,11 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
             };
             await storageService.saveCourse(updatedCourse);
             setCourse(updatedCourse);
-            setIsEditDialogOpen(false);
+            // Keyword-extraction flow passes shouldClose=false so the
+            // dialog stays open while the background LLM call runs
+            // and merges the extracted keywords back into the
+            // dialog's state. Only close on explicit full saves.
+            if (shouldClose) setIsEditDialogOpen(false);
         } catch (error) {
             console.error('Failed to update course:', error);
         }

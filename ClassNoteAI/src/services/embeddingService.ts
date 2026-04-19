@@ -177,3 +177,29 @@ export const embeddingService = new EmbeddingService();
 export async function generateLocalEmbedding(text: string): Promise<number[]> {
     return embeddingService.generateEmbedding(text);
 }
+
+/**
+ * Batched local embedding. Rust-side stacks all texts into a single
+ * padded forward pass. Use this when indexing N > ~4 chunks at once;
+ * on CPU the speedup vs. a sequential loop is ~3-5x.
+ *
+ * Silently falls back to a sequential loop if the batched command is
+ * not registered on the backend (e.g. user on an older native binary
+ * that predates this feature).
+ */
+export async function generateLocalEmbeddingsBatch(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    await embeddingService.ensureLoaded();
+    try {
+        return await invoke<number[][]>('generate_embeddings_batch', { texts });
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('not allowed') || msg.includes('invalid args') || msg.includes('generate_embeddings_batch')) {
+            console.warn('[embeddingService] batch command unavailable, falling back to sequential loop:', msg);
+            const out: number[][] = [];
+            for (const t of texts) out.push(await embeddingService.generateEmbedding(t));
+            return out;
+        }
+        throw err;
+    }
+}

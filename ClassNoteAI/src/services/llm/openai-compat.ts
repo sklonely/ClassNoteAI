@@ -82,6 +82,13 @@ function buildBody(request: LLMRequest, stream: boolean): Record<string, unknown
     messages: request.messages.map(toOpenAIChatMessage),
     stream,
   };
+  // OpenAI streaming only emits the `usage` object when the caller
+  // explicitly opts in. Without this, `parsed.usage` is always
+  // undefined, `chatStream` records no token count, and the UI's
+  // "in X out Y tokens" footer either shows 0/0 or falls through
+  // to a stale non-stream entry (e.g. the translation call) -- the
+  // user sees something like "in 80 out 8" on a 500-word reply.
+  if (stream) body.stream_options = { include_usage: true };
   if (request.temperature !== undefined) body.temperature = request.temperature;
   if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
   if (request.jsonMode) body.response_format = { type: 'json_object' };

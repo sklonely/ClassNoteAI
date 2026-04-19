@@ -34,6 +34,8 @@ import { extractKeywords } from "../utils/pdfKeywordExtractor";
 import { summarizeStream, usageTracker } from "../services/llm";
 import { toastService } from "../services/toastService";
 import { generateLocalEmbedding } from "../services/embeddingService";
+import { embeddingStorageService } from "../services/embeddingStorageService";
+import { openDetachedAiTutor } from "../services/aiTutorWindow";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -87,6 +89,20 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
+  // React-side mirror of autoAlignmentService.hasPageEmbeddings() so the
+  // banner in the Auto-Follow row re-renders when alignment finishes.
+  // The service is a plain singleton; calling its method inside JSX
+  // doesn't subscribe React to its internal state, so without this
+  // mirror the "PDF 索引尚未準備好" banner stays on screen forever
+  // even after embeddings are populated.
+  const [pageEmbeddingsReady, setPageEmbeddingsReady] = useState<boolean>(
+    autoAlignmentService.hasPageEmbeddings()
+  );
+  // Bumped whenever the RAG index is rebuilt in the AI chat panel so
+  // the Auto-Follow alignment useEffect re-runs and re-hydrates.
+  const [alignmentRefreshTick, setAlignmentRefreshTick] = useState(0);
+  // User-configurable AI 助教 chrome mode (Settings → 雲端 AI 助理).
+  const [aiTutorMode, setAiTutorMode] = useState<'floating' | 'sidebar' | 'detached'>('floating');
   const [currentPage, setCurrentPage] = useState(1);
   // Pieces of the Whisper initial_prompt. Stored separately so
   // `handleTextExtract` (PDF side) and `loadLecture` (course side)
@@ -364,36 +380,97 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     };
   }, []);
 
-  // Initialize Auto Alignment
+  // Load the user's preferred AI 助教 chrome from settings. Default
+  // floating matches v0.5.2 behavior for unupgraded users.
+  useEffect(() => {
+    (async () => {
+      try {
+        const settings = await storageService.getAppSettings();
+        const mode = settings?.aiTutor?.displayMode ?? 'floating';
+        setAiTutorMode(mode);
+      } catch { /* ignore */ }
+    })();
+  }, []);
+
+  // Sidebar mode window resize is handled imperatively in the AI
+  // 助教 button's onClick handler below rather than in a useEffect,
+  // because React StrictMode + HMR re-fires effects and the
+  // grow/shrink pair stops balancing (window drifts +400px per HMR).
+  // Imperative "user clicked open -> grow once" / "user clicked close
+  // -> shrink once" is symmetric by construction.
+
+  // Initialize Auto Alignment. Prefer hydrating from the persisted RAG
+  // chunk index (SQLite `embeddings` table) -- same embeddings are already
+  // there, keyed by pageNumber. We just need to collapse chunks-per-page
+  // down to one embedding-per-page by averaging. This gives us:
+  //   - O(1 query) hydration vs. re-running pdfjs text extraction +
+  //     30 × Candle embedding on every lecture re-open
+  //   - "重建索引" button implicitly also refreshes Auto-Follow,
+  //     because Auto-Follow now derives from the same SQLite rows
+  //   - Auto-Follow works offline and across app restarts
+  // Falls back to the old PDF-extraction path only if no RAG index
+  // exists yet (user never clicked 重建索引).
   useEffect(() => {
     const initAlignment = async () => {
-      if (modelLoaded && pdfData) {
-        try {
-          console.log("Processing PDF for alignment...");
-          // Clone buffer to prevent detachment by worker
-          const bufferCopy = pdfData.slice(0);
-          const pages = await pdfService.extractAllPagesText(bufferCopy);
-
-          if (currentLectureData) {
-            console.log('[NotesView] Generating per-page embeddings locally for alignment...');
-            const alignmentEmbeddings = [] as Array<{ pageNumber: number; text: string; embedding: number[] }>;
-            for (const p of pages) {
-              if (!p.text?.trim()) continue;
-              const embedding = await generateLocalEmbedding(p.text);
-              alignmentEmbeddings.push({ pageNumber: p.page, text: p.text, embedding });
+      if (!modelLoaded || !pdfData || !currentLectureData) return;
+      try {
+        // Stage 1: try to derive from the RAG index.
+        const records = await embeddingStorageService.getEmbeddingsByLecture(
+          currentLectureData.id
+        );
+        const pdfChunks = records.filter(
+          (r) => r.sourceType === 'pdf' && typeof r.pageNumber === 'number'
+        );
+        if (pdfChunks.length > 0) {
+          const byPage = new Map<number, { texts: string[]; sum: Float32Array; count: number }>();
+          for (const c of pdfChunks) {
+            const p = c.pageNumber as number;
+            const existing = byPage.get(p);
+            if (existing) {
+              for (let i = 0; i < c.embedding.length; i++) existing.sum[i] += c.embedding[i];
+              existing.texts.push(c.chunkText);
+              existing.count += 1;
+            } else {
+              const sum = new Float32Array(c.embedding.length);
+              for (let i = 0; i < c.embedding.length; i++) sum[i] = c.embedding[i];
+              byPage.set(p, { texts: [c.chunkText], sum, count: 1 });
             }
-            autoAlignmentService.setPageEmbeddings(alignmentEmbeddings);
-            console.log(`PDF alignment ready (${alignmentEmbeddings.length} pages)`);
-          } else {
-            console.warn('Cannot index PDF: Lecture ID not available');
           }
-        } catch (e) {
-          console.error("Failed to init alignment", e);
+          const pageEmbeddings = Array.from(byPage.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([pageNumber, agg]) => {
+              const avg = new Array<number>(agg.sum.length);
+              for (let i = 0; i < agg.sum.length; i++) avg[i] = agg.sum[i] / agg.count;
+              return { pageNumber, text: agg.texts.join('\n'), embedding: avg };
+            });
+          autoAlignmentService.setPageEmbeddings(pageEmbeddings);
+          setPageEmbeddingsReady(pageEmbeddings.length > 0);
+          console.log(
+            `[NotesView] Hydrated ${pageEmbeddings.length} page embeddings from RAG index ` +
+              `(${pdfChunks.length} PDF chunks averaged)`
+          );
+          return;
         }
+
+        // Stage 2 fallback: no RAG index yet — compute from scratch.
+        console.log('[NotesView] No RAG index; computing page embeddings from PDF directly...');
+        const bufferCopy = pdfData.slice(0);
+        const pages = await pdfService.extractAllPagesText(bufferCopy);
+        const alignmentEmbeddings: Array<{ pageNumber: number; text: string; embedding: number[] }> = [];
+        for (const p of pages) {
+          if (!p.text?.trim()) continue;
+          const embedding = await generateLocalEmbedding(p.text);
+          alignmentEmbeddings.push({ pageNumber: p.page, text: p.text, embedding });
+        }
+        autoAlignmentService.setPageEmbeddings(alignmentEmbeddings);
+        setPageEmbeddingsReady(alignmentEmbeddings.length > 0);
+        console.log(`PDF alignment ready from PDF (${alignmentEmbeddings.length} pages)`);
+      } catch (e) {
+        console.error("Failed to init alignment", e);
       }
     };
     initAlignment();
-  }, [pdfData, modelLoaded]);
+  }, [pdfData, modelLoaded, currentLectureData?.id, alignmentRefreshTick]);
 
   // v0.5.2 Auto Follow — precompute a (timestamp, page) timeline.
   //
@@ -1651,8 +1728,24 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
           {/* AI Chat Toggle Button */}
           <button
-            onClick={() => setIsAIChatOpen(!isAIChatOpen)}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${isAIChatOpen
+            onClick={async () => {
+              const settings = await storageService.getAppSettings().catch(() => null);
+              const freshMode = settings?.aiTutor?.displayMode ?? 'floating';
+              setAiTutorMode(freshMode);
+              if (freshMode === 'detached') {
+                const theme = settings?.theme === 'dark' ? 'dark' : 'light';
+                if (lectureId) await openDetachedAiTutor(lectureId, theme);
+                return;
+              }
+              // sidebar and floating: just toggle in-app state. Sidebar
+              // mode uses inline-push (content shrinks via PanelGroup)
+              // rather than window resize, which matches VSCode /
+              // Notion / Cursor and avoids the "window too wide to
+              // read" problem from the earlier expand-window approach.
+              setIsAIChatOpen(!isAIChatOpen);
+            }}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+              (aiTutorMode !== 'detached' && isAIChatOpen)
               ? 'bg-purple-500 text-white'
               : 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 hover:bg-purple-100'
               }`}
@@ -1664,8 +1757,28 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content — main area + optional right sidebar in a resizable
+          PanelGroup. `autoSaveId` persists the user's preferred ratio
+          to localStorage so their chosen sidebar width sticks across
+          sessions (Cursor / VSCode / Notion behavior). Nested
+          PanelGroups are fine: the inner one splits PDF vs Notes
+          inside the main Panel, the outer one splits main vs sidebar.
+          Floating mode renders the panel elsewhere (fixed overlay)
+          and detached lives in its own OS window. */}
       <div className="flex-1 overflow-hidden">
+        <PanelGroup
+          direction="horizontal"
+          autoSaveId="classnote-notesview-sidebar"
+          className="h-full"
+        >
+          <Panel
+            id="notesview-main"
+            order={0}
+            defaultSize={75}
+            minSize={40}
+            className="overflow-hidden"
+          >
+            <div className="h-full overflow-hidden">
         {viewMode === 'recording' ? (
           // Recording Mode Layout (Split View with Resizable Panels)
           <div className="flex flex-col h-full">
@@ -1995,7 +2108,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                         {pageTimeline.length} 個頁面切換點
                       </span>
                     )}
-                    {autoFollow && !isBuildingTimeline && pageTimeline.length === 0 && !autoAlignmentService.hasPageEmbeddings() && (
+                    {autoFollow && !isBuildingTimeline && pageTimeline.length === 0 && !pageEmbeddingsReady && (
                       <span className="text-xs text-amber-500">
                         PDF 索引尚未準備好
                       </span>
@@ -2024,6 +2137,42 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             />
           </div>
         )}
+            </div>
+          </Panel>
+          {/* Sidebar Panel — only rendered in sidebar mode + open.
+              react-resizable-panels tracks conditional panels by
+              stable `id`; size persists via outer PanelGroup's
+              autoSaveId. minSize 18% keeps it readable on small
+              windows; maxSize 45% prevents it from crushing the PDF. */}
+          {lectureId && aiTutorMode === 'sidebar' && isAIChatOpen && (
+            <>
+              <PanelResizeHandle className="w-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-col-resize" />
+              <Panel
+                id="notesview-sidebar"
+                order={1}
+                defaultSize={25}
+                minSize={18}
+                maxSize={45}
+                className="shadow-xl"
+              >
+                <AIChatPanel
+                  lectureId={lectureId}
+                  isOpen
+                  onClose={() => setIsAIChatOpen(false)}
+                  context={{
+                    pdfText: pdfTextContent,
+                    transcriptText: transcriptContent,
+                    pdfData: pdfData || undefined,
+                  }}
+                  currentPage={currentPage}
+                  onNavigateToPage={(page) => pdfViewerRef.current?.scrollToPage(page)}
+                  onIndexRebuilt={() => setAlignmentRefreshTick((t) => t + 1)}
+                  displayMode="sidebar"
+                />
+              </Panel>
+            </>
+          )}
+        </PanelGroup>
       </div>
 
       {
@@ -2040,12 +2189,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             initialTitle={currentLectureData.title}
             initialKeywords={currentLectureData.keywords}
             mode="edit"
+            entity="lecture"
           />
         )
       }
 
-      {/* AI Chat Panel */}
-      {lectureId && (
+      {/* AI Chat Panel — floating mode only. Sidebar mode is rendered
+          inline as a flex-row sibling inside the Content area above so
+          it allocates the window's extra width cleanly instead of
+          overlaying. Detached mode lives in its own OS window. */}
+      {lectureId && aiTutorMode === 'floating' && (
         <AIChatPanel
           lectureId={lectureId}
           isOpen={isAIChatOpen}
@@ -2057,6 +2210,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           }}
           currentPage={currentPage}
           onNavigateToPage={(page) => pdfViewerRef.current?.scrollToPage(page)}
+          onIndexRebuilt={() => setAlignmentRefreshTick((t) => t + 1)}
+          displayMode="floating"
         />
       )}
     </div >

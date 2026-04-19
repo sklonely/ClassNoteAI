@@ -44,8 +44,59 @@ function preferredProvider(): string | undefined {
   return localStorage.getItem(DEFAULT_PROVIDER_KEY) || undefined;
 }
 
-/** Resolve the active provider + default model, or throw a friendly error. */
-async function activeProviderAndModel(): Promise<{ providerId: string; model: string; provider: Awaited<ReturnType<typeof resolveActiveProvider>> }> {
+/**
+ * Rate-limit tiers as enforced by GitHub Models (and informally by
+ * other providers via their pricing). Tasks declare which tier they
+ * belong to and `activeProviderAndModel` routes them to the cheapest
+ * model that still does the job:
+ *
+ *   - `low`   = GitHub Models "Low" quota (150 req/day on Copilot Pro).
+ *               Simple, high-volume tasks: translation, keyword /
+ *               syllabus extraction, subtitle refinement. These don't
+ *               need GPT-4.1's reasoning; `gpt-4o-mini` / `gpt-4.1-mini`
+ *               produce equivalent results for structured or
+ *               short-text work.
+ *   - `high`  = GitHub Models "High" quota (50 req/day on Copilot Pro).
+ *               Quality-sensitive tasks: the main AI 助教 chat and the
+ *               lecture summary. Use the provider's flagship model.
+ *
+ * Splitting this way preserves the 50-req High pool for the two
+ * tasks users actually care about (chat + summary) -- everything
+ * else runs out of the separate 150-req Low pool.
+ */
+type ModelTier = 'low' | 'high';
+
+/**
+ * Heuristic classification of a model id into Low/High tier, based
+ * on the naming conventions used by OpenAI, Anthropic, and Meta.
+ * We can't rely on GitHub's docs to classify individual IDs --
+ * only the category bands are documented -- so we match on the
+ * substrings providers use to denote "small / fast / cheap":
+ *
+ *   mini, nano, small, haiku, lite, flash, -8b, 3.5-turbo
+ *
+ * Everything else (gpt-4.1, gpt-4o, gpt-5, claude-3.5-sonnet,
+ * llama-3-70b, ...) falls through to 'high'.
+ */
+function tierOf(modelId: string): ModelTier {
+  const lc = modelId.toLowerCase();
+  if (/mini|nano|small|haiku|lite|flash|-8b\b|3\.5[-_]?turbo/.test(lc)) return 'low';
+  return 'high';
+}
+
+/** Pick the best model in the given tier from the provider's list.
+ *  Falls back to the first available model if no match. */
+function pickModelForTier(models: { id: string }[], tier: ModelTier): string {
+  const match = models.find((m) => tierOf(m.id) === tier);
+  return (match ?? models[0]).id;
+}
+
+/** Resolve the active provider + the right-tier model, or throw a
+ *  friendly error. Tier defaults to 'high' so legacy callers (which
+ *  haven't been updated yet) still get the flagship model. */
+async function activeProviderAndModel(
+  tier: ModelTier = 'high',
+): Promise<{ providerId: string; model: string; provider: Awaited<ReturnType<typeof resolveActiveProvider>> }> {
   const provider = await resolveActiveProvider(preferredProvider());
   if (!provider) {
     throw new LLMError(
@@ -57,7 +108,7 @@ async function activeProviderAndModel(): Promise<{ providerId: string; model: st
   if (!models.length) {
     throw new LLMError('Active provider returned no models.', 'provider', provider.descriptor.id);
   }
-  return { providerId: provider.descriptor.id, model: models[0].id, provider };
+  return { providerId: provider.descriptor.id, model: pickModelForTier(models, tier), provider };
 }
 
 export interface SummarizeParams {
@@ -353,7 +404,10 @@ export async function* summarizeStream(
 }
 
 export async function extractKeywords(text: string, max = 20): Promise<string[]> {
-  const { provider, model } = await activeProviderAndModel();
+  // Low tier: keyword extraction is a pure structured-JSON task; a
+  // mini-class model handles it fine and keeps the High quota
+  // reserved for the chat + summary flows the user actually sees.
+  const { provider, model } = await activeProviderAndModel('low');
   const res = await provider!.complete({
     model,
     messages: [
@@ -400,7 +454,10 @@ export async function extractSyllabus(
   description: string | undefined,
   targetLanguage: 'zh' | 'en' = 'zh'
 ): Promise<SyllabusInfo> {
-  const { provider, model } = await activeProviderAndModel();
+  // Low tier: structured extraction into a fixed schema; mini models
+  // handle this reliably and we keep the High pool available for
+  // user-visible work.
+  const { provider, model } = await activeProviderAndModel('low');
   const sys =
     targetLanguage === 'zh'
       ? '從使用者提供的課程描述中抽取結構化資訊並回傳 JSON。欄位：topic, time, instructor, office_hours, teaching_assistants, location, grading（陣列，每項 {item, percentage}）, schedule（陣列，每項為一週進度字串）。找不到的欄位省略。'
@@ -466,7 +523,11 @@ export async function translateForRetrieval(
   const trimmed = query.trim();
   if (!trimmed) return query;
   try {
-    const { provider, model, providerId } = await activeProviderAndModel();
+    // Low tier: translating a ~20-char query is the canonical cheap
+    // task. Using flagship models here (previous behavior) burned
+    // through the High pool -- every CJK question doubled as a High
+    // request before the real chat even fired.
+    const { provider, model, providerId } = await activeProviderAndModel('low');
     const targetName = targetLang === 'en' ? 'English' : 'Traditional Chinese';
     const res = await provider!.complete({
       model,
@@ -484,7 +545,11 @@ export async function translateForRetrieval(
       temperature: 0,
       maxTokens: 256,
     });
-    trackUsage(providerId, model, 'chat', res.usage);
+    // Track as 'translate' (a small helper call), NOT 'chat' -- the
+    // UI's AI 助教 token counter shows `usageTracker.latest('chat'/'chatStream')`,
+    // and tagging translation as 'chat' polluted that reading with
+    // the tiny ~80/8 token count of the Chinese→English translation.
+    trackUsage(providerId, model, 'translate', res.usage);
     const out = res.content.trim();
     return out.length > 0 ? out : query;
   } catch (err) {
@@ -520,7 +585,11 @@ export interface FineRefinement {
 
 export async function refineTranscripts(batch: RoughSegment[]): Promise<FineRefinement[]> {
   if (!batch.length) return [];
-  const { provider, model } = await activeProviderAndModel();
+  // Low tier: subtitle refinement fires continuously during live
+  // recording -- can easily reach dozens of calls per lecture.
+  // High-quota would exhaust in minutes. A mini model produces
+  // acceptable ASR cleanup + translation quality.
+  const { provider, model } = await activeProviderAndModel('low');
 
   const numbered = batch.map((s, i) => `[${i + 1} id=${s.id}] ${s.text}`).join('\n');
   const systemPrompt =
