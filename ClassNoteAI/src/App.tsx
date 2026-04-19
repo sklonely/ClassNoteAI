@@ -6,6 +6,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
 import RecoveryPromptModal from "./components/RecoveryPromptModal";
 import ToastContainer from "./components/ToastContainer";
+import ConfirmDialog from "./components/ConfirmDialog";
 import AIChatWindow from "./components/AIChatWindow";
 import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
@@ -33,6 +34,7 @@ function App() {
       <ErrorBoundary>
         <AIChatWindow />
         <ToastContainer />
+        <ConfirmDialog />
       </ErrorBoundary>
     );
   }
@@ -242,6 +244,7 @@ function App() {
         onAllResolved={() => setRecoverableSessions([])}
       />
       <ToastContainer />
+      <ConfirmDialog />
     </ErrorBoundary>
   );
 }
