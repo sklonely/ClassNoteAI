@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Film, ClipboardPaste, X, Loader2, ArrowLeft } from 'lucide-react';
 import { useTauriFileDrop } from '../hooks/useTauriFileDrop';
+import { storageService } from '../services/storageService';
 
 /**
  * v0.6.0 — unified "匯入" entry point for the Notes view.
@@ -73,6 +74,25 @@ export default function ImportModal({
     const [videoQuality, setVideoQuality] = useState<VideoQuality>('fast');
     const [refineWithAI, setRefineWithAI] = useState(false);
     const modalRef = useRef<HTMLDivElement>(null);
+
+    // Load user's experimental-settings defaults once per mount. The
+    // modal is mounted once and stays resident across opens, so a
+    // single read covers the lifetime. Changing defaults in Settings
+    // only takes effect on the next app load — intentional; we don't
+    // want a settings change to silently overwrite a user's mid-modal
+    // picks if they had it open at the time.
+    useEffect(() => {
+        (async () => {
+            try {
+                const s = await storageService.getAppSettings();
+                const exp = s?.experimental;
+                if (exp?.importSpeed) setVideoQuality(exp.importSpeed as VideoQuality);
+                if (typeof exp?.importAiRefine === 'boolean') setRefineWithAI(exp.importAiRefine);
+            } catch {
+                /* stick with hardcoded defaults */
+            }
+        })();
+    }, []);
 
     // Modal is its own drop zone — takes priority over the NotesView
     // drop zone below it because elementFromPoint returns the topmost

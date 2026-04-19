@@ -174,6 +174,31 @@ export interface AppSettings {
   lectureLayout?: {
     videoPdfMode?: 'split' | 'pip';
   };
+  /**
+   * Experimental / opt-in defaults for the video-import pipeline.
+   * These used to live only in the ImportModal's per-import toggles;
+   * promoting them to settings lets the user set a preferred default
+   * once instead of re-picking for every import. The modal still
+   * honours per-import overrides when the user touches the control,
+   * so nothing regresses for "I want to change THIS one run".
+   */
+  experimental?: {
+    /** Default model preset for new video imports: `fast` (ggml-base,
+     *  ~5× realtime CPU) or `standard` (user's main model, slower but
+     *  more accurate). The ImportModal quality selector pre-fills from
+     *  this. */
+    importSpeed?: 'fast' | 'standard';
+    /** Default value of the "AI 精修字幕" checkbox in ImportModal.
+     *  Off by default because a 70-min lecture is ~130 k tokens of
+     *  LLM usage; users who have plentiful tokens can flip it on once
+     *  and forget it. */
+    importAiRefine?: boolean;
+    /** Whisper GPU backend preference. `auto` picks the first available
+     *  at runtime (Phase 2+); the other values let power users pin a
+     *  specific backend. Ignored in Phase 1 builds where no GPU features
+     *  are compiled in. */
+    asrBackend?: 'auto' | 'cuda' | 'metal' | 'vulkan' | 'cpu';
+  };
   sync?: {
     username: string;
     deviceId?: string;

@@ -1681,7 +1681,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               const relativeTime = Math.max(0, section.timestamp - baseTime);
               const minutes = Math.floor(relativeTime / 60);
               const seconds = Math.floor(relativeTime % 60);
-              markdown += `*時間戳: ${minutes}:${seconds.toString().padStart(2, '0')}*\n\n`;
+              const centis = Math.floor((relativeTime % 1) * 100);
+              markdown += `*時間戳: ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centis.toString().padStart(2, '0')}*\n\n`;
             }
           });
         }
@@ -1697,7 +1698,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               const relativeTime = Math.max(0, qa.timestamp - baseTime);
               const minutes = Math.floor(relativeTime / 60);
               const seconds = Math.floor(relativeTime % 60);
-              markdown += `*時間戳: ${minutes}:${seconds.toString().padStart(2, '0')}*\n\n`;
+              const centis = Math.floor((relativeTime % 1) * 100);
+              markdown += `*時間戳: ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centis.toString().padStart(2, '0')}*\n\n`;
             }
           });
         }
@@ -2236,7 +2238,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                                             onClick={() => handleSeek(relativeTime)}
                                             className="text-xs text-blue-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
                                           >
-                                            {Math.floor(relativeTime / 60)}:{Math.floor(relativeTime % 60).toString().padStart(2, '0')}
+                                            {Math.floor(relativeTime / 60).toString().padStart(2, '0')}:{Math.floor(relativeTime % 60).toString().padStart(2, '0')}.{Math.floor((relativeTime % 1) * 100).toString().padStart(2, '0')}
                                           </button>
                                         );
                                       })()}
