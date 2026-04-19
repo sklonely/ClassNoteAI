@@ -22,6 +22,33 @@ default = ["candle-embed"]
 # Candle embedding - 使用 Candle 框架進行文本 Embedding（預設啟用）
 candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 
+# Whisper GPU backends. All three are opt-in and OFF by default — the
+# CPU build stays the baseline, so any regression from a broken
+# backend can't brick the default install. Enable exactly one of
+# these at build time depending on the target platform.
+#
+#   gpu-cuda     NVIDIA CUDA. Requires CUDA Toolkit (~3 GB) present at
+#                build time; at runtime the cudart64_* DLL ships next
+#                to the app (~10–30 MB). On an RTX 4060 Ti,
+#                large-v3-turbo runs ~20× realtime vs ~0.5× on CPU.
+#                Windows + Linux only.
+#   gpu-vulkan   Cross-vendor GPU via Vulkan. Build needs the Vulkan
+#                SDK (~500 MB); runtime uses the Vulkan loader that
+#                ships with every modern GPU driver — no extra DLLs.
+#                Works on NVIDIA, AMD, Intel. Slightly slower than
+#                native CUDA but the broadest GPU coverage.
+#   gpu-metal    Apple Metal. Auto-enabled below via target_os cfg, so
+#                macOS users never need to pass a flag.
+#
+# Build examples:
+#   cargo build                                        # CPU (default)
+#   cargo build --features gpu-cuda                    # Windows + NVIDIA
+#   cargo build --features gpu-vulkan                  # Windows + AMD/Intel or Linux
+#   # (no extra flag on macOS — metal is wired via target-specific dep below)
+gpu-cuda = ["whisper-rs/cuda"]
+gpu-vulkan = ["whisper-rs/vulkan"]
+gpu-metal = ["whisper-rs/metal"]
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "devtools"] }
 tauri-plugin-opener = "2"
@@ -29,7 +56,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-whisper-rs = "0.11"
+whisper-rs = { version = "0.16", default-features = false }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 num_cpus = "1.0"
@@ -71,6 +98,15 @@ ndarray = "0.15"
 
 [dev-dependencies]
 tempfile = "3.8"
+
+# macOS-only auto-enable of Whisper's Metal backend. This keeps the
+# default-feature story simple on Windows/Linux (CPU unless the
+# packager opts into gpu-cuda/gpu-vulkan) while giving every macOS
+# build GPU acceleration with zero extra build flags — Metal is
+# universally available on every Mac since ~2016 so there's no
+# detection story to worry about.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", default-features = false, features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
