@@ -37,7 +37,22 @@ vi.mock('../embeddingStorageService', () => ({
         getStats: vi.fn(),
         deleteByLecture: vi.fn(),
         storeEmbeddings: vi.fn(),
+        // v0.5.2 hybrid retrieval fetches all chunk metadata so it can
+        // resolve BM25-only hits back to full records. Empty list is
+        // fine for this test — we're asserting the translate vs not
+        // dispatch, not ranking.
+        getEmbeddingsByLecture: vi.fn(() => Promise.resolve([])),
+        replaceEmbeddingsForLecture: vi.fn(),
+        getChunksByPage: vi.fn(() => Promise.resolve([])),
     },
+}));
+
+vi.mock('../bm25Service', () => ({
+    bm25Service: {
+        search: vi.fn(() => Promise.resolve([])),
+        invalidate: vi.fn(),
+    },
+    reciprocalRankFusion: vi.fn(() => []),
 }));
 
 vi.mock('../embeddingService', () => ({
@@ -76,15 +91,20 @@ describe('ragService.chat cross-lingual dispatch', () => {
 
         expect(translateMock).toHaveBeenCalledTimes(1);
         expect(translateMock).toHaveBeenCalledWith('什麼是啟發式評估法？', 'en');
-        // v0.5.3: for CJK queries we retrieve with BOTH the original
-        // and the translated form in parallel and union by chunk id.
-        // Content is typically mixed English-PDF + Chinese-transcript;
-        // running only one form misses half the corpus. Also note the
-        // signature was fixed to `(lectureId, query, ...)` -- the old
-        // wrong order was embedding UUIDs as queries and getting zero
-        // hits in production.
-        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', '什麼是啟發式評估法？', 5, undefined);
-        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', 'What is heuristic evaluation?', 5, undefined);
+        // v0.5.3 layers two fixes on top of v0.5.2's hybrid retrieval:
+        //   1. `semanticSearch(lectureId, query, ...)` -- fixed argument
+        //      order. The old `(query, lectureId, ...)` call was
+        //      embedding UUIDs and searching for lectures whose id
+        //      equalled the user's question, always returning zero
+        //      chunks.
+        //   2. CJK queries run retrieval BOTH with the original and the
+        //      LLM-translated form in parallel and union by chunk id.
+        //      Content is typically mixed English-PDF + Chinese-
+        //      transcript; a single-form retrieval misses half the
+        //      corpus. Hybrid pulls FANOUT = topK * 4 per side so the
+        //      expected topK in the mock assertion is 20, not 5.
+        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', '什麼是啟發式評估法？', 20, undefined);
+        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', 'What is heuristic evaluation?', 20, undefined);
         expect(semanticSearchMock).toHaveBeenCalledTimes(2);
     });
 
@@ -92,10 +112,11 @@ describe('ragService.chat cross-lingual dispatch', () => {
         await ragService.chat('What is heuristic evaluation?', 'lecture-1');
 
         expect(translateMock).not.toHaveBeenCalled();
+        // English-only path: one hybrid retrieval call, FANOUT=20.
         expect(semanticSearchMock).toHaveBeenCalledWith(
             'lecture-1',
             'What is heuristic evaluation?',
-            5,
+            20,
             undefined,
         );
         expect(semanticSearchMock).toHaveBeenCalledTimes(1);

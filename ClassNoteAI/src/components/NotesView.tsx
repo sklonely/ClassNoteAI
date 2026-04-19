@@ -31,6 +31,7 @@ const markdownSanitizeSchema = {
 };
 import { storageService } from "../services/storageService";
 import { extractKeywords } from "../utils/pdfKeywordExtractor";
+import { detectSectionBoundaries } from "../utils/topicSegmentation";
 import { summarizeStream, usageTracker } from "../services/llm";
 import { toastService } from "../services/toastService";
 import { generateLocalEmbedding } from "../services/embeddingService";
@@ -1106,45 +1107,57 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         await storageService.saveSubtitles(subtitles);
 
         // ===== AUTO-GENERATE NOTE FROM SUBTITLES =====
-        // Group subtitles into sections (every 5 minutes or every 10 segments)
-        const SECTION_DURATION_SEC = 300; // 5 minutes per section
-        const sections: { title: string; content: string; timestamp: number }[] = [];
+        // v0.5.2: topic-based section boundaries via embedding-similarity
+        // dips (see utils/topicSegmentation). When embeddings aren't
+        // available (no Candle model yet, or too few segments) it falls
+        // back to fixed 5-minute splits — matching pre-v0.5.2 behaviour.
+        //
+        // We opportunistically reuse the page-timeline embeddings that
+        // Auto Follow built, if the user had that feature active.
+        // Otherwise we DON'T block on embedding here — note auto-gen
+        // needs to be fast on Stop; uniform 5-min fallback is fine and
+        // the user can re-generate later with map-reduce summary.
+        const segInputs = segments.map((seg) => ({
+          id: seg.id,
+          startTime: seg.startTime,
+          text:
+            seg.displayText ||
+            seg.roughText ||
+            seg.displayTranslation ||
+            seg.roughTranslation ||
+            '',
+        }));
+        // pageTimeline from Auto Follow stores {t, page}; we'd need
+        // segment-aligned embeddings to reuse it directly. For MVP,
+        // just pass `null` — dim-check fallback kicks in, uniform
+        // 5-min split. A follow-up can wire the Auto-Follow embeddings
+        // through if we ever observe uniform-split being a pain point.
+        const boundaries = detectSectionBoundaries(segInputs, null);
 
-        let currentSectionStart = 0;
-        let currentSectionContent: string[] = [];
-        let sectionIndex = 1;
-
-        for (const seg of segments) {
-          const segTimestamp = seg.startTime / 1000;
-
-          // Check if we need to start a new section
-          if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
-            // Save current section
-            sections.push({
-              title: `Section ${sectionIndex}`,
-              content: currentSectionContent.join(' '),
-              timestamp: currentSectionStart,
-            });
-            sectionIndex++;
-            currentSectionStart = segTimestamp;
-            currentSectionContent = [];
-          }
-
-          // Add text to current section (prefer Chinese if available)
-          const text = seg.displayTranslation || seg.roughTranslation || seg.displayText || seg.roughText || '';
-          if (text.trim()) {
-            currentSectionContent.push(text.trim());
-          }
-        }
-
-        // Save the last section
-        if (currentSectionContent.length > 0) {
-          sections.push({
-            title: `Section ${sectionIndex}`,
-            content: currentSectionContent.join(' '),
-            timestamp: currentSectionStart,
+        const sections: { title: string; content: string; timestamp: number }[] =
+          boundaries.map((b, i) => {
+            const startIdx = b.startIdx;
+            const endIdxExclusive =
+              i + 1 < boundaries.length ? boundaries[i + 1].startIdx : segments.length;
+            const content = segments
+              .slice(startIdx, endIdxExclusive)
+              .map(
+                (s) =>
+                  s.displayTranslation ||
+                  s.roughTranslation ||
+                  s.displayText ||
+                  s.roughText ||
+                  '',
+              )
+              .map((t) => t.trim())
+              .filter(Boolean)
+              .join(' ');
+            return {
+              title: `Section ${i + 1}`,
+              content,
+              timestamp: b.timestamp,
+            };
           });
-        }
 
         // Create and save the Note
         const note: Note = {
