@@ -195,11 +195,26 @@ export const videoImportService = {
             language?: string;
             initialPrompt?: string;
             quality?: TranscribeQuality;
+            /** When true, run the LLM fine-refinement pass after rough
+             *  transcribe + CT2 translate finish. Off by default (see
+             *  ImportModal rationale about token cost). */
+            refineWithAI?: boolean;
             onProgress?: (p: ImportProgress) => void;
         } = {},
     ): Promise<{ videoPath: string; segmentCount: number; durationMs: number }> {
         const emit = (p: ImportProgress) => options.onProgress?.(p);
         const quality = options.quality ?? 'fast';
+        const refineWithAI = options.refineWithAI ?? false;
+
+        // Per-stage wall-time profiler. Logs a breakdown at the end so
+        // we can see exactly where the pipeline spent its minutes
+        // ("stage"/"extract"/"transcribe+translate"/"rag"/"fine") and
+        // target the slowest bit next round.
+        const t0 = performance.now();
+        const stageTimes: Record<string, number> = {};
+        const markStage = (name: string) => {
+            stageTimes[name] = (performance.now() - t0) / 1000;
+        };
 
         // 1. Stage the source video under the app's video dir, AND
         //    persist the video_path on the lecture row immediately.
@@ -222,6 +237,7 @@ export const videoImportService = {
                 updated_at: new Date().toISOString(),
             });
         }
+        markStage('stage_copy');
         emit({
             stage: 'video_ready',
             message: '影片已就緒，可以先開始觀看。轉錄中…',
@@ -262,6 +278,7 @@ export const videoImportService = {
         const pcm = await invoke<PcmExtractResult>('extract_video_pcm_to_temp', {
             videoPath,
         });
+        markStage('ffmpeg_pcm_extract');
 
         try {
             // 3. Plan chunks. Last chunk may be shorter than CHUNK_SEC.
@@ -375,14 +392,27 @@ export const videoImportService = {
                 //     only the English text. Each row's UUID is captured
                 //     so the translation step (b) can update the exact
                 //     same row without reading back from DB.
+                //
+                //     Timestamp convention: we store *absolute epoch
+                //     seconds* to match the live-recording path (which
+                //     stores Date.now()/1000 at the moment the segment
+                //     was captured). The SubtitleDisplay component and
+                //     section-timestamp math in NotesView both subtract
+                //     `lecture.created_at` at display time to get the
+                //     relative offset. Storing the video's in-media
+                //     offset as epoch seconds = `created_at + start_ms`
+                //     keeps both paths unified.
                 const nowIso = new Date().toISOString();
+                const createdAtEpochSec = lectureBefore
+                    ? new Date(lectureBefore.created_at).getTime() / 1000
+                    : Date.now() / 1000;
                 const chunkSubtitles: Subtitle[] = chunkSegs.map((seg) => {
                     const id = crypto.randomUUID();
                     savedSubtitleIds.set(seg, id);
                     return {
                         id,
                         lecture_id: lectureId,
-                        timestamp: seg.start_ms / 1000,
+                        timestamp: createdAtEpochSec + seg.start_ms / 1000,
                         text_en: seg.text.trim(),
                         text_zh: undefined,
                         type: 'rough',
@@ -442,7 +472,7 @@ export const videoImportService = {
                         const translatedRows: Subtitle[] = chunkSegs.map((seg, k) => ({
                             id: savedSubtitleIds.get(seg)!,
                             lecture_id: lectureId,
-                            timestamp: seg.start_ms / 1000,
+                            timestamp: createdAtEpochSec + seg.start_ms / 1000,
                             text_en: seg.text.trim(),
                             text_zh: outputs[k]?.trim() || undefined,
                             type: 'rough',
@@ -482,6 +512,7 @@ export const videoImportService = {
             // UI can exit the "importing" state as soon as rough +
             // Google-translated captions are all saved.
             await Promise.all(translationPromises);
+            markStage('transcribe_plus_translate');
 
             // 5. Update lecture duration + mark completed. video_path
             //    was written up-front at the staging step so this is
@@ -499,33 +530,52 @@ export const videoImportService = {
                 });
             }
 
-            // 6. Fine refinement (LLM-backed). Upgrades rough subtitles
-            //    to 'fine' type, correcting ASR errors and producing
-            //    natural Chinese. We await this so the import-active
-            //    progress indicator keeps showing while the LLM batches
-            //    crunch — otherwise the UI would flash "完成" and then
-            //    silently keep mutating subtitles behind the user.
-            try {
-                await runFineRefinementPass(lectureId, emit);
-            } catch (err) {
-                console.warn('[videoImport] fine refinement failed:', err);
-            }
+            // 6. Fine refinement + 7. RAG index can run in parallel:
+            //    fine uses the configured LLM (remote/local), RAG uses
+            //    the local embedding model. They don't contend for any
+            //    shared resource. RAG uses the rough English text —
+            //    fine's mutation of `text_zh` doesn't affect retrieval
+            //    quality (which embeds English).
+            //
+            //    Fine refinement is opt-in per-import via the `refineWithAI`
+            //    flag. Default OFF: a 70-min lecture burns ~130k tokens.
+            //    Users who want it see the cost estimate in ImportModal
+            //    before opting in.
+            const fineTask = refineWithAI
+                ? runFineRefinementPass(lectureId, emit).catch((err) => {
+                      console.warn('[videoImport] fine refinement failed:', err);
+                  })
+                : Promise.resolve();
 
-            // 7. RAG index. Build AI-tutor searchable chunks from the
-            //    final transcript. Uses fine text where available, rough
-            //    otherwise (storageService.getSubtitles returns whatever
-            //    the last save left).
             emit({ stage: 'indexing', message: '建立 AI 助教索引…' });
-            try {
-                const finalSubs = await storageService.getSubtitles(lectureId);
-                const transcriptText = finalSubs
-                    .map((s) => (s.text_en || '').trim())
-                    .filter(Boolean)
-                    .join('\n');
-                await ragService.indexLecture(lectureId, null, transcriptText);
-            } catch (err) {
-                console.warn('[videoImport] RAG index failed:', err);
+            const ragTask = (async () => {
+                try {
+                    const finalSubs = await storageService.getSubtitles(lectureId);
+                    const transcriptText = finalSubs
+                        .map((s) => (s.text_en || '').trim())
+                        .filter(Boolean)
+                        .join('\n');
+                    await ragService.indexLecture(lectureId, null, transcriptText);
+                } catch (err) {
+                    console.warn('[videoImport] RAG index failed:', err);
+                }
+            })();
+
+            await Promise.all([fineTask, ragTask]);
+            markStage('fine_plus_rag');
+
+            // Log a compact per-stage breakdown. Previous stages were
+            // cumulative from t0; turn them into deltas for readability.
+            const prev = { name: 'start', t: 0 };
+            const breakdown: string[] = [];
+            for (const [name, t] of Object.entries(stageTimes)) {
+                breakdown.push(`${name}=${(t - prev.t).toFixed(1)}s`);
+                prev.name = name;
+                prev.t = t;
             }
+            console.log(
+                `[videoImport] TIMING total=${((performance.now() - t0) / 1000).toFixed(1)}s  |  ${breakdown.join('  ')}`,
+            );
 
             emit({ stage: 'done', message: '完成' });
             return {

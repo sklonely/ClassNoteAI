@@ -28,6 +28,17 @@ export interface PasteSubmission {
 export type VideoLanguage = 'auto' | 'en' | 'zh';
 export type VideoQuality = 'fast' | 'standard';
 
+export interface VideoImportOptions {
+    language: VideoLanguage;
+    quality: VideoQuality;
+    /** Run the LLM-backed fine refinement pass after rough transcribe
+     *  + CT2 translate. Default OFF because a 70-min lecture spends
+     *  ~130k tokens on this pass, and cloud providers charge per token
+     *  (GitHub Models free tier rate-limits). Users who have a local
+     *  LLM or are OK burning tokens can toggle it on. */
+    refineWithAI: boolean;
+}
+
 interface Props {
     open: boolean;
     /** Busy state (video import running) — disables interaction + closes. */
@@ -36,9 +47,9 @@ interface Props {
     progressMessage?: string;
     onClose: () => void;
     /** User clicked "匯入影片檔" → run the native file picker. */
-    onPickVideo: (language: VideoLanguage, quality: VideoQuality) => void;
+    onPickVideo: (options: VideoImportOptions) => void;
     /** User dropped a video file directly onto the modal. */
-    onDropVideo: (path: string, language: VideoLanguage, quality: VideoQuality) => void;
+    onDropVideo: (path: string, options: VideoImportOptions) => void;
     /** User filled in the paste form and hit confirm. */
     onSubmitPaste: (submission: PasteSubmission) => void;
 }
@@ -60,6 +71,7 @@ export default function ImportModal({
     const [translate, setTranslate] = useState(true);
     const [videoLang, setVideoLang] = useState<VideoLanguage>('auto');
     const [videoQuality, setVideoQuality] = useState<VideoQuality>('fast');
+    const [refineWithAI, setRefineWithAI] = useState(false);
     const modalRef = useRef<HTMLDivElement>(null);
 
     // Modal is its own drop zone — takes priority over the NotesView
@@ -71,7 +83,11 @@ export default function ImportModal({
         onDrop: (paths) => {
             const video = paths.find((p) => VIDEO_EXT.test(p));
             if (video) {
-                onDropVideo(video, videoLang, videoQuality);
+                onDropVideo(video, {
+                    language: videoLang,
+                    quality: videoQuality,
+                    refineWithAI,
+                });
             }
         },
     });
@@ -129,7 +145,13 @@ export default function ImportModal({
                     <div className="p-6 space-y-4">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <button
-                                onClick={() => onPickVideo(videoLang, videoQuality)}
+                                onClick={() =>
+                                    onPickVideo({
+                                        language: videoLang,
+                                        quality: videoQuality,
+                                        refineWithAI,
+                                    })
+                                }
                                 disabled={isBusy}
                                 className="flex flex-col items-center text-center p-6 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
@@ -199,6 +221,34 @@ export default function ImportModal({
                                     自動偵測偶爾會失準 — 若已知語言建議直接指定
                                 </span>
                             </div>
+                            {/* AI 精修 toggle. Default OFF because a
+                                70-min lecture consumes ~130k tokens through
+                                the user's configured LLM provider, which
+                                is real money on OpenAI/Claude and hits
+                                rate limits on GitHub Models free tier.
+                                Users who want it can opt in; warning copy
+                                below makes the cost visible up-front. */}
+                            <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-400 pt-1">
+                                <input
+                                    type="checkbox"
+                                    checked={refineWithAI}
+                                    onChange={(e) => setRefineWithAI(e.target.checked)}
+                                    disabled={isBusy}
+                                    className="mt-0.5 accent-indigo-500"
+                                />
+                                <span>
+                                    <span className="font-medium text-gray-700 dark:text-gray-300">
+                                        使用 AI 精修字幕
+                                    </span>
+                                    <span className="block text-gray-400 dark:text-gray-500 mt-0.5">
+                                        粗翻譯完成後再請 LLM 修正 ASR 錯誤 + 產生自然中文。
+                                        <span className="text-amber-600 dark:text-amber-500">
+                                            預估 1 小時影片約 130k tokens（GPT-4o ≈ $1、Claude Sonnet ≈ $1.5、GitHub Models 免費但可能撞 rate limit）
+                                        </span>
+                                        。預設關閉。
+                                    </span>
+                                </span>
+                            </label>
                         </div>
                     </div>
                 )}
