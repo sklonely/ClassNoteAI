@@ -72,6 +72,19 @@ REM Hopper / Blackwell.
 set "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;100"
 set "CT2_CUDA_ARCH_LIST=Turing;Ampere;Ada;Hopper;Blackwell"
 set "GGML_CUDA_ARCHITECTURES=75;80;86;89;90;100"
+REM VS 18 (2026) isn't on CUDA 13's official-supported-compiler list —
+REM CUDA Toolkit's `CUDA 13.2.props` reads CudaToolkitDir from
+REM MSBuild properties (NOT CUDA_PATH), and nvcc rejects MSVC 14.50
+REM without explicit override. Two workarounds combined per NVIDIA's
+REM community guide (gist JoanTerra/ffe18eb5d5752e0f4df7d85c8e61f6b6):
+REM   - set CudaToolkitDir so MSBuild can find it
+REM   - pass -allow-unsupported-compiler via CMAKE_CUDA_FLAGS so nvcc
+REM     skips its host-compiler version check
+REM Trailing backslash is required by the props file's HasTrailingSlash
+REM guard.
+set "CudaToolkitDir=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\"
+set "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
+set "CMAKE_CUDA_HOST_COMPILER_FLAGS=-allow-unsupported-compiler"
 echo Using CUDA at %CUDA_PATH%
 goto :cuda_ok
 :no_cuda
