@@ -48,17 +48,25 @@ candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 # Each GPU feature fans out to every crate that can benefit. User
 # directive: "GPU 的加速可以用在任何支援 GPU 加速的項目上。只要我們手邊
 # 有 GPU 資源，且執行速度比 CPU 快，就應該盡可能地使用". So:
-#   - whisper-rs: speech-to-text (the headline win).
-#   - candle-core/candle-nn/candle-transformers: BGE-small embedding
-#     for the RAG index. CPU batch on BGE-small is already fast, but
-#     on a 400-chunk lecture the GPU path still halves wall time.
-#   Vulkan doesn't have Candle support yet, so `gpu-vulkan` covers
-#   only the Whisper path.
+#   - whisper-rs              speech-to-text (headline win; 20× on RTX)
+#   - candle-core/nn/transformers   BGE-small embedding for the RAG
+#                             index. Halves index time on a 400-chunk
+#                             lecture.
+#   - ct2rs                   local translation (M2M-100). `cuda-dynamic-
+#                             loading` means the built binary still
+#                             starts on a machine without cudart + just
+#                             falls back to CPU for translation, rather
+#                             than refusing to launch. Important because
+#                             the same binary ships to users without
+#                             NVIDIA drivers.
+# Vulkan/Metal aren't supported by ct2rs (CUDA-only GPU backend). Metal
+# covers whisper + candle; Vulkan covers only whisper.
 gpu-cuda = [
     "whisper-rs/cuda",
     "candle-core/cuda",
     "candle-nn/cuda",
     "candle-transformers/cuda",
+    "ct2rs/cuda-dynamic-loading",
 ]
 gpu-vulkan = ["whisper-rs/vulkan"]
 gpu-metal = [

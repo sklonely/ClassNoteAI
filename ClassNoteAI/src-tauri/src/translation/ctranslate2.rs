@@ -9,6 +9,8 @@ use ct2rs::tokenizers::sentencepiece::Tokenizer as SentencePieceTokenizer;
  * needs to be configured with the correct source/target languages via
  * tokenizer_config.json or the source.spm/target.spm files.
  */
+#[cfg(feature = "gpu-cuda")]
+use ct2rs::Device;
 use ct2rs::{BatchType, Config, TranslationOptions, Translator};
 use std::path::Path;
 use std::sync::Arc;
@@ -41,8 +43,30 @@ impl CT2Translator {
             return Err(format!("Model path does not exist: {}", model_path));
         }
 
-        // Create translator with default config
+        // Create translator config. When the binary was compiled with
+        // `gpu-cuda`, we probe for a usable CUDA runtime before asking
+        // ct2rs for a CUDA device — `cuda-dynamic-loading` still works
+        // even if cudart is absent at runtime (falls back to CPU), but
+        // checking up-front keeps the log message honest and avoids
+        // ct2rs's generic error if things go sideways.
+        #[cfg(feature = "gpu-cuda")]
+        let mut config: Config = Default::default();
+        #[cfg(not(feature = "gpu-cuda"))]
         let config: Config = Default::default();
+
+        #[cfg(feature = "gpu-cuda")]
+        {
+            let det = crate::gpu::detect(Some("auto"));
+            if det.cuda.is_some() {
+                config.device = Device::CUDA;
+                println!(
+                    "[CT2] CUDA detected ({}), using Device::CUDA",
+                    det.cuda.as_ref().unwrap().gpu_name
+                );
+            } else {
+                println!("[CT2] No CUDA at runtime — using Device::CPU");
+            }
+        }
 
         // Find SentencePiece model file
         let sp_model_path = Path::new(model_path).join("sentencepiece.bpe.model");

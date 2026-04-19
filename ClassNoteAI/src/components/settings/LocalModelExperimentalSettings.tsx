@@ -116,8 +116,11 @@ export default function LocalModelExperimentalSettings() {
                 <div>
                     <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">
                         <Cpu className="w-4 h-4 text-blue-500" />
-                        ASR 加速後端
+                        GPU 加速後端
                     </label>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">
+                        套用到所有支援 GPU 的本地模型：Whisper 轉錄、BGE 向量索引、CT2 本地翻譯。
+                    </p>
 
                     {detection && (
                         <div className="mb-2 p-2.5 rounded-md bg-white dark:bg-slate-900/50 border border-gray-200 dark:border-gray-700 space-y-1">
