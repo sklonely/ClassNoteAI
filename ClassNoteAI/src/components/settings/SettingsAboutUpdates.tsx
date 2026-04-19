@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { Card } from "./shared";
 import { setupService } from "../../services/setupService";
+import { toastService } from "../../services/toastService";
+import { confirmService } from "../../services/confirmService";
 
 interface Props {
   appVersion: string;
@@ -80,24 +82,28 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
 
   const [isResettingSetup, setIsResettingSetup] = useState(false);
   const handleResetSetup = async () => {
-    if (
-      !window.confirm(
-        "重置 Setup Wizard？\n\n" +
-          "下次啟動時會重新顯示新手引導（語言選擇、AI 配置、模型下載檢查）。\n" +
-          "你的課堂、筆記、設定不會被刪除，只是 setup_complete.json 標記會被清掉。"
-      )
-    ) {
-      return;
-    }
+    // Use the themed ConfirmDialog (confirmService) instead of the
+    // native window.confirm/alert combo: native dialogs clash with
+    // the app's dark/purple design and users reported the old flow
+    // looking like OS chrome dropped in mid-page. The success path
+    // is a single toast + short delay before reload -- no more
+    // stacked modal + alert + migration-notice toast pile-up.
+    const ok = await confirmService.ask({
+      title: '重置 Setup Wizard？',
+      message:
+        '下次啟動時會重新顯示新手引導（語言選擇、AI 配置、模型下載檢查）。\n\n' +
+        '你的課堂、筆記、設定不會被刪除，只是 setup_complete.json 標記會被清掉。',
+      confirmLabel: '重置',
+      variant: 'danger',
+    });
+    if (!ok) return;
     setIsResettingSetup(true);
     try {
       await setupService.resetStatus();
-      window.alert("Setup wizard 已重置。重新載入 app 後會出現引導流程。");
-      // 重新整理讓 App.tsx 馬上重新檢查 setup 狀態
-      window.location.reload();
+      toastService.success('Setup wizard 已重置', '重新載入中…');
+      setTimeout(() => window.location.reload(), 600);
     } catch (e) {
-      window.alert(`重置失敗：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
+      toastService.error('重置失敗', e instanceof Error ? e.message : String(e));
       setIsResettingSetup(false);
     }
   };
