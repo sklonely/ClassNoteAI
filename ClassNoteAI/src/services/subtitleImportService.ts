@@ -97,7 +97,9 @@ function parseTimestamped(input: string): ParsedCue[] {
             .join(' ')
             // Strip VTT inline speaker tags and simple HTML from some
             // exporters (Coursera / YouTube).
-            .replace(/<[^>]+>/g, '')
+            // Remove angle brackets directly to avoid incomplete
+            // multi-character sanitization where tags can re-form.
+            .replace(/[<>]/g, '')
             .trim();
         if (!text) continue;
         cues.push({ text, startMs, endMs });
