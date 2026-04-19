@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot, Film } from "lucide-react";
@@ -1061,35 +1061,55 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // with subtitles + AI 助教 fully indexed.
   /** Reload subtitles from DB into subtitleService so the Review
    *  mode subtitle panel reflects progressive video-import progress.
-   *  Called from the import progress callback whenever a chunk has
-   *  just been saved — cheap enough (single SQLite query) to rerun
-   *  per chunk for a 70-min lecture (70 chunks). */
-  const reloadSubtitlesFromDb = async (lid: string) => {
+   *
+   *  v0.6.1 perf fix: uses `subtitleService.setSegments` (single
+   *  notify) instead of the old `clear() + addSegment × N` loop
+   *  (N+1 notifies, each triggering a full React re-render of the
+   *  subtitle panel). The import pipeline fires `subtitlesChanged`
+   *  up to 2× per chunk = ~140 refreshes on a 70-chunk lecture;
+   *  with 1000 segments total, the old path racked up ~140k
+   *  unnecessary re-renders.
+   *
+   *  Debounced at the callsite (`scheduleSubtitlesReload`) so
+   *  back-to-back chunks don't even queue redundant DB reads. */
+  const reloadSubtitlesFromDb = useCallback(async (lid: string) => {
     try {
       const subs = await storageService.getSubtitles(lid);
-      subtitleService.clear();
-      subtitleService.setLectureId(lid);
-      for (const sub of subs) {
-        subtitleService.addSegment({
-          id: sub.id,
-          roughText: sub.text_en,
-          roughTranslation: sub.text_zh,
-          displayText: sub.text_en,
-          displayTranslation: sub.text_zh,
-          startTime: sub.timestamp * 1000,
-          endTime: (sub.timestamp + 5) * 1000,
-          source: sub.type === 'fine' ? 'fine' : 'rough',
-          translationSource: sub.text_zh
-            ? (sub.type === 'fine' ? 'fine' : 'rough')
-            : undefined,
-          text: sub.text_en,
-          translatedText: sub.text_zh,
-        });
-      }
+      const segments = subs.map((sub) => ({
+        id: sub.id,
+        roughText: sub.text_en,
+        roughTranslation: sub.text_zh,
+        displayText: sub.text_en,
+        displayTranslation: sub.text_zh,
+        startTime: sub.timestamp * 1000,
+        endTime: (sub.timestamp + 5) * 1000,
+        source: (sub.type === 'fine' ? 'fine' : 'rough') as 'fine' | 'rough',
+        translationSource: (sub.text_zh
+          ? sub.type === 'fine'
+            ? ('fine' as const)
+            : ('rough' as const)
+          : undefined),
+        text: sub.text_en,
+        translatedText: sub.text_zh,
+      }));
+      subtitleService.setSegments(segments, lid);
     } catch (err) {
       console.warn('[NotesView] reloadSubtitlesFromDb failed:', err);
     }
-  };
+  }, []);
+
+  /** Coalesces rapid `subtitlesChanged` events into at most one
+   *  reload per 400 ms. Video import with fast transcribe + parallel
+   *  translate fires reload requests every 100-500 ms; without
+   *  coalescing the DB + React work stacks up and blocks paint. */
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleSubtitlesReload = useCallback((lid: string) => {
+    if (reloadTimer.current) return; // already scheduled
+    reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = null;
+      void reloadSubtitlesFromDb(lid);
+    }, 400);
+  }, [reloadSubtitlesFromDb]);
 
   const runVideoImport = async (
     sourcePath: string,
@@ -1116,17 +1136,25 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             const fresh = await storageService.getLecture(lectureId);
             if (fresh) setCurrentLectureData(fresh);
             setIsImportModalOpen(false);
+            // Video import = the lecture is done recording. Switch to
+            // Notes Review and open the Subtitles/Audio tab, because
+            // the import's streaming caption updates happen there — the
+            // Notes tab is for post-hoc reading and would stay empty
+            // until loadLectureData runs at the end.
             setViewMode('review');
+            setActiveTab('subtitles');
             toastService.success(
               '影片已就緒',
               '可以開始觀看，字幕會隨轉錄逐步填入。',
             );
           }
           // A chunk just persisted new subtitles (or translations).
-          // Reload the in-memory subtitle set so the display updates
-          // without waiting for the whole pipeline to finish.
+          // Schedule a coalesced reload — on a fast transcribe run
+          // (GPU + base model) the pipeline fires this 2-3× per
+          // second, and running it synchronously here would block the
+          // JS thread on DB + re-render before the next chunk emits.
           if (p.subtitlesChanged) {
-            await reloadSubtitlesFromDb(lectureId);
+            scheduleSubtitlesReload(lectureId);
           }
         },
       });

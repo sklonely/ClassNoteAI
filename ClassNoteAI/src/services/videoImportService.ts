@@ -314,6 +314,17 @@ export const videoImportService = {
             const allSegments: WhisperSegment[] = [];
             const translationPromises: Promise<void>[] = [];
 
+            // Per-chunk latency records so the end-of-run TIMING line
+            // can surface p50/p95 for each stage. Distinguishes I/O
+            // (DB save) from compute (Whisper/CT2) — with GPU Whisper
+            // getting near-instant, the next bottleneck is almost
+            // always the DB writes or the Tauri IPC round-trip.
+            const chunkTimings: {
+                transcribeMs: number;
+                saveMs: number;
+                translateMs: number;
+            }[] = [];
+
             let transcribed = 0;
             let translated = 0;
             // Seed language from caller or leave null for auto-detect.
@@ -368,7 +379,8 @@ export const videoImportService = {
                     },
                 );
 
-                const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                const transcribeMs = performance.now() - t0;
+                const elapsed = (transcribeMs / 1000).toFixed(1);
                 console.log(
                     `[videoImport] chunk ${i + 1}/${total} transcribe done in ${elapsed}s — segments=${result.segments.length}, lang=${result.language ?? 'unknown'}`,
                 );
@@ -420,9 +432,12 @@ export const videoImportService = {
                         created_at: nowIso,
                     };
                 });
+                let saveMs = 0;
                 if (chunkSubtitles.length > 0) {
+                    const tSave = performance.now();
                     try {
                         await storageService.saveSubtitles(chunkSubtitles);
+                        saveMs = performance.now() - tSave;
                         emit({
                             stage: 'transcribing',
                             message: `轉錄第 ${i + 1}/${total} 段中（已完成 ${transcribed}，翻譯 ${translated}/${total}）`,
@@ -432,12 +447,21 @@ export const videoImportService = {
                             subtitlesChanged: true,
                         });
                     } catch (err) {
+                        saveMs = performance.now() - tSave;
                         console.warn(
                             `[videoImport] chunk ${i + 1} subtitle save failed:`,
                             err,
                         );
                     }
                 }
+                // Reserve a timing slot now; translate promise below
+                // writes to this exact index when it finishes.
+                const timingIdx = chunkTimings.length;
+                chunkTimings.push({
+                    transcribeMs,
+                    saveMs,
+                    translateMs: 0,
+                });
 
                 // (b) Kick off translation for just this chunk. When it
                 //     finishes we update the rows saved in (a) in place
@@ -445,6 +469,7 @@ export const videoImportService = {
                 //     English-only — same graceful fallback as before.
                 translationPromises.push(
                     (async () => {
+                        const tTr = performance.now();
                         const texts = chunkSegs.map((s) => s.text.trim());
                         const outputs: string[] = new Array(texts.length).fill('');
                         for (let i = 0; i < texts.length; i += TRANSLATE_BATCH) {
@@ -488,8 +513,9 @@ export const videoImportService = {
                             );
                         }
                         translated++;
+                        chunkTimings[timingIdx].translateMs = performance.now() - tTr;
                         console.log(
-                            `[videoImport] chunk ${chunkIndex + 1}/${total} translate done — ${translated}/${total} total`,
+                            `[videoImport] chunk ${chunkIndex + 1}/${total} translate done in ${(chunkTimings[timingIdx].translateMs / 1000).toFixed(2)}s — ${translated}/${total} total`,
                         );
                         emit({
                             stage: transcribed < total ? 'transcribing' : 'translating',
@@ -575,6 +601,29 @@ export const videoImportService = {
             }
             console.log(
                 `[videoImport] TIMING total=${((performance.now() - t0) / 1000).toFixed(1)}s  |  ${breakdown.join('  ')}`,
+            );
+
+            // Per-chunk latency percentiles. With GPU transcribe
+            // dropping to sub-second, the bottleneck shifts from
+            // compute to IPC / DB writes — this surfaces which
+            // stage is worth optimising next (e.g. if saveMs p95
+            // > transcribeMs p95 you're SQLite-bound, not model-
+            // bound).
+            const pct = (arr: number[], p: number) => {
+                if (arr.length === 0) return 0;
+                const s = [...arr].sort((a, b) => a - b);
+                return s[Math.min(s.length - 1, Math.floor((s.length - 1) * p))];
+            };
+            const tr = chunkTimings.map((c) => c.transcribeMs);
+            const sv = chunkTimings.map((c) => c.saveMs);
+            const tl = chunkTimings.map((c) => c.translateMs).filter((v) => v > 0);
+            const sum = (arr: number[]) => arr.reduce((a, b) => a + b, 0);
+            const fmt = (ms: number) => (ms / 1000).toFixed(2) + 's';
+            console.log(
+                `[videoImport] PER-CHUNK n=${tr.length}` +
+                    ` | transcribe p50=${fmt(pct(tr, 0.5))} p95=${fmt(pct(tr, 0.95))} sum=${fmt(sum(tr))}` +
+                    ` | save p50=${fmt(pct(sv, 0.5))} p95=${fmt(pct(sv, 0.95))} sum=${fmt(sum(sv))}` +
+                    ` | translate p50=${fmt(pct(tl, 0.5))} p95=${fmt(pct(tl, 0.95))} sum=${fmt(sum(tl))}`,
             );
 
             emit({ stage: 'done', message: '完成' });
