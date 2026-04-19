@@ -26,6 +26,7 @@ export interface PasteSubmission {
 }
 
 export type VideoLanguage = 'auto' | 'en' | 'zh';
+export type VideoQuality = 'fast' | 'standard';
 
 interface Props {
     open: boolean;
@@ -35,9 +36,9 @@ interface Props {
     progressMessage?: string;
     onClose: () => void;
     /** User clicked "匯入影片檔" → run the native file picker. */
-    onPickVideo: (language: VideoLanguage) => void;
+    onPickVideo: (language: VideoLanguage, quality: VideoQuality) => void;
     /** User dropped a video file directly onto the modal. */
-    onDropVideo: (path: string, language: VideoLanguage) => void;
+    onDropVideo: (path: string, language: VideoLanguage, quality: VideoQuality) => void;
     /** User filled in the paste form and hit confirm. */
     onSubmitPaste: (submission: PasteSubmission) => void;
 }
@@ -58,6 +59,7 @@ export default function ImportModal({
     const [pasteLang, setPasteLang] = useState<SubtitleLanguage>('en');
     const [translate, setTranslate] = useState(true);
     const [videoLang, setVideoLang] = useState<VideoLanguage>('auto');
+    const [videoQuality, setVideoQuality] = useState<VideoQuality>('fast');
     const modalRef = useRef<HTMLDivElement>(null);
 
     // Modal is its own drop zone — takes priority over the NotesView
@@ -69,7 +71,7 @@ export default function ImportModal({
         onDrop: (paths) => {
             const video = paths.find((p) => VIDEO_EXT.test(p));
             if (video) {
-                onDropVideo(video, videoLang);
+                onDropVideo(video, videoLang, videoQuality);
             }
         },
     });
@@ -127,7 +129,7 @@ export default function ImportModal({
                     <div className="p-6 space-y-4">
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <button
-                                onClick={() => onPickVideo(videoLang)}
+                                onClick={() => onPickVideo(videoLang, videoQuality)}
                                 disabled={isBusy}
                                 className="flex flex-col items-center text-center p-6 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
@@ -156,29 +158,47 @@ export default function ImportModal({
                                 </div>
                             </button>
                         </div>
-                        {/* Language row applies to the video import path.
-                            Whisper's auto-detector runs on the first 30 s of
-                            audio and has been observed to land on garbage
-                            (e.g. 'af' with p=0.01) when lectures open with
-                            silence or noise — letting the user pin it
-                            avoids that failure mode. */}
-                        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-                            <span>影片語言：</span>
-                            <select
-                                value={videoLang}
-                                onChange={(e) =>
-                                    setVideoLang(e.target.value as VideoLanguage)
-                                }
-                                disabled={isBusy}
-                                className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 disabled:opacity-50"
-                            >
-                                <option value="auto">自動偵測</option>
-                                <option value="en">英文</option>
-                                <option value="zh">中文</option>
-                            </select>
-                            <span className="text-gray-400">
-                                自動偵測偶爾會失準 — 若已知語言建議直接指定
-                            </span>
+                        {/* Video-import options. Applies to both the
+                            click-pick path and the drop path. Quality
+                            defaults to 'fast' because bulk transcription
+                            on CPU with the standard (large/turbo) model
+                            runs at ~1x realtime — a 70-min video is
+                            ~70 min of CPU. Base is ~5x faster and
+                            accurate enough for English lectures; users
+                            who need maximum accuracy can flip back. */}
+                        <div className="space-y-2 pt-1">
+                            <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                                <span className="min-w-[4rem]">轉錄速度：</span>
+                                <select
+                                    value={videoQuality}
+                                    onChange={(e) =>
+                                        setVideoQuality(e.target.value as VideoQuality)
+                                    }
+                                    disabled={isBusy}
+                                    className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 disabled:opacity-50"
+                                >
+                                    <option value="fast">快速（base 模型，約 5–10 分鐘/小時）</option>
+                                    <option value="standard">標準（依設定，約 30–60 分鐘/小時）</option>
+                                </select>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                                <span className="min-w-[4rem]">影片語言：</span>
+                                <select
+                                    value={videoLang}
+                                    onChange={(e) =>
+                                        setVideoLang(e.target.value as VideoLanguage)
+                                    }
+                                    disabled={isBusy}
+                                    className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 disabled:opacity-50"
+                                >
+                                    <option value="auto">自動偵測</option>
+                                    <option value="en">英文</option>
+                                    <option value="zh">中文</option>
+                                </select>
+                                <span className="text-gray-400">
+                                    自動偵測偶爾會失準 — 若已知語言建議直接指定
+                                </span>
+                            </div>
                         </div>
                     </div>
                 )}

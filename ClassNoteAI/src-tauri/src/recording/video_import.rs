@@ -19,6 +19,22 @@ use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use tokio::sync::Mutex as TokioMutex;
+
+use crate::whisper::WhisperService;
+
+/// Dedicated Whisper service slot for bulk video import. We keep this
+/// separate from the main WHISPER_SERVICE so:
+///   - The user's live-recording model (often large-v3-turbo) stays
+///     loaded and ready — video import doesn't evict it.
+///   - Import can use a faster model (base / small) without touching
+///     the live path. A 1-hour video on large-v3-turbo CPU is ~40 min;
+///     on base it's ~5 min. For bulk transcription the accuracy trade
+///     is almost always worth it.
+/// The tuple carries the loaded model's path so successive slice calls
+/// in the same import reuse the model instead of reloading per chunk.
+static IMPORT_WHISPER_SERVICE: TokioMutex<Option<(String, WhisperService)>> =
+    TokioMutex::const_new(None);
 
 /// Run ffmpeg to decode a video file into raw 16 kHz mono i16 PCM.
 /// Returns the full PCM samples in memory; for typical lecture lengths
@@ -340,6 +356,13 @@ pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractR
 /// Transcribe a [start_sec, end_sec) range of an on-disk PCM file.
 /// The returned segment timestamps are shifted by `start_sec * 1000`
 /// so the frontend can concatenate slices without further adjustment.
+///
+/// When `model_override_path` is `Some`, use a separate Whisper
+/// instance loaded from that file instead of the main WHISPER_SERVICE.
+/// This drives the "fast import" path where bulk video transcription
+/// runs on a smaller model (base) while live recording keeps the
+/// user's larger model loaded in WHISPER_SERVICE. When `None`, falls
+/// back to WHISPER_SERVICE (same as before).
 #[tauri::command]
 pub async fn transcribe_pcm_file_slice(
     pcm_path: String,
@@ -348,11 +371,12 @@ pub async fn transcribe_pcm_file_slice(
     initial_prompt: Option<String>,
     language: Option<String>,
     options: Option<crate::whisper::transcribe::TranscriptionOptions>,
+    model_override_path: Option<String>,
 ) -> Result<crate::whisper::transcribe::TranscriptionResult, String> {
     let t0 = std::time::Instant::now();
     println!(
-        "[video_import] slice start: {:.1}..{:.1}s, lang={:?}, pcm={}",
-        start_sec, end_sec, language, pcm_path
+        "[video_import] slice start: {:.1}..{:.1}s, lang={:?}, override={:?}, pcm={}",
+        start_sec, end_sec, language, model_override_path, pcm_path
     );
     if end_sec <= start_sec {
         return Err("end_sec must be > start_sec".to_string());
@@ -393,40 +417,144 @@ pub async fn transcribe_pcm_file_slice(
     }
 
     let t_lock = std::time::Instant::now();
-    let service_guard = crate::WHISPER_SERVICE.lock().await;
-    let service = service_guard
-        .as_ref()
-        .ok_or_else(|| "Whisper 模型未加載".to_string())?;
-    println!(
-        "[video_import] slice acquired WHISPER_SERVICE lock in {:.2}s",
-        t_lock.elapsed().as_secs_f64()
-    );
+    let result = if let Some(ref override_path) = model_override_path {
+        // Fast-import path: dedicated IMPORT_WHISPER_SERVICE with the
+        // caller-specified model. First slice in an import pays the
+        // model-load cost (~0.5-2s); subsequent slices reuse the
+        // cached model since we key on path.
+        let mut guard = IMPORT_WHISPER_SERVICE.lock().await;
+        let needs_load = match guard.as_ref() {
+            Some((loaded_path, _)) => loaded_path != override_path,
+            None => true,
+        };
+        if needs_load {
+            if !Path::new(override_path).exists() {
+                return Err(format!(
+                    "指定的 Whisper 模型檔案不存在: {}",
+                    override_path
+                ));
+            }
+            println!(
+                "[video_import] loading import-side Whisper model: {}",
+                override_path
+            );
+            let t_load = std::time::Instant::now();
+            let mut svc = WhisperService::new();
+            svc.load_model(override_path)
+                .await
+                .map_err(|e| format!("模型加載失敗: {}", e))?;
+            println!(
+                "[video_import] import model loaded in {:.2}s",
+                t_load.elapsed().as_secs_f64()
+            );
+            *guard = Some((override_path.to_string(), svc));
+        }
+        let (_, service) = guard.as_ref().unwrap();
+        println!(
+            "[video_import] slice acquired IMPORT_WHISPER lock in {:.2}s",
+            t_lock.elapsed().as_secs_f64()
+        );
 
-    let t_whisper = std::time::Instant::now();
-    let mut result = service
-        .transcribe(
-            &samples,
-            PCM_SAMPLE_RATE,
-            initial_prompt.as_deref(),
-            language.as_deref(),
-            options,
-        )
-        .await
-        .map_err(|e| format!("轉錄失敗: {}", e))?;
-    println!(
-        "[video_import] slice whisper done in {:.2}s — segments={} lang={:?}, total slice {:.2}s",
-        t_whisper.elapsed().as_secs_f64(),
-        result.segments.len(),
-        result.language,
-        t0.elapsed().as_secs_f64()
-    );
+        let t_whisper = std::time::Instant::now();
+        let r = service
+            .transcribe(
+                &samples,
+                PCM_SAMPLE_RATE,
+                initial_prompt.as_deref(),
+                language.as_deref(),
+                options,
+            )
+            .await
+            .map_err(|e| format!("轉錄失敗: {}", e))?;
+        println!(
+            "[video_import] slice whisper (import) done in {:.2}s — segments={} lang={:?}, total slice {:.2}s",
+            t_whisper.elapsed().as_secs_f64(),
+            r.segments.len(),
+            r.language,
+            t0.elapsed().as_secs_f64()
+        );
+        r
+    } else {
+        // Default path: share the main WHISPER_SERVICE with live
+        // recording. May contend if the user imports while a mic
+        // capture is running, but that's a rare race.
+        let service_guard = crate::WHISPER_SERVICE.lock().await;
+        let service = service_guard
+            .as_ref()
+            .ok_or_else(|| "Whisper 模型未加載".to_string())?;
+        println!(
+            "[video_import] slice acquired WHISPER_SERVICE lock in {:.2}s",
+            t_lock.elapsed().as_secs_f64()
+        );
 
+        let t_whisper = std::time::Instant::now();
+        let r = service
+            .transcribe(
+                &samples,
+                PCM_SAMPLE_RATE,
+                initial_prompt.as_deref(),
+                language.as_deref(),
+                options,
+            )
+            .await
+            .map_err(|e| format!("轉錄失敗: {}", e))?;
+        println!(
+            "[video_import] slice whisper done in {:.2}s — segments={} lang={:?}, total slice {:.2}s",
+            t_whisper.elapsed().as_secs_f64(),
+            r.segments.len(),
+            r.language,
+            t0.elapsed().as_secs_f64()
+        );
+        r
+    };
+    let mut result = result;
     let offset_ms = (start_sec * 1000.0) as u64;
     for seg in result.segments.iter_mut() {
         seg.start_ms = seg.start_ms.saturating_add(offset_ms);
         seg.end_ms = seg.end_ms.saturating_add(offset_ms);
     }
     Ok(result)
+}
+
+/// Release the import-side Whisper service — called by the frontend
+/// orchestrator when a video import pipeline finishes (or errors). We
+/// don't auto-unload because the user may run several imports back-to
+/// -back with the same model, and each load costs 0.5–2 s. Once idle,
+/// frees ~150 MB for base / ~200 MB for small.
+#[tauri::command]
+pub async fn release_import_whisper() -> Result<(), String> {
+    let mut guard = IMPORT_WHISPER_SERVICE.lock().await;
+    *guard = None;
+    println!("[video_import] IMPORT_WHISPER_SERVICE released");
+    Ok(())
+}
+
+/// Return the absolute path to a preset Whisper model file under the
+/// app's `models/whisper/` dir. Used by the import pipeline so the
+/// frontend can ask for "fast" without hardcoding platform-specific
+/// paths in TS.
+#[tauri::command]
+pub async fn resolve_whisper_model_path(preset: String) -> Result<String, String> {
+    let filename = match preset.as_str() {
+        "base" => "ggml-base.bin",
+        "small" => "ggml-small.bin",
+        "small-q5" => "ggml-small-q5.bin",
+        "medium" => "ggml-medium.bin",
+        "large" => "ggml-large.bin",
+        "turbo" => "ggml-large-v3-turbo-q5_0.bin",
+        _ => return Err(format!("unknown preset: {}", preset)),
+    };
+    let dir = crate::paths::get_whisper_models_dir()
+        .map_err(|e| format!("whisper models dir unavailable: {}", e))?;
+    let full = dir.join(filename);
+    if !full.exists() {
+        return Err(format!(
+            "preset {} ({}) not downloaded",
+            preset,
+            full.display()
+        ));
+    }
+    Ok(full.to_string_lossy().into_owned())
 }
 
 /// Remove the temp `.transcribe.pcm` file once the orchestrator is done

@@ -76,6 +76,12 @@ interface PcmExtractResult {
 const CHUNK_SEC = 300;
 const TRANSLATE_BATCH = 64;
 
+/** Which model Rust should use for this import's transcription.
+ *  - `'fast'`: swap in ggml-base.bin (~5x faster than turbo on CPU).
+ *  - `'standard'`: use whatever WHISPER_SERVICE already has loaded
+ *    (what the user picked in settings for live recording). */
+export type TranscribeQuality = 'fast' | 'standard';
+
 export const videoImportService = {
     async importVideo(
         lectureId: string,
@@ -83,10 +89,12 @@ export const videoImportService = {
         options: {
             language?: string;
             initialPrompt?: string;
+            quality?: TranscribeQuality;
             onProgress?: (p: ImportProgress) => void;
         } = {},
     ): Promise<{ videoPath: string; segmentCount: number; durationMs: number }> {
         const emit = (p: ImportProgress) => options.onProgress?.(p);
+        const quality = options.quality ?? 'fast';
 
         // 1. Stage the source video under the app's video dir.
         emit({ stage: 'staging', message: '正在複製影片到應用目錄…' });
@@ -94,6 +102,33 @@ export const videoImportService = {
             lectureId,
             sourcePath,
         });
+
+        // 1.5. Resolve model override up-front. Failing early lets us
+        //      surface "fast mode requires ggml-base.bin" before the
+        //      user waits through ffmpeg + chunk planning only to hit
+        //      the error on slice #1. 'standard' skips this entirely
+        //      and keeps model_override_path null.
+        let modelOverridePath: string | null = null;
+        if (quality === 'fast') {
+            try {
+                modelOverridePath = await invoke<string>('resolve_whisper_model_path', {
+                    preset: 'base',
+                });
+                console.log(
+                    '[videoImport] fast mode — using model:',
+                    modelOverridePath,
+                );
+            } catch (err) {
+                console.warn(
+                    '[videoImport] fast-mode model unavailable, falling back to standard:',
+                    err,
+                );
+                // Degrade gracefully to the user's main model. An
+                // alternative would be to abort with a "please
+                // download base first" dialog; preferring to just
+                // work-slowly-but-work for the MVP.
+            }
+        }
 
         // 2. Extract PCM to a temp file next to the staged video. Disk
         //    write is I/O-bound and cheap (~3 s for 70 min); doing it
@@ -186,6 +221,7 @@ export const videoImportService = {
                         initialPrompt: options.initialPrompt ?? null,
                         language: currentLang,
                         options: null,
+                        modelOverridePath,
                     },
                 );
 
@@ -312,6 +348,12 @@ export const videoImportService = {
             // mid-run (unlikely in MVP — there's no cancel button), the
             // leftover .pcm is still deleted here.
             void invoke('delete_temp_pcm', { pcmPath: pcm.pcm_path }).catch(() => {});
+            // Also release the import-side Whisper model so we're not
+            // holding ~150 MB idle. Next import will reload on first
+            // slice (~1 s).
+            if (modelOverridePath) {
+                void invoke('release_import_whisper').catch(() => {});
+            }
         }
     },
 };

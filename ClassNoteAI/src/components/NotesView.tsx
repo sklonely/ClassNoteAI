@@ -40,7 +40,7 @@ import { openDetachedAiTutor } from "../services/aiTutorWindow";
 import { videoImportService } from "../services/videoImportService";
 import { subtitleImportService } from "../services/subtitleImportService";
 import { selectVideoFile } from "../services/fileService";
-import ImportModal, { PasteSubmission, VideoLanguage } from "./ImportModal";
+import ImportModal, { PasteSubmission, VideoLanguage, VideoQuality } from "./ImportModal";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -1076,13 +1076,18 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // translate, save subtitles, index for RAG. User can leave the
   // window; when they come back, Notes Review mode shows the video
   // with subtitles + AI 助教 fully indexed.
-  const runVideoImport = async (sourcePath: string, language: VideoLanguage = 'auto') => {
+  const runVideoImport = async (
+    sourcePath: string,
+    language: VideoLanguage = 'auto',
+    quality: VideoQuality = 'fast',
+  ) => {
     if (!lectureId || isImportingVideo) return;
     setIsImportingVideo(true);
     setImportProgressMessage('開始匯入…');
     try {
       const result = await videoImportService.importVideo(lectureId, sourcePath, {
         language,
+        quality,
         onProgress: (p) => setImportProgressMessage(p.message),
       });
       const fresh = await storageService.getLecture(lectureId);
@@ -1100,10 +1105,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
-  const handlePickAndImportVideo = async (language: VideoLanguage) => {
+  const handlePickAndImportVideo = async (language: VideoLanguage, quality: VideoQuality) => {
     const sourcePath = await selectVideoFile();
     if (!sourcePath) return;
-    await runVideoImport(sourcePath, language);
+    await runVideoImport(sourcePath, language, quality);
   };
 
   const handleImportPastedSubtitles = async (submission: PasteSubmission) => {
@@ -2357,7 +2362,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         progressMessage={importProgressMessage}
         onClose={() => setIsImportModalOpen(false)}
         onPickVideo={handlePickAndImportVideo}
-        onDropVideo={(path, language) => runVideoImport(path, language)}
+        onDropVideo={(path, language, quality) => runVideoImport(path, language, quality)}
         onSubmitPaste={handleImportPastedSubtitles}
       />
     </div >

@@ -1876,6 +1876,8 @@ pub fn run() {
             recording::video_import::extract_video_pcm_to_temp,
             recording::video_import::transcribe_pcm_file_slice,
             recording::video_import::delete_temp_pcm,
+            recording::video_import::release_import_whisper,
+            recording::video_import::resolve_whisper_model_path,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())
