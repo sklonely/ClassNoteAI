@@ -78,6 +78,40 @@ interface PcmExtractResult {
     sample_count: number;
 }
 
+/** Minimal FIFO semaphore — caps concurrent execution of the async
+ *  tasks handed to `run`. Used to stop the translate pipeline from
+ *  firing 70 simultaneous `translate_ct2_batch` invokes at a single
+ *  CT2 translator (which thread-parallelizes internally and thrashes
+ *  the CPU/GPU when over-saturated).
+ *
+ *  Not worth pulling a `p-limit` npm dep for 15 lines.
+ */
+function makeLimiter(max: number) {
+    let running = 0;
+    const queue: (() => void)[] = [];
+    const next = () => {
+        if (running >= max) return;
+        const run = queue.shift();
+        if (run) {
+            running++;
+            run();
+        }
+    };
+    return async <T>(task: () => Promise<T>): Promise<T> => {
+        return new Promise<T>((resolve, reject) => {
+            queue.push(() => {
+                task()
+                    .then(resolve, reject)
+                    .finally(() => {
+                        running--;
+                        next();
+                    });
+            });
+            next();
+        });
+    };
+}
+
 /** Chunk length trade-off. Smaller chunks → first subtitles appear
  *  faster (better perceived latency) at the cost of more per-chunk
  *  warmup overhead. 60 s is the sweet spot for batch import:
@@ -95,7 +129,21 @@ interface PcmExtractResult {
  *  video where we already have the whole file — so we don't need
  *  LocalAgreement; just a small-enough chunk to feel responsive. */
 const CHUNK_SEC = 60;
-const TRANSLATE_BATCH = 64;
+/** Segments per invoke to translate_ct2_batch. Larger = fewer IPC
+ *  round-trips; CT2's internal batching handles the work. Bumped from
+ *  64 → 256 after the first probe showed translation stuck on IPC
+ *  overhead (user observation: "卡在等待資料傳入的部分"). A 60s
+ *  chunk has ~15-25 segments, so one chunk now fits in a single call
+ *  with headroom. Larger batches would need us to aggregate across
+ *  chunks and that loses the per-chunk save boundary. */
+const TRANSLATE_BATCH = 256;
+/** Ceiling on concurrent `translate_ct2_batch` invokes. The first
+ *  probe fired 70 in parallel at the same CT2 translator; CT2 already
+ *  thread-parallelizes per call, so stacking 70 on top thrashes the
+ *  CPU scheduler and actually *slows* each call. Empirically 2 is a
+ *  good ceiling — the translator stays busy, no idle slots, no
+ *  contention. Raise only if per-chunk translate_p95 is >> 1s. */
+const TRANSLATE_CONCURRENCY = 2;
 
 /** LLM-backed fine refinement pass. Runs AFTER rough transcribe +
  *  CT2 translate have landed all subtitles to DB. Each batch asks the
@@ -313,6 +361,7 @@ export const videoImportService = {
             const savedSubtitleIds = new Map<WhisperSegment, string>();
             const allSegments: WhisperSegment[] = [];
             const translationPromises: Promise<void>[] = [];
+            const translateLimit = makeLimiter(TRANSLATE_CONCURRENCY);
 
             // Per-chunk latency records so the end-of-run TIMING line
             // can surface p50/p95 for each stage. Distinguishes I/O
@@ -468,7 +517,7 @@ export const videoImportService = {
                 //     with the Chinese text. Errors degrade to
                 //     English-only — same graceful fallback as before.
                 translationPromises.push(
-                    (async () => {
+                    translateLimit(async () => {
                         const tTr = performance.now();
                         const texts = chunkSegs.map((s) => s.text.trim());
                         const outputs: string[] = new Array(texts.length).fill('');
@@ -528,7 +577,7 @@ export const videoImportService = {
                             totalChunks: total,
                             subtitlesChanged: true,
                         });
-                    })(),
+                    }),
                 );
             }
 
