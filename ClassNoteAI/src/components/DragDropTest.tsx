@@ -6,11 +6,11 @@ import { useState } from "react";
 import DragDropZone from "./DragDropZone";
 
 export default function DragDropTest() {
-  const [droppedFiles, setDroppedFiles] = useState<File[]>([]);
+  const [droppedPaths, setDroppedPaths] = useState<string[]>([]);
 
-  const handleFileDrop = (file: File) => {
-    console.log("測試組件收到文件:", file.name);
-    setDroppedFiles(prev => [...prev, file]);
+  const handleFileDrop = (paths: string[]) => {
+    console.log("測試組件收到檔案:", paths);
+    setDroppedPaths(prev => [...prev, ...paths]);
   };
 
   return (
@@ -22,14 +22,12 @@ export default function DragDropTest() {
       >
         <div className="text-center">
           <p className="text-lg mb-4">拖放文件到此處測試</p>
-          {droppedFiles.length > 0 && (
+          {droppedPaths.length > 0 && (
             <div className="mt-4">
-              <p className="font-semibold mb-2">已接收的文件:</p>
+              <p className="font-semibold mb-2">已接收的檔案:</p>
               <ul className="list-disc list-inside">
-                {droppedFiles.map((file, i) => (
-                  <li key={i}>
-                    {file.name} ({file.size} bytes, {file.type})
-                  </li>
+                {droppedPaths.map((p, i) => (
+                  <li key={i}>{p}</li>
                 ))}
               </ul>
             </div>

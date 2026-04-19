@@ -123,7 +123,13 @@ class RAGService {
             // enough to amortize the per-call overhead that was eating
             // 70% of wall time before batching (tokenizer lock acquire
             // + Tauri IPC serialize/deserialize × 100 chunks).
-            const BATCH = 16;
+            // v0.6.0: 16 → 32. BGE-small-en-v1.5 is ~33M params; a
+            // batch of 32 at seq_len 512 costs ~120 MB of activation
+            // memory, well within a desktop's headroom. Cuts wall time
+            // for a 70-min lecture's ~200 chunks from ~13 batches to
+            // ~7, and the embedding model's per-call Tauri IPC overhead
+            // halves accordingly.
+            const BATCH = 32;
             const embeddings: number[][] = [];
             for (let i = 0; i < texts.length; i += BATCH) {
                 const slice = texts.slice(i, i + BATCH);
@@ -209,7 +215,13 @@ class RAGService {
             }
 
             onProgress?.({ stage: 'embedding', current: 0, total: allChunks.length, message: '正在生成嵌入向量...' });
-            const BATCH = 16;
+            // v0.6.0: 16 → 32. BGE-small-en-v1.5 is ~33M params; a
+            // batch of 32 at seq_len 512 costs ~120 MB of activation
+            // memory, well within a desktop's headroom. Cuts wall time
+            // for a 70-min lecture's ~200 chunks from ~13 batches to
+            // ~7, and the embedding model's per-call Tauri IPC overhead
+            // halves accordingly.
+            const BATCH = 32;
             const texts = allChunks.map((c) => c.text);
             const embeddings: number[][] = [];
             for (let i = 0; i < texts.length; i += BATCH) {

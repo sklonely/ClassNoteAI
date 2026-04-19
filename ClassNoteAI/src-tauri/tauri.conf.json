@@ -19,11 +19,26 @@
         "minHeight": 700,
         "resizable": true,
         "center": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": [
+            "$APPDATA/videos/*",
+            "$APPDATA/videos/**",
+            "$APPDATA/audio/*",
+            "$APPDATA/audio/**",
+            "$HOME/Library/Application Support/com.classnoteai/videos/*",
+            "$HOME/Library/Application Support/com.classnoteai/videos/**",
+            "$HOME/Library/Application Support/com.classnoteai/audio/*",
+            "$HOME/Library/Application Support/com.classnoteai/audio/**"
+          ]
+        }
+      }
     }
   },
   "bundle": {

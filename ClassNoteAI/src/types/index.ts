@@ -36,6 +36,10 @@ export interface Lecture {
   updated_at: string; // ISO 8601 - 必需字段
   audio_path?: string;
   audio_hash?: string;
+  /** v0.6.0: path to an imported video file (under {app_data}/videos/).
+   *  When present, Notes Review mode renders a <video> player and the
+   *  transcript + RAG index are derived from the video's audio track. */
+  video_path?: string;
   subtitles?: Subtitle[]; // 可選，用於前端顯示，數據庫中不存儲
   notes?: Note; // 可選，用於前端顯示，數據庫中不存儲
   is_deleted?: boolean; // Soft Delete
@@ -155,6 +159,20 @@ export interface AppSettings {
    */
   aiTutor?: {
     displayMode?: 'floating' | 'sidebar' | 'detached';
+  };
+  /**
+   * Layout for lectures that have both an imported video and an
+   * attached PDF/PPT.
+   *   - `split` — vertical resizable split on the left panel: video
+   *               on top, slides on bottom. Both visible at once.
+   *   - `pip`   — slides take the main left panel, video floats as a
+   *               draggable / resizable overlay like a Zoom PiP. Less
+   *               visual footprint, closer to the "slides are the main
+   *               thing, glance at the prof occasionally" workflow.
+   * Defaults to `split` (see settings default-fill logic).
+   */
+  lectureLayout?: {
+    videoPdfMode?: 'split' | 'pip';
   };
   sync?: {
     username: string;

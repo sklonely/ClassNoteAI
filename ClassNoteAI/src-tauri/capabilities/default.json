@@ -8,6 +8,7 @@
   ],
   "permissions": [
     "core:default",
+    "core:path:default",
     "core:webview:allow-create-webview-window",
     "core:webview:allow-webview-close",
     "core:window:allow-set-focus",

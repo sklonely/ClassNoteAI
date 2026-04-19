@@ -210,9 +210,20 @@ pub async fn transcribe_audio(
             .full_get_segment_t1(i)
             .map_err(|e| anyhow::anyhow!("獲取片段結束時間失敗: {:?}", e))?;
 
-        // 轉換時間戳（從樣本數轉換為毫秒）
-        let start_ms = (start_timestamp * 1000) / sample_rate as i64;
-        let end_ms = (end_timestamp * 1000) / sample_rate as i64;
+        // whisper.cpp's `full_get_segment_t{0,1}` return values in
+        // **centiseconds** (10 ms units) — not sample indices. The
+        // old code `(t * 1000) / sample_rate` treated them as samples
+        // at 16 kHz, which compressed every segment's timestamp to
+        // ~1/16 of its true value and clumped all subtitles at the
+        // start of each chunk (the user-visible "字幕只有分鐘級別
+        // 精度" symptom).
+        //
+        // `sample_rate` is intentionally dropped from the math here —
+        // the unit conversion is purely t_cs * 10 = t_ms, independent
+        // of the input audio's sample rate.
+        let _ = sample_rate;
+        let start_ms = (start_timestamp * 10) as i64;
+        let end_ms = (end_timestamp * 10) as i64;
 
         segments.push(TranscriptionSegment {
             text: segment_text.trim().to_string(),

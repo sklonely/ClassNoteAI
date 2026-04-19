@@ -239,6 +239,7 @@ impl Database {
                     duration INTEGER NOT NULL,
                     pdf_path TEXT,
                     audio_path TEXT,
+                    video_path TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -378,6 +379,19 @@ impl Database {
             self.conn
                 .execute("ALTER TABLE lectures ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lectures_is_deleted ON lectures(is_deleted)", [])?;
+        }
+
+        // 2.3 v0.6.0 video_path migration. Idempotent — only adds the
+        // column if it's missing on the existing table.
+        let mut stmt = self.conn.prepare("PRAGMA table_info(lectures)")?;
+        let has_video_path = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| name.unwrap_or_default() == "video_path");
+        drop(stmt);
+        if !has_video_path {
+            println!("Migrating lectures table: adding video_path column (v0.6.0)");
+            self.conn
+                .execute("ALTER TABLE lectures ADD COLUMN video_path TEXT", [])?;
         }
 
 
@@ -683,8 +697,8 @@ impl Database {
         // — would wipe all subtitles, notes, and the RAG index, and
         // orphan the AI chat history for this lecture.
         self.conn.execute(
-            "INSERT INTO lectures (id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "INSERT INTO lectures (id, course_id, title, date, duration, pdf_path, audio_path, video_path, status, created_at, updated_at, is_deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 course_id = excluded.course_id,
                 title = excluded.title,
@@ -692,6 +706,7 @@ impl Database {
                 duration = excluded.duration,
                 pdf_path = excluded.pdf_path,
                 audio_path = excluded.audio_path,
+                video_path = excluded.video_path,
                 status = excluded.status,
                 updated_at = excluded.updated_at,
                 is_deleted = excluded.is_deleted",
@@ -703,6 +718,7 @@ impl Database {
                 lecture.duration,
                 lecture.pdf_path,
                 lecture.audio_path,
+                lecture.video_path,
                 lecture.status,
                 lecture.created_at,
                 lecture.updated_at,
@@ -714,8 +730,13 @@ impl Database {
 
     /// 獲取課程
     pub fn get_lecture(&self, id: &str) -> SqlResult<Option<Lecture>> {
+        // v0.6.0: `video_path` appended at column index 11 (was last
+        // `is_deleted` at 10; we now return is_deleted at 10 still
+        // because `Lecture::try_from` reads is_deleted at index 10 and
+        // video_path at index 11 — make sure the SELECT column order
+        // matches that read order exactly).
         let mut stmt = self.conn.prepare(
-            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted
+            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted, video_path
              FROM lectures WHERE id = ?1",
         )?;
 
@@ -729,7 +750,7 @@ impl Database {
     /// 列出指定用戶的所有課程 (不包含已刪除)
     pub fn list_lectures(&self, user_id: &str) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
-            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted
+            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted, l.video_path
              FROM lectures l
              JOIN courses c ON l.course_id = c.id
              WHERE c.user_id = ?1 AND l.is_deleted = 0 AND c.is_deleted = 0
@@ -745,7 +766,7 @@ impl Database {
     /// 列出指定用戶的所有課程 (包含已刪除，用於同步)
     pub fn list_lectures_sync(&self, user_id: &str) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
-            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted
+            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted, l.video_path
              FROM lectures l
              JOIN courses c ON l.course_id = c.id
              WHERE c.user_id = ?1
@@ -761,7 +782,7 @@ impl Database {
     /// 列出特定科目的所有課堂 (需驗證科目所屬權)
     pub fn list_lectures_by_course(&self, course_id: &str, user_id: &str) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
-            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted
+            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted, l.video_path
              FROM lectures l
              JOIN courses c ON l.course_id = c.id
              WHERE l.course_id = ?1 AND c.user_id = ?2 AND l.is_deleted = 0
@@ -824,6 +845,10 @@ impl Database {
                     is_deleted: row.get(8)?,
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
+                    // This query is used only for orphan-recovery on
+                    // startup, and orphans by definition have no video
+                    // — always None is fine here.
+                    video_path: None,
                 })
             })?
             .collect::<SqlResult<Vec<_>>>()?;
@@ -1101,7 +1126,7 @@ impl Database {
     /// 列出已刪除的課堂
     pub fn list_deleted_lectures(&self, user_id: &str) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
-            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted
+            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted, l.video_path
              FROM lectures l
              INNER JOIN courses c ON l.course_id = c.id
              WHERE c.user_id = ?1 AND l.is_deleted = 1 ORDER BY l.updated_at DESC",

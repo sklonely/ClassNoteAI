@@ -179,12 +179,20 @@ impl CT2Translator {
             .map_err(|e| format!("Translation failed: {}", e))?;
 
         // Extract translations from results, re-interleaving empty
-        // strings at the positions whose inputs we skipped above.
+        // strings at the positions whose inputs we skipped above. Each
+        // output is run through `clean_translation` — M2M100 with the
+        // src-side `__xx__` prefix we prepend occasionally leaks that
+        // token back into the decoded string and, worse, sometimes
+        // echoes the full English source before emitting the Chinese
+        // translation (observed e.g. `"__en__ And we will have to save
+        // it to the next class. 我们将不得不将其保存到下一类。"`).
+        // We strip both unconditionally rather than try to fix the
+        // prompting — post-processing is deterministic and cheap.
         let mut output = vec![String::new(); texts.len()];
         for ((orig_idx, _), (translation, _score)) in
             non_empty.iter().zip(results.into_iter())
         {
-            output[*orig_idx] = translation;
+            output[*orig_idx] = clean_translation(&translation, target_lang);
         }
 
         Ok(output)
@@ -198,6 +206,54 @@ impl CT2Translator {
             .next()
             .ok_or_else(|| "No translation result".to_string())
     }
+}
+
+/// Post-process a raw M2M100 translation output:
+///   1. Strip any `__xx__` / `__xxx__` language tokens — these are
+///      meant to be internal and shouldn't appear in user-visible
+///      text, but M2M100 occasionally echoes them.
+///   2. If the target language is Chinese and the output still starts
+///      with non-CJK characters (observed: the model echoing the
+///      English source before switching languages), drop everything
+///      up to the first CJK character.
+///
+/// Kept conservative — this only touches known failure modes; normal
+/// translations (which are pure target-language text) pass through
+/// unchanged after step 1.
+fn clean_translation(raw: &str, target_lang: &str) -> String {
+    // Step 1: strip `__xx__` / `__xxx__` / `__xxxx__` tokens.
+    let mut s = raw.trim().to_string();
+    loop {
+        let Some(start) = s.find("__") else { break };
+        let remaining = &s[start + 2..];
+        let Some(end_offset) = remaining.find("__") else { break };
+        if end_offset == 0 || end_offset > 4 {
+            // Not a plausible lang token — bail to avoid eating user text.
+            break;
+        }
+        let token_end = start + 2 + end_offset + 2;
+        s.replace_range(start..token_end, " ");
+    }
+    s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // Step 2: if target is zh, strip any leading non-CJK text. We
+    // consider CJK blocks, CJK extension A, halfwidth/fullwidth punct,
+    // and CJK punct — i.e. anything that could legitimately START a
+    // Chinese sentence.
+    if target_lang.starts_with("zh") {
+        let is_cjk = |c: char| {
+            let u = c as u32;
+            (0x3000..=0x303F).contains(&u) // CJK punctuation
+                || (0x3400..=0x4DBF).contains(&u) // CJK Ext A
+                || (0x4E00..=0x9FFF).contains(&u) // CJK Unified
+                || (0xFF00..=0xFFEF).contains(&u) // Halfwidth/Fullwidth
+                || (0xF900..=0xFAFF).contains(&u) // Compatibility
+        };
+        if let Some((i, _)) = s.char_indices().find(|(_, c)| is_cjk(*c)) {
+            s = s[i..].trim().to_string();
+        }
+    }
+    s
 }
 
 /// Map ISO-ish language codes to the M2M100 language token used by

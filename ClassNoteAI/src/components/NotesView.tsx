@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
-import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot } from "lucide-react";
+import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot, Film } from "lucide-react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from 'react-markdown';
@@ -37,6 +37,10 @@ import { toastService } from "../services/toastService";
 import { generateLocalEmbedding } from "../services/embeddingService";
 import { embeddingStorageService } from "../services/embeddingStorageService";
 import { openDetachedAiTutor } from "../services/aiTutorWindow";
+import { videoImportService } from "../services/videoImportService";
+import { subtitleImportService } from "../services/subtitleImportService";
+import { selectVideoFile } from "../services/fileService";
+import ImportModal, { PasteSubmission, VideoImportOptions } from "./ImportModal";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -48,6 +52,7 @@ import * as translationModelService from "../services/translationModelService";
 import { subtitleService } from "../services/subtitleService";
 import PDFViewer, { PDFViewerHandle } from "./PDFViewer";
 import DragDropZone from "./DragDropZone";
+import VideoPiP from "./VideoPiP";
 import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
 import { pdfService } from "../services/pdfService";
@@ -87,6 +92,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [alignmentSuggestion, setAlignmentSuggestion] = useState<AlignmentSuggestion | null>(null);
   const [isConverting, setIsConverting] = useState(false);
+  // v0.6.0 video import state
+  const [isImportingVideo, setIsImportingVideo] = useState(false);
+  const [importProgressMessage, setImportProgressMessage] = useState<string>('');
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
@@ -104,6 +113,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [alignmentRefreshTick, setAlignmentRefreshTick] = useState(0);
   // User-configurable AI 助教 chrome mode (Settings → 雲端 AI 助理).
   const [aiTutorMode, setAiTutorMode] = useState<'floating' | 'sidebar' | 'detached'>('floating');
+  // v0.6.0 video+PDF layout. Loaded from settings (lectureLayout.videoPdfMode).
+  const [videoPdfMode, setVideoPdfMode] = useState<'split' | 'pip'>('split');
   const [currentPage, setCurrentPage] = useState(1);
   // Pieces of the Whisper initial_prompt. Stored separately so
   // `handleTextExtract` (PDF side) and `loadLecture` (course side)
@@ -228,7 +239,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  // v0.6.0: `audioRef` is now HTMLMediaElement so the same ref can
+  // point at either the hidden <audio> (live-recorded lecture) or the
+  // visible <video> (imported video lecture). All existing playback
+  // helpers (togglePlay, handleSeek, handleTimeUpdate) work off
+  // HTMLMediaElement members so the branch is purely render-side.
+  const audioRef = useRef<HTMLMediaElement>(null);
   const [playbackVolume, setPlaybackVolume] = useState(100); // Output volume for playback
 
   // Initialize audio when review mode starts or lecture loads
@@ -297,29 +313,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
-  const handleSubtitleSeek = (timestamp: number) => {
-    // timestamp is absolute Date time (ms). We need relative seconds.
-    // Assuming recording started at lecture.created_at? 
-    // Or first segment start time? 
-    // Ideally we store 'recording_start_time' in lecture.
-    // Fallback: Use 1st segment start time as rough base 
-    // OR assume 0 if we can't determine.
-    // In "Live Recording", usually the first segment starts at ~0-5s.
-    // Let's rely on segment data if available.
-    // Actually, simpler approach:
-    // If we use `created_at` of the lecture as start time.
-    if (!currentLectureData) return;
-
-    const lectureStart = new Date(currentLectureData.created_at).getTime();
-    const seekTime = (timestamp - lectureStart) / 1000;
-
-    // Sanity check: seek time should be positive.
-    // If user started recording later than creation? 
-    // This is tricky without explicit 'recording_start_timestamp'.
-    // But usually acceptable to assume created_at ~= start.
-    // Better: check first segment.
-    // If seekTime < 0, maybe use 0.
-    handleSeek(Math.max(0, seekTime));
+  /** SubtitleDisplay hands us RELATIVE seconds from media start
+   *  (it already did the epoch subtraction internally using the
+   *  baseTime prop). So this is just a pass-through to handleSeek,
+   *  clamped non-negative. */
+  const handleSubtitleSeek = (relativeTimeSec: number) => {
+    handleSeek(Math.max(0, relativeTimeSec));
   };
 
   // Update transcript content when note changes
@@ -389,6 +388,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         const settings = await storageService.getAppSettings();
         const mode = settings?.aiTutor?.displayMode ?? 'floating';
         setAiTutorMode(mode);
+        const layout = settings?.lectureLayout?.videoPdfMode ?? 'split';
+        setVideoPdfMode(layout);
       } catch { /* ignore */ }
     })();
   }, []);
@@ -1054,6 +1055,134 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
+  // v0.6.0: pick a video, copy it into app data, transcribe it,
+  // translate, save subtitles, index for RAG. User can leave the
+  // window; when they come back, Notes Review mode shows the video
+  // with subtitles + AI 助教 fully indexed.
+  /** Reload subtitles from DB into subtitleService so the Review
+   *  mode subtitle panel reflects progressive video-import progress.
+   *  Called from the import progress callback whenever a chunk has
+   *  just been saved — cheap enough (single SQLite query) to rerun
+   *  per chunk for a 70-min lecture (70 chunks). */
+  const reloadSubtitlesFromDb = async (lid: string) => {
+    try {
+      const subs = await storageService.getSubtitles(lid);
+      subtitleService.clear();
+      subtitleService.setLectureId(lid);
+      for (const sub of subs) {
+        subtitleService.addSegment({
+          id: sub.id,
+          roughText: sub.text_en,
+          roughTranslation: sub.text_zh,
+          displayText: sub.text_en,
+          displayTranslation: sub.text_zh,
+          startTime: sub.timestamp * 1000,
+          endTime: (sub.timestamp + 5) * 1000,
+          source: sub.type === 'fine' ? 'fine' : 'rough',
+          translationSource: sub.text_zh
+            ? (sub.type === 'fine' ? 'fine' : 'rough')
+            : undefined,
+          text: sub.text_en,
+          translatedText: sub.text_zh,
+        });
+      }
+    } catch (err) {
+      console.warn('[NotesView] reloadSubtitlesFromDb failed:', err);
+    }
+  };
+
+  const runVideoImport = async (
+    sourcePath: string,
+    options: VideoImportOptions = { language: 'auto', quality: 'fast', refineWithAI: false },
+  ) => {
+    if (!lectureId || isImportingVideo) return;
+    setIsImportingVideo(true);
+    setImportProgressMessage('開始匯入…');
+    try {
+      const result = await videoImportService.importVideo(lectureId, sourcePath, {
+        language: options.language,
+        quality: options.quality,
+        refineWithAI: options.refineWithAI,
+        onProgress: async (p) => {
+          setImportProgressMessage(p.message);
+          // Step 1 just completed — the video is playable from its
+          // final path. Refresh the lecture row into state so the
+          // Notes Review mode picks up video_path, then close the
+          // import modal. User can now watch while transcription
+          // continues in the background (see progressive caption
+          // pattern above). Also flip to Review mode if they're
+          // still on Recording so the video is actually visible.
+          if (p.stage === 'video_ready') {
+            const fresh = await storageService.getLecture(lectureId);
+            if (fresh) setCurrentLectureData(fresh);
+            setIsImportModalOpen(false);
+            setViewMode('review');
+            toastService.success(
+              '影片已就緒',
+              '可以開始觀看，字幕會隨轉錄逐步填入。',
+            );
+          }
+          // A chunk just persisted new subtitles (or translations).
+          // Reload the in-memory subtitle set so the display updates
+          // without waiting for the whole pipeline to finish.
+          if (p.subtitlesChanged) {
+            await reloadSubtitlesFromDb(lectureId);
+          }
+        },
+      });
+      // Re-run the full lecture load once import completes so the
+      // auto-note-generation path fires (same code that runs on first
+      // open of a lecture that already has subtitles). Without this the
+      // Notes tab stays empty and the "總結 / 匯出" header buttons —
+      // which gate on `selectedNote` — don't appear.
+      await loadLectureData(lectureId);
+      toastService.success(
+        '影片匯入完成',
+        `共 ${result.segmentCount} 段字幕，AI 助教已索引完畢。`,
+      );
+    } catch (err) {
+      toastService.error('影片匯入失敗', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsImportingVideo(false);
+      setImportProgressMessage('');
+    }
+  };
+
+  const handlePickAndImportVideo = async (options: VideoImportOptions) => {
+    const sourcePath = await selectVideoFile();
+    if (!sourcePath) return;
+    await runVideoImport(sourcePath, options);
+  };
+
+  const handleImportPastedSubtitles = async (submission: PasteSubmission) => {
+    if (!lectureId || isImportingVideo) return;
+    setIsImportingVideo(true);
+    setImportProgressMessage('解析字幕…');
+    try {
+      const result = await subtitleImportService.importPasted(
+        lectureId,
+        submission.rawText,
+        {
+          language: submission.language,
+          translateToChinese: submission.translateToChinese,
+          onProgress: (p) => setImportProgressMessage(p.message),
+        },
+      );
+      const fresh = await storageService.getLecture(lectureId);
+      if (fresh) setCurrentLectureData(fresh);
+      toastService.success(
+        '字幕匯入完成',
+        `共 ${result.segmentCount} 段字幕，AI 助教可立即查閱。`,
+      );
+      setIsImportModalOpen(false);
+    } catch (err) {
+      toastService.error('字幕匯入失敗', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsImportingVideo(false);
+      setImportProgressMessage('');
+    }
+  };
+
   const handleSaveLecture = async (lectureOverride?: any) => {
     // Determine which lecture data to use (current state or override)
     // React Event objects might be passed as first arg if used in onClick
@@ -1253,98 +1382,62 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
-  const handleFileDrop = async (file: File) => {
-    const fileName = file.name.toLowerCase();
-    const isPdf = fileName.endsWith('.pdf') || file.type === 'application/pdf';
-    const isSupported = isPdf || fileName.endsWith('.ppt') || fileName.endsWith('.pptx') ||
-      fileName.endsWith('.doc') || fileName.endsWith('.docx');
+  // v0.6.0 drag-drop now rides on Tauri's native `onDragDropEvent`,
+  // which hands us real filesystem paths instead of HTML5 `File`
+  // objects. That means we can route by extension and avoid the old
+  // `File.arrayBuffer()` + `write_temp_file` round-trip — critical for
+  // video files where that path would JSON-encode hundreds of MB.
+  const handleFileDrop = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    const path = paths[0];
+    const lower = path.toLowerCase();
 
-    if (!isSupported) {
-      toastService.warning('請拖入 PDF、PPT、或 Word 檔案');
+    const isVideo = /\.(mp4|m4v|mkv|webm|mov|avi)$/.test(lower);
+    const isPdf = lower.endsWith('.pdf');
+    const isConvertible =
+      lower.endsWith('.ppt') ||
+      lower.endsWith('.pptx') ||
+      lower.endsWith('.doc') ||
+      lower.endsWith('.docx');
+
+    if (isVideo) {
+      // Dragging a video onto the lecture area uses auto-detect and
+      // fast mode by default — the user hasn't been through the modal
+      // where they could tweak. If detection fails or they want AI
+      // refinement, re-import via the 匯入 button.
+      await runVideoImport(path, { language: 'auto', quality: 'fast', refineWithAI: false });
+      return;
+    }
+
+    if (isConvertible) {
+      await convertAndLoadDocument(path);
       return;
     }
 
     if (!isPdf) {
-      // Need to convert - save to temp location first
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (event.target?.result) {
-          // Save dropped file to temp location
-          const tempDir = await invoke<string>('get_temp_dir').catch(() => '/tmp');
-          const tempPath = `${tempDir}/${file.name}`;
+      toastService.warning('請拖入影片、PDF、PPT 或 Word 檔案');
+      return;
+    }
 
-          // Write file (we'll need a Tauri command for this)
-          const arrayBuffer = event.target.result as ArrayBuffer;
-          const uint8Array = new Uint8Array(arrayBuffer);
-
-          try {
-            await invoke('write_temp_file', {
-              path: tempPath,
-              data: Array.from(uint8Array)
-            });
-            await convertAndLoadDocument(tempPath);
-          } catch (error) {
-            console.error('Failed to save temp file:', error);
-            toastService.error('檔案處理失敗', '請試試用「選擇檔案」按鈕');
-          }
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    } else {
-      // Direct PDF load — persist the bytes to app data so the PDF
-      // survives a page reload or re-entry to the lecture. Prior to
-      // v0.5.2 the dropped ArrayBuffer lived only in React state and
-      // evaporated on reload, so users lost their slide deck every
-      // time HMR (or an explicit reload) kicked in.
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (!event.target?.result) return;
-        const arrayBuffer = event.target.result as ArrayBuffer;
-        setPdfData(arrayBuffer);
-        try {
-          const appData = await invoke<string>('get_app_data_dir');
-          const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
-          const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
-          // v0.5.2 audit follow-up: prefix the filename with the
-          // lecture id. The prior scheme was `{ts}-{name}.pdf` which
-          // had no link back to the lecture, so a `write_temp_file`
-          // success followed by an `updateLecturePDF` DB failure left
-          // an orphan file we couldn't auto-recover. The new pattern
-          // `lecture_{id}_{ts}_{name}.pdf` mirrors the audio convention
-          // and is what `try_recover_pdf_path` (next commit) scans for.
-          const target = `${appData}${sep}lecture-pdfs${sep}lecture_${currentLectureData?.id ?? 'unknown'}_${Date.now()}_${safeName}`;
-          await invoke('write_temp_file', {
-            path: target,
-            data: Array.from(new Uint8Array(arrayBuffer)),
-          });
-          setPdfPath(target);
-          try {
-            await updateLecturePDF(target);
-          } catch (dbErr) {
-            // The FILE is already on disk at `target`. Surface the DB
-            // failure to the user so they know to retry — previously
-            // this was only `console.error`, so the UI showed the PDF
-            // loaded (from in-memory buffer) but the DB didn't know
-            // about it, and the PDF vanished on next reload. With the
-            // new filename pattern, `try_recover_pdf_path` will recover
-            // on next load anyway, but a loud toast prevents confusion.
-            console.error('[NotesView] PDF file written but DB save failed:', dbErr);
-            toastService.error(
-              'PDF 已儲存但資料庫更新失敗',
-              '下次開啟此課堂時系統會自動重新連結。' +
-                (dbErr instanceof Error ? ` (${dbErr.message})` : ''),
-            );
-          }
-        } catch (err) {
-          console.error('[NotesView] Failed to persist dropped PDF:', err);
-          toastService.error(
-            'PDF 儲存失敗',
-            err instanceof Error ? err.message : String(err),
-          );
-          setPdfPath(null);
-        }
-      };
-      reader.readAsArrayBuffer(file);
+    // Load PDF directly from its on-disk path — no temp copy needed.
+    try {
+      const pdfBytes = await invoke<number[]>('read_binary_file', { path });
+      const arrayBuffer = new Uint8Array(pdfBytes).buffer;
+      setPdfData(arrayBuffer);
+      setPdfPath(path);
+      try {
+        await updateLecturePDF(path);
+      } catch (dbErr) {
+        console.error('[NotesView] PDF path loaded but DB save failed:', dbErr);
+        toastService.error(
+          'PDF 資料庫更新失敗',
+          '下次開啟此課堂時系統會自動重新連結。' +
+            (dbErr instanceof Error ? ` (${dbErr.message})` : ''),
+        );
+      }
+    } catch (err) {
+      console.error('[NotesView] Failed to read dropped PDF:', err);
+      toastService.error('PDF 讀取失敗', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -1725,6 +1818,32 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             </button>
           )}
 
+          {/* v0.6.0: Import Video button — runs the imported-video
+              pipeline (ffmpeg → Whisper → subtitles → RAG index)
+              and ends with the lecture ready to review in Notes
+              Review mode. Shown only in recording mode, alongside
+              Save. */}
+          {/* 匯入 button visibility:
+                - Always in Recording mode (so user can start an import
+                  from a fresh lecture).
+                - Also in Review mode WHILE an import is running, so
+                  the progress message stays with the user after we
+                  auto-switch them to Review in the `video_ready`
+                  handler — otherwise they lose sight of "轉錄 N/70". */}
+          {lectureId && (viewMode === 'recording' || isImportingVideo) && (
+            <button
+              onClick={() => setIsImportModalOpen(true)}
+              disabled={isImportingVideo}
+              className="flex items-center gap-2 px-3 py-2 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors disabled:opacity-50"
+              title="匯入已錄製的影片或課程字幕"
+            >
+              {isImportingVideo ? <Loader2 size={18} className="animate-spin" /> : <Film size={18} />}
+              <span className="hidden sm:inline">
+                {isImportingVideo ? (importProgressMessage || '處理中…') : '匯入'}
+              </span>
+            </button>
+          )}
+
           {/* Summary & Export Buttons (Visible in Review Mode) */}
           {viewMode === 'review' && selectedNote && (
             <>
@@ -1792,8 +1911,19 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             className="overflow-hidden"
           >
             <div className="h-full overflow-hidden">
-        {viewMode === 'recording' ? (
-          // Recording Mode Layout (Split View with Resizable Panels)
+        {/* v0.6.0 keep-alive: both mode layouts render simultaneously
+            with one hidden via the `hidden` attribute. Prior to this
+            the ternary unmounted Review's <video> whenever the user
+            tabbed to Live, so flipping back triggered a full reload
+            from disk (slow buffering, media state reset to t=0). The
+            dual-mount keeps the <video> element — and its `currentTime`,
+            buffered ranges, pause state — stable across toggles. The
+            cost is trivial: both PanelGroups are lightweight layout
+            containers; the only heavy child is PDFViewer, and the
+            Live-mode one shares pdfPath/pdfData state so renders
+            cheaply when hidden. Drop zones in each mode are guarded
+            with `enabled` so only the visible one accepts files. */}
+        <div hidden={viewMode !== 'recording'} className="h-full">
           <div className="flex flex-col h-full">
             <PanelGroup direction="horizontal" className="flex-1">
               {/* Left Panel: PDF Viewer */}
@@ -1809,7 +1939,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                       </button>
                     </div>
                   )}
-                  <DragDropZone onFileDrop={handleFileDrop} className="flex-1 overflow-hidden">
+                  <DragDropZone onFileDrop={handleFileDrop} enabled={!isImportModalOpen} className="flex-1 overflow-hidden">
                     {pdfPath || pdfData ? (
                       <PDFViewer
                         ref={pdfViewerRef}
@@ -1909,37 +2039,89 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               </Panel>
             </PanelGroup>
 
-            {/* Bottom Audio Player Bar (Optional position, currently integrating roughly where controls were but lets keep it separate if needed) 
-                 Actually, the requirement was to put Audio Player broadly. 
+            {/* Bottom Audio Player Bar (Optional position, currently integrating roughly where controls were but lets keep it separate if needed)
+                 Actually, the requirement was to put Audio Player broadly.
                  For 'Recording Mode', we use the live controls above.
                  AudioPlayer is mostly for 'Review Mode' to play back recorded audio.
                  Let's stick to the plan: AudioPlayer helps in playback.
              */}
           </div>
-        ) : (
-          // Review Mode Layout (Split View with Audio Player)
+        </div>
+        <div hidden={viewMode !== 'review'} className="h-full">
           <div className="flex flex-col h-full overflow-hidden relative">
             <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
-              {/* Left Panel: PDF Viewer (Ref Area) */}
+              {/* Left Panel: Reference Area. v0.6.0 — content depends
+                  on which artifacts this lecture has:
+                    - video only: full-panel <video>
+                    - PDF only: full-panel PDFViewer (historical default)
+                    - both + split: vertical resizable split (video top / PDF bottom)
+                    - both + pip:   PDF fills, video floats as an overlay
+                  Layout choice comes from settings.lectureLayout.videoPdfMode. */}
               <Panel defaultSize={50} minSize={20} className="flex flex-col border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
-                {/* PDF Header? Maybe keep it simple */}
-                <DragDropZone onFileDrop={handleFileDrop} className="flex-1 overflow-hidden">
-                  {pdfPath || pdfData ? (
-                    <PDFViewer
-                      ref={pdfViewerRef}
-                      filePath={pdfPath || undefined}
-                      pdfData={pdfData || undefined}
-                      onTextExtract={handleTextExtract}
-                      onPageChange={setCurrentPage}
-                    />
-                  ) : (
-                    <div className="flex items-center justify-center h-full text-gray-500">
-                      <div className="text-center">
-                        <BookOpen size={48} className="mx-auto mb-4 opacity-20" />
-                        <p>No PDF Reference</p>
+                <DragDropZone onFileDrop={handleFileDrop} enabled={!isImportModalOpen} className="flex-1 overflow-hidden">
+                  {(() => {
+                    const hasVideo = !!currentLectureData?.video_path;
+                    const hasPdf = !!(pdfPath || pdfData);
+                    const pdfPane = hasPdf ? (
+                      <PDFViewer
+                        ref={pdfViewerRef}
+                        filePath={pdfPath || undefined}
+                        pdfData={pdfData || undefined}
+                        onTextExtract={handleTextExtract}
+                        onPageChange={setCurrentPage}
+                      />
+                    ) : (
+                      <div className="flex items-center justify-center h-full text-gray-500">
+                        <div className="text-center">
+                          <BookOpen size={48} className="mx-auto mb-4 opacity-20" />
+                          <p>No PDF Reference</p>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                    const videoEl = hasVideo ? (
+                      <video
+                        ref={audioRef as React.RefObject<HTMLVideoElement>}
+                        src={convertFileSrc(currentLectureData!.video_path!)}
+                        onTimeUpdate={handleTimeUpdate}
+                        onLoadedMetadata={handleLoadedMetadata}
+                        onEnded={() => setIsPlaying(false)}
+                        controls
+                        className="w-full h-full bg-black object-contain"
+                      />
+                    ) : null;
+
+                    if (hasVideo && hasPdf && videoPdfMode === 'split') {
+                      return (
+                        <PanelGroup direction="vertical" autoSaveId="notesview-left-split">
+                          <Panel defaultSize={40} minSize={20}>
+                            <div className="w-full h-full bg-black">{videoEl}</div>
+                          </Panel>
+                          <PanelResizeHandle className="h-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-row-resize" />
+                          <Panel defaultSize={60} minSize={20}>
+                            {pdfPane}
+                          </Panel>
+                        </PanelGroup>
+                      );
+                    }
+                    if (hasVideo && hasPdf && videoPdfMode === 'pip') {
+                      return (
+                        <div className="relative w-full h-full">
+                          {pdfPane}
+                          <VideoPiP
+                            ref={audioRef as React.RefObject<HTMLVideoElement>}
+                            src={convertFileSrc(currentLectureData!.video_path!)}
+                            onTimeUpdate={handleTimeUpdate}
+                            onLoadedMetadata={handleLoadedMetadata}
+                            onEnded={() => setIsPlaying(false)}
+                          />
+                        </div>
+                      );
+                    }
+                    if (hasVideo) {
+                      return <div className="w-full h-full bg-black">{videoEl}</div>;
+                    }
+                    return pdfPane;
+                  })()}
                 </DragDropZone>
               </Panel>
 
@@ -2141,15 +2323,22 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               </div>
             )}
 
-            {/* Hidden Audio Element */}
-            <audio
-              ref={audioRef}
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onEnded={() => setIsPlaying(false)}
-            />
+            {/* Audio-only lectures keep the hidden <audio> ref here;
+                video lectures render the <video> on the left panel
+                (see the Review Mode left panel block above). The ref
+                target switches based on `currentLectureData.video_path`
+                — all playback wiring (togglePlay / handleSeek /
+                subtitle sync) is media-type agnostic. */}
+            {!currentLectureData?.video_path && (
+              <audio
+                ref={audioRef as React.RefObject<HTMLAudioElement>}
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onEnded={() => setIsPlaying(false)}
+              />
+            )}
           </div>
-        )}
+        </div>
             </div>
           </Panel>
           {/* Sidebar Panel — only rendered in sidebar mode + open.
@@ -2227,6 +2416,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           displayMode="floating"
         />
       )}
+
+      <ImportModal
+        open={isImportModalOpen}
+        isBusy={isImportingVideo}
+        progressMessage={importProgressMessage}
+        onClose={() => setIsImportModalOpen(false)}
+        onPickVideo={handlePickAndImportVideo}
+        onDropVideo={(path, options) => runVideoImport(path, options)}
+        onSubmitPaste={handleImportPastedSubtitles}
+      />
     </div >
   );
 }

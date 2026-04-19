@@ -4,6 +4,7 @@ import { Card } from "./shared";
 import UsageSummary from "./UsageSummary";
 import OcrSettings from "./OcrSettings";
 import AiTutorDisplaySettings from "./AiTutorDisplaySettings";
+import VideoLayoutSettings from "./VideoLayoutSettings";
 
 export default function SettingsCloudAI() {
   return (
@@ -17,6 +18,7 @@ export default function SettingsCloudAI() {
           <AIProviderSettings />
           <OcrSettings />
           <AiTutorDisplaySettings />
+          <VideoLayoutSettings />
           <UsageSummary />
         </div>
       </Card>
