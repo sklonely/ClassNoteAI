@@ -20,7 +20,22 @@ import { chat as llmChat, chatStream as llmChatStream, translateForRetrieval } f
 import { ocrService } from './ocrService';
 import { remoteOcrService } from './remoteOcrService';
 import { pdfToImageService } from './pdfToImageService';
-import { pdfService } from './pdfService';
+// `pdfService` pulls in pdfjs-dist at module load, which needs the
+// DOMMatrix browser API. Vitest's jsdom env doesn't polyfill that,
+// so a static import here would break every test that touches
+// ragService (ragService.crossLingual.test.ts etc.). We use a
+// deferred dynamic import in the one path that actually needs
+// per-page text extraction (the no-OCR fallback in
+// `indexLectureWithOCR`). At runtime in the app bundle this is a
+// no-op since Vite already pre-bundles pdfjs.
+let _pdfServiceCache: typeof import('./pdfService')['pdfService'] | null = null;
+async function getPdfService() {
+    if (!_pdfServiceCache) {
+        const mod = await import('./pdfService');
+        _pdfServiceCache = mod.pdfService;
+    }
+    return _pdfServiceCache;
+}
 import { storageService } from './storageService';
 
 /**
@@ -303,7 +318,8 @@ class RAGService {
                     // derives page-level embeddings by grouping on that
                     // field -- without it, the PDF index is unusable for
                     // slide alignment.
-                    const pagesText = await pdfService.extractAllPagesText(pdfData.slice(0));
+                    const pdfSvc = await getPdfService();
+                    const pagesText = await pdfSvc.extractAllPagesText(pdfData.slice(0));
                     return this.indexLectureFromPages(
                         lectureId,
                         pagesText.filter((p) => p.text.trim().length > 0).map((p) => ({ pageNumber: p.page, text: p.text })),

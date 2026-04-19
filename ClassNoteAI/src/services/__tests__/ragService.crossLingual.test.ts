@@ -76,15 +76,16 @@ describe('ragService.chat cross-lingual dispatch', () => {
 
         expect(translateMock).toHaveBeenCalledTimes(1);
         expect(translateMock).toHaveBeenCalledWith('什麼是啟發式評估法？', 'en');
-        // Retrieval must receive the English form, not the original Chinese.
-        // If this ever flips back to passing the Chinese query directly
-        // to semanticSearch, cross-lingual recall drops ~30 points.
-        expect(semanticSearchMock).toHaveBeenCalledWith(
-            'What is heuristic evaluation?',
-            'lecture-1',
-            5,
-            undefined,
-        );
+        // v0.5.3: for CJK queries we retrieve with BOTH the original
+        // and the translated form in parallel and union by chunk id.
+        // Content is typically mixed English-PDF + Chinese-transcript;
+        // running only one form misses half the corpus. Also note the
+        // signature was fixed to `(lectureId, query, ...)` -- the old
+        // wrong order was embedding UUIDs as queries and getting zero
+        // hits in production.
+        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', '什麼是啟發式評估法？', 5, undefined);
+        expect(semanticSearchMock).toHaveBeenCalledWith('lecture-1', 'What is heuristic evaluation?', 5, undefined);
+        expect(semanticSearchMock).toHaveBeenCalledTimes(2);
     });
 
     it('does not translate a pure-English query', async () => {
@@ -92,11 +93,12 @@ describe('ragService.chat cross-lingual dispatch', () => {
 
         expect(translateMock).not.toHaveBeenCalled();
         expect(semanticSearchMock).toHaveBeenCalledWith(
-            'What is heuristic evaluation?',
             'lecture-1',
+            'What is heuristic evaluation?',
             5,
             undefined,
         );
+        expect(semanticSearchMock).toHaveBeenCalledTimes(1);
     });
 
     it('passes the ORIGINAL question (not the translation) to the answering LLM', async () => {
