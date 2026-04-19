@@ -1147,9 +1147,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           }
         },
       });
-      const fresh = await storageService.getLecture(lectureId);
-      if (fresh) setCurrentLectureData(fresh);
-      await reloadSubtitlesFromDb(lectureId);
+      // Re-run the full lecture load once import completes so the
+      // auto-note-generation path fires (same code that runs on first
+      // open of a lecture that already has subtitles). Without this the
+      // Notes tab stays empty and the "總結 / 匯出" header buttons —
+      // which gate on `selectedNote` — don't appear.
+      await loadLectureData(lectureId);
       toastService.success(
         '影片匯入完成',
         `共 ${result.segmentCount} 段字幕，AI 助教已索引完畢。`,
@@ -1837,7 +1840,14 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               and ends with the lecture ready to review in Notes
               Review mode. Shown only in recording mode, alongside
               Save. */}
-          {viewMode === 'recording' && lectureId && (
+          {/* 匯入 button visibility:
+                - Always in Recording mode (so user can start an import
+                  from a fresh lecture).
+                - Also in Review mode WHILE an import is running, so
+                  the progress message stays with the user after we
+                  auto-switch them to Review in the `video_ready`
+                  handler — otherwise they lose sight of "轉錄 N/70". */}
+          {lectureId && (viewMode === 'recording' || isImportingVideo) && (
             <button
               onClick={() => setIsImportModalOpen(true)}
               disabled={isImportingVideo}
@@ -1918,8 +1928,19 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             className="overflow-hidden"
           >
             <div className="h-full overflow-hidden">
-        {viewMode === 'recording' ? (
-          // Recording Mode Layout (Split View with Resizable Panels)
+        {/* v0.6.0 keep-alive: both mode layouts render simultaneously
+            with one hidden via the `hidden` attribute. Prior to this
+            the ternary unmounted Review's <video> whenever the user
+            tabbed to Live, so flipping back triggered a full reload
+            from disk (slow buffering, media state reset to t=0). The
+            dual-mount keeps the <video> element — and its `currentTime`,
+            buffered ranges, pause state — stable across toggles. The
+            cost is trivial: both PanelGroups are lightweight layout
+            containers; the only heavy child is PDFViewer, and the
+            Live-mode one shares pdfPath/pdfData state so renders
+            cheaply when hidden. Drop zones in each mode are guarded
+            with `enabled` so only the visible one accepts files. */}
+        <div hidden={viewMode !== 'recording'} className="h-full">
           <div className="flex flex-col h-full">
             <PanelGroup direction="horizontal" className="flex-1">
               {/* Left Panel: PDF Viewer */}
@@ -2035,15 +2056,15 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               </Panel>
             </PanelGroup>
 
-            {/* Bottom Audio Player Bar (Optional position, currently integrating roughly where controls were but lets keep it separate if needed) 
-                 Actually, the requirement was to put Audio Player broadly. 
+            {/* Bottom Audio Player Bar (Optional position, currently integrating roughly where controls were but lets keep it separate if needed)
+                 Actually, the requirement was to put Audio Player broadly.
                  For 'Recording Mode', we use the live controls above.
                  AudioPlayer is mostly for 'Review Mode' to play back recorded audio.
                  Let's stick to the plan: AudioPlayer helps in playback.
              */}
           </div>
-        ) : (
-          // Review Mode Layout (Split View with Audio Player)
+        </div>
+        <div hidden={viewMode !== 'review'} className="h-full">
           <div className="flex flex-col h-full overflow-hidden relative">
             <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
               {/* Left Panel: Reference Area. v0.6.0 — content depends
@@ -2334,7 +2355,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               />
             )}
           </div>
-        )}
+        </div>
             </div>
           </Panel>
           {/* Sidebar Panel — only rendered in sidebar mode + open.

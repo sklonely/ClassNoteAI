@@ -97,6 +97,90 @@ interface PcmExtractResult {
 const CHUNK_SEC = 60;
 const TRANSLATE_BATCH = 64;
 
+/** LLM-backed fine refinement pass. Runs AFTER rough transcribe +
+ *  CT2 translate have landed all subtitles to DB. Each batch asks the
+ *  user's configured LLM provider to correct ASR mistakes and produce
+ *  a natural Chinese translation in one shot, then writes those back
+ *  as `type='fine'`. Mirrors what transcriptionService does inline for
+ *  live recordings — we just didn't have a hook to reach it from the
+ *  batch video-import pipeline.
+ *
+ *  Skips entirely when no LLM provider is configured (same check
+ *  `refreshFineRefinementAvailability` does for live), so users
+ *  running fully offline don't pay a per-batch "no provider" retry.
+ *
+ *  Errors are treated as soft — we keep whatever rough refinement got
+ *  through and move on. The user can retry later by deleting the
+ *  lecture and re-importing, or we can add a "refine again" button.
+ */
+async function runFineRefinementPass(
+    lectureId: string,
+    emit: (p: ImportProgress) => void,
+): Promise<void> {
+    let refineTranscriptsFn: typeof import('./llm').refineTranscripts;
+    try {
+        const llm = await import('./llm');
+        refineTranscriptsFn = llm.refineTranscripts;
+        // Cheap availability check — probe a zero-length batch. If the
+        // provider isn't configured, refineTranscripts itself bails
+        // fast; we just catch that and skip silently.
+    } catch (err) {
+        console.warn('[videoImport] llm module unavailable, skipping fine refine:', err);
+        return;
+    }
+
+    const subs = await storageService.getSubtitles(lectureId);
+    if (subs.length === 0) return;
+
+    // Work in batches of 20 — same as the live-recording path's
+    // FINE_BATCH_SIZE. Large enough that per-call LLM overhead
+    // amortises, small enough that a single failure only costs 20
+    // segments of progress.
+    const BATCH = 20;
+    let done = 0;
+    const total = subs.length;
+
+    for (let i = 0; i < subs.length; i += BATCH) {
+        const slice = subs.slice(i, i + BATCH);
+        const input = slice
+            .map((s) => ({ id: s.id, text: s.text_en || '' }))
+            .filter((s) => s.text.length > 0);
+        if (input.length === 0) {
+            done += slice.length;
+            continue;
+        }
+
+        try {
+            const refinements = await refineTranscriptsFn(input);
+            const byId = new Map(refinements.map((r) => [r.id, r]));
+            const updates: Subtitle[] = slice.map((s) => {
+                const r = byId.get(s.id);
+                if (!r) return s;
+                return {
+                    ...s,
+                    text_en: r.en,
+                    text_zh: r.zh,
+                    type: 'fine' as const,
+                };
+            });
+            await storageService.saveSubtitles(updates);
+            done += slice.length;
+            emit({
+                stage: 'translating',
+                message: `精翻中 ${Math.min(done, total)}/${total}…`,
+                subtitlesChanged: true,
+            });
+        } catch (err) {
+            // Most likely cause: no AI provider configured. Bail out
+            // entirely rather than spamming N failed batches.
+            console.warn('[videoImport] refineTranscripts batch failed, stopping:', err);
+            return;
+        }
+    }
+
+    emit({ stage: 'done', message: '精翻完成', subtitlesChanged: true });
+}
+
 /** Which model Rust should use for this import's transcription.
  *  - `'fast'`: swap in ggml-base.bin (~5x faster than turbo on CPU).
  *  - `'standard'`: use whatever WHISPER_SERVICE already has loaded
@@ -393,7 +477,10 @@ export const videoImportService = {
             }
 
             // Wait for every chunk's translation to finish before we
-            // build the RAG index (needs the full concatenated text).
+            // mark the lecture completed. Fine refinement + RAG index
+            // run AFTER completion in the background (see below) so the
+            // UI can exit the "importing" state as soon as rough +
+            // Google-translated captions are all saved.
             await Promise.all(translationPromises);
 
             // 5. Update lecture duration + mark completed. video_path
@@ -412,13 +499,33 @@ export const videoImportService = {
                 });
             }
 
-            // 7. RAG index: concat all transcript text.
+            // 6. Fine refinement (LLM-backed). Upgrades rough subtitles
+            //    to 'fine' type, correcting ASR errors and producing
+            //    natural Chinese. We await this so the import-active
+            //    progress indicator keeps showing while the LLM batches
+            //    crunch — otherwise the UI would flash "完成" and then
+            //    silently keep mutating subtitles behind the user.
+            try {
+                await runFineRefinementPass(lectureId, emit);
+            } catch (err) {
+                console.warn('[videoImport] fine refinement failed:', err);
+            }
+
+            // 7. RAG index. Build AI-tutor searchable chunks from the
+            //    final transcript. Uses fine text where available, rough
+            //    otherwise (storageService.getSubtitles returns whatever
+            //    the last save left).
             emit({ stage: 'indexing', message: '建立 AI 助教索引…' });
-            const transcriptText = allSegments
-                .map((s) => s.text.trim())
-                .filter(Boolean)
-                .join('\n');
-            await ragService.indexLecture(lectureId, null, transcriptText);
+            try {
+                const finalSubs = await storageService.getSubtitles(lectureId);
+                const transcriptText = finalSubs
+                    .map((s) => (s.text_en || '').trim())
+                    .filter(Boolean)
+                    .join('\n');
+                await ragService.indexLecture(lectureId, null, transcriptText);
+            } catch (err) {
+                console.warn('[videoImport] RAG index failed:', err);
+            }
 
             emit({ stage: 'done', message: '完成' });
             return {
