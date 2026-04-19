@@ -25,6 +25,8 @@ export interface PasteSubmission {
     translateToChinese: boolean;
 }
 
+export type VideoLanguage = 'auto' | 'en' | 'zh';
+
 interface Props {
     open: boolean;
     /** Busy state (video import running) — disables interaction + closes. */
@@ -33,9 +35,9 @@ interface Props {
     progressMessage?: string;
     onClose: () => void;
     /** User clicked "匯入影片檔" → run the native file picker. */
-    onPickVideo: () => void;
+    onPickVideo: (language: VideoLanguage) => void;
     /** User dropped a video file directly onto the modal. */
-    onDropVideo: (path: string) => void;
+    onDropVideo: (path: string, language: VideoLanguage) => void;
     /** User filled in the paste form and hit confirm. */
     onSubmitPaste: (submission: PasteSubmission) => void;
 }
@@ -55,6 +57,7 @@ export default function ImportModal({
     const [pasteText, setPasteText] = useState('');
     const [pasteLang, setPasteLang] = useState<SubtitleLanguage>('en');
     const [translate, setTranslate] = useState(true);
+    const [videoLang, setVideoLang] = useState<VideoLanguage>('auto');
     const modalRef = useRef<HTMLDivElement>(null);
 
     // Modal is its own drop zone — takes priority over the NotesView
@@ -66,7 +69,7 @@ export default function ImportModal({
         onDrop: (paths) => {
             const video = paths.find((p) => VIDEO_EXT.test(p));
             if (video) {
-                onDropVideo(video);
+                onDropVideo(video, videoLang);
             }
         },
     });
@@ -121,36 +124,62 @@ export default function ImportModal({
                 </div>
 
                 {mode === 'menu' && (
-                    <div className="p-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <button
-                            onClick={onPickVideo}
-                            disabled={isBusy}
-                            className="flex flex-col items-center text-center p-6 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            <Film size={36} className="text-purple-500 mb-2" />
-                            <div className="font-medium text-gray-900 dark:text-gray-100">
-                                匯入影片檔
-                            </div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
-                                選擇或拖入 .mp4 / .mkv / .webm
-                                等檔案<br />
-                                自動抽音、轉錄、翻譯、建立 AI 助教索引
-                            </div>
-                        </button>
-                        <button
-                            onClick={() => setMode('paste')}
-                            disabled={isBusy}
-                            className="flex flex-col items-center text-center p-6 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            <ClipboardPaste size={36} className="text-blue-500 mb-2" />
-                            <div className="font-medium text-gray-900 dark:text-gray-100">
-                                貼上字幕
-                            </div>
-                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
-                                課程不給下載但可複製字幕時<br />
-                                支援 SRT / VTT / 純文字
-                            </div>
-                        </button>
+                    <div className="p-6 space-y-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <button
+                                onClick={() => onPickVideo(videoLang)}
+                                disabled={isBusy}
+                                className="flex flex-col items-center text-center p-6 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <Film size={36} className="text-purple-500 mb-2" />
+                                <div className="font-medium text-gray-900 dark:text-gray-100">
+                                    匯入影片檔
+                                </div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+                                    選擇或拖入 .mp4 / .mkv / .webm
+                                    等檔案<br />
+                                    自動抽音、轉錄、翻譯、建立 AI 助教索引
+                                </div>
+                            </button>
+                            <button
+                                onClick={() => setMode('paste')}
+                                disabled={isBusy}
+                                className="flex flex-col items-center text-center p-6 rounded-lg border-2 border-dashed border-gray-200 dark:border-gray-700 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                <ClipboardPaste size={36} className="text-blue-500 mb-2" />
+                                <div className="font-medium text-gray-900 dark:text-gray-100">
+                                    貼上字幕
+                                </div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 leading-relaxed">
+                                    課程不給下載但可複製字幕時<br />
+                                    支援 SRT / VTT / 純文字
+                                </div>
+                            </button>
+                        </div>
+                        {/* Language row applies to the video import path.
+                            Whisper's auto-detector runs on the first 30 s of
+                            audio and has been observed to land on garbage
+                            (e.g. 'af' with p=0.01) when lectures open with
+                            silence or noise — letting the user pin it
+                            avoids that failure mode. */}
+                        <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                            <span>影片語言：</span>
+                            <select
+                                value={videoLang}
+                                onChange={(e) =>
+                                    setVideoLang(e.target.value as VideoLanguage)
+                                }
+                                disabled={isBusy}
+                                className="text-sm px-2 py-1 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 disabled:opacity-50"
+                            >
+                                <option value="auto">自動偵測</option>
+                                <option value="en">英文</option>
+                                <option value="zh">中文</option>
+                            </select>
+                            <span className="text-gray-400">
+                                自動偵測偶爾會失準 — 若已知語言建議直接指定
+                            </span>
+                        </div>
                     </div>
                 )}
 

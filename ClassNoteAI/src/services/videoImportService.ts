@@ -4,27 +4,39 @@ import { ragService } from './ragService';
 import type { Subtitle } from '../types';
 
 /**
- * v0.6.0 — import a recorded lecture video and produce the same
- * artifacts a live-recorded lecture produces:
+ * v0.6.0 — chunked video import pipeline.
  *
- *   1. Copy the user-selected video file into the app's video dir.
- *   2. Pipe it through ffmpeg to get 16 kHz mono i16 PCM.
- *   3. Run whisper-rs over the PCM to get timed segments.
- *   4. Persist the segments as `subtitles` rows (role = "rough";
- *      the streaming fine-refine pass can upgrade them to "fine"
- *      later if needed).
- *   5. Update the lecture row with `video_path` + durations.
- *   6. Re-index the lecture for RAG so AI 助教 can use the
- *      transcript immediately.
+ * Previously the whole flow lived inside a single `transcribe_video_file`
+ * call that would:
+ *   1. Run ffmpeg to fully buffer the PCM,
+ *   2. Run one monolithic Whisper pass over it,
+ *   3. Return all segments — at which point we batch-translated.
  *
- * Everything after step 1 is background work. The UI surfaces
- * progress via the callback.
+ * For a 70-minute lecture step 2 was 20–60 min of opaque work with
+ * zero UI feedback — indistinguishable from a hang. We now:
+ *
+ *   a. Extract PCM once to a temp `.pcm` file (fast, ~3 s for 70 min),
+ *   b. Slice into 5-min chunks and transcribe each via
+ *      `transcribe_pcm_file_slice`,
+ *   c. As each chunk's segments come back, immediately queue them for
+ *      CT2 translation — transcription of chunk N+1 runs in parallel
+ *      with translation of chunk N on the Rust side,
+ *   d. After all chunks finish (both passes), persist subtitles +
+ *      build the RAG index.
+ *
+ * Language detection is cached from the first chunk and passed to
+ * every subsequent chunk. Whisper's auto-detector runs on the first
+ * 30 s of audio; if the lecture opens with silence or background
+ * noise, detection lands on garbage (we saw "af" with p=0.01 on one
+ * English lecture). The UI also lets the user pick a language
+ * explicitly for reliability.
  */
 
 export type ImportStage =
     | 'staging'
     | 'extracting_audio'
     | 'transcribing'
+    | 'translating'
     | 'saving_subtitles'
     | 'indexing'
     | 'done';
@@ -32,10 +44,10 @@ export type ImportStage =
 export interface ImportProgress {
     stage: ImportStage;
     message: string;
-    /** 0..1 for stages that can report granular progress; undefined
-     *  when the underlying step is opaque (e.g. ffmpeg doesn't stream
-     *  progress over stdin, whisper doesn't either). */
-    fraction?: number;
+    /** Transcribed / total chunks when known, for a progress bar. */
+    transcribedChunks?: number;
+    translatedChunks?: number;
+    totalChunks?: number;
 }
 
 interface WhisperSegment {
@@ -51,6 +63,19 @@ interface TranscriptionResult {
     duration_ms: number;
 }
 
+interface PcmExtractResult {
+    pcm_path: string;
+    duration_sec: number;
+    sample_count: number;
+}
+
+/** Default chunk length. Whisper.cpp's internal windows are 30 s, so
+ *  any multiple of that is safe; 5 min gives ~14 chunks for a 70-min
+ *  lecture which is enough progress granularity without paying too
+ *  much per-chunk model warmup cost. */
+const CHUNK_SEC = 300;
+const TRANSLATE_BATCH = 64;
+
 export const videoImportService = {
     async importVideo(
         lectureId: string,
@@ -63,116 +88,194 @@ export const videoImportService = {
     ): Promise<{ videoPath: string; segmentCount: number; durationMs: number }> {
         const emit = (p: ImportProgress) => options.onProgress?.(p);
 
-        // 1. Stage the source video under {app_data}/videos/{lectureId}.{ext}.
+        // 1. Stage the source video under the app's video dir.
         emit({ stage: 'staging', message: '正在複製影片到應用目錄…' });
         const videoPath = await invoke<string>('import_video_for_lecture', {
             lectureId,
             sourcePath,
         });
 
-        // 2 + 3. Extract PCM + run Whisper inside one Rust call. The
-        // previous split would have serialised up to ~115 MB of i16
-        // samples (1h video × 16kHz × 2 bytes) as JSON over Tauri's
-        // IPC channel, which OOMs the webview. The combined command
-        // keeps the PCM in the Rust process and only returns the
-        // final segment list (a few KB).
-        emit({
-            stage: 'transcribing',
-            message: '抽取音訊並轉錄中…',
-        });
-        const result = await invoke<TranscriptionResult>('transcribe_video_file', {
+        // 2. Extract PCM to a temp file next to the staged video. Disk
+        //    write is I/O-bound and cheap (~3 s for 70 min); doing it
+        //    once up-front means per-chunk transcription only seeks.
+        emit({ stage: 'extracting_audio', message: '抽取音訊…' });
+        const pcm = await invoke<PcmExtractResult>('extract_video_pcm_to_temp', {
             videoPath,
-            initialPrompt: options.initialPrompt ?? null,
-            language: options.language ?? null,
-            options: null,
         });
 
-        // 4a. Batch translate the English segments into Chinese in
-        //     ONE CTranslate2 call, then stitch back to their original
-        //     timestamps. Translating one line at a time would have
-        //     been N IPC round-trips and given the model no surrounding
-        //     context; a batch call lets the local CT2 engine run the
-        //     whole set on a single forward pass. We chunk at 64 lines
-        //     per batch so a 90-min lecture (~1000 segments) doesn't
-        //     push a single IPC payload over a megabyte — CTranslate2
-        //     handles the internal batching anyway.
-        emit({
-            stage: 'saving_subtitles',
-            message: `翻譯 ${result.segments.length} 段字幕…`,
-        });
-        const texts = result.segments.map((s) => s.text.trim());
-        const translations: string[] = new Array(texts.length);
-        const BATCH = 64;
-        for (let i = 0; i < texts.length; i += BATCH) {
-            const slice = texts.slice(i, i + BATCH);
-            try {
-                const translated = await invoke<string[]>('translate_ct2_batch', { texts: slice });
-                for (let j = 0; j < slice.length; j++) {
-                    translations[i + j] = translated[j] ?? '';
-                }
-            } catch (err) {
-                // Degrade gracefully: if the local CT2 model isn't
-                // loaded (user never configured translation, or model
-                // download is pending), keep the English subtitles
-                // and let the user add translations later.
-                console.warn('[videoImport] batch translate failed, falling back to English-only:', err);
-                for (let j = 0; j < slice.length; j++) {
-                    translations[i + j] = '';
-                }
+        try {
+            // 3. Plan chunks. Last chunk may be shorter than CHUNK_SEC.
+            const chunks: { start: number; end: number }[] = [];
+            for (let t = 0; t < pcm.duration_sec; t += CHUNK_SEC) {
+                chunks.push({
+                    start: t,
+                    end: Math.min(t + CHUNK_SEC, pcm.duration_sec),
+                });
             }
-        }
+            const total = chunks.length;
 
-        // 4b. Persist segments as rough subtitles with both English
-        //     and (best-effort) Chinese text. Timestamp = Whisper's
-        //     start_ms converted to seconds (the schema's `timestamp`
-        //     column is seconds-as-float).
-        const subtitles: Subtitle[] = result.segments.map((seg, idx) => ({
-            id: crypto.randomUUID(),
-            lecture_id: lectureId,
-            timestamp: seg.start_ms / 1000,
-            text_en: seg.text.trim(),
-            text_zh: translations[idx]?.trim() || undefined,
-            type: 'rough',
-            confidence: undefined,
-            created_at: new Date().toISOString(),
-        }));
-        if (subtitles.length > 0) {
-            await storageService.saveSubtitles(subtitles);
-        }
+            // 4. Transcribe + translate pipeline.
+            //
+            //    - Transcription runs sequentially (one Whisper context
+            //      at a time; two in parallel would just contend for
+            //      the same Mutex-guarded service).
+            //    - Translation fires-and-forgets: each finished chunk's
+            //      segments are handed to translate_ct2_batch in the
+            //      background while the next chunk transcribes.
+            //    - We join on all translation promises at the end before
+            //      saving subtitles.
+            const allSegments: WhisperSegment[] = [];
+            const translationMap = new Map<WhisperSegment, string>();
+            const translationPromises: Promise<void>[] = [];
 
-        // 5. Update the lecture row — video_path + duration. We leave
-        //    status alone; if the lecture was 'recording' (rare for
-        //    this flow since user usually imports into a fresh
-        //    lecture), the user can manually flip via Save.
-        const lecture = await storageService.getLecture(lectureId);
-        if (lecture) {
-            await storageService.saveLecture({
-                ...lecture,
-                video_path: videoPath,
-                duration: Math.max(lecture.duration, Math.round(result.duration_ms / 1000)),
-                status: 'completed',
-                updated_at: new Date().toISOString(),
+            let transcribed = 0;
+            let translated = 0;
+            // Seed language from caller or leave null for auto-detect.
+            // `'auto'` is the UI sentinel — Rust already normalises it
+            // to None, but we want it to also be blank-ish here so the
+            // first-chunk result can overwrite it.
+            let currentLang: string | null =
+                options.language && options.language.toLowerCase() !== 'auto'
+                    ? options.language
+                    : null;
+
+            const report = (stage: ImportStage) =>
+                emit({
+                    stage,
+                    message:
+                        stage === 'translating'
+                            ? `翻譯 ${translated}/${total}（轉錄已完成）`
+                            : `轉錄 ${transcribed}/${total}，翻譯 ${translated}/${total}`,
+                    transcribedChunks: transcribed,
+                    translatedChunks: translated,
+                    totalChunks: total,
+                });
+
+            report('transcribing');
+
+            for (const chunk of chunks) {
+                const result = await invoke<TranscriptionResult>(
+                    'transcribe_pcm_file_slice',
+                    {
+                        pcmPath: pcm.pcm_path,
+                        startSec: chunk.start,
+                        endSec: chunk.end,
+                        initialPrompt: options.initialPrompt ?? null,
+                        language: currentLang,
+                        options: null,
+                    },
+                );
+
+                // Cache first successful language detection so later
+                // chunks don't redo it (and more importantly so they
+                // don't drift between languages if audio briefly goes
+                // quiet).
+                if (!currentLang && result.language) {
+                    currentLang = result.language;
+                    console.log('[videoImport] language detected:', currentLang);
+                }
+
+                const chunkSegs = result.segments.slice();
+                allSegments.push(...chunkSegs);
+                transcribed++;
+                report('transcribing');
+
+                // Kick off translation for just this chunk. Errors
+                // degrade to English-only — same graceful fallback the
+                // old code had.
+                translationPromises.push(
+                    (async () => {
+                        const texts = chunkSegs.map((s) => s.text.trim());
+                        const outputs: string[] = new Array(texts.length).fill('');
+                        for (let i = 0; i < texts.length; i += TRANSLATE_BATCH) {
+                            const slice = texts.slice(i, i + TRANSLATE_BATCH);
+                            try {
+                                const tr = await invoke<string[]>('translate_ct2_batch', {
+                                    texts: slice,
+                                });
+                                for (let j = 0; j < slice.length; j++) {
+                                    outputs[i + j] = tr[j] ?? '';
+                                }
+                            } catch (err) {
+                                console.warn(
+                                    '[videoImport] batch translate failed:',
+                                    err,
+                                );
+                                // Leave outputs[i..i+slice.length] as '' —
+                                // English subtitle still gets saved.
+                            }
+                        }
+                        for (let i = 0; i < chunkSegs.length; i++) {
+                            translationMap.set(chunkSegs[i], outputs[i]);
+                        }
+                        translated++;
+                        report(transcribed < total ? 'transcribing' : 'translating');
+                    })(),
+                );
+            }
+
+            // Wait for every chunk's translation to finish before we
+            // persist (saveSubtitles expects the full translated set).
+            await Promise.all(translationPromises);
+
+            // 5. Persist subtitles (mirrors the live-recording schema:
+            //    `rough` subtitles with en + best-effort zh).
+            emit({
+                stage: 'saving_subtitles',
+                message: `儲存 ${allSegments.length} 段字幕…`,
+                transcribedChunks: total,
+                translatedChunks: total,
+                totalChunks: total,
             });
+            const now = new Date().toISOString();
+            const subtitles: Subtitle[] = allSegments.map((seg) => ({
+                id: crypto.randomUUID(),
+                lecture_id: lectureId,
+                timestamp: seg.start_ms / 1000,
+                text_en: seg.text.trim(),
+                text_zh: translationMap.get(seg)?.trim() || undefined,
+                type: 'rough',
+                confidence: undefined,
+                created_at: now,
+            }));
+            if (subtitles.length > 0) {
+                await storageService.saveSubtitles(subtitles);
+            }
+
+            // 6. Update lecture with video_path + duration.
+            const lecture = await storageService.getLecture(lectureId);
+            if (lecture) {
+                await storageService.saveLecture({
+                    ...lecture,
+                    video_path: videoPath,
+                    duration: Math.max(
+                        lecture.duration,
+                        Math.round(pcm.duration_sec),
+                    ),
+                    status: 'completed',
+                    updated_at: new Date().toISOString(),
+                });
+            }
+
+            // 7. RAG index: concat all transcript text.
+            emit({ stage: 'indexing', message: '建立 AI 助教索引…' });
+            const transcriptText = allSegments
+                .map((s) => s.text.trim())
+                .filter(Boolean)
+                .join('\n');
+            await ragService.indexLecture(lectureId, null, transcriptText);
+
+            emit({ stage: 'done', message: '完成' });
+            return {
+                videoPath,
+                segmentCount: allSegments.length,
+                durationMs: Math.round(pcm.duration_sec * 1000),
+            };
+        } finally {
+            // Best-effort cleanup of the temp PCM. If the user aborted
+            // mid-run (unlikely in MVP — there's no cancel button), the
+            // leftover .pcm is still deleted here.
+            void invoke('delete_temp_pcm', { pcmPath: pcm.pcm_path }).catch(() => {});
         }
-
-        // 6. RAG index. Concatenate all segments into one transcript
-        //    string; ragService.indexLecture chunks it the same way
-        //    live-recorded transcripts are chunked.
-        emit({ stage: 'indexing', message: '建立 AI 助教索引…' });
-        const transcriptText = result.segments
-            .map((s) => s.text.trim())
-            .filter(Boolean)
-            .join('\n');
-        // `indexLecture` will pull pdfText from the lecture's PDF on
-        // next open if one is attached; here we pass null so only the
-        // transcript goes in. PDF index picks up via its own flow.
-        await ragService.indexLecture(lectureId, null, transcriptText);
-
-        emit({ stage: 'done', message: '完成' });
-        return {
-            videoPath,
-            segmentCount: result.segments.length,
-            durationMs: result.duration_ms,
-        };
     },
 };

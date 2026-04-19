@@ -14,7 +14,9 @@
  * the downstream transcription path needs zero changes.
  */
 
-use std::io::Read;
+use serde::{Deserialize, Serialize};
+use std::fs::File;
+use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -204,6 +206,218 @@ pub async fn import_video_for_lecture(
 #[tauri::command]
 pub async fn extract_pcm_from_video(video_path: String) -> Result<Vec<i16>, String> {
     extract_pcm_16k_mono(Path::new(&video_path))
+}
+
+// ----- Chunked-transcribe pipeline (v0.6.0) ----------------------------
+//
+// The original `transcribe_video_file` was a single opaque call: ffmpeg
+// → full PCM buffer → one Whisper pass → return all segments. For a
+// 1 hour 20 minute lecture that's ~80 min of CPU work with zero
+// progress feedback, indistinguishable from a hang. We now split the
+// work into 5-minute slices so the frontend can:
+//   1. show granular progress ("轉錄 3/14, 翻譯 2/14"),
+//   2. pipeline translation against transcription instead of sequencing
+//      them, and
+//   3. avoid rebuffering the whole PCM when retrying a single chunk.
+//
+// The PCM is materialised to a temp file on disk once (fast — ffmpeg
+// does ~70 min of video in ~3 s) and then each slice reads the exact
+// byte range it needs. Whisper is called per-slice with the offset
+// baked into the returned segment timestamps.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcmExtractResult {
+    pub pcm_path: String,
+    pub duration_sec: f64,
+    pub sample_count: u64,
+}
+
+const PCM_SAMPLE_RATE: u32 = 16_000;
+const PCM_BYTES_PER_SAMPLE: u64 = 2;
+
+/// Stream ffmpeg's PCM output directly to a temp file instead of the
+/// in-memory Vec<i16> that `extract_pcm_16k_mono` uses. A 70-minute
+/// video is ~130 MB; writing to disk is cheaper than holding it in RAM
+/// across the chunked transcription loop (which can take tens of
+/// minutes) and the frontend can then retry individual slices without
+/// re-running ffmpeg.
+fn extract_pcm_to_file(video_path: &Path, pcm_path: &Path) -> Result<u64, String> {
+    if !video_path.exists() {
+        return Err(format!("video file not found: {}", video_path.display()));
+    }
+    if let Some(parent) = pcm_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create pcm dir: {}", e))?;
+    }
+
+    let ffmpeg = locate_ffmpeg()?;
+    let output = File::create(pcm_path)
+        .map_err(|e| format!("failed to create pcm file: {}", e))?;
+    let mut writer = BufWriter::with_capacity(1024 * 1024, output);
+
+    let mut child = Command::new(&ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
+        .arg(video_path)
+        .args(["-ac", "1", "-ar", "16000", "-f", "s16le", "-y", "-"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn ffmpeg: {}", e))?;
+
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
+
+    let stderr_handle = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+
+    // Stream in 1 MB blocks so we never hold more than that in memory.
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = stdout
+            .read(&mut buf)
+            .map_err(|e| format!("ffmpeg read failed: {}", e))?;
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .map_err(|e| format!("pcm write failed: {}", e))?;
+        total += n as u64;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("pcm flush failed: {}", e))?;
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("ffmpeg wait failed: {}", e))?;
+    let stderr_out = stderr_handle.join().unwrap_or_default();
+    if !status.success() {
+        return Err(format!(
+            "ffmpeg exited with {}: {}",
+            status,
+            stderr_out.trim()
+        ));
+    }
+    if total % 2 != 0 {
+        return Err(format!(
+            "ffmpeg produced {} bytes, not a whole number of i16 samples",
+            total
+        ));
+    }
+    Ok(total / PCM_BYTES_PER_SAMPLE)
+}
+
+#[tauri::command]
+pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractResult, String> {
+    let source = Path::new(&video_path);
+    // Drop the temp PCM next to the staged video so it lives and dies
+    // with the lecture — same directory already has the app's write
+    // permission and our cleanup routines.
+    let stem = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("pcm");
+    let parent = source
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| "invalid video path".to_string())?;
+    let pcm_path = parent.join(format!("{}.transcribe.pcm", stem));
+
+    let sample_count = extract_pcm_to_file(source, &pcm_path)?;
+    let duration_sec = sample_count as f64 / PCM_SAMPLE_RATE as f64;
+    Ok(PcmExtractResult {
+        pcm_path: pcm_path.to_string_lossy().into_owned(),
+        duration_sec,
+        sample_count,
+    })
+}
+
+/// Transcribe a [start_sec, end_sec) range of an on-disk PCM file.
+/// The returned segment timestamps are shifted by `start_sec * 1000`
+/// so the frontend can concatenate slices without further adjustment.
+#[tauri::command]
+pub async fn transcribe_pcm_file_slice(
+    pcm_path: String,
+    start_sec: f64,
+    end_sec: f64,
+    initial_prompt: Option<String>,
+    language: Option<String>,
+    options: Option<crate::whisper::transcribe::TranscriptionOptions>,
+) -> Result<crate::whisper::transcribe::TranscriptionResult, String> {
+    if end_sec <= start_sec {
+        return Err("end_sec must be > start_sec".to_string());
+    }
+    let path = Path::new(&pcm_path);
+    let mut file = File::open(path).map_err(|e| format!("open pcm failed: {}", e))?;
+    let start_byte = (start_sec * PCM_SAMPLE_RATE as f64 * PCM_BYTES_PER_SAMPLE as f64) as u64;
+    // Align to sample boundary.
+    let start_byte = start_byte - (start_byte % PCM_BYTES_PER_SAMPLE);
+    let sample_span = ((end_sec - start_sec) * PCM_SAMPLE_RATE as f64) as usize;
+    let byte_span = sample_span * PCM_BYTES_PER_SAMPLE as usize;
+
+    file.seek(SeekFrom::Start(start_byte))
+        .map_err(|e| format!("seek failed: {}", e))?;
+    let mut bytes = vec![0u8; byte_span];
+    let read = file
+        .read(&mut bytes)
+        .map_err(|e| format!("read pcm failed: {}", e))?;
+    bytes.truncate(read - (read % PCM_BYTES_PER_SAMPLE as usize));
+
+    let samples: Vec<i16> = bytes
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect();
+
+    if samples.is_empty() {
+        return Ok(crate::whisper::transcribe::TranscriptionResult {
+            text: String::new(),
+            segments: vec![],
+            language: None,
+            duration_ms: 0,
+        });
+    }
+
+    let service_guard = crate::WHISPER_SERVICE.lock().await;
+    let service = service_guard
+        .as_ref()
+        .ok_or_else(|| "Whisper 模型未加載".to_string())?;
+    let mut result = service
+        .transcribe(
+            &samples,
+            PCM_SAMPLE_RATE,
+            initial_prompt.as_deref(),
+            language.as_deref(),
+            options,
+        )
+        .await
+        .map_err(|e| format!("轉錄失敗: {}", e))?;
+
+    let offset_ms = (start_sec * 1000.0) as u64;
+    for seg in result.segments.iter_mut() {
+        seg.start_ms = seg.start_ms.saturating_add(offset_ms);
+        seg.end_ms = seg.end_ms.saturating_add(offset_ms);
+    }
+    Ok(result)
+}
+
+/// Remove the temp `.transcribe.pcm` file once the orchestrator is done
+/// with it. Best-effort — a leftover PCM is harmless (just disk).
+#[tauri::command]
+pub async fn delete_temp_pcm(pcm_path: String) -> Result<(), String> {
+    let path = Path::new(&pcm_path);
+    if !path.exists() {
+        return Ok(());
+    }
+    // Guard against accidental deletion outside a pcm file.
+    if !pcm_path.ends_with(".pcm") {
+        return Err("refusing to delete non-.pcm file".to_string());
+    }
+    std::fs::remove_file(path).map_err(|e| format!("delete failed: {}", e))
 }
 
 /// Combined "extract + transcribe" entry point. The original shape --
