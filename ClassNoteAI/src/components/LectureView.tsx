@@ -128,55 +128,16 @@ export default function LectureView() {
     checkAndLoadModels();
   }, []); // 空依賴數組，只在組件掛載時執行一次
 
-  const handleFileDrop = async (file: File) => {
-    // 拖放診斷已禁用
-
-    // 驗證文件類型
-    const fileName = file.name.toLowerCase();
-    const isValidPDF = fileName.endsWith('.pdf') || file.type === 'application/pdf' || file.type === '';
-
-    if (!isValidPDF) {
-      console.warn("不是 PDF 文件:", file.name, file.type);
-      alert('請拖放 PDF 文件');
+  const handleFileDrop = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    const path = paths[0];
+    const lower = path.toLowerCase();
+    if (!lower.endsWith('.pdf')) {
+      alert('請拖放 PDF 檔案');
       return;
     }
-
-    console.log("文件驗證通過，開始處理");
-
-    // 在 Tauri 中，嘗試獲取文件路徑
-    // 檢查是否有 path 屬性（Tauri 可能會提供）
-    const filePath = (file as any).path;
-
-    if (filePath && typeof filePath === 'string') {
-      console.log("使用文件路徑:", filePath);
-      // 如果 Tauri 提供了文件路徑，直接使用
-      setPdfPath(filePath);
-    } else {
-      console.log("使用 FileReader 讀取文件");
-      // 使用 FileReader 讀取文件並直接傳遞 ArrayBuffer
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (event.target?.result) {
-          const arrayBuffer = event.target.result as ArrayBuffer;
-          console.log("文件讀取成功，文件大小:", arrayBuffer.byteLength, "bytes");
-
-          // 直接使用 ArrayBuffer，避免 blob URL 的問題
-          setPdfData(arrayBuffer);
-          setPdfPath(null); // 清除 filePath，使用 pdfData
-        }
-      };
-      reader.onerror = (error) => {
-        console.error("文件讀取失敗:", error);
-        alert('文件讀取失敗，請重試');
-      };
-      reader.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const percentLoaded = Math.round((e.loaded / e.total) * 100);
-          console.log(`文件讀取進度: ${percentLoaded}%`);
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    }
+    setPdfPath(path);
+    setPdfData(null);
   };
 
   // 使用 ref 來追蹤模型加載狀態，避免閉包問題

@@ -38,7 +38,9 @@ import { generateLocalEmbedding } from "../services/embeddingService";
 import { embeddingStorageService } from "../services/embeddingStorageService";
 import { openDetachedAiTutor } from "../services/aiTutorWindow";
 import { videoImportService } from "../services/videoImportService";
+import { subtitleImportService } from "../services/subtitleImportService";
 import { selectVideoFile } from "../services/fileService";
+import ImportModal, { PasteSubmission } from "./ImportModal";
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
@@ -92,6 +94,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // v0.6.0 video import state
   const [isImportingVideo, setIsImportingVideo] = useState(false);
   const [importProgressMessage, setImportProgressMessage] = useState<string>('');
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isAIChatOpen, setIsAIChatOpen] = useState(false);
   const [pdfTextContent, setPdfTextContent] = useState<string>('');
   const [transcriptContent, setTranscriptContent] = useState<string>('');
@@ -1068,10 +1071,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // translate, save subtitles, index for RAG. User can leave the
   // window; when they come back, Notes Review mode shows the video
   // with subtitles + AI 助教 fully indexed.
-  const handleImportVideo = async () => {
+  const runVideoImport = async (sourcePath: string) => {
     if (!lectureId || isImportingVideo) return;
-    const sourcePath = await selectVideoFile();
-    if (!sourcePath) return;
     setIsImportingVideo(true);
     setImportProgressMessage('開始匯入…');
     try {
@@ -1079,16 +1080,50 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         language: 'auto',
         onProgress: (p) => setImportProgressMessage(p.message),
       });
-      // Refresh lecture state so the Notes Review mode picks up
-      // video_path + new subtitles immediately.
       const fresh = await storageService.getLecture(lectureId);
       if (fresh) setCurrentLectureData(fresh);
       toastService.success(
         '影片匯入完成',
         `共 ${result.segmentCount} 段字幕，可到 Notes Review 看播放。`,
       );
+      setIsImportModalOpen(false);
     } catch (err) {
       toastService.error('影片匯入失敗', err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsImportingVideo(false);
+      setImportProgressMessage('');
+    }
+  };
+
+  const handlePickAndImportVideo = async () => {
+    const sourcePath = await selectVideoFile();
+    if (!sourcePath) return;
+    await runVideoImport(sourcePath);
+  };
+
+  const handleImportPastedSubtitles = async (submission: PasteSubmission) => {
+    if (!lectureId || isImportingVideo) return;
+    setIsImportingVideo(true);
+    setImportProgressMessage('解析字幕…');
+    try {
+      const result = await subtitleImportService.importPasted(
+        lectureId,
+        submission.rawText,
+        {
+          language: submission.language,
+          translateToChinese: submission.translateToChinese,
+          onProgress: (p) => setImportProgressMessage(p.message),
+        },
+      );
+      const fresh = await storageService.getLecture(lectureId);
+      if (fresh) setCurrentLectureData(fresh);
+      toastService.success(
+        '字幕匯入完成',
+        `共 ${result.segmentCount} 段字幕，AI 助教可立即查閱。`,
+      );
+      setIsImportModalOpen(false);
+    } catch (err) {
+      toastService.error('字幕匯入失敗', err instanceof Error ? err.message : String(err));
     } finally {
       setIsImportingVideo(false);
       setImportProgressMessage('');
@@ -1294,98 +1329,58 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     }
   };
 
-  const handleFileDrop = async (file: File) => {
-    const fileName = file.name.toLowerCase();
-    const isPdf = fileName.endsWith('.pdf') || file.type === 'application/pdf';
-    const isSupported = isPdf || fileName.endsWith('.ppt') || fileName.endsWith('.pptx') ||
-      fileName.endsWith('.doc') || fileName.endsWith('.docx');
+  // v0.6.0 drag-drop now rides on Tauri's native `onDragDropEvent`,
+  // which hands us real filesystem paths instead of HTML5 `File`
+  // objects. That means we can route by extension and avoid the old
+  // `File.arrayBuffer()` + `write_temp_file` round-trip — critical for
+  // video files where that path would JSON-encode hundreds of MB.
+  const handleFileDrop = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    const path = paths[0];
+    const lower = path.toLowerCase();
 
-    if (!isSupported) {
-      toastService.warning('請拖入 PDF、PPT、或 Word 檔案');
+    const isVideo = /\.(mp4|m4v|mkv|webm|mov|avi)$/.test(lower);
+    const isPdf = lower.endsWith('.pdf');
+    const isConvertible =
+      lower.endsWith('.ppt') ||
+      lower.endsWith('.pptx') ||
+      lower.endsWith('.doc') ||
+      lower.endsWith('.docx');
+
+    if (isVideo) {
+      await runVideoImport(path);
+      return;
+    }
+
+    if (isConvertible) {
+      await convertAndLoadDocument(path);
       return;
     }
 
     if (!isPdf) {
-      // Need to convert - save to temp location first
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (event.target?.result) {
-          // Save dropped file to temp location
-          const tempDir = await invoke<string>('get_temp_dir').catch(() => '/tmp');
-          const tempPath = `${tempDir}/${file.name}`;
+      toastService.warning('請拖入影片、PDF、PPT 或 Word 檔案');
+      return;
+    }
 
-          // Write file (we'll need a Tauri command for this)
-          const arrayBuffer = event.target.result as ArrayBuffer;
-          const uint8Array = new Uint8Array(arrayBuffer);
-
-          try {
-            await invoke('write_temp_file', {
-              path: tempPath,
-              data: Array.from(uint8Array)
-            });
-            await convertAndLoadDocument(tempPath);
-          } catch (error) {
-            console.error('Failed to save temp file:', error);
-            toastService.error('檔案處理失敗', '請試試用「選擇檔案」按鈕');
-          }
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    } else {
-      // Direct PDF load — persist the bytes to app data so the PDF
-      // survives a page reload or re-entry to the lecture. Prior to
-      // v0.5.2 the dropped ArrayBuffer lived only in React state and
-      // evaporated on reload, so users lost their slide deck every
-      // time HMR (or an explicit reload) kicked in.
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (!event.target?.result) return;
-        const arrayBuffer = event.target.result as ArrayBuffer;
-        setPdfData(arrayBuffer);
-        try {
-          const appData = await invoke<string>('get_app_data_dir');
-          const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
-          const safeName = file.name.replace(/[^A-Za-z0-9._-]/g, '_');
-          // v0.5.2 audit follow-up: prefix the filename with the
-          // lecture id. The prior scheme was `{ts}-{name}.pdf` which
-          // had no link back to the lecture, so a `write_temp_file`
-          // success followed by an `updateLecturePDF` DB failure left
-          // an orphan file we couldn't auto-recover. The new pattern
-          // `lecture_{id}_{ts}_{name}.pdf` mirrors the audio convention
-          // and is what `try_recover_pdf_path` (next commit) scans for.
-          const target = `${appData}${sep}lecture-pdfs${sep}lecture_${currentLectureData?.id ?? 'unknown'}_${Date.now()}_${safeName}`;
-          await invoke('write_temp_file', {
-            path: target,
-            data: Array.from(new Uint8Array(arrayBuffer)),
-          });
-          setPdfPath(target);
-          try {
-            await updateLecturePDF(target);
-          } catch (dbErr) {
-            // The FILE is already on disk at `target`. Surface the DB
-            // failure to the user so they know to retry — previously
-            // this was only `console.error`, so the UI showed the PDF
-            // loaded (from in-memory buffer) but the DB didn't know
-            // about it, and the PDF vanished on next reload. With the
-            // new filename pattern, `try_recover_pdf_path` will recover
-            // on next load anyway, but a loud toast prevents confusion.
-            console.error('[NotesView] PDF file written but DB save failed:', dbErr);
-            toastService.error(
-              'PDF 已儲存但資料庫更新失敗',
-              '下次開啟此課堂時系統會自動重新連結。' +
-                (dbErr instanceof Error ? ` (${dbErr.message})` : ''),
-            );
-          }
-        } catch (err) {
-          console.error('[NotesView] Failed to persist dropped PDF:', err);
-          toastService.error(
-            'PDF 儲存失敗',
-            err instanceof Error ? err.message : String(err),
-          );
-          setPdfPath(null);
-        }
-      };
-      reader.readAsArrayBuffer(file);
+    // Load PDF directly from its on-disk path — no temp copy needed.
+    try {
+      const pdfBytes = await invoke<number[]>('read_binary_file', { path });
+      const arrayBuffer = new Uint8Array(pdfBytes).buffer;
+      setPdfData(arrayBuffer);
+      setPdfPath(path);
+      try {
+        await updateLecturePDF(path);
+      } catch (dbErr) {
+        console.error('[NotesView] PDF path loaded but DB save failed:', dbErr);
+        toastService.error(
+          'PDF 資料庫更新失敗',
+          '下次開啟此課堂時系統會自動重新連結。' +
+            (dbErr instanceof Error ? ` (${dbErr.message})` : ''),
+        );
+      }
+    } catch (err) {
+      console.error('[NotesView] Failed to read dropped PDF:', err);
+      toastService.error('PDF 讀取失敗', err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -1773,14 +1768,14 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               Save. */}
           {viewMode === 'recording' && lectureId && (
             <button
-              onClick={handleImportVideo}
+              onClick={() => setIsImportModalOpen(true)}
               disabled={isImportingVideo}
               className="flex items-center gap-2 px-3 py-2 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors disabled:opacity-50"
-              title="匯入已錄製的影片，自動轉錄 + 翻譯 + 建立 AI 助教索引"
+              title="匯入已錄製的影片或課程字幕"
             >
               {isImportingVideo ? <Loader2 size={18} className="animate-spin" /> : <Film size={18} />}
               <span className="hidden sm:inline">
-                {isImportingVideo ? (importProgressMessage || '處理中…') : '匯入影片'}
+                {isImportingVideo ? (importProgressMessage || '處理中…') : '匯入'}
               </span>
             </button>
           )}
@@ -1869,7 +1864,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                       </button>
                     </div>
                   )}
-                  <DragDropZone onFileDrop={handleFileDrop} className="flex-1 overflow-hidden">
+                  <DragDropZone onFileDrop={handleFileDrop} enabled={!isImportModalOpen} className="flex-1 overflow-hidden">
                     {pdfPath || pdfData ? (
                       <PDFViewer
                         ref={pdfViewerRef}
@@ -2308,6 +2303,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           displayMode="floating"
         />
       )}
+
+      <ImportModal
+        open={isImportModalOpen}
+        isBusy={isImportingVideo}
+        progressMessage={importProgressMessage}
+        onClose={() => setIsImportModalOpen(false)}
+        onPickVideo={handlePickAndImportVideo}
+        onDropVideo={(path) => runVideoImport(path)}
+        onSubmitPaste={handleImportPastedSubtitles}
+      />
     </div >
   );
 }
