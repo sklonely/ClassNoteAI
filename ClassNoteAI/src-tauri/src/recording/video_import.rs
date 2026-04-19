@@ -205,3 +205,37 @@ pub async fn import_video_for_lecture(
 pub async fn extract_pcm_from_video(video_path: String) -> Result<Vec<i16>, String> {
     extract_pcm_16k_mono(Path::new(&video_path))
 }
+
+/// Combined "extract + transcribe" entry point. The original shape --
+/// one command for extract (returns Vec<i16>), one for transcribe --
+/// would have round-tripped up to ~115 MB of PCM over Tauri's JSON IPC
+/// for a 1-hour 16 kHz video. Serialising 57M i16 as JSON text blows
+/// out to ~300 MB and OOMs the webview.
+///
+/// Keeping the PCM inside the Rust process and handing only the
+/// finished transcription segments back (usually a few KB) avoids
+/// the whole issue. The actual Whisper call uses the same WHISPER_SERVICE
+/// singleton as the live-recording path.
+#[tauri::command]
+pub async fn transcribe_video_file(
+    video_path: String,
+    initial_prompt: Option<String>,
+    language: Option<String>,
+    options: Option<crate::whisper::transcribe::TranscriptionOptions>,
+) -> Result<crate::whisper::transcribe::TranscriptionResult, String> {
+    let pcm = extract_pcm_16k_mono(Path::new(&video_path))?;
+    let service_guard = crate::WHISPER_SERVICE.lock().await;
+    let service = service_guard
+        .as_ref()
+        .ok_or_else(|| "Whisper 模型未加載".to_string())?;
+    service
+        .transcribe(
+            &pcm,
+            16_000,
+            initial_prompt.as_deref(),
+            language.as_deref(),
+            options,
+        )
+        .await
+        .map_err(|e| format!("轉錄失敗: {}", e))
+}

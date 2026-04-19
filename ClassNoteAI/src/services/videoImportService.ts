@@ -70,38 +70,68 @@ export const videoImportService = {
             sourcePath,
         });
 
-        // 2. Extract PCM via ffmpeg. Whole-file in-memory result is
-        //    fine for lecture lengths; if we ever need to support 4 h+
-        //    videos we switch to streaming PCM chunks.
-        emit({ stage: 'extracting_audio', message: '抽取音訊中…' });
-        const pcm = await invoke<number[]>('extract_pcm_from_video', {
-            videoPath,
-        });
-
-        // 3. Whisper transcribe. Reuses the exact same command the
-        //    live-recording path uses — no new model state, no new
-        //    code path, same quality.
+        // 2 + 3. Extract PCM + run Whisper inside one Rust call. The
+        // previous split would have serialised up to ~115 MB of i16
+        // samples (1h video × 16kHz × 2 bytes) as JSON over Tauri's
+        // IPC channel, which OOMs the webview. The combined command
+        // keeps the PCM in the Rust process and only returns the
+        // final segment list (a few KB).
         emit({
             stage: 'transcribing',
-            message: `轉錄中（約 ${Math.round(pcm.length / 16000)} 秒音訊）…`,
+            message: '抽取音訊並轉錄中…',
         });
-        const result = await invoke<TranscriptionResult>('transcribe_audio', {
-            audioData: pcm,
-            sampleRate: 16000,
+        const result = await invoke<TranscriptionResult>('transcribe_video_file', {
+            videoPath,
             initialPrompt: options.initialPrompt ?? null,
             language: options.language ?? null,
             options: null,
         });
 
-        // 4. Persist segments as rough subtitles. `timestamp` on the
-        //    Subtitle row is in seconds (float) per the existing
-        //    schema; Whisper gives us ms, so divide.
-        emit({ stage: 'saving_subtitles', message: '寫入字幕…' });
-        const subtitles: Subtitle[] = result.segments.map((seg) => ({
+        // 4a. Batch translate the English segments into Chinese in
+        //     ONE CTranslate2 call, then stitch back to their original
+        //     timestamps. Translating one line at a time would have
+        //     been N IPC round-trips and given the model no surrounding
+        //     context; a batch call lets the local CT2 engine run the
+        //     whole set on a single forward pass. We chunk at 64 lines
+        //     per batch so a 90-min lecture (~1000 segments) doesn't
+        //     push a single IPC payload over a megabyte — CTranslate2
+        //     handles the internal batching anyway.
+        emit({
+            stage: 'saving_subtitles',
+            message: `翻譯 ${result.segments.length} 段字幕…`,
+        });
+        const texts = result.segments.map((s) => s.text.trim());
+        const translations: string[] = new Array(texts.length);
+        const BATCH = 64;
+        for (let i = 0; i < texts.length; i += BATCH) {
+            const slice = texts.slice(i, i + BATCH);
+            try {
+                const translated = await invoke<string[]>('translate_ct2_batch', { texts: slice });
+                for (let j = 0; j < slice.length; j++) {
+                    translations[i + j] = translated[j] ?? '';
+                }
+            } catch (err) {
+                // Degrade gracefully: if the local CT2 model isn't
+                // loaded (user never configured translation, or model
+                // download is pending), keep the English subtitles
+                // and let the user add translations later.
+                console.warn('[videoImport] batch translate failed, falling back to English-only:', err);
+                for (let j = 0; j < slice.length; j++) {
+                    translations[i + j] = '';
+                }
+            }
+        }
+
+        // 4b. Persist segments as rough subtitles with both English
+        //     and (best-effort) Chinese text. Timestamp = Whisper's
+        //     start_ms converted to seconds (the schema's `timestamp`
+        //     column is seconds-as-float).
+        const subtitles: Subtitle[] = result.segments.map((seg, idx) => ({
             id: crypto.randomUUID(),
             lecture_id: lectureId,
             timestamp: seg.start_ms / 1000,
             text_en: seg.text.trim(),
+            text_zh: translations[idx]?.trim() || undefined,
             type: 'rough',
             confidence: undefined,
             created_at: new Date().toISOString(),

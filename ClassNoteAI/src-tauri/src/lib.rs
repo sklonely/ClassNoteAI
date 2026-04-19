@@ -28,8 +28,11 @@ use tauri::Emitter;
 use tokio::sync::Mutex;
 use whisper::WhisperService; // For window.emit()
 
-// 全局 Whisper 服務實例
-static WHISPER_SERVICE: Mutex<Option<WhisperService>> = Mutex::const_new(None);
+// 全局 Whisper 服務實例. `pub(crate)` so sibling modules (e.g.
+// recording::video_import's combined extract+transcribe path) can
+// reuse the loaded model without routing through Tauri command IPC
+// and without serialising 100+ MB of PCM back and forth.
+pub(crate) static WHISPER_SERVICE: Mutex<Option<WhisperService>> = Mutex::const_new(None);
 // 全局 Embedding 服務實例
 static EMBEDDING_SERVICE: Mutex<Option<EmbeddingService>> = Mutex::const_new(None);
 
@@ -1869,6 +1872,7 @@ pub fn run() {
             recording::discard_orphaned_recording,
             recording::video_import::import_video_for_lecture,
             recording::video_import::extract_pcm_from_video,
+            recording::video_import::transcribe_video_file,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())
