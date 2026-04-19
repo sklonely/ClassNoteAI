@@ -113,8 +113,12 @@ function serializeConsoleArg(arg) {
     return '[unserializable]';
 }
 
+function escapeRegExpLiteral(input) {
+    return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function cmdTail(flags) {
-    const grep = flags.grep ? new RegExp(flags.grep) : null;
+    const grep = flags.grep ? new RegExp(escapeRegExpLiteral(String(flags.grep))) : null;
     const session = await connect();
     await session.send('Runtime.enable');
     session.on((msg) => {
