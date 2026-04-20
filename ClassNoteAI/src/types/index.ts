@@ -208,6 +208,40 @@ export interface AppSettings {
      *  LLM usage; users who have plentiful tokens can flip it on once
      *  and forget it. */
     importAiRefine?: boolean;
+    /** Refinement intensity. Controls how aggressively the LLM
+     *  rewrites the rough CT2 translation:
+     *    - `off`    : no LLM call (same as `importAiRefine: false`)
+     *    - `light`  : mid-tier model (GPT-4o-mini / Haiku / Gemini
+     *                 Flash), batched per 5-min section, grammar +
+     *                 term fixes only. ~14 calls / 70-min lecture,
+     *                 ~15k tokens. Fits free-tier Gemini easily.
+     *    - `deep`   : upper-mid model (Mistral Large 2 / Claude
+     *                 Sonnet / Llama 3.3 70B), batched per section,
+     *                 full rewrite with cross-subtitle consistency.
+     *                 ~14 calls, ~50k tokens. Shows a cost estimate
+     *                 in the UI before running.
+     *  The old `importAiRefine: true` maps to `deep`. */
+    refineIntensity?: 'off' | 'light' | 'deep';
+    /** Which LLM provider to prefer for refinement. `auto` picks
+     *  the first configured provider in this order: user's
+     *  ChatGPT Plus OAuth (already signed in? use it — the app
+     *  reuses Codex CLI's OAuth client) → GitHub Models /
+     *  Copilot OAuth → local Ollama (if GPU ≥ 12 GB VRAM detected)
+     *  → Gemini free tier → Groq free tier → Mistral Experiment
+     *  → user-provided raw key. The OAuth paths come first
+     *  because they're what most of our users already have signed
+     *  in (Copilot Pro = $10/mo, ChatGPT Plus = $20/mo are both
+     *  common). Pinning a specific value bypasses the chain. */
+    refineProvider?:
+        | 'auto'
+        | 'chatgpt-oauth'
+        | 'github-models'
+        | 'ollama'
+        | 'gemini'
+        | 'groq'
+        | 'mistral'
+        | 'openrouter'
+        | 'user-key';
     /** Whisper GPU backend preference. `auto` picks the first available
      *  at runtime (Phase 2+); the other values let power users pin a
      *  specific backend. Ignored in Phase 1 builds where no GPU features
