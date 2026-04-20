@@ -1,6 +1,6 @@
 [package]
 name = "classnoteai"
-version = "0.6.0-alpha.1"
+version = "0.6.0-alpha.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -139,6 +139,9 @@ ct2rs = { version = "0.9", features = ["default"] }
 # File system utilities
 walkdir = "2"
 dirs = "5"
+# Tiny TOML parser for `dev_flags.rs` — experimental toggles read
+# before Tauri / SQLite init (so they can't live in the main DB).
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tauri-plugin-http = "2"
 tauri-plugin-process = "2"
 ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }

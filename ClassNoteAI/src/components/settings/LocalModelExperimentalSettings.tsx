@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FlaskConical, Zap, Cpu, CheckCircle2, XCircle, AlertTriangle, ExternalLink } from 'lucide-react';
+import { FlaskConical, Zap, Cpu, CheckCircle2, XCircle, AlertTriangle, ExternalLink, Terminal } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { storageService } from '../../services/storageService';
@@ -41,6 +41,13 @@ export default function LocalModelExperimentalSettings() {
     const [detection, setDetection] = useState<GpuDetection | null>(null);
     const [loaded, setLoaded] = useState(false);
     const [savedAt, setSavedAt] = useState<number | null>(null);
+    // v0.6.0-alpha.2: opt-in remote debug port. Read straight from a
+    // Rust-managed TOML flag (not AppSettings) because the flag is
+    // consumed by main() *before* Tauri/SQLite come up — the UI
+    // here just reflects + toggles it. Restart required to take
+    // effect: we render a "待重啟" badge after toggling.
+    const [cdpOn, setCdpOn] = useState<boolean>(false);
+    const [cdpChangedAt, setCdpChangedAt] = useState<number | null>(null);
 
     useEffect(() => {
         (async () => {
@@ -56,6 +63,12 @@ export default function LocalModelExperimentalSettings() {
                     setDetection(d);
                 } catch {
                     /* older binary — leave null */
+                }
+                try {
+                    const cdp = await invoke<boolean>('get_remote_debug_enabled');
+                    setCdpOn(cdp);
+                } catch {
+                    /* older binary without the command — default off */
                 }
             } finally {
                 setLoaded(true);
@@ -225,6 +238,51 @@ export default function LocalModelExperimentalSettings() {
                         </option>
                         <option value="cpu">強制 CPU</option>
                     </select>
+                </div>
+
+                {/* Remote debug port — developer / agent mode */}
+                <div className="pt-3 border-t border-gray-200 dark:border-gray-700">
+                    <label className="flex items-start gap-2 text-sm">
+                        <input
+                            type="checkbox"
+                            checked={cdpOn}
+                            onChange={async (e) => {
+                                const next = e.target.checked;
+                                setCdpOn(next);
+                                try {
+                                    await invoke('set_remote_debug_enabled', { enabled: next });
+                                    setCdpChangedAt(Date.now());
+                                } catch (err) {
+                                    console.error('[DevFlags] save failed:', err);
+                                    setCdpOn(!next); // revert
+                                }
+                            }}
+                            className="mt-1 accent-indigo-500"
+                        />
+                        <span>
+                            <span className="flex items-center gap-1.5 font-medium text-gray-700 dark:text-gray-300">
+                                <Terminal className="w-4 h-4 text-slate-500" />
+                                開啟遠端除錯 / Agent port
+                                {cdpChangedAt && Date.now() - cdpChangedAt < 10000 && (
+                                    <span className="text-[10px] text-amber-600 dark:text-amber-400 ml-1">
+                                        請重啟應用程式以生效
+                                    </span>
+                                )}
+                            </span>
+                            <span className="block text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                                在 <code className="text-[10px]">127.0.0.1:9222</code> 開啟
+                                Chrome DevTools Protocol，方便自動化測試腳本（
+                                <code className="text-[10px]">scripts/cdp.cjs</code>、Playwright、
+                                AI Agent 等）連進來操作應用程式。
+                                <span className="text-amber-600 dark:text-amber-500">
+                                    注意：
+                                </span>
+                                任何能連到 localhost 的程式都能讀寫你的資料，
+                                正式使用時請關掉。
+                                變更需下次啟動才生效。
+                            </span>
+                        </span>
+                    </label>
                 </div>
             </div>
         </div>
