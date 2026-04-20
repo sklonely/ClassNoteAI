@@ -24,6 +24,9 @@ mod oauth;
 pub mod recording;
 // GPU backend detection (CUDA via nvidia-smi, Metal via cfg, Vulkan via filesystem)
 mod gpu;
+// Pre-WebView2 experimental toggles (remote debug port, etc). Public
+// so `main()` can `remote_debug_enabled()` before Tauri spins up.
+pub mod dev_flags;
 
 use embedding::EmbeddingService;
 use tauri::Emitter;
@@ -511,9 +514,55 @@ async fn load_translation_model_by_name(model_name: String) -> Result<String, St
         return Err(format!("模型目錄不存在: {:?}", model_dir));
     }
 
-    // 檢查 CT2 模型文件 (model.bin)
+    // 檢查 CT2 模型文件 (model.bin).
+    //
+    // Some older app builds / manual extracts left the model files
+    // one directory deeper than expected:
+    //     .../m2m100-418M-ct2-int8/m2m100-418M-ct2-int8/model.bin
+    // instead of the flat layout this command expects:
+    //     .../m2m100-418M-ct2-int8/model.bin
+    // The current downloader strips the top-level dir correctly, so
+    // fresh installs don't hit this — but users migrating from older
+    // versions do, and the error ("CT2 模型文件不存在") is opaque. We
+    // self-heal on first load: if outer model.bin is missing but a
+    // nested `{model_name}/model.bin` exists under the same root,
+    // flatten it by moving every entry up one level. One-shot;
+    // subsequent loads hit the check_path fast path.
     let model_bin_path = model_dir.join("model.bin");
-
+    if !model_bin_path.exists() {
+        let nested_dir = model_dir.join(&model_name);
+        let nested_bin = nested_dir.join("model.bin");
+        if nested_bin.exists() {
+            println!(
+                "[TranslationModel] 偵測到巢狀模型目錄，自動 flatten: {:?} -> {:?}",
+                nested_dir, model_dir
+            );
+            match std::fs::read_dir(&nested_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let from = entry.path();
+                        let to = model_dir.join(entry.file_name());
+                        if let Err(e) = std::fs::rename(&from, &to) {
+                            return Err(format!(
+                                "自動 flatten 失敗 ({} → {}): {}",
+                                from.display(),
+                                to.display(),
+                                e
+                            ));
+                        }
+                    }
+                    // Now the inner dir should be empty — remove it.
+                    let _ = std::fs::remove_dir(&nested_dir);
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "讀取巢狀目錄失敗 {:?}: {}",
+                        nested_dir, e
+                    ));
+                }
+            }
+        }
+    }
     if !model_bin_path.exists() {
         return Err(format!("CT2 模型文件不存在: {:?}", model_bin_path));
     }
@@ -1184,6 +1233,25 @@ async fn calculate_similarity(text_a: String, text_b: String) -> Result<f32, Str
     Ok(EmbeddingService::cosine_similarity(&emb_a, &emb_b))
 }
 
+/// Read the current "Remote debug port" experimental toggle.
+/// Returns the persisted flag from `dev-flags.toml`; `false` when
+/// the file doesn't exist or is unreadable.
+#[tauri::command]
+fn get_remote_debug_enabled() -> bool {
+    dev_flags::remote_debug_enabled()
+}
+
+/// Persist the toggle. Frontend Settings shows a "請重啟應用程式"
+/// hint after calling this — the change doesn't take effect until
+/// the next `main()` runs, because WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+/// is read at WebView2 process-start time only.
+#[tauri::command]
+fn set_remote_debug_enabled(enabled: bool) -> Result<(), String> {
+    let mut flags = dev_flags::load();
+    flags.remote_debug_port_enabled = enabled;
+    dev_flags::save(&flags)
+}
+
 /// Given N sentence-groups (one per Note section), return `top_k`
 /// representative sentences per group via a GPU-capable centroid
 /// extractor. Empty or small groups are passed through unchanged.
@@ -1654,7 +1722,7 @@ fn try_keynote_conversion(
 
     println!("Executing Keynote conversion...");
 
-    let output = Command::new("osascript")
+    let output = crate::utils::command::no_window("osascript")
         .arg("-e")
         .arg(&script)
         .output()
@@ -1693,7 +1761,7 @@ fn try_pages_conversion(input_path: &str, output_path: &std::path::Path) -> Resu
         output_path.to_string_lossy().replace("\"", "\\\"")
     );
 
-    let output = Command::new("osascript")
+    let output = crate::utils::command::no_window("osascript")
         .arg("-e")
         .arg(&script)
         .output()
@@ -1738,7 +1806,7 @@ fn try_office_mac_conversion(
         output_path.to_string_lossy().replace("\"", "\\\"")
     );
 
-    let output = Command::new("osascript")
+    let output = crate::utils::command::no_window("osascript")
         .arg("-e")
         .arg(&script)
         .output()
@@ -1791,7 +1859,7 @@ fn convert_with_libreoffice(
 
     println!("Using LibreOffice: {}", soffice_cmd);
 
-    let output = Command::new(soffice_cmd)
+    let output = crate::utils::command::no_window(soffice_cmd)
         .arg("--headless")
         .arg("--convert-to")
         .arg("pdf")
@@ -2034,6 +2102,8 @@ pub fn run() {
             semantic_search_lecture,
             semantic_search_course,
             extract_section_highlights,
+            get_remote_debug_enabled,
+            set_remote_debug_enabled,
             download_embedding_model_cmd,
             // 文檔轉換相關
             convert_to_pdf,

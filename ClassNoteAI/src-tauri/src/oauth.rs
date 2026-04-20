@@ -101,9 +101,9 @@ fn try_bind(preferred_port: u16, max_attempts: u16) -> Result<(TcpListener, u16)
 /// or if either command fails.
 #[cfg(target_os = "windows")]
 fn identify_port_holder(port: u16) -> Option<String> {
-    use std::process::Command;
+    use crate::utils::command::no_window;
 
-    let netstat = Command::new("netstat").args(["-ano"]).output().ok()?;
+    let netstat = no_window("netstat").args(["-ano"]).output().ok()?;
     if !netstat.status.success() {
         return None;
     }
@@ -116,7 +116,7 @@ fn identify_port_holder(port: u16) -> Option<String> {
         line.split_whitespace().last()
     })?;
 
-    let tl = Command::new("tasklist")
+    let tl = no_window("tasklist")
         .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
         .output()
         .ok()?;

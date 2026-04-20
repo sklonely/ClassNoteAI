@@ -5,9 +5,9 @@
  * - System: Homebrew, CMake, FFmpeg
  * - Models: Whisper, CTranslate2 translation model
  */
+use crate::utils::command::no_window;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
 
 /// Requirement category
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,7 +68,7 @@ pub struct Requirement {
 pub fn check_os_version() -> RequirementStatus {
     #[cfg(target_os = "macos")]
     {
-        match Command::new("sw_vers").arg("-productVersion").output() {
+        match no_window("sw_vers").arg("-productVersion").output() {
             Ok(output) => {
                 if output.status.success() {
                     let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -100,7 +100,7 @@ pub fn check_os_version() -> RequirementStatus {
         // Minimum: Windows 10 1809 (build 17763) — WebView2 baseline.
         const MIN_BUILD: u32 = 17763;
 
-        match Command::new("cmd").args(["/c", "ver"]).output() {
+        match no_window("cmd").args(["/c", "ver"]).output() {
             Ok(output) => {
                 if !output.status.success() {
                     return RequirementStatus::Error(
@@ -166,7 +166,7 @@ pub fn check_os_version() -> RequirementStatus {
 pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
     #[cfg(target_os = "macos")]
     {
-        match Command::new("df").args(["-m", "/"]).output() {
+        match no_window("df").args(["-m", "/"]).output() {
             Ok(output) => {
                 if output.status.success() {
                     let output_str = String::from_utf8_lossy(&output.stdout);
@@ -234,7 +234,7 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
         // and -File, and cleanly sidesteps any interpretation of
         // backticks / $ / apostrophes that might appear in a Windows
         // path with an unusual username.
-        match Command::new("powershell")
+        match no_window("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",

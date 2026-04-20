@@ -29,9 +29,9 @@
 //!     cover 99% of cases, and silent driver installs can trigger
 //!     reboots/kernel changes we shouldn't own.
 
+use crate::utils::command::no_window;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CudaInfo {
@@ -146,7 +146,7 @@ fn detect_cuda() -> Option<CudaInfo> {
     // `nvidia-smi` is in PATH on every NVIDIA-driver install since
     // R460. If it's missing, either no NVIDIA driver or the PATH isn't
     // propagated (rare — system installer adds it).
-    let output = Command::new("nvidia-smi")
+    let output = no_window("nvidia-smi")
         .args([
             "--query-gpu=name,driver_version",
             "--format=csv,noheader",

@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use crate::utils::command::no_window;
+use std::process::Stdio;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::whisper::WhisperService;
@@ -48,7 +49,7 @@ pub fn extract_pcm_16k_mono(video_path: &Path) -> Result<Vec<i16>, String> {
 
     let ffmpeg = locate_ffmpeg()?;
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = no_window(&ffmpeg)
         // Suppress the extremely verbose default banner; keep warnings/errors.
         .args([
             "-hide_banner",
@@ -126,7 +127,7 @@ fn locate_ffmpeg() -> Result<String, String> {
     // Fast path: PATH lookup via `which`-equivalent. `ffmpeg` alone
     // works on every shell that has it resolvable, so we just try to
     // spawn it with `-version` to see if it's there.
-    let probe = Command::new("ffmpeg")
+    let probe = no_window("ffmpeg")
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -271,7 +272,7 @@ fn extract_pcm_to_file(video_path: &Path, pcm_path: &Path) -> Result<u64, String
         .map_err(|e| format!("failed to create pcm file: {}", e))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, output);
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = no_window(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(video_path)
         .args(["-ac", "1", "-ar", "16000", "-f", "s16le", "-y", "-"])
