@@ -1,16 +1,26 @@
 import { useEffect, useState } from 'react';
-import { FlaskConical, Zap, Cpu, CheckCircle2, XCircle } from 'lucide-react';
+import { FlaskConical, Zap, Cpu, CheckCircle2, XCircle, AlertTriangle, ExternalLink } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { storageService } from '../../services/storageService';
 
 type Speed = 'fast' | 'standard';
 type Backend = 'auto' | 'cuda' | 'metal' | 'vulkan' | 'cpu';
+
+interface DriverHint {
+    severity: string;
+    title: string;
+    message: string;
+    action_url: string;
+    action_label: string;
+}
 
 interface GpuDetection {
     cuda: { gpu_name: string; driver_version: string } | null;
     metal: boolean;
     vulkan: boolean;
     effective: string;
+    driver_hint?: DriverHint | null;
 }
 
 /**
@@ -121,6 +131,51 @@ export default function LocalModelExperimentalSettings() {
                     <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">
                         套用到所有支援 GPU 的本地模型：Whisper 轉錄、BGE 向量索引、CT2 本地翻譯。
                     </p>
+
+                    {detection?.driver_hint && (
+                        // Non-blocking advisory for driver mismatch. Shown
+                        // when we see a GPU but the driver is older than
+                        // our shipped CUDA runtime needs. Rust side fills
+                        // in the exact version numbers + download URL.
+                        <div
+                            className={`mb-2 p-3 rounded-md border flex gap-2.5 ${
+                                detection.driver_hint.severity === 'warning'
+                                    ? 'bg-amber-50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-900/40'
+                                    : 'bg-blue-50 dark:bg-blue-900/10 border-blue-200 dark:border-blue-900/40'
+                            }`}
+                        >
+                            <AlertTriangle
+                                className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
+                                    detection.driver_hint.severity === 'warning'
+                                        ? 'text-amber-500'
+                                        : 'text-blue-500'
+                                }`}
+                            />
+                            <div className="flex-1 min-w-0">
+                                <div
+                                    className={`text-xs font-semibold mb-1 ${
+                                        detection.driver_hint.severity === 'warning'
+                                            ? 'text-amber-800 dark:text-amber-300'
+                                            : 'text-blue-800 dark:text-blue-300'
+                                    }`}
+                                >
+                                    {detection.driver_hint.title}
+                                </div>
+                                <p className="text-[11px] text-gray-700 dark:text-gray-300 leading-relaxed">
+                                    {detection.driver_hint.message}
+                                </p>
+                                <button
+                                    onClick={() => {
+                                        void openUrl(detection.driver_hint!.action_url);
+                                    }}
+                                    className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300"
+                                >
+                                    {detection.driver_hint.action_label}
+                                    <ExternalLink className="w-3 h-3" />
+                                </button>
+                            </div>
+                        </div>
+                    )}
 
                     {detection && (
                         <div className="mb-2 p-2.5 rounded-md bg-white dark:bg-slate-900/50 border border-gray-200 dark:border-gray-700 space-y-1">

@@ -51,6 +51,95 @@ pub struct GpuDetection {
     /// taking into account what's compiled in (Phase 1: always CPU)
     /// + what was detected here. Phase 2+ will fill this in for real.
     pub effective: String,
+    /// Non-blocking advisory surfaced to the UI when we spot something
+    /// that could stop GPU acceleration from actually kicking in —
+    /// most commonly a too-old NVIDIA driver. Present as a banner with
+    /// a download link; the user can ignore it and keep running on
+    /// CPU. `None` means "nothing to nag about."
+    pub driver_hint: Option<DriverHint>,
+}
+
+/// UI-bound advisory for driver-side GPU issues. Kept structured
+/// (not a single `String`) so the frontend can style severity and
+/// render the download link as a proper button rather than parsing
+/// text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriverHint {
+    /// "warning" for actionable mismatches (driver too old),
+    /// "info" for softer suggestions. Frontend picks colour + icon
+    /// off this.
+    pub severity: String,
+    pub title: String,
+    pub message: String,
+    /// URL the "Update driver" CTA opens. NVIDIA's search page is
+    /// stable since 2015 and redirects correctly for every consumer
+    /// GeForce + professional Quadro SKU, so hard-coding is safe.
+    pub action_url: String,
+    pub action_label: String,
+}
+
+/// Minimum NVIDIA driver for the CUDA 12.5 runtime we ship via CI's
+/// Jimver action. Below this, `cudaSetDevice` returns the familiar
+/// "CUDA driver version is insufficient for CUDA runtime version"
+/// error and every downstream load (whisper, ct2rs, candle) falls
+/// back to CPU — still functional, just slow.
+///
+/// Sources: NVIDIA CUDA Toolkit Release Notes 12.5. Windows has a
+/// slightly higher floor than Linux because of WDDM scheduling
+/// changes that landed in the 555-line drivers. When CI moves to
+/// CUDA 12.6+ / 13.x, bump these (and remember to re-sync the
+/// `docs/` note that mentions them).
+const CUDA_MIN_DRIVER_WINDOWS: f32 = 555.85;
+const CUDA_MIN_DRIVER_LINUX: f32 = 555.42;
+
+/// Parse the `"572.83"`-style version string that `nvidia-smi`
+/// prints. Handles the two formats we see in the wild:
+///
+///   - Windows / recent Linux: `"596.21"` — two segments, parses
+///     directly as `f32`.
+///   - Older Linux distros: `"555.42.06"` — three segments, where
+///     the third is a build-number we don't need for threshold
+///     comparison. We take `major.minor` from the first two dots.
+///
+/// Returns `None` on anything that doesn't start with a digit so the
+/// caller treats "unknown driver" as "skip the hint" instead of
+/// nagging about a driver we just can't interpret.
+fn parse_driver_version(s: &str) -> Option<f32> {
+    let trimmed = s.trim();
+    // Direct f32 parse covers the common two-segment case.
+    if let Ok(v) = trimmed.parse::<f32>() {
+        return Some(v);
+    }
+    // Fall back to joining the first two segments and retrying.
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?;
+    let minor = parts.next()?;
+    format!("{}.{}", major, minor).parse::<f32>().ok()
+}
+
+/// Build the advisory banner when a driver is present but below the
+/// CUDA 12.5 floor. Returns `None` when everything's fine.
+fn compute_driver_hint(cuda: &Option<CudaInfo>) -> Option<DriverHint> {
+    let info = cuda.as_ref()?;
+    let parsed = parse_driver_version(&info.driver_version)?;
+    let min = if cfg!(target_os = "windows") {
+        CUDA_MIN_DRIVER_WINDOWS
+    } else {
+        CUDA_MIN_DRIVER_LINUX
+    };
+    if parsed >= min {
+        return None;
+    }
+    Some(DriverHint {
+        severity: "warning".into(),
+        title: "GPU 加速未啟用".into(),
+        message: format!(
+            "偵測到 {}（driver {}），但目前的 NVIDIA driver 版本低於 CUDA 12.5 runtime 所需的 {}。GPU 加速會自動退回 CPU 模式，應用仍可正常使用；若想啟用 GPU，請更新 NVIDIA driver。",
+            info.gpu_name, info.driver_version, min
+        ),
+        action_url: "https://www.nvidia.com/Download/index.aspx".into(),
+        action_label: "前往 NVIDIA 驅動下載".into(),
+    })
 }
 
 fn detect_cuda() -> Option<CudaInfo> {
@@ -140,11 +229,13 @@ pub fn detect(preference: Option<&str>) -> GpuDetection {
     let metal = cfg!(target_os = "macos");
     let vulkan = detect_vulkan();
     let effective = resolve_effective(preference, cuda.is_some(), metal, vulkan);
+    let driver_hint = compute_driver_hint(&cuda);
     GpuDetection {
         cuda,
         metal,
         vulkan,
         effective,
+        driver_hint,
     }
 }
 

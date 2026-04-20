@@ -16,8 +16,10 @@ import {
     Zap,
     Mic,
     Languages,
-    HardDrive
+    HardDrive,
+    ExternalLink
 } from 'lucide-react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { setupService } from '../services/setupService';
 import AIProviderSettings from './AIProviderSettings';
 import {
@@ -46,11 +48,20 @@ type WizardStep =
     | 'installing'
     | 'complete';
 
+interface DriverHint {
+    severity: string;
+    title: string;
+    message: string;
+    action_url: string;
+    action_label: string;
+}
+
 interface GpuDetection {
     cuda: { gpu_name: string; driver_version: string } | null;
     metal: boolean;
     vulkan: boolean;
     effective: string;
+    driver_hint?: DriverHint | null;
 }
 
 type SourceLang = 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
@@ -535,10 +546,94 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                   },
               ]
             : [];
+        const driverHint = gpuDetection?.driver_hint;
         return (
             <div className="setup-step review-step">
                 <h2 className="setup-subtitle">硬體加速偵測</h2>
                 <p className="setup-description">可用的 Whisper 加速後端</p>
+
+                {driverHint && (
+                    // Non-blocking driver-version advisory. Matches the
+                    // banner in LocalModelExperimentalSettings so users
+                    // see the same wording in the wizard + in the live
+                    // settings panel.
+                    <div
+                        style={{
+                            display: 'flex',
+                            gap: '0.75rem',
+                            padding: '0.875rem',
+                            marginBottom: '1rem',
+                            borderRadius: '0.5rem',
+                            background:
+                                driverHint.severity === 'warning'
+                                    ? 'rgba(251, 191, 36, 0.08)'
+                                    : 'rgba(59, 130, 246, 0.08)',
+                            border:
+                                driverHint.severity === 'warning'
+                                    ? '1px solid rgba(251, 191, 36, 0.3)'
+                                    : '1px solid rgba(59, 130, 246, 0.3)',
+                        }}
+                    >
+                        <AlertTriangle
+                            className="w-5 h-5"
+                            style={{
+                                marginTop: '0.125rem',
+                                flexShrink: 0,
+                                color:
+                                    driverHint.severity === 'warning'
+                                        ? '#f59e0b'
+                                        : '#3b82f6',
+                            }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                                style={{
+                                    fontSize: '0.875rem',
+                                    fontWeight: 600,
+                                    marginBottom: '0.25rem',
+                                    color:
+                                        driverHint.severity === 'warning'
+                                            ? '#d97706'
+                                            : '#2563eb',
+                                }}
+                            >
+                                {driverHint.title}
+                            </div>
+                            <p
+                                style={{
+                                    fontSize: '0.8125rem',
+                                    lineHeight: 1.5,
+                                    color: 'rgba(255,255,255,0.8)',
+                                    margin: 0,
+                                }}
+                            >
+                                {driverHint.message}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void openUrl(driverHint.action_url);
+                                }}
+                                style={{
+                                    marginTop: '0.5rem',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    fontSize: '0.8125rem',
+                                    fontWeight: 500,
+                                    color: '#818cf8',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    padding: 0,
+                                }}
+                            >
+                                {driverHint.action_label}
+                                <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                        </div>
+                    </div>
+                )}
 
                 <div className="requirements-list">
                     {rows.map((r) => (
