@@ -77,15 +77,44 @@ impl CT2Translator {
             ));
         }
 
-        // Initialize Tokenizer
-        // Note: SentencePieceTokenizer::from_file expects (model_path, vocab_path).
-        // For M2M100, we pass the model path for both as the vocab is typically embedded or handled by the model file.
-        let tokenizer = SentencePieceTokenizer::from_file(&sp_model_path, &sp_model_path)
-            .map_err(|e| format!("Failed to load tokenizer: {}", e))?;
+        // Tokenizer is consumed by `with_tokenizer`, so a CUDA→CPU retry
+        // needs a fresh one. A closure keeps both construction sites in
+        // one place. SentencePieceTokenizer::from_file expects
+        // (model_path, vocab_path); for M2M100 the same file serves both.
+        let make_tokenizer = || {
+            SentencePieceTokenizer::from_file(&sp_model_path, &sp_model_path)
+                .map_err(|e| format!("Failed to load tokenizer: {}", e))
+        };
 
-        // Initialize Translator with tokenizer
-        let translator = Translator::with_tokenizer(&model_path, tokenizer, &config)
-            .map_err(|e| format!("Failed to load CT2 model: {}", e))?;
+        // Try loading with whatever device `config` picked above. If the
+        // first attempt was on CUDA and it blew up (typical causes:
+        // driver < CUDA runtime, cudart DLL missing at runtime even with
+        // `cuda-dynamic-loading`, or a stale kernel cache), retry once
+        // on CPU. We log but don't surface the switch — the product
+        // directive is "use GPU when possible, stay quiet when it
+        // can't." Only fail the command when the CPU attempt also fails.
+        let first_tokenizer = make_tokenizer()?;
+        let first_attempt = Translator::with_tokenizer(&model_path, first_tokenizer, &config);
+
+        let translator = match first_attempt {
+            Ok(t) => t,
+            #[cfg(feature = "gpu-cuda")]
+            Err(e) if matches!(config.device, Device::CUDA) => {
+                println!("[CT2] CUDA load failed ({}), retrying on CPU", e);
+                let mut cpu_config: Config = Default::default();
+                cpu_config.device = Device::CPU;
+                let cpu_tokenizer = make_tokenizer()?;
+                Translator::with_tokenizer(&model_path, cpu_tokenizer, &cpu_config).map_err(
+                    |err| {
+                        format!(
+                            "Failed to load CT2 model: CUDA load errored ({}) and CPU fallback also failed ({})",
+                            e, err
+                        )
+                    },
+                )?
+            }
+            Err(e) => return Err(format!("Failed to load CT2 model: {}", e)),
+        };
 
         self.translator = Some(Arc::new(translator));
         self.model_path = Some(model_path.to_string());
