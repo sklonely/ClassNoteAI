@@ -816,7 +816,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               }
               const text = (sub.text_zh || sub.text_en || '').trim();
               if (text) currentSentences.push(text);
-              if (typeof sub.page_number === 'number') currentPages.push(sub.page_number);
+              // Subtitles don't carry page_number — that field lives on
+              // EmbeddingRow (chunks are page-aware after indexing). Leave
+              // page_range empty for now; a future pass can back-fill from
+              // embeddings once the RAG index has been built.
             }
           } else {
             for (const seg of inMemorySegments) {
@@ -942,6 +945,9 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                 (a, b) => a.timestamp - b.timestamp,
               );
               const perSectionSentences: string[][] = [];
+              // page_range migration deferred — subtitles don't carry
+              // page_number (see auto-gen path comment). When we add an
+              // embedding-backed back-fill, slot it in here.
               const perSectionPages: number[][] = [];
               for (let i = 0; i < sorted.length; i++) {
                 const start = sorted[i].timestamp;
@@ -955,11 +961,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                     .map((s) => (s.text_zh || s.text_en || '').trim())
                     .filter((t) => t),
                 );
-                perSectionPages.push(
-                  subsInSection
-                    .map((s) => s.page_number)
-                    .filter((p): p is number => typeof p === 'number'),
-                );
+                perSectionPages.push([]);
               }
 
               let bulletsPerSection: string[][] = [];
