@@ -153,10 +153,20 @@ jobs:
           TAURI_FEATURES: ${{ matrix.variant.features }}
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          REM Pin to nsis + updater bundles only. MSI rejects any
+          REM pre-release version suffix that isn't a plain
+          REM 1-65535 integer (`0.6.0-alpha.1` breaks the MSI
+          REM ProductVersion field at bundling time), while NSIS
+          REM happily accepts full SemVer. Stable releases could
+          REM add "msi" back — revisit when the first non-pre-
+          REM release 0.6.0 ships. Skipping MSI costs users nothing
+          REM today: we already primarily distribute the NSIS
+          REM setup.exe, the updater picks it up, and auto-update
+          REM works off the nsis .exe.sig either way.
           if "%TAURI_FEATURES%"=="" (
-            npx tauri build
+            npx tauri build --bundles nsis,updater
           ) else (
-            npx tauri build --features %TAURI_FEATURES%
+            npx tauri build --features %TAURI_FEATURES% --bundles nsis,updater
           )
 
       - name: Upload artifacts (PR / manual runs)
