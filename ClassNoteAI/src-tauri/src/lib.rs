@@ -1184,6 +1184,176 @@ async fn calculate_similarity(text_a: String, text_b: String) -> Result<f32, Str
     Ok(EmbeddingService::cosine_similarity(&emb_a, &emb_b))
 }
 
+/// Structured search hit returned by `semantic_search_*`. Wraps the
+/// embedding row's metadata (minus the raw embedding vector, which the
+/// frontend doesn't need for display) plus the computed similarity.
+///
+/// Field names use snake_case to match the existing `BackendEmbeddingRow`
+/// payload — the frontend's `toRecord` helper can then reuse its
+/// existing camelCase mapping.
+#[derive(serde::Serialize, Debug)]
+struct SearchHit {
+    id: String,
+    lecture_id: String,
+    chunk_text: String,
+    source_type: String,
+    position: i64,
+    page_number: Option<i64>,
+    created_at: String,
+    similarity: f32,
+}
+
+/// Apply the same preferred-page boost the old JS path did. Kept as a
+/// tiny helper so the single-lecture and course-wide paths below
+/// don't drift.
+fn boost_for_page(sim: f32, chunk_page: Option<i64>, preferred_page: Option<i64>) -> f32 {
+    match (preferred_page, chunk_page) {
+        (Some(pref), Some(page)) => {
+            let gap = (page - pref).abs();
+            if gap <= 5 {
+                sim + 0.1
+            } else if gap <= 10 {
+                sim + 0.05
+            } else {
+                sim
+            }
+        }
+        _ => sim,
+    }
+}
+
+/// Rank chunks in one lecture by cosine similarity to `query`, with an
+/// optional boost for chunks near `preferred_page` (PDF-slide-aware
+/// RAG). Single Candle matmul on the service's device replaces the
+/// per-chunk JS cosine loop we used to run in the renderer.
+#[tauri::command]
+async fn semantic_search_lecture(
+    lecture_id: String,
+    query: String,
+    top_k: Option<usize>,
+    preferred_page: Option<i64>,
+) -> Result<Vec<SearchHit>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    let rows = db
+        .get_embeddings_by_lecture(&lecture_id)
+        .map_err(|e| format!("get embeddings: {}", e))?;
+    drop(db);
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut service_guard = EMBEDDING_SERVICE.lock().await;
+    let service = service_guard
+        .as_mut()
+        .ok_or("Embedding 模型未加載".to_string())?;
+    let query_emb = service
+        .generate_embedding(&query)
+        .map_err(|e| format!("query embed: {}", e))?;
+    let chunks: Vec<Vec<f32>> = rows.iter().map(|r| r.embedding.clone()).collect();
+    let sims = service
+        .batch_cosine_similarity(&query_emb, &chunks)
+        .map_err(|e| format!("similarity: {}", e))?;
+    drop(service_guard);
+
+    let top_k = top_k.unwrap_or(5);
+    let mut scored: Vec<(usize, f32)> = sims
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (i, boost_for_page(s, rows[i].page_number, preferred_page)))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+
+    Ok(scored
+        .into_iter()
+        .map(|(i, score)| {
+            let r = &rows[i];
+            SearchHit {
+                id: r.id.clone(),
+                lecture_id: r.lecture_id.clone(),
+                chunk_text: r.chunk_text.clone(),
+                source_type: r.source_type.clone(),
+                position: r.position,
+                page_number: r.page_number,
+                created_at: r.created_at.clone(),
+                similarity: score,
+            }
+        })
+        .collect())
+}
+
+/// Cross-lecture search: union every lecture in a course and rank the
+/// combined chunk pool. One matmul over the union, not per-lecture —
+/// for a typical 10-lecture × 200-chunk course that's 2000 rows, and
+/// the GPU finishes the whole search in a handful of ms.
+#[tauri::command]
+async fn semantic_search_course(
+    course_id: String,
+    user_id: String,
+    query: String,
+    top_k: Option<usize>,
+) -> Result<Vec<SearchHit>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    let lectures = db
+        .list_lectures_by_course(&course_id, &user_id)
+        .map_err(|e| format!("list lectures: {}", e))?;
+
+    let mut all_rows: Vec<storage::EmbeddingRow> = Vec::new();
+    for lec in &lectures {
+        let rows = db
+            .get_embeddings_by_lecture(&lec.id)
+            .map_err(|e| format!("get embeddings for {}: {}", lec.id, e))?;
+        all_rows.extend(rows);
+    }
+    drop(db);
+
+    if all_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut service_guard = EMBEDDING_SERVICE.lock().await;
+    let service = service_guard
+        .as_mut()
+        .ok_or("Embedding 模型未加載".to_string())?;
+    let query_emb = service
+        .generate_embedding(&query)
+        .map_err(|e| format!("query embed: {}", e))?;
+    let chunks: Vec<Vec<f32>> = all_rows.iter().map(|r| r.embedding.clone()).collect();
+    let sims = service
+        .batch_cosine_similarity(&query_emb, &chunks)
+        .map_err(|e| format!("similarity: {}", e))?;
+    drop(service_guard);
+
+    let top_k = top_k.unwrap_or(5);
+    let mut scored: Vec<(usize, f32)> = sims.iter().enumerate().map(|(i, &s)| (i, s)).collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+
+    Ok(scored
+        .into_iter()
+        .map(|(i, score)| {
+            let r = &all_rows[i];
+            SearchHit {
+                id: r.id.clone(),
+                lecture_id: r.lecture_id.clone(),
+                chunk_text: r.chunk_text.clone(),
+                source_type: r.source_type.clone(),
+                position: r.position,
+                page_number: r.page_number,
+                created_at: r.created_at.clone(),
+                similarity: score,
+            }
+        })
+        .collect())
+}
+
 #[cfg(feature = "candle-embed")]
 #[tauri::command]
 async fn download_embedding_model_cmd(
@@ -1839,6 +2009,8 @@ pub fn run() {
             generate_embedding,
             generate_embeddings_batch,
             calculate_similarity,
+            semantic_search_lecture,
+            semantic_search_course,
             download_embedding_model_cmd,
             // 文檔轉換相關
             convert_to_pdf,

@@ -392,4 +392,82 @@ impl EmbeddingService {
             dot_product / (norm_a * norm_b)
         }
     }
+
+    /// Score a query embedding against a batch of chunk embeddings in a
+    /// single matmul on `self.device` (GPU when available, CPU otherwise).
+    /// Returns one similarity per chunk, in the same order.
+    ///
+    /// Replaces the per-chunk JS cosine loop in
+    /// `embeddingStorageService.ts` — for N=500, D=384 that loop used
+    /// ~100 ms on the renderer thread; a single matmul finishes in
+    /// <10 ms on a GPU (and still a few ms on CPU thanks to Candle's
+    /// BLAS backend).
+    ///
+    /// Assumes both the query and every chunk are already L2-normalized,
+    /// which every embedding we generate is — `generate_embedding` and
+    /// `generate_embeddings_batch` both normalize before returning.
+    /// Dot product of unit vectors == cosine, so we skip the denominator
+    /// work the CPU-side `cosine_similarity` has to do.
+    #[cfg(feature = "candle-embed")]
+    pub fn batch_cosine_similarity(
+        &self,
+        query: &[f32],
+        chunks: &[Vec<f32>],
+    ) -> Result<Vec<f32>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dim = query.len();
+        if dim == 0 {
+            return Err(anyhow!("Query embedding is empty"));
+        }
+        // Filter out any malformed chunks — legacy rows that slipped
+        // past the v0.5.2 dimension migration would explode the matmul.
+        // Record the original index so we can reinsert zero scores for
+        // them afterwards, keeping the returned Vec aligned with the
+        // caller's input.
+        let mut good: Vec<(usize, &[f32])> = Vec::with_capacity(chunks.len());
+        for (i, c) in chunks.iter().enumerate() {
+            if c.len() == dim {
+                good.push((i, c.as_slice()));
+            }
+        }
+        if good.is_empty() {
+            return Ok(vec![0.0; chunks.len()]);
+        }
+
+        let n = good.len();
+        let mut flat = Vec::with_capacity(n * dim);
+        for (_, c) in &good {
+            flat.extend_from_slice(c);
+        }
+
+        let chunk_tensor = Tensor::from_vec(flat, (n, dim), &self.device)?;
+        let query_tensor = Tensor::from_vec(query.to_vec(), (dim, 1), &self.device)?;
+
+        // [N, D] @ [D, 1] = [N, 1] — cosine because inputs are unit norm.
+        let sims_tensor = chunk_tensor.matmul(&query_tensor)?;
+        let sims: Vec<f32> = sims_tensor.squeeze(1)?.to_vec1()?;
+
+        let mut out = vec![0.0f32; chunks.len()];
+        for ((original_idx, _), sim) in good.iter().zip(sims.iter()) {
+            out[*original_idx] = *sim;
+        }
+        Ok(out)
+    }
+
+    /// Stub when candle-embed feature is disabled. Falls back to the
+    /// per-pair CPU cosine so the command still works, just without
+    /// batched GPU acceleration.
+    #[cfg(not(feature = "candle-embed"))]
+    pub fn batch_cosine_similarity(
+        &self,
+        query: &[f32],
+        chunks: &[Vec<f32>],
+    ) -> Result<Vec<f32>> {
+        Ok(chunks
+            .iter()
+            .map(|c| Self::cosine_similarity(query, c))
+            .collect())
+    }
 }
