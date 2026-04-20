@@ -151,6 +151,19 @@ jobs:
           CMAKE_GENERATOR: Visual Studio 17 2022
           CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\ClassNoteAI\src-tauri\scripts\win-toolchain.cmake
           TAURI_FEATURES: ${{ matrix.variant.features }}
+          # candle-kernels' build.rs defers to `bindgen_cuda` 0.1.6,
+          # which calls `nvidia-smi` to detect the local compute cap.
+          # CI runners are CPU-only VMs — no GPU, no nvidia-smi on
+          # PATH — so the call panics with "program not found" even
+          # when CUDA Toolkit is installed. Setting CUDA_COMPUTE_CAP
+          # up-front makes bindgen_cuda skip the probe and use the
+          # value we hand it. 7.5 (Turing) is our distribution
+          # floor: anything newer (Ampere, Ada, Hopper, Blackwell)
+          # gets SASS via driver-side PTX JIT at first model load,
+          # which adds ~1-2 s cold-start cost but stays correct.
+          # Older archs (Volta / Pascal) are already dropped by
+          # CUDA 12.5's support matrix anyway.
+          CUDA_COMPUTE_CAP: "75"
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           REM Pin to nsis + updater bundles only. MSI rejects any
