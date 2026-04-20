@@ -96,7 +96,15 @@ jobs:
         with:
           cuda: '12.5.1'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+          # curand_dev is not optional — CTranslate2's CMake configure
+          # step fails with "Could not find curand" when it's absent,
+          # even though our app doesn't directly generate random
+          # numbers. CT2 pulls it in through its internal sampling
+          # utilities, and the link step only surfaces the miss at
+          # the very end of a 20-minute build. Hit confirmed on
+          # OpenNMT/CTranslate2's own ci.yml: they install
+          # `cublas_dev curand_dev` together.
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "thrust", "visual_studio_integration"]'
 
       # Rust cache: keyed separately per variant so cpu and cuda compile
       # objects don't clobber each other (the gpu-cuda feature changes
@@ -164,6 +172,25 @@ jobs:
           # Older archs (Volta / Pascal) are already dropped by
           # CUDA 12.5's support matrix anyway.
           CUDA_COMPUTE_CAP: "75"
+          # Redundant CUDA root variables — different crates look at
+          # different names. `bindgen_cuda` reads CUDA_PATH / CUDA_ROOT;
+          # cmake's FindCUDAToolkit reads CUDA_TOOLKIT_ROOT_DIR;
+          # ct2rs' build.rs reads CUDA_HOME. Jimver exports CUDA_PATH
+          # but cargo sometimes strips environment mid-build; setting
+          # all of them here is cheap insurance.
+          CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5
+          CUDA_ROOT: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5
+          CUDA_TOOLKIT_ROOT_DIR: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5
+          CUDA_HOME: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.5
+          # Limit simultaneous nvcc processes to N-1 cores on the
+          # 4-core runner. PTXAS can take 2-3 GB per compile unit;
+          # fully-parallel (4 concurrent) blew up compiling
+          # candle-kernels' moe_wmma.cu with an OOM kill that nvcc
+          # reports as exit 1 with empty stdout/stderr (see
+          # whisper.cpp's own build.yml — they set the same pattern
+          # via NINJA_JOBS). Doesn't affect cargo's outer
+          # parallelism, only inner nvcc/cmake parallel builds.
+          CMAKE_BUILD_PARALLEL_LEVEL: "3"
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           REM Pin to nsis + updater bundles only. MSI rejects any
