@@ -908,6 +908,110 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             console.log('[NotesView] No sections generated, skipping note creation');
             setSelectedNote(null);
           }
+        } else if (note) {
+          // Existing Note path. v0.6.0 added bullets + page_range to
+          // the Section schema; Notes written before that are missing
+          // both fields and would render as "subtitle-like" walls of
+          // text (the very thing the bullets are meant to replace).
+          // Lazy-migrate on first Review-mode entry: if any section
+          // is missing bullets, rebuild per-section sentence arrays
+          // from the subtitle table, run one extract pass, and patch
+          // the Note in place. Title/content stay untouched so any
+          // user edits to headings or rewritten sections are
+          // preserved.
+          const sectionsMissingBullets = (note.sections || []).some(
+            (s) => !s.bullets || s.bullets.length === 0,
+          );
+          if (sectionsMissingBullets && subtitles.length > 0 && note.sections) {
+            console.log(
+              '[NotesView] Migrating existing Note: adding bullets to',
+              note.sections.filter((s) => !s.bullets || s.bullets.length === 0)
+                .length,
+              'of',
+              note.sections.length,
+              'sections',
+            );
+            setSelectedNote(note); // show the old view immediately while we re-derive
+
+            try {
+              // Re-derive sentence arrays by slicing subtitles into each
+              // section's time window. `section.timestamp` is the start;
+              // the next section's timestamp is the exclusive end.
+              // Sort defensively in case saved ordering drifted.
+              const sorted = [...note.sections].sort(
+                (a, b) => a.timestamp - b.timestamp,
+              );
+              const perSectionSentences: string[][] = [];
+              const perSectionPages: number[][] = [];
+              for (let i = 0; i < sorted.length; i++) {
+                const start = sorted[i].timestamp;
+                const end =
+                  i + 1 < sorted.length ? sorted[i + 1].timestamp : Infinity;
+                const subsInSection = subtitles.filter(
+                  (s) => s.timestamp >= start && s.timestamp < end,
+                );
+                perSectionSentences.push(
+                  subsInSection
+                    .map((s) => (s.text_zh || s.text_en || '').trim())
+                    .filter((t) => t),
+                );
+                perSectionPages.push(
+                  subsInSection
+                    .map((s) => s.page_number)
+                    .filter((p): p is number => typeof p === 'number'),
+                );
+              }
+
+              let bulletsPerSection: string[][] = [];
+              try {
+                bulletsPerSection = await invoke<string[][]>(
+                  'extract_section_highlights',
+                  { sections: perSectionSentences, topK: 3 },
+                );
+              } catch (e) {
+                console.warn(
+                  '[NotesView] Migration bullet extraction failed:',
+                  e,
+                );
+                bulletsPerSection = sorted.map(() => []);
+              }
+
+              const migratedSections = sorted.map((s, i) => {
+                const pages = perSectionPages[i] ?? [];
+                const page_range =
+                  pages.length > 0
+                    ? { min: Math.min(...pages), max: Math.max(...pages) }
+                    : null;
+                return {
+                  ...s,
+                  bullets:
+                    s.bullets && s.bullets.length > 0
+                      ? s.bullets
+                      : bulletsPerSection[i] ?? [],
+                  page_range: s.page_range ?? page_range,
+                };
+              });
+
+              const migratedNote: Note = { ...note, sections: migratedSections };
+              try {
+                await storageService.saveNote(migratedNote);
+                console.log(
+                  '[NotesView] Migration complete, Note resaved with bullets',
+                );
+              } catch (saveErr) {
+                console.warn(
+                  '[NotesView] Note save after migration failed; UI still updated:',
+                  saveErr,
+                );
+              }
+              setSelectedNote(migratedNote);
+            } catch (migErr) {
+              // Leave the existing Note showing — graceful degradation.
+              console.error('[NotesView] Note migration failed:', migErr);
+            }
+          } else {
+            setSelectedNote(note);
+          }
         } else {
           setSelectedNote(note);
         }
