@@ -9,3 +9,25 @@
    endif()
    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W4 /d2FH4-")
  else()
+@@ -465,11 +465,16 @@
+   include_directories(${CUDA_TOOLKIT_ROOT_DIR}/include)
+
+   add_definitions(-DCT2_WITH_CUDA)
+   if(MSVC)
+-    if(BUILD_SHARED_LIBS)
+-      list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=/MD$<$<CONFIG:Debug>:d>")
+-    else()
+-      list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=/MT$<$<CONFIG:Debug>:d>")
+-    endif()
++    # Force /MD regardless of BUILD_SHARED_LIBS. ct2rs ships as a static
++    # lib into Rust (BUILD_SHARED_LIBS=OFF), but line 90 above pinned
++    # CMAKE_MSVC_RUNTIME_LIBRARY to MultiThreadedDLL (/MD) for the rest
++    # of the C++ compile. The original `if(BUILD_SHARED_LIBS)` branch
++    # here emits /MT for the CUDA `.cu.obj` files only, causing
++    # LNK2038 RuntimeLibrary mismatch against (a) ct2rs's own non-CUDA
++    # code and (b) whisper-rs-sys + Rust stdlib (both /MD). Unifying
++    # on /MD across the whole binary is correct — the linker then has
++    # a single CRT to link.
++    list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=/MD$<$<CONFIG:Debug>:d>")
+   endif()
+   list(APPEND CUDA_NVCC_FLAGS "-std=c++17")

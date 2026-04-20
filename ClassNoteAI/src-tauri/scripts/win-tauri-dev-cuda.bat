@@ -70,7 +70,12 @@ REM + CT2_CUDA_ARCH_LIST (ct2rs-specific fallback). Covers the full
 REM consumer GPU range shipped since 2018: Turing / Ampere / Ada /
 REM Hopper / Blackwell.
 set "CMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;100"
-set "CT2_CUDA_ARCH_LIST=Turing;Ampere;Ada;Hopper;Blackwell"
+REM CT2 uses cmake's FindCUDA::cuda_select_nvcc_arch_flags which only
+REM recognises symbolic names up to Ampere (Turing=7.5, Ampere=8.0/8.6).
+REM For newer archs (Ada=8.9, Hopper=9.0, Blackwell=10.0) we pass
+REM numeric compute capabilities. Keeping Turing + Ampere as fallbacks
+REM so a build made on this machine still runs on older NVIDIAs.
+set "CT2_CUDA_ARCH_LIST=Turing;Ampere;7.5;8.0;8.6;8.9;9.0"
 set "GGML_CUDA_ARCHITECTURES=75;80;86;89;90;100"
 REM VS 18 (2026) isn't on CUDA 13's official-supported-compiler list —
 REM CUDA Toolkit's `CUDA 13.2.props` reads CudaToolkitDir from
@@ -85,6 +90,12 @@ REM guard.
 set "CudaToolkitDir=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\"
 set "CMAKE_CUDA_FLAGS=-allow-unsupported-compiler"
 set "CMAKE_CUDA_HOST_COMPILER_FLAGS=-allow-unsupported-compiler"
+REM ct2rs's CUDA `.cu.obj` files originally built with /MT (static CRT)
+REM via nvcc's Windows defaults, while Rust + whisper-rs use /MD
+REM (dynamic CRT), causing LNK2038 RuntimeLibrary mismatch. Fixed at
+REM the source: vendor/ct2rs/CTranslate2/CMakeLists.txt patched to
+REM unconditionally emit `-Xcompiler=/MD` for CUDA .cu.obj files, so
+REM the whole build agrees on /MD. No RUSTFLAGS override needed.
 echo Using CUDA at %CUDA_PATH%
 goto :cuda_ok
 :no_cuda
@@ -93,6 +104,12 @@ exit /b 1
 :cuda_ok
 
 set "PATH=%USERPROFILE%\.cargo\bin;%LIBCLANG_PATH%;%PATH%"
+
+REM Expose WebView2's Chrome DevTools Protocol on 127.0.0.1:9222 so
+REM scripts/cdp.cjs + scripts/dev-ctl.mjs can inspect the running dev
+REM build (eval JS, tail console, run SQL). Matches win-tauri-dev.bat.
+if not defined CNAI_DEV_CDP_PORT set "CNAI_DEV_CDP_PORT=9222"
+if not "%CNAI_DEV_CDP_PORT%"=="" set "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=%CNAI_DEV_CDP_PORT%"
 
 cd /d "%~dp0.."
 npx tauri dev --features gpu-cuda %*
