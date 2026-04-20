@@ -30,6 +30,8 @@ const markdownSanitizeSchema = {
     tagNames: [...(defaultSchema.tagNames ?? []), 'details', 'summary'],
 };
 import { storageService } from "../services/storageService";
+import { audioDeviceService } from "../services/audioDeviceService";
+import { buildDeviceChangeWarning, type RecordingInputSnapshot } from "../services/recordingDeviceMonitor";
 import { extractKeywords } from "../utils/pdfKeywordExtractor";
 import { detectSectionBoundaries } from "../utils/topicSegmentation";
 import { summarizeStream, usageTracker } from "../services/llm";
@@ -150,11 +152,19 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const pdfViewerRef = useRef<PDFViewerHandle>(null);
   const modelsLoadingRef = useRef(false);
   const modelLoadedRef = useRef(false);
+  const recordingStatusRef = useRef<RecordingStatus>("idle");
+  const deviceMonitorCleanupRef = useRef<(() => void) | null>(null);
+  const recordingDeviceSnapshotRef = useRef<RecordingInputSnapshot | null>(null);
+  const lastDeviceWarningKeyRef = useRef<string | null>(null);
 
   // Sync modelLoaded state to ref
   useEffect(() => {
     modelLoadedRef.current = modelLoaded;
   }, [modelLoaded]);
+
+  useEffect(() => {
+    recordingStatusRef.current = recordingStatus;
+  }, [recordingStatus]);
 
   // Load Lecture Data
   useEffect(() => {
@@ -169,8 +179,61 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       if (audioRecorderRef.current) {
         audioRecorderRef.current.stop();
       }
+      deviceMonitorCleanupRef.current?.();
+      deviceMonitorCleanupRef.current = null;
     };
   }, [lectureId]);
+
+  const stopRecordingDeviceMonitor = () => {
+    deviceMonitorCleanupRef.current?.();
+    deviceMonitorCleanupRef.current = null;
+    recordingDeviceSnapshotRef.current = null;
+    lastDeviceWarningKeyRef.current = null;
+  };
+
+  const startRecordingDeviceMonitor = async () => {
+    stopRecordingDeviceMonitor();
+    const recorder = audioRecorderRef.current;
+    if (!recorder) return;
+
+    const currentInfo = recorder.getInputDeviceInfo();
+    if (currentInfo?.label) {
+      recordingDeviceSnapshotRef.current = {
+        label: currentInfo.label,
+        sampleRate: currentInfo.sampleRate,
+      };
+    }
+
+    deviceMonitorCleanupRef.current = audioDeviceService.onDeviceChange(() => {
+      window.setTimeout(() => {
+        const activeRecorder = audioRecorderRef.current;
+        if (!activeRecorder || recordingStatusRef.current !== 'recording') return;
+
+        const previous = recordingDeviceSnapshotRef.current;
+        const nextInfo = activeRecorder.getInputDeviceInfo();
+        const next = nextInfo?.label
+          ? {
+            label: nextInfo.label,
+            sampleRate: nextInfo.sampleRate,
+          }
+          : null;
+        const warning = buildDeviceChangeWarning(previous, next);
+        if (!warning || !next) return;
+
+        const warningKey = `${previous?.label ?? 'unknown'}->${next.label}`;
+        if (lastDeviceWarningKeyRef.current === warningKey) return;
+        lastDeviceWarningKeyRef.current = warningKey;
+        recordingDeviceSnapshotRef.current = next;
+
+        toastService.show({
+          message: warning.message,
+          detail: warning.detail,
+          type: 'warning',
+          durationMs: 0,
+        });
+      }, 300);
+    });
+  };
 
   // Load Models
   useEffect(() => {
@@ -876,6 +939,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         return;
       }
 
+      const settings = await storageService.getAppSettings();
+      audioRecorderRef.current.updateConfig({
+        deviceId: settings?.audio?.device_id || '',
+      });
+
       // CRITICAL: Save lecture to DB BEFORE setting lectureId on transcription service
       // This ensures the lecture exists when auto-save tries to save subtitles
       const updatedLecture = { ...currentLectureData, status: 'recording' as const };
@@ -890,7 +958,6 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       // pre-check whether the LLM fine-refinement queue should be active
       // for this session.
       try {
-        const settings = await storageService.getAppSettings();
         const src = settings?.translation?.source_language || 'auto';
         const tgt = settings?.translation?.target_language || 'zh-TW';
         transcriptionService.setLanguages(src, tgt);
@@ -908,6 +975,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       audioRecorderRef.current.enablePersistence(currentLectureData.id);
 
       await audioRecorderRef.current.start();
+      await startRecordingDeviceMonitor();
       setRecordingStatus("recording");
       setRecordingStartTime(Date.now());
     } catch (error) {
@@ -964,6 +1032,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       }
 
       await audioRecorderRef.current.stop();
+      stopRecordingDeviceMonitor();
       setRecordingStatus("stopped");
       setVolume(0);
 
@@ -1038,6 +1107,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       if (!audioRecorderRef.current) return;
       audioRecorderRef.current.pause();
       transcriptionService.pause();
+      stopRecordingDeviceMonitor();
       setRecordingStatus("paused");
     } catch (error) {
       console.error('Failed to pause recording:', error);
@@ -1048,6 +1118,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     try {
       if (!audioRecorderRef.current) return;
       await audioRecorderRef.current.resume();
+      await startRecordingDeviceMonitor();
       transcriptionService.resume();
       setRecordingStatus("recording");
     } catch (error) {

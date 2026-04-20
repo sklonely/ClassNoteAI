@@ -18,6 +18,12 @@ export interface AudioChunk {
   timestamp: number; // 時間戳（毫秒）
 }
 
+export interface AudioInputDeviceInfo {
+  deviceId?: string;
+  label: string;
+  sampleRate?: number;
+}
+
 export type AudioRecorderStatus = 'idle' | 'recording' | 'paused' | 'stopped' | 'error';
 
 export class AudioRecorder {
@@ -667,6 +673,17 @@ export class AudioRecorder {
     };
   }
 
+  getInputDeviceInfo(): AudioInputDeviceInfo | null {
+    const track = this.mediaStream?.getAudioTracks?.()[0];
+    if (!track) return null;
+    const settings = track.getSettings?.() ?? {};
+    return {
+      deviceId: settings.deviceId,
+      label: track.label || '未知輸入裝置',
+      sampleRate: settings.sampleRate,
+    };
+  }
+
   /**
    * 銷毀實例
    */
@@ -687,4 +704,3 @@ export class AudioRecorder {
     console.log('[AudioRecorder] 實例已銷毀');
   }
 }
-
