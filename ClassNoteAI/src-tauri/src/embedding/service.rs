@@ -62,6 +62,45 @@ impl NomicConfig {
     }
 }
 
+/// Pick the best-available Candle device for BGE embedding. Tries GPU
+/// backends before CPU; any init failure falls back silently. Matches
+/// the ct2rs pattern in `translation::ctranslate2::load_model`.
+///
+/// Important: this is called once, at service construction. The
+/// returned device is kept on the service and used for every tensor
+/// thereafter (model weights + each batch's input_ids). Falling back
+/// to CPU mid-run would require reloading the model, so we only try
+/// the GPU path at startup — if it works there, it works for the
+/// life of the process.
+#[cfg(feature = "candle-embed")]
+fn select_embedding_device() -> Device {
+    #[cfg(feature = "gpu-cuda")]
+    {
+        match Device::new_cuda(0) {
+            Ok(d) => {
+                eprintln!("[Embedding] Using CUDA device 0");
+                return d;
+            }
+            Err(e) => {
+                eprintln!("[Embedding] CUDA init failed ({}), falling back", e);
+            }
+        }
+    }
+    #[cfg(all(target_os = "macos", feature = "gpu-metal"))]
+    {
+        match Device::new_metal(0) {
+            Ok(d) => {
+                eprintln!("[Embedding] Using Metal device 0");
+                return d;
+            }
+            Err(e) => {
+                eprintln!("[Embedding] Metal init failed ({}), falling back", e);
+            }
+        }
+    }
+    Device::Cpu
+}
+
 /// Candle-based Embedding Service
 pub struct EmbeddingService {
     #[cfg(feature = "candle-embed")]
@@ -93,8 +132,15 @@ impl EmbeddingService {
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("Failed to load tokenizer: {}", e))?;
 
-        // Use CPU device (Metal support can be added later)
-        let device = Device::Cpu;
+        // Pick the strongest device the host will actually let us use.
+        // Priority: CUDA (gpu-cuda build) → Metal (macOS gpu-metal) →
+        // CPU. An init failure — driver mismatch, missing cudart,
+        // Metal system library missing — silently drops to CPU. BGE
+        // is correctness-critical (the RAG index and the query-time
+        // encoding must agree on the same model output), so a steady
+        // CPU run beats a half-working GPU run. Log to stderr for
+        // post-hoc debugging; nothing reaches the UI.
+        let device = select_embedding_device();
 
         // Load config (支持 nomic 和標準 BERT 格式)
         let config_path = model_path
