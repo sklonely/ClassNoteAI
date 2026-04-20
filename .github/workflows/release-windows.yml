@@ -191,6 +191,31 @@ jobs:
           # via NINJA_JOBS). Doesn't affect cargo's outer
           # parallelism, only inner nvcc/cmake parallel builds.
           CMAKE_BUILD_PARALLEL_LEVEL: "3"
+          # CPU portability baseline. Without these flags, whisper.cpp
+          # (via whisper-rs-sys' CMake) sets `GGML_NATIVE=ON` and bakes
+          # the CI runner's full SIMD feature set into the binary —
+          # including AVX-512 / VNNI / BF16 that the GitHub
+          # windows-latest Xeon has. All 12th-gen+ Intel consumer CPUs
+          # (Alder Lake / Raptor Lake onwards) ship WITHOUT AVX-512
+          # (disabled in microcode). Users on those CPUs get
+          # STATUS_ILLEGAL_INSTRUCTION (c000001d) the first time
+          # whisper tries to run. Same applies to ggml's inner ops
+          # even in the CUDA build — there's still CPU-side
+          # pre/post-processing.
+          #
+          # `x86-64-v3` pins Rust's target ISA to the
+          # SSE4.2/AVX2/BMI2/FMA level (Haswell 2013 / Excavator 2015),
+          # a practical "modern consumer" floor. ~99% of 2014-onwards
+          # machines qualify. GGML_NATIVE=OFF tells the C++ side not
+          # to auto-detect; GGML_AVX2=ON keeps the useful modern
+          # intrinsics; the *_AVX512_* toggles stay off.
+          #
+          # Revisit when we ship a second Xeon-tier variant
+          # (recommended path: matrix × cpu-isa = {v3, v4} producing
+          # two installers, updater picks at download time based on
+          # cpuid).
+          RUSTFLAGS: "-C target-cpu=x86-64-v3"
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_AVX512_BF16=OFF -DGGML_FMA=ON -DGGML_F16C=ON"
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           REM Pin to nsis + updater bundles only. MSI rejects any
