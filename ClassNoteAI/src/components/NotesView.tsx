@@ -166,6 +166,49 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     recordingStatusRef.current = recordingStatus;
   }, [recordingStatus]);
 
+  const flushRecordingSafetyBuffer = async (reason: string) => {
+    const recorder = audioRecorderRef.current;
+    if (!recorder) return;
+    try {
+      await recorder.flushPersistenceNow();
+    } catch (error) {
+      console.warn(`[NotesView] Failed to flush recording safety buffer (${reason}):`, error);
+    }
+  };
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) return;
+      const status = recordingStatusRef.current;
+      if (status !== 'recording' && status !== 'paused') return;
+      void flushRecordingSafetyBuffer('visibilitychange');
+    };
+
+    const handlePageHide = () => {
+      const status = recordingStatusRef.current;
+      if (status !== 'recording' && status !== 'paused') return;
+      void flushRecordingSafetyBuffer('pagehide');
+    };
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      const status = recordingStatusRef.current;
+      if (status !== 'recording' && status !== 'paused') return;
+      void flushRecordingSafetyBuffer('beforeunload');
+      event.preventDefault();
+      event.returnValue = '錄音仍在進行中，現在離開可能導致最後幾秒尚未寫入磁碟。';
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
   // Load Lecture Data
   useEffect(() => {
     if (lectureId) {
@@ -1105,6 +1148,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const handlePauseRecording = () => {
     try {
       if (!audioRecorderRef.current) return;
+      void flushRecordingSafetyBuffer('pause');
       audioRecorderRef.current.pause();
       transcriptionService.pause();
       stopRecordingDeviceMonitor();

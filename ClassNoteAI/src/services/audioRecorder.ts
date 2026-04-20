@@ -349,6 +349,17 @@ export class AudioRecorder {
   }
 
   /**
+   * Best-effort safety flush for "risky" moments such as page hide,
+   * pause, or before-unload. Returns true when persistence is active
+   * and the recorder attempted to drain its pending PCM queue.
+   */
+  public async flushPersistenceNow(): Promise<boolean> {
+    if (!this.persistLectureId || this.persistDisabled) return false;
+    await this.flushPersistPending();
+    return true;
+  }
+
+  /**
    * 設置狀態變化回調
    */
   onStatusChange(callback: (status: AudioRecorderStatus) => void): void {
