@@ -470,4 +470,147 @@ impl EmbeddingService {
             .map(|c| Self::cosine_similarity(query, c))
             .collect())
     }
+
+    /// For each group of sentences, pick the `top_k` that are most
+    /// representative of the group — the sentences whose embedding is
+    /// closest to the group's centroid. Used by NotesView to turn a
+    /// 5-minute section's raw subtitle soup into a 3-bullet summary
+    /// (the extractive half of Note AI structurization).
+    ///
+    /// Why centroid-nearest and not TextRank / clustering?
+    ///   - Centroid of unit-norm vectors ≈ "average topic of the
+    ///     section" in the embedding space. Sentences near it are the
+    ///     ones that touch the most shared meaning — usually the
+    ///     topic-sentence, the key definition, and the summary line.
+    ///   - One matmul per section on GPU; no iterative graph walk.
+    ///   - No external dependency (wouldn't want to pull textrank-rs
+    ///     just for this).
+    ///
+    /// Picks are returned in **original order**, not similarity order,
+    /// so the resulting bullets still flow as the lecture did — crucial
+    /// for learning material. If a group has fewer sentences than
+    /// `top_k`, the whole group comes back (also in-order).
+    #[cfg(feature = "candle-embed")]
+    pub fn extract_representative_sentences(
+        &mut self,
+        groups: &[Vec<String>],
+        top_k: usize,
+    ) -> Result<Vec<Vec<String>>> {
+        // Short-circuit empty input so the model isn't spun up for
+        // nothing.
+        if groups.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Flatten every sentence from every group into one Vec, then
+        // embed in fixed-size chunks. We can't hand the whole lecture
+        // to `generate_embeddings_batch` in one shot because it pads
+        // every row in the batch to the longest sequence — 1296 × 100
+        // tokens × 768 hidden-dim × (activations for 12 BERT layers)
+        // OOMs at ~5 GB on a 70-min lecture. Chunking keeps the
+        // padding horizon small and memory flat.
+        //
+        // Per-group separate passes (the original layout) wasted the
+        // batching win entirely: 14 forward passes at ~90 sentences
+        // each took 52 minutes on CPU. 128 is a pragmatic middle
+        // ground: big enough for BERT to amortise its per-call
+        // overhead, small enough that padding doesn't dominate.
+        //
+        // `group_ranges[i]` records the half-open slice in the flat
+        // buffer owned by group i, so we can pull per-group
+        // embeddings back out with zero copies.
+        const BATCH: usize = 128;
+        let mut flat_sentences: Vec<String> = Vec::new();
+        let mut group_ranges: Vec<(usize, usize)> = Vec::with_capacity(groups.len());
+        for group in groups {
+            let start = flat_sentences.len();
+            for s in group {
+                flat_sentences.push(s.clone());
+            }
+            group_ranges.push((start, flat_sentences.len()));
+        }
+        if flat_sentences.is_empty() {
+            return Ok(groups.iter().map(|_| Vec::new()).collect());
+        }
+
+        let mut all_embs: Vec<Vec<f32>> = Vec::with_capacity(flat_sentences.len());
+        for chunk in flat_sentences.chunks(BATCH) {
+            let chunk_embs = self.generate_embeddings_batch(chunk)?;
+            all_embs.extend(chunk_embs);
+        }
+        let dim = all_embs.first().map(|v| v.len()).unwrap_or(0);
+        if dim == 0 {
+            return Ok(groups.iter().map(|g| g.clone()).collect());
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (group_idx, group) in groups.iter().enumerate() {
+            let (start, end) = group_ranges[group_idx];
+            let n = end - start;
+            if n == 0 {
+                out.push(Vec::new());
+                continue;
+            }
+            if n <= top_k {
+                out.push(group.clone());
+                continue;
+            }
+
+            // Copy this group's slice of embeddings into an [N, D] tensor.
+            // Allocation is unavoidable (Tensor owns its buffer), but
+            // only once per group instead of a full re-embed.
+            let mut flat = Vec::with_capacity(n * dim);
+            for e in &all_embs[start..end] {
+                flat.extend_from_slice(e);
+            }
+            let mat = Tensor::from_vec(flat, (n, dim), &self.device)?;
+
+            // Centroid = row-wise mean → [D]. BGE outputs are unit-norm,
+            // so the mean of normalised vectors points toward the
+            // dominant cluster direction even when the group is noisy.
+            let centroid = mat.mean(0)?;
+
+            // Normalise the centroid so downstream scores stay in the
+            // familiar cosine-[-1, 1] range. Logging / debugging is
+            // much easier when "0.8 ≈ strong match" still holds.
+            let centroid_norm: f32 = centroid.sqr()?.sum_all()?.sqrt()?.to_scalar()?;
+            let centroid = if centroid_norm > 0.0 {
+                centroid.affine(1.0 / centroid_norm as f64, 0.0)?
+            } else {
+                centroid
+            };
+
+            // [N, D] @ [D, 1] = [N, 1] — cosine against the centroid.
+            let centroid_col = centroid.reshape((dim, 1))?;
+            let sims_tensor = mat.matmul(&centroid_col)?;
+            let sims: Vec<f32> = sims_tensor.squeeze(1)?.to_vec1()?;
+
+            // Pick top_k by score, then re-sort by original position
+            // so the bullets read in the lecture's narrative order.
+            let mut scored: Vec<(usize, f32)> =
+                sims.iter().enumerate().map(|(i, &s)| (i, s)).collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(top_k);
+            let mut picked_indices: Vec<usize> = scored.into_iter().map(|(i, _)| i).collect();
+            picked_indices.sort();
+
+            out.push(picked_indices.iter().map(|&i| group[i].clone()).collect());
+        }
+        Ok(out)
+    }
+
+    /// Stub when candle-embed is compiled out — returns the first
+    /// `top_k` sentences of each group so the NotesView UI still has
+    /// something to render.
+    #[cfg(not(feature = "candle-embed"))]
+    pub fn extract_representative_sentences(
+        &mut self,
+        groups: &[Vec<String>],
+        top_k: usize,
+    ) -> Result<Vec<Vec<String>>> {
+        Ok(groups
+            .iter()
+            .map(|g| g.iter().take(top_k).cloned().collect())
+            .collect())
+    }
 }

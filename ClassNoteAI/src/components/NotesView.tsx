@@ -772,66 +772,120 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           console.log('[NotesView] No notes found but subtitles exist. Auto-generating notes...');
 
           const SECTION_DURATION_SEC = 300; // 5 minutes per section
-          const sections: { title: string; content: string; timestamp: number }[] = [];
+
+          // Keep per-section sentence arrays + page tracking alongside
+          // the user-visible section object. The sentence array feeds
+          // `extract_section_highlights` to produce the bullet summary
+          // (Layer 1 of Note AI structurization); page_range gives the
+          // "投影片 3-5" header. Sections without any PDF alignment
+          // simply stay page_range = null.
+          const sectionBuild: Array<{
+            title: string;
+            sentences: string[];
+            timestamp: number;
+            pages: number[];
+          }> = [];
 
           let currentSectionStart = 0;
-          let currentSectionContent: string[] = [];
+          let currentSentences: string[] = [];
+          let currentPages: number[] = [];
           let sectionIndex = 1;
 
-          // Use database subtitles if available, otherwise use in-memory segments
+          const flushSection = () => {
+            if (currentSentences.length === 0) return;
+            sectionBuild.push({
+              title: `Section ${sectionIndex}`,
+              sentences: [...currentSentences],
+              timestamp: currentSectionStart,
+              pages: [...currentPages],
+            });
+            sectionIndex++;
+          };
+
           if (subtitles.length > 0) {
             for (const sub of subtitles) {
               const segTimestamp = sub.timestamp;
-
-              if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
-                sections.push({
-                  title: `Section ${sectionIndex}`,
-                  content: currentSectionContent.join(' '),
-                  timestamp: currentSectionStart,
-                });
-                sectionIndex++;
+              if (
+                segTimestamp - currentSectionStart >= SECTION_DURATION_SEC &&
+                currentSentences.length > 0
+              ) {
+                flushSection();
                 currentSectionStart = segTimestamp;
-                currentSectionContent = [];
+                currentSentences = [];
+                currentPages = [];
               }
-
-              const text = sub.text_zh || sub.text_en || '';
-              if (text.trim()) {
-                currentSectionContent.push(text.trim());
-              }
+              const text = (sub.text_zh || sub.text_en || '').trim();
+              if (text) currentSentences.push(text);
+              if (typeof sub.page_number === 'number') currentPages.push(sub.page_number);
             }
           } else {
-            // Use in-memory segments as fallback
             for (const seg of inMemorySegments) {
               const segTimestamp = seg.startTime / 1000;
-
-              if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
-                sections.push({
-                  title: `Section ${sectionIndex}`,
-                  content: currentSectionContent.join(' '),
-                  timestamp: currentSectionStart,
-                });
-                sectionIndex++;
+              if (
+                segTimestamp - currentSectionStart >= SECTION_DURATION_SEC &&
+                currentSentences.length > 0
+              ) {
+                flushSection();
                 currentSectionStart = segTimestamp;
-                currentSectionContent = [];
+                currentSentences = [];
+                currentPages = [];
               }
+              const text = (
+                seg.displayTranslation ||
+                seg.roughTranslation ||
+                seg.displayText ||
+                seg.roughText ||
+                ''
+              ).trim();
+              if (text) currentSentences.push(text);
+            }
+          }
+          flushSection();
 
-              const text = seg.displayTranslation || seg.roughTranslation || seg.displayText || seg.roughText || '';
-              if (text.trim()) {
-                currentSectionContent.push(text.trim());
-              }
+          // Compute Layer-1 AI structure: representative bullets per
+          // section via the Rust side's Candle centroid extractor.
+          // Runs on whichever device the embedding service picked —
+          // GPU on a gpu-cuda build with a working driver, CPU
+          // otherwise. One IPC round-trip for the entire lecture.
+          let bulletsPerSection: string[][] = [];
+          if (sectionBuild.length > 0) {
+            try {
+              bulletsPerSection = await invoke<string[][]>(
+                'extract_section_highlights',
+                {
+                  sections: sectionBuild.map((s) => s.sentences),
+                  topK: 3,
+                },
+              );
+              console.log(
+                '[NotesView] Extracted bullets for',
+                bulletsPerSection.length,
+                'sections',
+              );
+            } catch (e) {
+              // Extraction failure shouldn't block note creation —
+              // the section content remains readable even without
+              // bullets. Log once and fall through to empty bullets.
+              console.warn('[NotesView] bullet extraction failed:', e);
+              bulletsPerSection = sectionBuild.map(() => []);
             }
           }
 
-          // Save the last section
-          if (currentSectionContent.length > 0) {
-            sections.push({
-              title: `Section ${sectionIndex}`,
-              content: currentSectionContent.join(' '),
-              timestamp: currentSectionStart,
-            });
-          }
+          const sections = sectionBuild.map((s, i) => {
+            const pages = s.pages.filter((p) => Number.isFinite(p));
+            const page_range =
+              pages.length > 0
+                ? { min: Math.min(...pages), max: Math.max(...pages) }
+                : null;
+            return {
+              title: s.title,
+              content: s.sentences.join(' '),
+              timestamp: s.timestamp,
+              bullets: bulletsPerSection[i] ?? [],
+              page_range,
+            };
+          });
 
-          // Create and save the Note
           if (sections.length > 0) {
             const generatedNote: Note = {
               lecture_id: lecture.id,
@@ -2257,7 +2311,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                                 ) : (
                                   <>
                                     <div className="flex items-center justify-between mb-1">
-                                      <h4 className="font-semibold text-gray-900 dark:text-gray-100">{section.title}</h4>
+                                      <div className="flex items-center gap-2">
+                                        <h4 className="font-semibold text-gray-900 dark:text-gray-100">{section.title}</h4>
+                                        {section.page_range && (
+                                          <span className="text-xs text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
+                                            {section.page_range.min === section.page_range.max
+                                              ? `投影片 ${section.page_range.min}`
+                                              : `投影片 ${section.page_range.min}–${section.page_range.max}`}
+                                          </span>
+                                        )}
+                                      </div>
                                       {section.timestamp && (() => {
                                         const baseTime = currentLectureData?.created_at ? new Date(currentLectureData.created_at).getTime() / 1000 : section.timestamp;
                                         const relativeTime = Math.max(0, section.timestamp - baseTime);
@@ -2271,7 +2334,29 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                                         );
                                       })()}
                                     </div>
-                                    <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{section.content}</p>
+                                    {section.bullets && section.bullets.length > 0 ? (
+                                      // Layer-1 structured view: bullets (centroid-extracted
+                                      // representative sentences) above a collapsed raw content.
+                                      // Reading the bullets alone gives the gist; click to
+                                      // expand when the full transcript is wanted.
+                                      <>
+                                        <ul className="list-disc pl-5 space-y-1 text-gray-800 dark:text-gray-200 text-sm leading-relaxed">
+                                          {section.bullets.map((b, bi) => (
+                                            <li key={bi}>{b}</li>
+                                          ))}
+                                        </ul>
+                                        <details className="mt-2 text-xs">
+                                          <summary className="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 select-none">
+                                            原始字幕（{section.content.length} 字）
+                                          </summary>
+                                          <p className="text-gray-500 dark:text-gray-400 text-xs leading-relaxed whitespace-pre-wrap mt-1 pl-1">
+                                            {section.content}
+                                          </p>
+                                        </details>
+                                      </>
+                                    ) : (
+                                      <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{section.content}</p>
+                                    )}
                                   </>
                                 )}
                               </div>

@@ -1184,6 +1184,28 @@ async fn calculate_similarity(text_a: String, text_b: String) -> Result<f32, Str
     Ok(EmbeddingService::cosine_similarity(&emb_a, &emb_b))
 }
 
+/// Given N sentence-groups (one per Note section), return `top_k`
+/// representative sentences per group via a GPU-capable centroid
+/// extractor. Empty or small groups are passed through unchanged.
+///
+/// This is Layer-1 of Note AI structurization — the extractive pass
+/// that runs automatically on section creation. The opt-in LLM
+/// enrichment (Layer 2) happens through a separate command.
+#[tauri::command]
+async fn extract_section_highlights(
+    sections: Vec<Vec<String>>,
+    top_k: Option<usize>,
+) -> Result<Vec<Vec<String>>, String> {
+    let top_k = top_k.unwrap_or(3).max(1);
+    let mut service_guard = EMBEDDING_SERVICE.lock().await;
+    let service = service_guard
+        .as_mut()
+        .ok_or("Embedding 模型未加載".to_string())?;
+    service
+        .extract_representative_sentences(&sections, top_k)
+        .map_err(|e| format!("section highlight extraction failed: {}", e))
+}
+
 /// Structured search hit returned by `semantic_search_*`. Wraps the
 /// embedding row's metadata (minus the raw embedding vector, which the
 /// frontend doesn't need for display) plus the computed similarity.
@@ -2011,6 +2033,7 @@ pub fn run() {
             calculate_similarity,
             semantic_search_lecture,
             semantic_search_course,
+            extract_section_highlights,
             download_embedding_model_cmd,
             // 文檔轉換相關
             convert_to_pdf,

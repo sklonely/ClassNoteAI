@@ -72,6 +72,21 @@ export interface Section {
   title: string;
   content: string;
   timestamp: number;
+  /**
+   * Representative sentences for this section, extracted by
+   * `extract_section_highlights` (centroid-nearest sentences from the
+   * section's subtitle body). Optional so legacy notes saved before
+   * v0.6.2 still load. When present, the UI renders these as bullets
+   * above a collapsed `content` block.
+   */
+  bullets?: string[];
+  /**
+   * Range of slide / PDF pages covered by this section, taken from
+   * the `page_number` fields of the subtitles it was built from.
+   * `null` when the section has no PDF pages (audio-only lecture or
+   * pre-PDF-alignment note).
+   */
+  page_range?: { min: number; max: number } | null;
 }
 
 export interface QARecord {
