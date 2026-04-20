@@ -63,9 +63,25 @@ candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 # covers whisper + candle; Vulkan covers only whisper.
 gpu-cuda = [
     "whisper-rs/cuda",
-    "candle-core/cuda",
-    "candle-nn/cuda",
-    "candle-transformers/cuda",
+    # candle-core/cuda disabled in the Windows CI build. candle-kernels
+    # 0.9.2 compiles src/moe/moe_wmma.cu through bindgen_cuda 0.1.6's
+    # rayon-parallel nvcc invocation. On a 4-core windows-latest runner
+    # (16GB RAM) the parallel PTXAS processes OOM silently — nvcc
+    # returns exit 1 with empty stdout + stderr. candle 0.10.2 has the
+    # same breakage. Ampere (sm_80+) users would also lose native SASS
+    # if we bumped CUDA_COMPUTE_CAP to paper over the OOM.
+    #
+    # Net effect: BGE embedding stays on CPU in shipped Windows builds.
+    # For a 70-min lecture that's ~3 min of CPU embedding vs. ~10 s on
+    # GPU — noticeable but not blocking. Whisper + CT2 retain full GPU
+    # acceleration (each on a separate crate's CUDA path, neither hits
+    # the moe_wmma.cu compile step).
+    #
+    # When candle 0.11 / bindgen_cuda 0.2 land upstream fixes, or when
+    # we move CI to a larger runner, fold these back in.
+    # "candle-core/cuda",
+    # "candle-nn/cuda",
+    # "candle-transformers/cuda",
     "ct2rs/cuda-dynamic-loading",
 ]
 gpu-vulkan = ["whisper-rs/vulkan"]
