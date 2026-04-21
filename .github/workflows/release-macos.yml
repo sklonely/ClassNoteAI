@@ -38,6 +38,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # sccache — cache native C++ object files (ct2rs, whisper-rs-sys)
+      # across releases. Apple Silicon already has fast clang, so the
+      # win here is smaller than on Windows (~3-5 min/release after
+      # the first warm-cache build). Metal shader compilation is not
+      # cached by sccache (similar to CUDA on Windows).
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Enable sccache for rustc
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+        shell: bash
+
       # ===== Node.js + npm cache =====
       - name: Setup Node.js
         uses: actions/setup-node@v4
