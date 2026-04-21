@@ -57,6 +57,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # sccache — cache native C++ object files (ct2rs, whisper-rs-sys,
+      # sentencepiece-sys) across releases. `CARGO_INCREMENTAL=0` is
+      # already set above which is a prerequisite for sccache. First
+      # release after this lands doesn't benefit (cache cold), second
+      # release onward saves ~5-15 min per variant on the C++ compile
+      # path. nvcc / CUDA kernel compilation is NOT cached — that still
+      # runs full each time.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Enable sccache for rustc
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+        shell: bash
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
