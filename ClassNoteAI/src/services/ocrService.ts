@@ -15,6 +15,24 @@
 import { storageService } from './storageService';
 import { fetch } from '@tauri-apps/plugin-http';
 
+const ocrContentHashCache = new Map<string, string>();
+
+function decodeBase64ToBytes(base64: string): Uint8Array {
+    const normalized = base64.includes(',') ? base64.slice(base64.indexOf(',') + 1) : base64;
+    const binary = atob(normalized);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+export async function computeContentHash(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+    const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const digest = await crypto.subtle.digest('SHA-256', input);
+    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
 export interface OCRResult {
     pageNumber: number;
     text: string;
@@ -60,6 +78,16 @@ class OCRService {
      */
     public async recognizePage(imageBase64: string, pageNumber: number, retries: number = 2): Promise<OCRResult> {
         try {
+            const pageHash = await computeContentHash(decodeBase64ToBytes(imageBase64));
+            const cachedText = ocrContentHashCache.get(pageHash);
+            if (cachedText) {
+                return {
+                    pageNumber,
+                    text: cachedText,
+                    success: true,
+                };
+            }
+
             const host = await this.getHost();
             if (!host) {
                 throw new Error('Ollama host not configured — skipping OCR');
@@ -103,6 +131,8 @@ class OCRService {
                 // Debug 模式輸出 (顯示前 100 字)
                 console.log(`[OCRService] 頁面 ${pageNumber} OCR 完成 (${text.length} 字):`);
                 console.log(`--- Page ${pageNumber} Start ---\n${text.slice(0, 100)}${text.length > 100 ? '...' : ''}\n--- Page ${pageNumber} End ---`);
+
+                ocrContentHashCache.set(pageHash, text);
 
                 return {
                     pageNumber,
