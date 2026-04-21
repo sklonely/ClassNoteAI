@@ -61,7 +61,8 @@ export default function AIChatPanel({
     const [showSessions, setShowSessions] = useState(false);
 
     // 視窗位置和大小
-    const [position, setPosition] = useState({ x: window.innerWidth - DEFAULT_WIDTH - 20, y: 100 });
+    const getDefaultPosition = () => ({ x: window.innerWidth - DEFAULT_WIDTH - 20, y: 100 });
+    const [position, setPosition] = useState(getDefaultPosition);
     const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT });
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -156,7 +157,7 @@ export default function AIChatPanel({
             const dy = e.clientY - dragRef.current.startY;
             setPosition({
                 x: Math.max(0, Math.min(window.innerWidth - size.width, dragRef.current.startPosX + dx)),
-                y: Math.max(0, Math.min(window.innerHeight - 100, dragRef.current.startPosY + dy)),
+                y: Math.max(0, Math.min(window.innerHeight - size.height, dragRef.current.startPosY + dy)),
             });
         }
         if (resizeRef.current.isResizing) {
@@ -167,11 +168,15 @@ export default function AIChatPanel({
                 height: Math.max(MIN_HEIGHT, resizeRef.current.startHeight + dy),
             });
         }
-    }, [size.width]);
+    }, [size.height, size.width]);
 
     const handleMouseUp = useCallback(() => {
         dragRef.current.isDragging = false;
         resizeRef.current.isResizing = false;
+    }, []);
+
+    const handleResetPosition = useCallback(() => {
+        setPosition(getDefaultPosition());
     }, []);
 
     useEffect(() => {
@@ -447,6 +452,16 @@ export default function AIChatPanel({
                     >
                         <History className="w-3 h-3" />
                     </button>
+                    {isFloating && (
+                        <button
+                            onClick={handleResetPosition}
+                            aria-label={'\u91cd\u7f6e\u4f4d\u7f6e'}
+                            className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                            title={'\u91cd\u7f6e\u4f4d\u7f6e'}
+                        >
+                            <Maximize2 className="w-3 h-3" />
+                        </button>
+                    )}
                     {isFloating && (
                         <button
                             onClick={() => setIsMinimized(!isMinimized)}
