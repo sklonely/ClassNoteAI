@@ -40,7 +40,7 @@ export default function ConfirmDialog() {
 
     return (
         <div
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+            className="fixed inset-0 z-60 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
             onClick={() => confirmService.dismiss()}
         >
             <div
@@ -48,7 +48,7 @@ export default function ConfirmDialog() {
                 onClick={(e) => e.stopPropagation()}
             >
                 <div className="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3">
-                    <AlertTriangle className={`w-5 h-5 flex-shrink-0 ${iconTint}`} />
+                    <AlertTriangle className={`w-5 h-5 shrink-0 ${iconTint}`} />
                     <h2 className="flex-1 text-base font-semibold text-gray-900 dark:text-gray-100">
                         {active.title}
                     </h2>

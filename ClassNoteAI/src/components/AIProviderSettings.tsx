@@ -443,9 +443,9 @@ function ProviderCard(props: {
           }`}
         >
           {result.ok ? (
-            <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            <CheckCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           ) : (
-            <XCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            <XCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
           )}
           <span className="break-all">{result.message}</span>
         </div>

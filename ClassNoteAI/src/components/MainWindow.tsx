@@ -198,7 +198,7 @@ export default function MainWindow() {
       {/* 頂部導航欄。z-[60] 高於 Settings/Profile/Trash overlay 的 z-50，
           讓 TaskIndicator 等向下展開的氣泡（它繼承 header 的 stacking
           context）能蓋在全螢幕 overlay 上面而不被截斷。 */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 z-[60] relative">
+      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 z-60 relative">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-semibold">ClassNote AI</h1>
         </div>

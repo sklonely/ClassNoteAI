@@ -19,10 +19,10 @@ import { toastService, type Toast, type ToastType } from '../services/toastServi
  */
 
 const ICON_BY_TYPE: Record<ToastType, React.ReactNode> = {
-    success: <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />,
-    error: <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0" />,
-    info: <Info className="w-5 h-5 text-blue-500 flex-shrink-0" />,
-    warning: <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />,
+    success: <CheckCircle2 className="w-5 h-5 text-green-500 shrink-0" />,
+    error: <AlertCircle className="w-5 h-5 text-red-500 shrink-0" />,
+    info: <Info className="w-5 h-5 text-blue-500 shrink-0" />,
+    warning: <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />,
 };
 
 const RING_BY_TYPE: Record<ToastType, string> = {
@@ -43,7 +43,7 @@ export default function ToastContainer() {
 
     return (
         <div
-            className="fixed top-4 right-4 z-[100] flex flex-col gap-2 max-w-sm pointer-events-none"
+            className="fixed top-4 right-4 z-100 flex flex-col gap-2 max-w-sm pointer-events-none"
             aria-live="polite"
             aria-atomic="false"
         >
@@ -55,11 +55,11 @@ export default function ToastContainer() {
                 >
                     {ICON_BY_TYPE[t.type]}
                     <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100 break-words">
+                        <div className="text-sm font-medium text-gray-900 dark:text-gray-100 wrap-break-word">
                             {t.message}
                         </div>
                         {t.detail && (
-                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 break-words">
+                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 wrap-break-word">
                                 {t.detail}
                             </div>
                         )}

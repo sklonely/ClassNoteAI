@@ -266,7 +266,7 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                             </div>
 
                             {/* Course Content / Description */}
-                            <div className="flex-grow mb-4">
+                            <div className="grow mb-4">
                                 {course.syllabus_info?.topic ? (
                                     <div className="space-y-2">
                                         <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-3 font-medium">
@@ -292,13 +292,13 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                                         )}
                                         <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
                                             {course.syllabus_info.time && (
-                                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                                <div className="flex items-center gap-1.5 shrink-0">
                                                     <Clock className="w-3.5 h-3.5 text-green-500" />
                                                     <span className="line-clamp-1 max-w-[100px]">{toDisplayString(course.syllabus_info.time)}</span>
                                                 </div>
                                             )}
                                             {course.syllabus_info.location && (
-                                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                                <div className="flex items-center gap-1.5 shrink-0">
                                                     <MapPin className="w-3.5 h-3.5 text-red-500" />
                                                     <span className="line-clamp-1 max-w-[80px]">{toDisplayString(course.syllabus_info.location)}</span>
                                                 </div>
