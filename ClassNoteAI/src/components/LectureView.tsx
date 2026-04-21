@@ -543,7 +543,7 @@ export default function LectureView() {
         <div className="w-96 flex flex-col border-l border-gray-200 dark:border-gray-700 relative" style={{ zIndex: 10 }}>
           {/* 字幕顯示區域 - 使用 flex-1 但設置最小高度為 0 確保正確計算 */}
           <div className="flex-1 min-h-0 p-4 border-b border-gray-200 dark:border-gray-700 flex flex-col relative" style={{ zIndex: 10, overflow: 'hidden' }}>
-            <h2 className="text-lg font-semibold mb-4 flex-shrink-0">即時字幕</h2>
+            <h2 className="text-lg font-semibold mb-4 shrink-0">即時字幕</h2>
             <div className="flex-1 min-h-0 overflow-hidden">
               <SubtitleDisplay
                 maxLines={5}
@@ -554,7 +554,7 @@ export default function LectureView() {
           </div>
 
           {/* AI 助教面板 - 固定高度 */}
-          <div className="h-64 flex-shrink-0 p-4 flex flex-col bg-white dark:bg-slate-800">
+          <div className="h-64 shrink-0 p-4 flex flex-col bg-white dark:bg-slate-800">
             <h2 className="text-lg font-semibold mb-3">AI 助教</h2>
             <div className="flex-1 overflow-auto mb-3 space-y-2">
               <div className="text-sm text-gray-500 dark:text-gray-400">

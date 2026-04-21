@@ -2401,7 +2401,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               <Panel defaultSize={40} minSize={20}>
                 <div className="flex flex-col h-full bg-white dark:bg-slate-800">
                   <div className="flex-1 min-h-0 p-4 flex flex-col overflow-hidden">
-                    <h2 className="text-lg font-semibold mb-4 flex-shrink-0 dark:text-white">Live Subtitles</h2>
+                    <h2 className="text-lg font-semibold mb-4 shrink-0 dark:text-white">Live Subtitles</h2>
                     <div className="flex-1 min-h-0 overflow-hidden">
                       <SubtitleDisplay maxLines={10} fontSize={16} position="bottom" />
                     </div>

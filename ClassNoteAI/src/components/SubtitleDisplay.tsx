@@ -166,11 +166,11 @@ export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: Subti
                   )}
                 </div>
                 <div className="space-y-1">
-                  <p className="text-base font-medium text-gray-900 dark:text-white break-words">
+                  <p className="text-base font-medium text-gray-900 dark:text-white wrap-break-word">
                     {segment.displayText || segment.roughText || segment.text}
                   </p>
                   {segment.displayTranslation && (
-                    <p className="text-sm text-gray-600 dark:text-gray-400 break-words">
+                    <p className="text-sm text-gray-600 dark:text-gray-400 wrap-break-word">
                       {segment.displayTranslation}
                     </p>
                   )}
@@ -208,11 +208,11 @@ export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: Subti
               </span>
             </div>
             <div className="space-y-1">
-              <p className="text-base text-gray-600 dark:text-gray-300 italic break-words">
+              <p className="text-base text-gray-600 dark:text-gray-300 italic wrap-break-word">
                 {subtitleState.currentText}
               </p>
               {subtitleState.currentTranslation && (
-                <p className="text-sm text-gray-500 dark:text-gray-400 italic break-words">
+                <p className="text-sm text-gray-500 dark:text-gray-400 italic wrap-break-word">
                   {subtitleState.currentTranslation}
                 </p>
               )}

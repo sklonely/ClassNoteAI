@@ -225,7 +225,7 @@ function App() {
   // Show loading screen while checking setup
   if (appState === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-800">
+      <div className="min-h-screen flex items-center justify-center bg-linear-to-br from-slate-900 to-slate-800">
         <div className="text-white text-center">
           <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p>正在檢查環境...</p>

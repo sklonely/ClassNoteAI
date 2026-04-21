@@ -48,7 +48,7 @@ export default function DragDropZone({
         >
             {isDragging && (
                 <div
-                    className="absolute inset-0 flex items-center justify-center bg-blue-50/90 dark:bg-blue-900/50 border-4 border-blue-500 border-dashed z-[60] pointer-events-none"
+                    className="absolute inset-0 flex items-center justify-center bg-blue-50/90 dark:bg-blue-900/50 border-4 border-blue-500 border-dashed z-60 pointer-events-none"
                     style={{
                         position: 'absolute',
                         top: 0,

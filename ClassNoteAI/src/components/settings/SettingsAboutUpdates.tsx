@@ -410,9 +410,9 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
                   {!isWindows && channel === "stable" && (
                     <>
                       <div className="relative flex py-1 items-center">
-                        <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
-                        <span className="flex-shrink-0 mx-2 text-xs text-gray-400">或</span>
-                        <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
+                        <div className="grow border-t border-gray-200 dark:border-gray-700"></div>
+                        <span className="shrink-0 mx-2 text-xs text-gray-400">或</span>
+                        <div className="grow border-t border-gray-200 dark:border-gray-700"></div>
                       </div>
                       <button
                         onClick={handleManualDownload}

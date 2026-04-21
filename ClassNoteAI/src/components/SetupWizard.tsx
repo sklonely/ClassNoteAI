@@ -446,7 +446,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                                     <div className="text-xs text-white/60 mt-1">{p.tagline}</div>
                                     <div className="text-[11px] text-white/40 mt-1">{p.caveat}</div>
                                 </div>
-                                <ArrowRight className="w-4 h-4 text-white/50 group-hover:text-blue-400 group-hover:translate-x-0.5 transition-transform flex-shrink-0 mt-1" />
+                                <ArrowRight className="w-4 h-4 text-white/50 group-hover:text-blue-400 group-hover:translate-x-0.5 transition-transform shrink-0 mt-1" />
                             </div>
                         </button>
                     ))}
