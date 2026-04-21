@@ -83,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.4
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Enable sccache for rustc
         run: |
