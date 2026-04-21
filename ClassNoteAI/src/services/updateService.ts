@@ -308,7 +308,11 @@ class UpdateService {
 
         let pickedAssetName: string | undefined;
         if (isWindows) {
-            const suffix = buildVariant === 'cuda' ? '_cuda' : '';
+            // Match the SUFFIX produced by release-windows.yml matrix:
+            // CUDA variant adds "-cuda" (hyphen, not underscore), CPU
+            // variant adds nothing. See
+            // .github/workflows/release-windows.yml `matrix.variant`.
+            const suffix = buildVariant === 'cuda' ? '-cuda' : '';
             pickedAssetName = `ClassNoteAI_${stripTagPrefix(release.tag_name)}_x64${suffix}-setup.exe`;
         } else {
             pickedAssetName = `ClassNoteAI_${stripTagPrefix(release.tag_name)}_aarch64.dmg`;
