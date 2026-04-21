@@ -2029,6 +2029,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(oauth::OAuthListenerState::default())
         .setup(|app| {
             // DevTools 現在由前端控制，根據 developerMode 設定
             // 前端可透過 invoke 呼叫開啟
@@ -2064,7 +2065,8 @@ pub fn run() {
             list_available_translation_models,
             load_translation_model_by_name,
             // OAuth callback listener
-            oauth::oauth_listen_for_code,
+            oauth::oauth_bind_port,
+            oauth::oauth_wait_for_code,
             oauth::oauth_cancel,
             // 數據存儲相關
             save_course,

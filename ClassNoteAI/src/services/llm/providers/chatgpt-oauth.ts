@@ -16,7 +16,6 @@
 
 import { fetch } from '@tauri-apps/plugin-http';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { keyStore } from '../keyStore';
 import { randomState, randomVerifier, sha256Challenge } from '../pkce';
@@ -41,24 +40,19 @@ const PROVIDER_ID = 'chatgpt-oauth';
 const OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OAUTH_AUTHORIZE = 'https://auth.openai.com/oauth/authorize';
 const OAUTH_TOKEN = 'https://auth.openai.com/oauth/token';
-// Codex's OAuth client has `http://localhost:1455/auth/callback` registered
-// as its ONLY valid redirect_uri server-side. Falling back to 1456+ makes
-// auth.openai.com reject the callback with "unknown_error" (see issue #36).
-// So we try 1455 exactly once; if it's held (often by VS Code's WebView
-// debugger or a previous dev session in TIME_WAIT) the user has to free it.
 const PREFERRED_CALLBACK_PORT = 1455;
-const CALLBACK_PORT_MAX_ATTEMPTS = 1;
+const CALLBACK_PORT_MAX_ATTEMPTS = 10;
 const CALLBACK_PATH = '/auth/callback';
 const OAUTH_SCOPES = 'openid profile email offline_access';
-const CALLBACK_TIMEOUT_SECS = 180;
+const CALLBACK_TIMEOUT_SECS = 300;
 
 function redirectUriFor(port: number): string {
   return `http://localhost:${port}${CALLBACK_PATH}`;
 }
 
-interface OAuthListenResult {
-  port: number;
-  path: string;
+interface OAuthCallback {
+  code: string;
+  state: string;
 }
 
 // Responses API endpoint on the ChatGPT backend (not api.openai.com).
@@ -138,44 +132,11 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     const challenge = await sha256Challenge(verifier);
     const state = randomState();
 
-    // 1) Subscribe to the `oauth:bound` event BEFORE kicking the
-    //    listener invoke, so we can't miss it on a fast bind.
-    let unlisten: UnlistenFn | undefined;
-    const boundPort = new Promise<number>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        unlisten?.();
-        reject(
-          new LLMError(
-            'OAuth listener did not bind to port 1455 (held by another app — often VS Code). Close it and try again.',
-            'auth',
-            PROVIDER_ID,
-          ),
-        );
-      }, 10_000);
-      listen<number>('oauth:bound', (e) => {
-        clearTimeout(timer);
-        unlisten?.();
-        resolve(e.payload);
-      })
-        .then((u) => {
-          unlisten = u;
-        })
-        .catch(reject);
-    });
-
-    // 2) Start the callback listener. It'll emit `oauth:bound` with the
-    //    port it actually bound to — possibly a fallback if 1455 was held
-    //    (e.g. VS Code). Issue #30 / #36.
-    const listenPromise = invoke<OAuthListenResult>('oauth_listen_for_code', {
-      port: PREFERRED_CALLBACK_PORT,
-      timeoutSecs: CALLBACK_TIMEOUT_SECS,
+    const port = await invoke<number>('oauth_bind_port', {
+      preferredPort: PREFERRED_CALLBACK_PORT,
       maxAttempts: CALLBACK_PORT_MAX_ATTEMPTS,
     });
-
-    // 3) Wait for Rust to tell us which port it's actually on, THEN open
-    //    the browser with a matching redirect_uri.
-    const actualPort = await boundPort;
-    const redirectUri = redirectUriFor(actualPort);
+    const redirectUri = redirectUriFor(port);
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: OAUTH_CLIENT_ID,
@@ -194,17 +155,13 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     const authUrl = `${OAUTH_AUTHORIZE}?${params.toString()}`;
     await openUrl(authUrl);
 
-    const result = await listenPromise;
-    const parsed = new URL(result.path, `http://localhost:${result.port}`);
-    const returnedState = parsed.searchParams.get('state');
-    const code = parsed.searchParams.get('code');
-    const err = parsed.searchParams.get('error');
+    const result = await invoke<OAuthCallback>('oauth_wait_for_code', {
+      timeoutSecs: CALLBACK_TIMEOUT_SECS,
+    });
+    if (!result.code) throw new LLMError('OAuth callback missing `code`', 'auth', PROVIDER_ID);
+    if (result.state !== state) throw new LLMError('OAuth state mismatch', 'auth', PROVIDER_ID);
 
-    if (err) throw new LLMError(`OAuth error: ${err}`, 'auth', PROVIDER_ID);
-    if (!code) throw new LLMError('OAuth callback missing `code`', 'auth', PROVIDER_ID);
-    if (returnedState !== state) throw new LLMError('OAuth state mismatch', 'auth', PROVIDER_ID);
-
-    const tokens = await this.exchangeCodeForTokens(code, verifier, redirectUri);
+    const tokens = await this.exchangeCodeForTokens(result.code, verifier, redirectUri);
     this.persistTokens(tokens);
     return tokens;
   }
