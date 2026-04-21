@@ -327,7 +327,7 @@ export default function SettingsView({}: Props) {
   return (
     <div className="h-full flex bg-gray-50 dark:bg-gray-900">
       {/* Sidebar */}
-      <div className="w-64 shrink-0 bg-white dark:bg-slate-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+      <div className="w-64 flex-shrink-0 bg-white dark:bg-slate-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
         <div className="p-6 border-b border-gray-200 dark:border-gray-700">
           <h2 className="text-xl font-bold text-gray-800 dark:text-white">
             設置
@@ -348,7 +348,7 @@ export default function SettingsView({}: Props) {
 
       {/* Main Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <div className="h-16 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-8 shrink-0">
+        <div className="h-16 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-8 flex-shrink-0">
           <div>
             <h1 className="text-lg font-semibold text-gray-800 dark:text-white">
               {current?.label}
