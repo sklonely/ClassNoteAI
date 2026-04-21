@@ -210,7 +210,7 @@ export default function ImportModal({
                             who need maximum accuracy can flip back. */}
                         <div className="space-y-2 pt-1">
                             <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-                                <span className="min-w-16">轉錄速度：</span>
+                                <span className="min-w-[4rem]">轉錄速度：</span>
                                 <select
                                     value={videoQuality}
                                     onChange={(e) =>
@@ -224,7 +224,7 @@ export default function ImportModal({
                                 </select>
                             </div>
                             <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
-                                <span className="min-w-16">影片語言：</span>
+                                <span className="min-w-[4rem]">影片語言：</span>
                                 <select
                                     value={videoLang}
                                     onChange={(e) =>

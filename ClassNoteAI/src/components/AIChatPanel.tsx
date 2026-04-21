@@ -432,7 +432,7 @@ export default function AIChatPanel({
             onMouseDown={isFloating ? handleMouseDown : undefined}
         >
             {/* Header - drag handle only when floating */}
-            <div className={`${isFloating ? 'drag-handle cursor-move' : ''} flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-linear-to-r from-purple-500 to-blue-500 select-none`}>
+            <div className={`${isFloating ? 'drag-handle cursor-move' : ''} flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-500 to-blue-500 select-none`}>
                 <div className="flex items-center gap-2 text-white">
                     <Bot className="w-4 h-4" />
                     <span className="font-medium text-sm">AI 助教</span>
@@ -684,4 +684,3 @@ export default function AIChatPanel({
         </div>
     );
 }
-

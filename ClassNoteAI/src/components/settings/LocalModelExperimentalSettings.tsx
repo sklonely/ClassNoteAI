@@ -158,7 +158,7 @@ export default function LocalModelExperimentalSettings() {
                             }`}
                         >
                             <AlertTriangle
-                                className={`w-4 h-4 mt-0.5 shrink-0 ${
+                                className={`w-4 h-4 mt-0.5 flex-shrink-0 ${
                                     detection.driver_hint.severity === 'warning'
                                         ? 'text-amber-500'
                                         : 'text-blue-500'
@@ -293,9 +293,9 @@ function DetRow({ ok, label, detail }: { ok: boolean; label: string; detail: str
     return (
         <div className="flex items-start gap-2 text-[11px]">
             {ok ? (
-                <CheckCircle2 className="w-3.5 h-3.5 text-green-500 mt-0.5 shrink-0" />
+                <CheckCircle2 className="w-3.5 h-3.5 text-green-500 mt-0.5 flex-shrink-0" />
             ) : (
-                <XCircle className="w-3.5 h-3.5 text-gray-400 mt-0.5 shrink-0" />
+                <XCircle className="w-3.5 h-3.5 text-gray-400 mt-0.5 flex-shrink-0" />
             )}
             <span className={ok ? 'text-gray-700 dark:text-gray-300' : 'text-gray-400 dark:text-gray-500'}>
                 <span className="font-medium">{label}</span>
