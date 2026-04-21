@@ -83,7 +83,9 @@ pub async fn save_setup_status(complete: bool) -> Result<(), String> {
             "version": env!("CARGO_PKG_VERSION"),
         });
 
-        std::fs::write(&status_file, serde_json::to_string_pretty(&status).unwrap())
+        let payload = serde_json::to_string_pretty(&status)
+            .map_err(|e| format!("Failed to serialize setup status: {}", e))?;
+        std::fs::write(&status_file, payload)
             .map_err(|e| format!("Failed to save setup status: {}", e))?;
     } else {
         // Remove the status file to mark as incomplete
