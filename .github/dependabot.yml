@@ -1,0 +1,68 @@
+# Dependabot configuration — pragmatic scope for a Tauri + heavy-native-deps repo.
+#
+# npm ecosystem: full weekly coverage, grouped by update type so we don't get
+# 20 PRs a week.
+#
+# cargo ecosystem: restricted. Dependabot's sandbox can't build our native
+# deps (ct2rs, whisper-rs-sys, candle-*, ort all need LLVM/MSVC/CUDA) and
+# Tauri plugins must bump in lockstep via `tauri upgrade`. Auto-PRs for
+# those are noise at best, broken-lock at worst. We allow-list the simple
+# crates where the auto-PR cost is low.
+#
+# Security updates (GitHub Advisory DB) run independently of this file
+# and will still notify us for any vulnerable transitive dep.
+
+version: 2
+updates:
+  # Frontend
+  - package-ecosystem: "npm"
+    directory: "/ClassNoteAI"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      patch-updates:
+        patterns: ["*"]
+        update-types: ["patch"]
+      minor-updates:
+        patterns: ["*"]
+        update-types: ["minor"]
+
+  # Backend Rust — pragmatic ignore list
+  - package-ecosystem: "cargo"
+    directory: "/ClassNoteAI/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    ignore:
+      # Vendor-patched or heavy native-build crates — manual bump only.
+      # These fail in Dependabot's sandbox (no LLVM/MSVC/CUDA toolchain)
+      # and often require matching changes in vendor-patches/ or
+      # release-*.yml env vars.
+      - dependency-name: "ct2rs"
+      - dependency-name: "whisper-rs"
+      - dependency-name: "whisper-rs-sys"
+      - dependency-name: "candle-core"
+      - dependency-name: "candle-nn"
+      - dependency-name: "candle-transformers"
+      - dependency-name: "candle-kernels"
+      - dependency-name: "hf-hub"
+      - dependency-name: "ort"
+      - dependency-name: "rusqlite"
+      - dependency-name: "tokenizers"
+      - dependency-name: "sentencepiece-sys"
+      - dependency-name: "zip"
+
+      # Tauri + plugins — must bump in lockstep via `tauri upgrade`.
+      # Auto-PRs break the version-alignment invariant between
+      # tauri-build, @tauri-apps/cli, and tauri-plugin-*.
+      - dependency-name: "tauri"
+      - dependency-name: "tauri-build"
+      - dependency-name: "tauri-plugin-*"
+
+    groups:
+      patch-updates:
+        patterns: ["*"]
+        update-types: ["patch"]
