@@ -44,7 +44,7 @@ jobs:
       # the first warm-cache build). Metal shader compilation is not
       # cached by sccache (similar to CUDA on Windows).
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.4
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Enable sccache for rustc
         run: |
