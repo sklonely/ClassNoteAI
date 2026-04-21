@@ -40,6 +40,7 @@ type TabId =
 const DEFAULT_SETTINGS: AppSettings = {
   server: { url: "http://localhost", port: 8080, enabled: false },
   audio: { sample_rate: 16000, chunk_duration: 2 },
+  recording: {},
   subtitle: {
     font_size: 18,
     font_color: "#FFFFFF",
@@ -188,6 +189,7 @@ export default function SettingsView({}: Props) {
             },
             theme: saved.theme ?? "light",
             models: saved.models,
+            recording: saved.recording,
             translation: saved.translation,
             sync: saved.sync,
           });
