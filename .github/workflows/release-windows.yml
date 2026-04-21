@@ -65,7 +65,7 @@ jobs:
       # path. nvcc / CUDA kernel compilation is NOT cached — that still
       # runs full each time.
       - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.4
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Enable sccache for rustc
         run: |
