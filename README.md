@@ -14,6 +14,10 @@
 
 </div>
 
+> **🚧 Development status**
+> 穩定版：**v0.6.0** · 最新預覽版：**v0.6.0-alpha.4**（含 GPU 加速、簽章 macOS build、診斷 log、新 updater）
+> 一般使用者請從 [Releases 頁面](https://github.com/sklonely/ClassNoteAI/releases) 安裝。`main` 分支包含尚未正式發布的進行中工作，以 tag 區分穩定與預覽 — 不會主動 push 壞的內容到 main，但 release 的保障只在 tag 上。
+
 ---
 
 ClassNote AI 把你的筆電變成一位隨堂助教：上課時把老師的英文講解**即時轉成文字、同步翻譯**；下課後用你選擇的 AI（GPT、Claude、Gemini…）**整理筆記、回答問題、生成課程大綱**。

@@ -104,6 +104,22 @@ ClassNoteAI/
 └── .github/workflows/         # Dual-platform CI (build-windows + build-macos)
 ```
 
+## Branch strategy
+
+Trunk-based development:
+
+- **`main`** is the sole long-lived branch. Every merged PR lands here. CI runs on `main`. Dependabot targets `main`.
+- **Releases are tags, not branches.** Stable: `v0.6.0`, `v0.7.0`. Pre-release: `v0.6.0-alpha.4`, `v0.6.0-beta.1`. The auto-updater fetches by tag, not by branch.
+- **Short-lived `feat/*` branches** only for multi-week work (e.g. the v0.6.5 speech pipeline overhaul). Everyday fixes and small features land directly on `main`.
+- **After a feature branch merges**, archive it as a tag and delete the branch: `git tag archive/<name> <old-tip-sha> && git push origin archive/<name> && git push origin --delete <name>`. History stays reachable; branch list stays clean.
+- **PRs merge via squash** by default. Use merge-commit only when the branch's per-commit history is intentionally atomic and meaningful (rare).
+
+### Why not GitFlow / main-vs-develop split
+
+Considered and rejected for a solo-maintainer alpha-stage project. GitFlow works when a dedicated release manager cuts stable releases on cadence; a two-long-lived-branch model creates dependabot-target confusion, merge-conflict tax at every stable cut, and "which branch is authoritative?" questions from visitors. Trunk-based with disciplined tagging solves the same problem with one moving part.
+
+The README banner at the repo root tells visitors the latest stable + latest pre-release tag so they don't have to infer state from `main`'s commit log.
+
 ## CI
 
 Every PR runs `build-windows` and `build-macos`. The ruleset on `main` requires both status checks + one approving review (bypassable by repo admins). See [.github/workflows/](.github/workflows/) for details.
