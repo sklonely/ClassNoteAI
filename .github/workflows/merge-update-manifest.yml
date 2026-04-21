@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   merge:
@@ -82,6 +83,13 @@ jobs:
           done
           echo "Peer did not complete within 40 minutes."
 
+      - name: Checkout default branch
+        if: steps.wait.outputs.ok == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
       - name: Download manifest fragments
         if: steps.wait.outputs.ok == 'true'
         env:
@@ -125,6 +133,26 @@ jobs:
           echo "--- merged latest.json ---"
           cat latest.json
 
+      - name: Determine channel tier and write per-channel manifests
+        if: steps.wait.outputs.ok == 'true'
+        shell: bash
+        env:
+          TAG: ${{ steps.ctx.outputs.tag }}
+        run: |
+          channels=()
+          if [[ "$TAG" == *-alpha* ]]; then
+            channels=(alpha)
+          elif [[ "$TAG" == *-beta* ]]; then
+            channels=(alpha beta)
+          else
+            channels=(alpha beta stable)
+          fi
+
+          for channel in "${channels[@]}"; do
+            mkdir -p "docs/updater/$channel"
+            cp latest.json "docs/updater/$channel/latest.json"
+          done
+
       - name: Sanity check merged manifest
         if: steps.wait.outputs.ok == 'true'
         run: |
@@ -143,6 +171,32 @@ jobs:
             echo "NOTE: latest.json does not include Windows CUDA variant (expected on older tags)."
           fi
           echo "OK: latest.json has all required platforms."
+
+      - name: Open PR for manifest update
+        if: steps.wait.outputs.ok == 'true'
+        id: manifest_pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          add-paths: |
+            docs/updater
+          branch: updater-manifest/${{ steps.ctx.outputs.tag }}
+          title: chore(updater): publish manifest for ${{ steps.ctx.outputs.tag }}
+          commit-message: chore(updater): update channel manifests for ${{ steps.ctx.outputs.tag }}
+          body: Automated per-channel manifest update for ${{ steps.ctx.outputs.tag }}
+
+      - name: Auto-merge manifest PR
+        if: steps.wait.outputs.ok == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ steps.manifest_pr.outputs.pull-request-url }}
+          PR_BRANCH: updater-manifest/${{ steps.ctx.outputs.tag }}
+        run: |
+          if [ -n "$PR_URL" ]; then
+            gh pr merge --admin --squash "$PR_URL" || echo "Auto-merge failed. Merge manually: $PR_URL"
+          else
+            echo "No manifest PR was created. Branch: $PR_BRANCH"
+          fi
 
       - name: Upload merged manifest
         if: steps.wait.outputs.ok == 'true'
