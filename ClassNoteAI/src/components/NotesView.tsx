@@ -138,7 +138,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // Lookup is a binary search at each time-update so the sync is cheap.
   const [pageTimeline, setPageTimeline] = useState<{ t: number; page: number }[]>([]);
   const [isBuildingTimeline, setIsBuildingTimeline] = useState<boolean>(false);
-  const [lastAutoFollowPage, setLastAutoFollowPage] = useState<number>(0);
+  const lastAutoPageRef = useRef<number | null>(null);
 
   // Note Editing State
   const [isEditingNote, setIsEditingNote] = useState(false);
@@ -540,18 +540,15 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   }, [autoFollow, viewMode, pdfData, modelLoaded, currentLectureData?.id]);
 
   // Sync PDF to the current playback time when Auto Follow is on.
-  // Debounced via "last page scrolled" so we don't thrash the PDF
-  // viewer on every timeupdate (which fires ~4x/s).
   useEffect(() => {
-    if (!autoFollow) return;
-    if (viewMode !== 'review') return;
-    if (!isPlaying) return;
-    if (pageTimeline.length === 0) return;
+    if (!autoFollow || pageTimeline.length === 0) {
+      lastAutoPageRef.current = null;
+      return;
+    }
 
-    // Binary search for largest timeline entry with t <= currentTime.
     let lo = 0;
     let hi = pageTimeline.length - 1;
-    let best = -1;
+    let best = 0;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       if (pageTimeline[mid].t <= audioCurrentTime) {
@@ -561,14 +558,14 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         hi = mid - 1;
       }
     }
-    if (best < 0) return;
     const targetPage = pageTimeline[best].page;
-    if (targetPage === lastAutoFollowPage) return;
-    setLastAutoFollowPage(targetPage);
-    if (pdfViewerRef.current) {
-      pdfViewerRef.current.scrollToPage(targetPage);
+    // Manual page turns while autoFollow=true will be overridden on the next timeupdate tick.
+    const viewer = pdfViewerRef.current;
+    if (viewer && lastAutoPageRef.current !== targetPage) {
+      viewer.scrollToPage(targetPage);
+      lastAutoPageRef.current = targetPage;
     }
-  }, [audioCurrentTime, autoFollow, isPlaying, viewMode, pageTimeline, lastAutoFollowPage]);
+  }, [autoFollow, pageTimeline, audioCurrentTime]);
 
   // Assemble the Whisper initial_prompt from three sources:
   //   1. Course context (topic from syllabus)
