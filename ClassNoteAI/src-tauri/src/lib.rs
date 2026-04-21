@@ -16,6 +16,7 @@ mod setup;
 pub mod paths;
 // 統一下載管理模塊
 pub mod downloads;
+pub mod diagnostics;
 // 同步模塊
 mod sync;
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
@@ -2033,6 +2034,15 @@ async fn open_log_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn export_diagnostic_package(
+    input: crate::diagnostics::DiagnosticPackageInput,
+    include_audio: bool,
+) -> Result<String, String> {
+    let path = crate::diagnostics::build_diagnostic_zip(input, include_audio)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Populate HTTP_PROXY/HTTPS_PROXY from Windows Internet Settings so
@@ -2100,6 +2110,7 @@ pub fn run() {
             close_devtools,
             read_recent_log,
             open_log_folder,
+            export_diagnostic_package,
             detect_speech_segments,
             greet,
             load_whisper_model,

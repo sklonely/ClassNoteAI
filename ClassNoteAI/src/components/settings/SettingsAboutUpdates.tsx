@@ -12,6 +12,7 @@ import {
   Copy,
   FolderOpen,
   Bug,
+  Package,
 } from "lucide-react";
 import { Card } from "./shared";
 import { setupService } from "../../services/setupService";
@@ -23,6 +24,7 @@ import {
   buildGithubIssueUrl,
 } from "../../services/logDiagnostics";
 import type { ReleaseChannel } from "../../services/updateService";
+import type { Lecture } from "../../types";
 
 interface Props {
   appVersion: string;
@@ -39,6 +41,10 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [channel, setChannel] = useState<ReleaseChannel>("stable");
   const [logPreview, setLogPreview] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportIncludeAudio, setExportIncludeAudio] = useState(false);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [selectedLectureId, setSelectedLectureId] = useState<string>("");
   const [logHits, setLogHits] = useState<Record<string, number>>({});
   const [hasGithubProvider, setHasGithubProvider] = useState(true);
 
@@ -82,6 +88,31 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
       } catch (e) {
         console.warn("[SettingsAboutUpdates] Failed to inspect GitHub Models state:", e);
         if (!cancelled) setHasGithubProvider(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await storageService.listLectures();
+        const sorted = [...list].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+        if (cancelled) return;
+        setLectures(sorted);
+        setSelectedLectureId((current) => {
+          if (current && sorted.some((lecture) => lecture.id === current)) {
+            return current;
+          }
+          return sorted[0]?.id ?? "";
+        });
+      } catch (e) {
+        console.warn("[SettingsAboutUpdates] Failed to load lectures:", e);
       }
     })();
     return () => {
@@ -177,6 +208,36 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
         "無法開啟 log 資料夾",
         e instanceof Error ? e.message : String(e),
       );
+    }
+  };
+
+  const handleExportPackage = async () => {
+    if (!selectedLectureId) {
+      toastService.error("請先選擇要匯出的講座");
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const buildVariant = await invoke<string>("get_build_variant").catch(() => "cpu");
+      const { exportDiagnosticPackage, revealZipInFileManager } = await import(
+        "../../services/diagnosticsService"
+      );
+      const zipPath = await exportDiagnosticPackage({
+        lectureId: selectedLectureId,
+        includeAudio: exportIncludeAudio,
+        appVersion,
+        buildVariant,
+      });
+      toastService.success("診斷封包已匯出到下載資料夾");
+      await revealZipInFileManager(zipPath);
+    } catch (e) {
+      toastService.error(
+        "匯出診斷封包失敗",
+        e instanceof Error ? e.message : String(e),
+      );
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -413,7 +474,56 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
             </button>
           </div>
 
-            {logPreview !== null && (
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-100">
+                <Package className="w-4 h-4 text-violet-500" />
+                <span>匯出完整診斷封包</span>
+              </div>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                會將講座資料、字幕、已遮罩的 log 與中繼資料打包成 ZIP 存到下載資料夾，可選擇是否附帶音訊；不會自動上傳。
+              </p>
+            </div>
+
+            <select
+              value={selectedLectureId}
+              onChange={(e) => setSelectedLectureId(e.target.value)}
+              disabled={isExporting || lectures.length === 0}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 disabled:opacity-50"
+            >
+              {lectures.length === 0 ? (
+                <option value="">目前沒有可匯出的講座</option>
+              ) : (
+                lectures.map((lecture) => (
+                  <option key={lecture.id} value={lecture.id}>
+                    {lecture.title} · {new Date(lecture.created_at).toLocaleString()}
+                  </option>
+                ))
+              )}
+            </select>
+
+            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={exportIncludeAudio}
+                onChange={(e) => setExportIncludeAudio(e.target.checked)}
+                disabled={isExporting}
+                className="h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500"
+              />
+              包含原始音訊檔（若存在）
+            </label>
+
+            <button
+              onClick={handleExportPackage}
+              disabled={isExporting || !selectedLectureId}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-violet-600 hover:bg-violet-700 disabled:bg-gray-400 text-white rounded-lg transition-colors"
+            >
+              <Package className="w-4 h-4" />
+              {isExporting ? "正在匯出診斷封包..." : "匯出診斷封包 ZIP"}
+            </button>
+          </div>
+
+          {logPreview !== null && (
               <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 space-y-3">
                 <div className="text-sm text-gray-700 dark:text-gray-300">
                   <div className="font-medium">Redaction summary</div>
