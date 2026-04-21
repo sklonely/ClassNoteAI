@@ -30,7 +30,7 @@ pub mod dev_flags;
 
 use embedding::EmbeddingService;
 use log::LevelFilter;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tokio::sync::Mutex;
 use whisper::WhisperService; // For window.emit()
@@ -1987,6 +1987,52 @@ async fn close_devtools(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn read_recent_log(lines: usize, app_handle: tauri::AppHandle) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to resolve log dir: {}", e))?;
+    let log_path = log_dir.join("classnoteai.log");
+
+    if !log_path.exists() {
+        return Ok(String::new());
+    }
+
+    let file = File::open(&log_path).map_err(|e| format!("Failed to open log file: {}", e))?;
+    let reader = BufReader::new(file);
+    let all_lines = reader
+        .lines()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read log file: {}", e))?;
+
+    let limit = lines.min(2000);
+    if limit == 0 {
+        return Ok(String::new());
+    }
+
+    let start = all_lines.len().saturating_sub(limit);
+    Ok(all_lines[start..].join("\n"))
+}
+
+#[tauri::command]
+async fn open_log_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to resolve log dir: {}", e))?;
+
+    app_handle
+        .opener()
+        .open_path(log_dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Populate HTTP_PROXY/HTTPS_PROXY from Windows Internet Settings so
@@ -2052,6 +2098,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             close_devtools,
+            read_recent_log,
+            open_log_folder,
             detect_speech_segments,
             greet,
             load_whisper_model,

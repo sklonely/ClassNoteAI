@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Info,
   RefreshCw,
@@ -7,11 +9,19 @@ import {
   Cpu,
   RotateCcw,
   FlaskConical,
+  Copy,
+  FolderOpen,
+  Bug,
 } from "lucide-react";
 import { Card } from "./shared";
 import { setupService } from "../../services/setupService";
+import { storageService } from "../../services/storageService";
 import { toastService } from "../../services/toastService";
 import { confirmService } from "../../services/confirmService";
+import {
+  redactLogContent,
+  buildGithubIssueUrl,
+} from "../../services/logDiagnostics";
 import type { ReleaseChannel } from "../../services/updateService";
 
 interface Props {
@@ -28,6 +38,9 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [channel, setChannel] = useState<ReleaseChannel>("stable");
+  const [logPreview, setLogPreview] = useState<string | null>(null);
+  const [logHits, setLogHits] = useState<Record<string, number>>({});
+  const [hasGithubProvider, setHasGithubProvider] = useState(true);
 
   // Load the user's current channel selection on mount. Default to
   // stable on any failure — see getReleaseChannel() for the same
@@ -41,6 +54,34 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
         if (!cancelled) setChannel(current);
       } catch (e) {
         console.warn("[SettingsAboutUpdates] Failed to read release channel:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const settings = await storageService.getAppSettings();
+        const canReadLocalStorage = typeof window !== "undefined" &&
+          typeof window.localStorage !== "undefined";
+        const storedPat = canReadLocalStorage
+          ? window.localStorage.getItem("llm.github-models.pat")
+          : null;
+        const configured = typeof storedPat === "string"
+          ? storedPat.trim().length > 0
+          : !canReadLocalStorage
+          ? true
+          : settings?.experimental?.refineProvider === "github-models"
+          ? true
+          : false;
+        if (!cancelled) setHasGithubProvider(configured);
+      } catch (e) {
+        console.warn("[SettingsAboutUpdates] Failed to inspect GitHub Models state:", e);
+        if (!cancelled) setHasGithubProvider(true);
       }
     })();
     return () => {
@@ -114,9 +155,60 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
     }
   };
 
+  const handleCopyLog = async () => {
+    try {
+      const raw = await invoke<string>("read_recent_log", { lines: 500 });
+      const { redacted, hits } = redactLogContent(raw);
+      setLogPreview(redacted);
+      setLogHits(hits);
+    } catch (e) {
+      toastService.error(
+        "無法讀取診斷 log",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  const handleOpenLogFolder = async () => {
+    try {
+      await invoke("open_log_folder");
+    } catch (e) {
+      toastService.error(
+        "無法開啟 log 資料夾",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  const handleGithubIssue = async () => {
+    if (logPreview === null) return;
+    try {
+      await openUrl(buildGithubIssueUrl(logPreview, appVersion));
+    } catch (e) {
+      toastService.error(
+        "無法開啟 GitHub issue 頁面",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  const handleConfirmCopyToClipboard = async () => {
+    if (logPreview === null) return;
+    try {
+      await navigator.clipboard.writeText(logPreview);
+      toastService.success("診斷 log 已複製");
+      setLogPreview(null);
+      setLogHits({});
+    } catch (e) {
+      toastService.error(
+        "無法複製診斷 log",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
   const handleOpenDevTools = async () => {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("open_devtools");
     } catch (e) {
       console.error("Failed to open devtools:", e);
@@ -153,6 +245,8 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
 
   const isWindows = typeof navigator !== "undefined" &&
     navigator.userAgent.includes("Windows");
+  const redactionEntries = Object.entries(logHits).filter(([, count]) => count > 0);
+  const totalRedactions = redactionEntries.reduce((sum, [, count]) => sum + count, 0);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -290,6 +384,84 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
               {updateError}
             </div>
           )}
+
+        </div>
+      </Card>
+
+      <Card
+        title="診斷 log"
+        icon={<Info className="w-5 h-5 text-slate-500" />}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            預覽最近 500 行 app log，先在前端做敏感資訊遮罩，再決定是否複製或回報。
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              onClick={handleCopyLog}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-700 hover:bg-slate-800 text-white rounded-lg transition-colors"
+            >
+              <Copy className="w-4 h-4" />
+              預覽並複製 log
+            </button>
+            <button
+              onClick={handleOpenLogFolder}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+            >
+              <FolderOpen className="w-4 h-4" />
+              開啟 log 資料夾
+            </button>
+          </div>
+
+            {logPreview !== null && (
+              <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 space-y-3">
+                <div className="text-sm text-gray-700 dark:text-gray-300">
+                  <div className="font-medium">Redaction summary</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {redactionEntries.length > 0
+                      ? `已遮罩 ${totalRedactions} 項：${redactionEntries
+                          .map(([label, count]) => `${label} ×${count}`)
+                          .join(", ")}`
+                      : "未偵測到需要遮罩的內容。"}
+                  </div>
+                </div>
+
+                <textarea
+                  readOnly
+                  value={logPreview}
+                  rows={12}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-gray-800 dark:text-gray-100"
+                />
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <button
+                    onClick={handleConfirmCopyToClipboard}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  >
+                    <Copy className="w-4 h-4" />
+                    複製到剪貼簿
+                  </button>
+                  {hasGithubProvider && (
+                    <button
+                      onClick={handleGithubIssue}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                    >
+                      <Bug className="w-4 h-4" />
+                      GitHub issue
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setLogPreview(null);
+                      setLogHits({});
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
         </div>
       </Card>
 
