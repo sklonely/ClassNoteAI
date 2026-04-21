@@ -19,6 +19,7 @@ import {
     HardDrive
 } from 'lucide-react';
 import { setupService } from '../services/setupService';
+import { consentService } from '../services/consentService';
 import AIProviderSettings from './AIProviderSettings';
 import {
     SetupStatus,
@@ -40,6 +41,7 @@ type WizardStep =
     | 'language'
     | 'ai-provider'   // v0.5.2: pick GitHub Models vs ChatGPT (or skip)
     | 'ai-config'     // v0.5.2: configure the chosen provider (PAT / OAuth)
+    | 'recording-consent'
     | 'checking'
     | 'review'
     | 'installing'
@@ -67,6 +69,8 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     // into two steps was a review fix — the combined step overflowed the
     // wizard container and the "Continue" button got clipped off-screen.
     const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
+    const [consentChecked, setConsentChecked] = useState(false);
+    const [consentError, setConsentError] = useState<string | null>(null);
 
     // Check requirements when entering checking step
     const checkRequirements = useCallback(async () => {
@@ -89,6 +93,17 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
             setStep('review');
         }
     }, []);
+
+    const advanceToRecordingConsent = useCallback(async () => {
+        const state = await consentService.getRecordingConsentState();
+        if (state.acknowledged) {
+            await checkRequirements();
+            return;
+        }
+        setConsentChecked(false);
+        setConsentError(null);
+        setStep('recording-consent');
+    }, [checkRequirements]);
 
     // Start installation
     const startInstallation = useCallback(async () => {
@@ -380,7 +395,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                             // Skip — still check requirements so the
                             // rest of the wizard runs. User can come
                             // back via Settings → 雲端 AI 助理.
-                            await checkRequirements();
+                            await advanceToRecordingConsent();
                         }}
                     >
                         跳過此步驟 <ArrowRight className="w-4 h-4" />
@@ -435,6 +450,78 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                         // noise (and was also buggy: state was only
                         // polled after click, so a successful config
                         // still showed "先不管、繼續").
+                        await advanceToRecordingConsent();
+                    }}
+                >
+                    繼續 <ArrowRight className="w-5 h-5" />
+                </button>
+            </div>
+        </div>
+    );
+
+    const renderRecordingConsent = () => (
+        <div className="setup-step welcome-step">
+            <div className="setup-icon-container">
+                <div className="setup-icon">
+                    <Mic className="w-16 h-16 text-amber-400" />
+                </div>
+            </div>
+
+            <h2 className="setup-subtitle">錄音與隱私提醒</h2>
+            <p className="setup-description">
+                ClassNoteAI 會把錄音與筆記留在你的電腦上，但<strong>錄音行為本身</strong>仍可能受到
+                老師、同學、校規與所在地法律限制。
+            </p>
+
+            <div className="w-full max-w-lg mx-auto my-4 rounded-xl border border-amber-400/20 bg-amber-500/10 p-4 text-left text-sm text-white/90 space-y-3">
+                <p>開始錄音前，請你自行確認：</p>
+                <ul className="list-disc pl-5 space-y-1 text-white/75">
+                    <li>是否已取得課堂錄音所需的同意</li>
+                    <li>是否符合學校政策、課程規範與當地法律</li>
+                    <li>若內容包含第三人聲音，是否涉及隱私或個資風險</li>
+                </ul>
+                <p className="text-white/65">
+                    我們不會替你判斷合法與否，但會把這個提醒保留下來，之後不再反覆打擾。
+                </p>
+            </div>
+
+            <label className="w-full max-w-lg mx-auto flex items-start gap-3 rounded-lg border border-white/15 bg-white/5 px-4 py-3 text-left cursor-pointer">
+                <input
+                    type="checkbox"
+                    checked={consentChecked}
+                    onChange={(e) => {
+                        setConsentChecked(e.target.checked);
+                        if (e.target.checked) setConsentError(null);
+                    }}
+                    className="mt-1 h-4 w-4 rounded border-white/30 bg-slate-900 text-blue-500"
+                />
+                <span className="text-sm text-white/90">
+                    我了解 ClassNoteAI 只提供本地工具；實際錄音是否合規，仍需由我自行確認並遵守相關規定。
+                </span>
+            </label>
+
+            {consentError && (
+                <div className="setup-error">
+                    <AlertTriangle className="w-5 h-5" />
+                    {consentError}
+                </div>
+            )}
+
+            <div className="setup-actions">
+                <button
+                    className="setup-button secondary"
+                    onClick={() => setStep(selectedProviderId ? 'ai-config' : 'ai-provider')}
+                >
+                    返回
+                </button>
+                <button
+                    className="setup-button primary"
+                    onClick={async () => {
+                        if (!consentChecked) {
+                            setConsentError('請先勾選同意與理解，才能繼續。');
+                            return;
+                        }
+                        await consentService.acknowledgeRecordingConsent();
                         await checkRequirements();
                     }}
                 >
@@ -665,7 +752,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                     dot since the user experience is "one thing" (configure
                     an LLM) split across two screens for viewport reasons. */}
                 {(() => {
-                    const visualSteps: WizardStep[] = ['welcome', 'language', 'ai-provider', 'checking', 'review', 'installing', 'complete'];
+                    const visualSteps: WizardStep[] = ['welcome', 'language', 'ai-provider', 'recording-consent', 'checking', 'review', 'installing', 'complete'];
                     const normalisedStep: WizardStep = step === 'ai-config' ? 'ai-provider' : step;
                     const currentIdx = visualSteps.indexOf(normalisedStep);
                     return (
@@ -685,6 +772,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 {step === 'language' && renderLanguage()}
                 {step === 'ai-provider' && renderAIProvider()}
                 {step === 'ai-config' && renderAIConfig()}
+                {step === 'recording-consent' && renderRecordingConsent()}
                 {step === 'checking' && renderChecking()}
                 {step === 'review' && renderReview()}
                 {step === 'installing' && renderInstalling()}

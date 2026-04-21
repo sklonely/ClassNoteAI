@@ -12,6 +12,8 @@ import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
 import { syncService } from "./services/syncService";
+import { toastService } from "./services/toastService";
+import { buildInterruptedRecordingNotice } from "./services/recordingInterruptionNotice";
 import { useAuth } from "./contexts/AuthContext";
 
 type AppState = 'loading' | 'setup' | 'ready';
@@ -137,6 +139,15 @@ function App() {
           } catch (err) {
             console.warn(`[App] Failed to reconcile zombie lecture ${lec.id}:`, err);
           }
+        }
+
+        const interruptedNotice = buildInterruptedRecordingNotice(scan.lectureOrphansWithoutPcm);
+        if (interruptedNotice) {
+          toastService.show({
+            ...interruptedNotice,
+            type: 'warning',
+            durationMs: 0,
+          });
         }
       } catch (err) {
         console.warn('[App] Crash-recovery scan failed (non-fatal):', err);

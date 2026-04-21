@@ -92,6 +92,10 @@ export interface AppSettings {
     sample_rate: number;
     chunk_duration: number;
   };
+  recording?: {
+    consentAcknowledgedAt?: string;
+    consentReminderVersion?: number;
+  };
   subtitle: {
     font_size: number;
     font_color: string;
@@ -185,4 +189,3 @@ export interface AppSettings {
 
 // 錄音狀態
 export type RecordingStatus = "idle" | "recording" | "paused" | "stopped";
-
