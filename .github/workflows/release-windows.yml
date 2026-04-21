@@ -310,6 +310,17 @@ jobs:
           cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig   "release-assets/ClassNoteAI_${VERSION}_x64${SUFFIX}-setup.exe.sig" || true
           cp latest-windows-x86_64${SUFFIX}.json                     release-assets/
 
+          # Backward-compat for users stuck on <= alpha.3 whose updater
+          # code looks for `_cuda` (underscore) instead of `-cuda`
+          # (hyphen). See PR #83 for the root-cause fix. Keep emitting
+          # the underscore-named duplicate for a couple more alphas; can
+          # drop once alpha.3 users have all migrated. Only relevant for
+          # the CUDA variant; the CPU variant has no suffix.
+          if [ "${SUFFIX}" = "-cuda" ]; then
+            cp "release-assets/ClassNoteAI_${VERSION}_x64-cuda-setup.exe"     "release-assets/ClassNoteAI_${VERSION}_x64_cuda-setup.exe"     || true
+            cp "release-assets/ClassNoteAI_${VERSION}_x64-cuda-setup.exe.sig" "release-assets/ClassNoteAI_${VERSION}_x64_cuda-setup.exe.sig" || true
+          fi
+
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
