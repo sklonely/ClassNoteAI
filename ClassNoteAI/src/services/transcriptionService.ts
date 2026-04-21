@@ -68,6 +68,7 @@ export class TranscriptionService {
   // fine-refinement queue entirely instead of spamming errors every
   // FINE_DEBOUNCE_MS. Re-checked each new recording session.
   private fineRefinementEnabled: boolean = false;
+  private currentRefineIntensity: 'off' | 'light' | 'deep' = 'off';
 
   constructor() {
     // 綁定方法以避免 this 丟失
@@ -87,11 +88,21 @@ export class TranscriptionService {
    *  fine-refinement queue entirely if not. */
   public async refreshFineRefinementAvailability(): Promise<void> {
     try {
+      const { storageService } = await import('./storageService');
+      const settings = await storageService.getAppSettings().catch(() => null);
+      const intensity = settings?.experimental?.refineIntensity ?? 'off';
+      this.currentRefineIntensity = intensity;
+      if (intensity === 'off') {
+        this.fineRefinementEnabled = false;
+        return;
+      }
+
       const { resolveActiveProvider } = await import('./llm');
       const defaultId = localStorage.getItem('llm.defaultProvider') || undefined;
       const provider = await resolveActiveProvider(defaultId);
       this.fineRefinementEnabled = !!provider;
     } catch {
+      this.currentRefineIntensity = 'off';
       this.fineRefinementEnabled = false;
     }
   }
@@ -674,7 +685,7 @@ export class TranscriptionService {
    * is called once per recording session from NotesView.
    */
   private enqueueFineRefinement(id: string, text: string): void {
-    if (!this.fineRefinementEnabled) return;
+    if (!this.fineRefinementEnabled || this.currentRefineIntensity === 'off') return;
 
     this.fineQueue.push({ id, text });
     if (this.fineQueue.length >= TranscriptionService.FINE_BATCH_SIZE) {
@@ -693,6 +704,11 @@ export class TranscriptionService {
       clearTimeout(this.fineFlushTimer);
       this.fineFlushTimer = null;
     }
+    const { storageService } = await import('./storageService');
+    const settings = await storageService.getAppSettings().catch(() => null);
+    const intensity = settings?.experimental?.refineIntensity ?? 'off';
+    if (intensity === 'off') return;
+    this.currentRefineIntensity = intensity;
     if (!this.fineQueue.length) return;
     const batch = this.fineQueue.splice(0, this.fineQueue.length);
 
@@ -740,6 +756,17 @@ export class TranscriptionService {
       }
     } catch (e) {
       console.warn('[TranscriptionService] Fine refinement batch failed; keeping rough output:', e);
+    }
+  }
+
+  public setRefineIntensity(intensity: 'off' | 'light' | 'deep'): void {
+    this.currentRefineIntensity = intensity;
+    if (intensity === 'off') {
+      this.fineRefinementEnabled = false;
+    } else {
+      this.refreshFineRefinementAvailability().catch((e) =>
+        console.warn('[TranscriptionService] refresh after intensity change failed:', e)
+      );
     }
   }
 
