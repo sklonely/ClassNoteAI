@@ -9,6 +9,7 @@ import {
   Database,
   Info,
   ChevronRight,
+  Monitor,
 } from "lucide-react";
 import { AppSettings } from "../types";
 import { getVersion } from "@tauri-apps/api/app";
@@ -25,11 +26,13 @@ import SettingsCloudAI from "./settings/SettingsCloudAI";
 import SettingsAudioSubtitles from "./settings/SettingsAudioSubtitles";
 import SettingsDataManagement from "./settings/SettingsDataManagement";
 import SettingsAboutUpdates from "./settings/SettingsAboutUpdates";
+import SettingsInterface from "./settings/SettingsInterface";
 
 type TabId =
   | "local-transcription"
   | "translation"
   | "cloud-ai"
+  | "interface"
   | "audio-subtitles"
   | "data-management"
   | "about-updates";
@@ -81,6 +84,12 @@ const PRIMARY_NAV: NavItem[] = [
 ];
 
 const SECONDARY_NAV: NavItem[] = [
+  {
+    id: "interface",
+    label: "介面與顯示",
+    icon: Monitor,
+    description: "視窗、面板與佈局",
+  },
   {
     id: "audio-subtitles",
     label: "音訊與字幕",
@@ -262,6 +271,8 @@ export default function SettingsView({}: Props) {
         );
       case "cloud-ai":
         return <SettingsCloudAI />;
+      case "interface":
+        return <SettingsInterface />;
       case "audio-subtitles":
         return (
           <SettingsAudioSubtitles

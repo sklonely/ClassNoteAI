@@ -185,9 +185,12 @@ class StorageService {
     }
     try {
       return JSON.parse(settingsJson) as AppSettings;
-    } catch (e) {
-      console.error('解析設置失敗:', e);
-      return null;
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn('[StorageService] Failed to parse JSON for app_settings; returning null');
+        return null;
+      }
+      throw error;
     }
   }
 
@@ -209,9 +212,12 @@ class StorageService {
     }
     try {
       return JSON.parse(valueJson) as T;
-    } catch (e) {
-      console.error(`解析設置 ${key} 失敗:`, e);
-      return null;
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[StorageService] Failed to parse JSON for setting ${key}; returning null`);
+        return null;
+      }
+      throw error;
     }
   }
 
@@ -255,10 +261,19 @@ class StorageService {
     let imported = 0;
 
     try {
-      const data = JSON.parse(jsonData);
+      let data = null;
+      try {
+        data = JSON.parse(jsonData);
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          console.warn('[StorageService] Failed to parse JSON for importData payload; returning null');
+        } else {
+          throw error;
+        }
+      }
 
       // 驗證數據格式
-      if (!data.lectures || !Array.isArray(data.lectures)) {
+      if (!data?.lectures || !Array.isArray(data.lectures)) {
         throw new Error('無效的數據格式：缺少 lectures 數組');
       }
 
@@ -429,15 +444,12 @@ class StorageService {
         qa_records: content.qa_records || [],
         generated_at: dbNote.generated_at,
       };
-    } catch (e) {
-      console.error('解析筆記內容失敗:', e);
-      return {
-        lecture_id: dbNote.lecture_id,
-        title: dbNote.title,
-        sections: [],
-        qa_records: [],
-        generated_at: dbNote.generated_at,
-      };
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[StorageService] Failed to parse JSON for note ${lectureId}; returning null`);
+        return null;
+      }
+      throw error;
     }
   }
 
@@ -459,9 +471,12 @@ class StorageService {
     if (!data) return [];
     try {
       return JSON.parse(data);
-    } catch (e) {
-      console.error('解析對話歷史失敗:', e);
-      return [];
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.warn(`[StorageService] Failed to parse JSON for chat history ${key}; returning []`);
+        return [];
+      }
+      throw error;
     }
   }
 

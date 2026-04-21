@@ -17,7 +17,7 @@ import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
 import { generateLocalEmbedding, generateLocalEmbeddingsBatch } from './embeddingService';
 import { chat as llmChat, chatStream as llmChatStream, translateForRetrieval } from './llm';
-import { ocrService } from './ocrService';
+import { computeContentHash, ocrService } from './ocrService';
 import { remoteOcrService } from './remoteOcrService';
 import { pdfToImageService } from './pdfToImageService';
 // `pdfService` pulls in pdfjs-dist at module load, which needs the
@@ -279,6 +279,34 @@ class RAGService {
             ) => Promise<Array<{ pageNumber: number; text: string; success: boolean; error?: string }>>;
             type OcrBackend = { name: 'remote' | 'local'; recognize: OcrRecognize } | null;
 
+            const contentHashKey = `lecture_content_hash_${lectureId}`;
+            const pdfHash = pdfData
+                ? await computeContentHash(new Uint8Array(pdfData))
+                : 'no-pdf';
+            const contentHash = await computeContentHash(
+                new TextEncoder().encode(
+                    JSON.stringify({
+                        pdfHash,
+                        transcriptText: transcriptText ?? '',
+                    }),
+                ),
+            );
+            const persistContentHash = async () => {
+                await storageService.saveSetting(contentHashKey, contentHash);
+            };
+
+            if (!forceRefresh) {
+                const storedHash = await storageService.getSetting(contentHashKey);
+                if (storedHash === contentHash) {
+                    const hasExistingIndex = await embeddingStorageService.hasEmbeddings(lectureId);
+                    if (hasExistingIndex) {
+                        const stats = await embeddingStorageService.getStats(lectureId).catch(() => null);
+                        console.log(`[RAGService] Skipping OCR re-index for lecture ${lectureId}; content hash unchanged.`);
+                        return { chunksCount: stats?.total ?? 0, success: true };
+                    }
+                }
+            }
+
             let backend: OcrBackend = null;
 
             if (pdfData) {
@@ -337,12 +365,16 @@ class RAGService {
                     // slide alignment.
                     const pdfSvc = await getPdfService();
                     const pagesText = await pdfSvc.extractAllPagesText(pdfData.slice(0));
-                    return this.indexLectureFromPages(
+                    const indexResult = await this.indexLectureFromPages(
                         lectureId,
                         pagesText.filter((p) => p.text.trim().length > 0).map((p) => ({ pageNumber: p.page, text: p.text })),
                         transcriptText,
                         onProgress,
                     );
+                    if (indexResult.success) {
+                        await persistContentHash();
+                    }
+                    return indexResult;
                 }
                 console.log(`[RAGService] Using OCR backend: ${backend.name}`);
             }
@@ -479,6 +511,7 @@ class RAGService {
             // must always describe the same chunk set for RRF fusion to
             // produce sensible results.
             bm25Service.invalidate(lectureId);
+            await persistContentHash();
 
             onProgress?.({
                 stage: 'storing',

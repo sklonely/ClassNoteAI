@@ -62,6 +62,45 @@ impl NomicConfig {
     }
 }
 
+/// Pick the best-available Candle device for BGE embedding. Tries GPU
+/// backends before CPU; any init failure falls back silently. Matches
+/// the ct2rs pattern in `translation::ctranslate2::load_model`.
+///
+/// Important: this is called once, at service construction. The
+/// returned device is kept on the service and used for every tensor
+/// thereafter (model weights + each batch's input_ids). Falling back
+/// to CPU mid-run would require reloading the model, so we only try
+/// the GPU path at startup — if it works there, it works for the
+/// life of the process.
+#[cfg(feature = "candle-embed")]
+fn select_embedding_device() -> Device {
+    #[cfg(feature = "gpu-cuda")]
+    {
+        match Device::new_cuda(0) {
+            Ok(d) => {
+                eprintln!("[Embedding] Using CUDA device 0");
+                return d;
+            }
+            Err(e) => {
+                eprintln!("[Embedding] CUDA init failed ({}), falling back", e);
+            }
+        }
+    }
+    #[cfg(all(target_os = "macos", feature = "gpu-metal"))]
+    {
+        match Device::new_metal(0) {
+            Ok(d) => {
+                eprintln!("[Embedding] Using Metal device 0");
+                return d;
+            }
+            Err(e) => {
+                eprintln!("[Embedding] Metal init failed ({}), falling back", e);
+            }
+        }
+    }
+    Device::Cpu
+}
+
 /// Candle-based Embedding Service
 pub struct EmbeddingService {
     #[cfg(feature = "candle-embed")]
@@ -93,8 +132,15 @@ impl EmbeddingService {
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| anyhow!("Failed to load tokenizer: {}", e))?;
 
-        // Use CPU device (Metal support can be added later)
-        let device = Device::Cpu;
+        // Pick the strongest device the host will actually let us use.
+        // Priority: CUDA (gpu-cuda build) → Metal (macOS gpu-metal) →
+        // CPU. An init failure — driver mismatch, missing cudart,
+        // Metal system library missing — silently drops to CPU. BGE
+        // is correctness-critical (the RAG index and the query-time
+        // encoding must agree on the same model output), so a steady
+        // CPU run beats a half-working GPU run. Log to stderr for
+        // post-hoc debugging; nothing reaches the UI.
+        let device = select_embedding_device();
 
         // Load config (支持 nomic 和標準 BERT 格式)
         let config_path = model_path
@@ -345,5 +391,226 @@ impl EmbeddingService {
         } else {
             dot_product / (norm_a * norm_b)
         }
+    }
+
+    /// Score a query embedding against a batch of chunk embeddings in a
+    /// single matmul on `self.device` (GPU when available, CPU otherwise).
+    /// Returns one similarity per chunk, in the same order.
+    ///
+    /// Replaces the per-chunk JS cosine loop in
+    /// `embeddingStorageService.ts` — for N=500, D=384 that loop used
+    /// ~100 ms on the renderer thread; a single matmul finishes in
+    /// <10 ms on a GPU (and still a few ms on CPU thanks to Candle's
+    /// BLAS backend).
+    ///
+    /// Assumes both the query and every chunk are already L2-normalized,
+    /// which every embedding we generate is — `generate_embedding` and
+    /// `generate_embeddings_batch` both normalize before returning.
+    /// Dot product of unit vectors == cosine, so we skip the denominator
+    /// work the CPU-side `cosine_similarity` has to do.
+    #[cfg(feature = "candle-embed")]
+    pub fn batch_cosine_similarity(
+        &self,
+        query: &[f32],
+        chunks: &[Vec<f32>],
+    ) -> Result<Vec<f32>> {
+        if chunks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dim = query.len();
+        if dim == 0 {
+            return Err(anyhow!("Query embedding is empty"));
+        }
+        // Filter out any malformed chunks — legacy rows that slipped
+        // past the v0.5.2 dimension migration would explode the matmul.
+        // Record the original index so we can reinsert zero scores for
+        // them afterwards, keeping the returned Vec aligned with the
+        // caller's input.
+        let mut good: Vec<(usize, &[f32])> = Vec::with_capacity(chunks.len());
+        for (i, c) in chunks.iter().enumerate() {
+            if c.len() == dim {
+                good.push((i, c.as_slice()));
+            }
+        }
+        if good.is_empty() {
+            return Ok(vec![0.0; chunks.len()]);
+        }
+
+        let n = good.len();
+        let mut flat = Vec::with_capacity(n * dim);
+        for (_, c) in &good {
+            flat.extend_from_slice(c);
+        }
+
+        let chunk_tensor = Tensor::from_vec(flat, (n, dim), &self.device)?;
+        let query_tensor = Tensor::from_vec(query.to_vec(), (dim, 1), &self.device)?;
+
+        // [N, D] @ [D, 1] = [N, 1] — cosine because inputs are unit norm.
+        let sims_tensor = chunk_tensor.matmul(&query_tensor)?;
+        let sims: Vec<f32> = sims_tensor.squeeze(1)?.to_vec1()?;
+
+        let mut out = vec![0.0f32; chunks.len()];
+        for ((original_idx, _), sim) in good.iter().zip(sims.iter()) {
+            out[*original_idx] = *sim;
+        }
+        Ok(out)
+    }
+
+    /// Stub when candle-embed feature is disabled. Falls back to the
+    /// per-pair CPU cosine so the command still works, just without
+    /// batched GPU acceleration.
+    #[cfg(not(feature = "candle-embed"))]
+    pub fn batch_cosine_similarity(
+        &self,
+        query: &[f32],
+        chunks: &[Vec<f32>],
+    ) -> Result<Vec<f32>> {
+        Ok(chunks
+            .iter()
+            .map(|c| Self::cosine_similarity(query, c))
+            .collect())
+    }
+
+    /// For each group of sentences, pick the `top_k` that are most
+    /// representative of the group — the sentences whose embedding is
+    /// closest to the group's centroid. Used by NotesView to turn a
+    /// 5-minute section's raw subtitle soup into a 3-bullet summary
+    /// (the extractive half of Note AI structurization).
+    ///
+    /// Why centroid-nearest and not TextRank / clustering?
+    ///   - Centroid of unit-norm vectors ≈ "average topic of the
+    ///     section" in the embedding space. Sentences near it are the
+    ///     ones that touch the most shared meaning — usually the
+    ///     topic-sentence, the key definition, and the summary line.
+    ///   - One matmul per section on GPU; no iterative graph walk.
+    ///   - No external dependency (wouldn't want to pull textrank-rs
+    ///     just for this).
+    ///
+    /// Picks are returned in **original order**, not similarity order,
+    /// so the resulting bullets still flow as the lecture did — crucial
+    /// for learning material. If a group has fewer sentences than
+    /// `top_k`, the whole group comes back (also in-order).
+    #[cfg(feature = "candle-embed")]
+    pub fn extract_representative_sentences(
+        &mut self,
+        groups: &[Vec<String>],
+        top_k: usize,
+    ) -> Result<Vec<Vec<String>>> {
+        // Short-circuit empty input so the model isn't spun up for
+        // nothing.
+        if groups.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Flatten every sentence from every group into one Vec, then
+        // embed in fixed-size chunks. We can't hand the whole lecture
+        // to `generate_embeddings_batch` in one shot because it pads
+        // every row in the batch to the longest sequence — 1296 × 100
+        // tokens × 768 hidden-dim × (activations for 12 BERT layers)
+        // OOMs at ~5 GB on a 70-min lecture. Chunking keeps the
+        // padding horizon small and memory flat.
+        //
+        // Per-group separate passes (the original layout) wasted the
+        // batching win entirely: 14 forward passes at ~90 sentences
+        // each took 52 minutes on CPU. 128 is a pragmatic middle
+        // ground: big enough for BERT to amortise its per-call
+        // overhead, small enough that padding doesn't dominate.
+        //
+        // `group_ranges[i]` records the half-open slice in the flat
+        // buffer owned by group i, so we can pull per-group
+        // embeddings back out with zero copies.
+        const BATCH: usize = 128;
+        let mut flat_sentences: Vec<String> = Vec::new();
+        let mut group_ranges: Vec<(usize, usize)> = Vec::with_capacity(groups.len());
+        for group in groups {
+            let start = flat_sentences.len();
+            for s in group {
+                flat_sentences.push(s.clone());
+            }
+            group_ranges.push((start, flat_sentences.len()));
+        }
+        if flat_sentences.is_empty() {
+            return Ok(groups.iter().map(|_| Vec::new()).collect());
+        }
+
+        let mut all_embs: Vec<Vec<f32>> = Vec::with_capacity(flat_sentences.len());
+        for chunk in flat_sentences.chunks(BATCH) {
+            let chunk_embs = self.generate_embeddings_batch(chunk)?;
+            all_embs.extend(chunk_embs);
+        }
+        let dim = all_embs.first().map(|v| v.len()).unwrap_or(0);
+        if dim == 0 {
+            return Ok(groups.iter().map(|g| g.clone()).collect());
+        }
+
+        let mut out = Vec::with_capacity(groups.len());
+        for (group_idx, group) in groups.iter().enumerate() {
+            let (start, end) = group_ranges[group_idx];
+            let n = end - start;
+            if n == 0 {
+                out.push(Vec::new());
+                continue;
+            }
+            if n <= top_k {
+                out.push(group.clone());
+                continue;
+            }
+
+            // Copy this group's slice of embeddings into an [N, D] tensor.
+            // Allocation is unavoidable (Tensor owns its buffer), but
+            // only once per group instead of a full re-embed.
+            let mut flat = Vec::with_capacity(n * dim);
+            for e in &all_embs[start..end] {
+                flat.extend_from_slice(e);
+            }
+            let mat = Tensor::from_vec(flat, (n, dim), &self.device)?;
+
+            // Centroid = row-wise mean → [D]. BGE outputs are unit-norm,
+            // so the mean of normalised vectors points toward the
+            // dominant cluster direction even when the group is noisy.
+            let centroid = mat.mean(0)?;
+
+            // Normalise the centroid so downstream scores stay in the
+            // familiar cosine-[-1, 1] range. Logging / debugging is
+            // much easier when "0.8 ≈ strong match" still holds.
+            let centroid_norm: f32 = centroid.sqr()?.sum_all()?.sqrt()?.to_scalar()?;
+            let centroid = if centroid_norm > 0.0 {
+                centroid.affine(1.0 / centroid_norm as f64, 0.0)?
+            } else {
+                centroid
+            };
+
+            // [N, D] @ [D, 1] = [N, 1] — cosine against the centroid.
+            let centroid_col = centroid.reshape((dim, 1))?;
+            let sims_tensor = mat.matmul(&centroid_col)?;
+            let sims: Vec<f32> = sims_tensor.squeeze(1)?.to_vec1()?;
+
+            // Pick top_k by score, then re-sort by original position
+            // so the bullets read in the lecture's narrative order.
+            let mut scored: Vec<(usize, f32)> =
+                sims.iter().enumerate().map(|(i, &s)| (i, s)).collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(top_k);
+            let mut picked_indices: Vec<usize> = scored.into_iter().map(|(i, _)| i).collect();
+            picked_indices.sort();
+
+            out.push(picked_indices.iter().map(|&i| group[i].clone()).collect());
+        }
+        Ok(out)
+    }
+
+    /// Stub when candle-embed is compiled out — returns the first
+    /// `top_k` sentences of each group so the NotesView UI still has
+    /// something to render.
+    #[cfg(not(feature = "candle-embed"))]
+    pub fn extract_representative_sentences(
+        &mut self,
+        groups: &[Vec<String>],
+        top_k: usize,
+    ) -> Result<Vec<Vec<String>>> {
+        Ok(groups
+            .iter()
+            .map(|g| g.iter().take(top_k).cloned().collect())
+            .collect())
     }
 }

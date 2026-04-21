@@ -40,7 +40,31 @@ pub struct Database {
 impl Database {
     /// 初始化數據庫連接
     pub fn new(db_path: &PathBuf) -> SqlResult<Self> {
-        let conn = Connection::open(db_path)?;
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut conn = None;
+        let mut last_error = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match Connection::open(db_path) {
+                Ok(opened_conn) => {
+                    conn = Some(opened_conn);
+                    break;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[Database] open attempt {}/{} failed: {}",
+                        attempt, MAX_ATTEMPTS, e
+                    );
+                    if attempt < MAX_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    last_error = Some(e);
+                }
+            };
+        }
+        let conn = match conn {
+            Some(conn) => conn,
+            None => return Err(last_error.expect("database open failed without an error")),
+        };
         let db = Database { conn };
         db.init_tables()?;
         Ok(db)

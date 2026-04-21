@@ -1,9 +1,9 @@
 name: Build and Release (Windows)
 
 on:
-  # Release bundles are expensive (~15–20 min). Only run when we're
-  # actually cutting a release (tag push) or when someone manually
-  # kicks it off. Lightweight PR feedback lives in pr-check.yml.
+  # Release bundles are expensive (~15–20 min per variant). Only run
+  # when we're actually cutting a release (tag push) or when someone
+  # manually kicks it off. Lightweight PR feedback lives in pr-check.yml.
   push:
     tags:
       - 'v*'
@@ -27,10 +27,32 @@ defaults:
     working-directory: ClassNoteAI
 
 jobs:
+  # v0.6.1: two Windows variants in a matrix.
+  #
+  #   cpu  — the historical build. No GPU code linked; smaller installer
+  #          (~250 MB). Works on every x64 Windows machine regardless of
+  #          GPU.
+  #   cuda — Whisper + Candle compiled with the CUDA backend. Ships the
+  #          runtime cudart/cuBLAS DLLs alongside the exe so the user
+  #          needs only the NVIDIA driver (already present on every
+  #          machine that's ever played a modern game). ~2 GB extra at
+  #          install-time because of cuBLAS, but transcription jumps
+  #          from ~0.5× realtime on CPU to ~20× on a mid-range RTX.
+  #
+  # The matrix items stay close enough that the shared checkout / toolchain
+  # setup deduplicates naturally; only the CUDA-specific steps gate on
+  # `matrix.variant.id == 'cuda'`.
   build-windows:
     runs-on: windows-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant:
+          - { id: cpu,  features: "",         suffix: "",      label: "CPU" }
+          - { id: cuda, features: "gpu-cuda", suffix: "-cuda", label: "CUDA" }
+    name: build-windows-${{ matrix.variant.id }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,16 +77,48 @@ jobs:
           version: "18"
           directory: ${{ runner.temp }}/llvm
 
+      # CUDA-variant only: install the Toolkit so nvcc / cudart / cuBLAS
+      # are available at build time. The Jimver action caches the Toolkit
+      # payload and is the canonical way to install CUDA on GitHub Actions
+      # without baking it into a custom runner image.
+      #
+      # Pinned to CUDA 12.5 because whisper-rs 0.16 + Candle 0.8's CUDA
+      # paths have been tested against 12.x; bumping to a newer toolkit
+      # requires a compatible host driver, and we want the artifact to
+      # work on the widest driver range (571+ ships CUDA 12 runtime).
+      #
+      # `method: network` streams the toolkit installer and picks only
+      # the sub-components we use (compiler, cudart, cublas) — saves
+      # ~6 GB of download vs the full offline installer.
+      - name: Install CUDA Toolkit
+        if: matrix.variant.id == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.5.1'
+          method: 'network'
+          # curand_dev is not optional — CTranslate2's CMake configure
+          # step fails with "Could not find curand" when it's absent,
+          # even though our app doesn't directly generate random
+          # numbers. CT2 pulls it in through its internal sampling
+          # utilities, and the link step only surfaces the miss at
+          # the very end of a 20-minute build. Hit confirmed on
+          # OpenNMT/CTranslate2's own ci.yml: they install
+          # `cublas_dev curand_dev` together.
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "curand", "curand_dev", "thrust", "visual_studio_integration"]'
+
+      # Rust cache: keyed separately per variant so cpu and cuda compile
+      # objects don't clobber each other (the gpu-cuda feature changes
+      # every whisper-rs-sys / candle-core artifact).
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ClassNoteAI/src-tauri -> target
-          shared-key: "windows-rust-cache"
+          shared-key: "windows-${{ matrix.variant.id }}-rust-cache"
           cache-all-crates: true
 
       # CTranslate2 + whisper.cpp + sentencepiece each take a few minutes;
-      # cache their build dirs keyed to Cargo.lock + vendor patches so we
-      # only rebuild when those actually change.
+      # cache their build dirs keyed to Cargo.lock + vendor patches +
+      # variant so we only rebuild when those actually change.
       - name: Cache native C++ builds
         uses: actions/cache@v4
         with:
@@ -72,7 +126,7 @@ jobs:
             ClassNoteAI/src-tauri/target/release/build/ct2rs-*
             ClassNoteAI/src-tauri/target/release/build/whisper-rs-sys-*
             ClassNoteAI/src-tauri/target/release/build/sentencepiece-sys-*
-          key: native-windows-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock', 'ClassNoteAI/src-tauri/vendor-patches/**') }}
+          key: native-windows-${{ matrix.variant.id }}-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock', 'ClassNoteAI/src-tauri/vendor-patches/**') }}
 
       - name: Hydrate vendor/ (ct2rs, esaxx-rs with Windows patches)
         shell: bash
@@ -84,21 +138,107 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build Tauri
+      # Stage the CUDA runtime DLLs where tauri.conf.json's
+      # `bundle.resources` glob can pick them up. Only runs for the
+      # cuda variant; for cpu the `src-tauri/resources/cuda/` dir
+      # stays empty and the glob matches nothing.
+      - name: Stage CUDA runtime DLLs
+        if: matrix.variant.id == 'cuda'
+        shell: bash
+        run: |
+          mkdir -p src-tauri/resources/cuda
+          cp "$CUDA_PATH/bin/cudart64_12.dll"     src-tauri/resources/cuda/
+          cp "$CUDA_PATH/bin/cublas64_12.dll"     src-tauri/resources/cuda/
+          cp "$CUDA_PATH/bin/cublasLt64_12.dll"   src-tauri/resources/cuda/
+          ls -la src-tauri/resources/cuda/
+
+      - name: Build Tauri (${{ matrix.variant.label }})
         shell: cmd
         env:
           LIBCLANG_PATH: ${{ runner.temp }}\llvm\bin
           CMAKE_GENERATOR: Visual Studio 17 2022
           CMAKE_TOOLCHAIN_FILE: ${{ github.workspace }}\ClassNoteAI\src-tauri\scripts\win-toolchain.cmake
+          TAURI_FEATURES: ${{ matrix.variant.features }}
+          # candle-kernels' build.rs defers to `bindgen_cuda` 0.1.6,
+          # which calls `nvidia-smi` to detect the local compute cap.
+          # CI runners are CPU-only VMs — no GPU, no nvidia-smi on
+          # PATH — so the call panics with "program not found" even
+          # when CUDA Toolkit is installed. Setting CUDA_COMPUTE_CAP
+          # up-front makes bindgen_cuda skip the probe and use the
+          # value we hand it. 7.5 (Turing) is our distribution
+          # floor: anything newer (Ampere, Ada, Hopper, Blackwell)
+          # gets SASS via driver-side PTX JIT at first model load,
+          # which adds ~1-2 s cold-start cost but stays correct.
+          # Older archs (Volta / Pascal) are already dropped by
+          # CUDA 12.5's support matrix anyway.
+          CUDA_COMPUTE_CAP: "75"
+          # Redundant CUDA root variables — different crates look at
+          # different names. `bindgen_cuda` reads CUDA_PATH / CUDA_ROOT;
+          # cmake's FindCUDAToolkit reads CUDA_TOOLKIT_ROOT_DIR;
+          # ct2rs' build.rs reads CUDA_HOME. Jimver exports CUDA_PATH
+          # but cargo sometimes strips environment mid-build; setting
+          # all of them here is cheap insurance.
+          CUDA_PATH: C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5
+          CUDA_ROOT: C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5
+          CUDA_TOOLKIT_ROOT_DIR: C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5
+          CUDA_HOME: C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.5
+          # Limit simultaneous nvcc processes to N-1 cores on the
+          # 4-core runner. PTXAS can take 2-3 GB per compile unit;
+          # fully-parallel (4 concurrent) blew up compiling
+          # candle-kernels' moe_wmma.cu with an OOM kill that nvcc
+          # reports as exit 1 with empty stdout/stderr (see
+          # whisper.cpp's own build.yml — they set the same pattern
+          # via NINJA_JOBS). Doesn't affect cargo's outer
+          # parallelism, only inner nvcc/cmake parallel builds.
+          CMAKE_BUILD_PARALLEL_LEVEL: "3"
+          # CPU portability baseline. Without these flags, whisper.cpp
+          # (via whisper-rs-sys' CMake) sets `GGML_NATIVE=ON` and bakes
+          # the CI runner's full SIMD feature set into the binary —
+          # including AVX-512 / VNNI / BF16 that the GitHub
+          # windows-latest Xeon has. All 12th-gen+ Intel consumer CPUs
+          # (Alder Lake / Raptor Lake onwards) ship WITHOUT AVX-512
+          # (disabled in microcode). Users on those CPUs get
+          # STATUS_ILLEGAL_INSTRUCTION (c000001d) the first time
+          # whisper tries to run. Same applies to ggml's inner ops
+          # even in the CUDA build — there's still CPU-side
+          # pre/post-processing.
+          #
+          # `x86-64-v3` pins Rust's target ISA to the
+          # SSE4.2/AVX2/BMI2/FMA level (Haswell 2013 / Excavator 2015),
+          # a practical "modern consumer" floor. ~99% of 2014-onwards
+          # machines qualify. GGML_NATIVE=OFF tells the C++ side not
+          # to auto-detect; GGML_AVX2=ON keeps the useful modern
+          # intrinsics; the *_AVX512_* toggles stay off.
+          #
+          # Revisit when we ship a second Xeon-tier variant
+          # (recommended path: matrix × cpu-isa = {v3, v4} producing
+          # two installers, updater picks at download time based on
+          # cpuid).
+          RUSTFLAGS: "-C target-cpu=x86-64-v3"
+          CMAKE_ARGS: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_AVX512=OFF -DGGML_AVX512_VBMI=OFF -DGGML_AVX512_VNNI=OFF -DGGML_AVX512_BF16=OFF -DGGML_FMA=ON -DGGML_F16C=ON"
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          npx tauri build
+          REM Pin to nsis + updater bundles only. MSI rejects any
+          REM pre-release version suffix that isn't a plain
+          REM 1-65535 integer (`0.6.0-alpha.1` breaks the MSI
+          REM ProductVersion field at bundling time), while NSIS
+          REM happily accepts full SemVer. Stable releases could
+          REM add "msi" back — revisit when the first non-pre-
+          REM release 0.6.0 ships. Skipping MSI costs users nothing
+          REM today: we already primarily distribute the NSIS
+          REM setup.exe, the updater picks it up, and auto-update
+          REM works off the nsis .exe.sig either way.
+          if "%TAURI_FEATURES%"=="" (
+            npx tauri build --bundles nsis,updater
+          ) else (
+            npx tauri build --features %TAURI_FEATURES% --bundles nsis,updater
+          )
 
       - name: Upload artifacts (PR / manual runs)
         if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installers
+          name: windows-installers-${{ matrix.variant.id }}
           path: |
             ClassNoteAI/src-tauri/target/release/bundle/msi/*.msi
             ClassNoteAI/src-tauri/target/release/bundle/nsis/*-setup.exe
@@ -111,39 +251,48 @@ jobs:
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
         working-directory: .
 
-      # Write a platform-specific updater manifest so Mac and Windows jobs
-      # don't overwrite each other's latest.json. See notes at bottom of file
-      # for how to merge them into a single latest.json if you use the updater.
-      - name: Generate updater manifest (Windows)
+      # Per-variant updater manifest fragment. The client decides at
+      # install time which one to apply based on local GPU detection
+      # (see updaterService.pickPlatformKey in Phase 5).
+      #
+      #   cpu  → platforms.windows-x86_64
+      #   cuda → platforms.windows-x86_64-cuda
+      #
+      # merge-update-manifest.yml fuses these fragments into the single
+      # latest.json clients poll.
+      - name: Generate updater manifest (Windows / ${{ matrix.variant.label }})
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
           SIG=$(cat src-tauri/target/release/bundle/nsis/*.exe.sig 2>/dev/null || echo "")
-          cat > latest-windows-x86_64.json << EOF
+          PLATFORM_KEY="windows-x86_64${{ matrix.variant.suffix == '-cuda' && '-cuda' || '' }}"
+          SUFFIX="${{ matrix.variant.suffix }}"
+          cat > latest-windows-x86_64${SUFFIX}.json << EOF
           {
             "version": "${VERSION}",
-            "notes": "ClassNoteAI ${VERSION} update",
+            "notes": "ClassNoteAI ${VERSION} update (${{ matrix.variant.label }})",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "platforms": {
-              "windows-x86_64": {
+              "${PLATFORM_KEY}": {
                 "signature": "${SIG}",
-                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/ClassNoteAI_${VERSION}_x64-setup.exe"
+                "url": "https://github.com/${{ github.repository }}/releases/download/v${VERSION}/ClassNoteAI_${VERSION}_x64${SUFFIX}-setup.exe"
               }
             }
           }
           EOF
 
-      - name: Prepare release assets
+      - name: Prepare release assets (${{ matrix.variant.label }})
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           VERSION="${{ steps.get_version.outputs.VERSION }}"
+          SUFFIX="${{ matrix.variant.suffix }}"
           mkdir -p release-assets
-          cp src-tauri/target/release/bundle/msi/*.msi              "release-assets/ClassNoteAI_${VERSION}_x64.msi"            || true
-          cp src-tauri/target/release/bundle/nsis/*-setup.exe       "release-assets/ClassNoteAI_${VERSION}_x64-setup.exe"     || true
-          cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig   "release-assets/ClassNoteAI_${VERSION}_x64-setup.exe.sig" || true
-          cp latest-windows-x86_64.json                              release-assets/
+          cp src-tauri/target/release/bundle/msi/*.msi              "release-assets/ClassNoteAI_${VERSION}_x64${SUFFIX}.msi"            || true
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe       "release-assets/ClassNoteAI_${VERSION}_x64${SUFFIX}-setup.exe"     || true
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe.sig   "release-assets/ClassNoteAI_${VERSION}_x64${SUFFIX}-setup.exe.sig" || true
+          cp latest-windows-x86_64${SUFFIX}.json                     release-assets/
 
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -151,18 +300,19 @@ jobs:
         with:
           # Upload as draft. The release is flipped to published by
           # merge-update-manifest.yml once both platforms' builds have
-          # succeeded and the unified latest.json is uploaded. This way,
-          # users never see a half-populated release.
+          # succeeded and the unified latest.json is uploaded.
           draft: true
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           files: |
             ClassNoteAI/release-assets/*
 
 # NOTES ----------------------------------------------------------------
-# This workflow uploads `latest-windows-x86_64.json`; the macOS workflow
-# uploads `latest-macos-aarch64.json`. Neither alone is a valid Tauri
-# updater manifest. The unified `latest.json` (which a v0.5.1+ client
-# polls via the single endpoint compiled into its binary) is produced
-# by `.github/workflows/merge-update-manifest.yml`, which fires once
-# both release workflows finish on a tag and merges both fragments.
-# See issue #33.
+# This workflow uploads two Windows updater fragments —
+# `latest-windows-x86_64.json` (CPU) and `latest-windows-x86_64-cuda.json`
+# — plus the macOS workflow's `latest-macos-aarch64.json`. None alone is a
+# valid Tauri updater manifest; the unified `latest.json` (which a
+# v0.5.1+ client polls via the single endpoint compiled into its binary)
+# is produced by `.github/workflows/merge-update-manifest.yml`. The
+# merged document has three `platforms` entries for Windows: `windows-
+# x86_64` (CPU, default), `windows-x86_64-cuda` (GPU, opt-in via updater
+# settings), and `darwin-aarch64` (macOS).

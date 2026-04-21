@@ -68,9 +68,9 @@ pub fn apply_system_proxy_env() {
 
 #[cfg(target_os = "windows")]
 fn read_reg_value(path: &str, name: &str) -> Option<String> {
-    use std::process::Command;
+    use crate::utils::command::no_window;
 
-    let output = Command::new("reg")
+    let output = no_window("reg")
         .args(["query", path, "/v", name])
         .output()
         .ok()?;

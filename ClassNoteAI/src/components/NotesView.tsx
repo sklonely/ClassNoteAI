@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { readFile } from "@tauri-apps/plugin-fs";
 import { Download, ArrowLeft, Pencil, Cpu, Loader2, FileText, Mic, MicOff, Pause, Square, Save, BookOpen, FolderOpen, Wand2, Bot, Film } from "lucide-react";
@@ -67,6 +67,65 @@ interface NotesViewProps {
   courseId?: string;
   lectureId?: string;
   onBack?: () => void;
+}
+
+type AudioUnavailableState = {
+  message: string;
+  path?: string;
+};
+
+const ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
+
+function stripLeadingPathSeparators(value: string): string {
+  return value.replace(/^[\\/]+/, '');
+}
+
+function stripTrailingPathSeparators(value: string): string {
+  return value.replace(/[\\/]+$/, '');
+}
+
+function normalizePathSeparators(value: string): string {
+  return value.replace(/[\\/]+/g, '/');
+}
+
+function joinAudioPath(baseDir: string, childPath: string): string {
+  const separator = baseDir.includes('\\') ? '\\' : '/';
+  const normalizedChild = stripLeadingPathSeparators(childPath).replace(/[\\/]+/g, separator);
+  return `${stripTrailingPathSeparators(baseDir)}${separator}${normalizedChild}`;
+}
+
+function toRelativeAudioPath(audioDir: string, absolutePath: string): string {
+  const normalizedDir = normalizePathSeparators(stripTrailingPathSeparators(audioDir));
+  const normalizedPath = normalizePathSeparators(absolutePath);
+
+  if (normalizedPath.startsWith(`${normalizedDir}/`)) {
+    return normalizedPath.slice(normalizedDir.length + 1);
+  }
+
+  const filename = absolutePath.split(/[\\/]/).pop();
+  return filename && filename.length > 0 ? filename : absolutePath;
+}
+
+async function resolveAudioPath(storedPath: string | null | undefined): Promise<string | null> {
+  if (!storedPath) {
+    return null;
+  }
+
+  const trimmedPath = storedPath.trim();
+  if (!trimmedPath) {
+    return null;
+  }
+
+  const resolvedPath = ABSOLUTE_PATH_PATTERN.test(trimmedPath)
+    ? trimmedPath
+    : joinAudioPath(await invoke<string>('get_audio_dir'), trimmedPath);
+
+  try {
+    await readFile(resolvedPath);
+    return resolvedPath;
+  } catch {
+    return null;
+  }
 }
 
 export default function NotesView({ courseId: propCourseId, lectureId: propLectureId, onBack }: NotesViewProps) {
@@ -140,7 +199,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // Lookup is a binary search at each time-update so the sync is cheap.
   const [pageTimeline, setPageTimeline] = useState<{ t: number; page: number }[]>([]);
   const [isBuildingTimeline, setIsBuildingTimeline] = useState<boolean>(false);
-  const [lastAutoFollowPage, setLastAutoFollowPage] = useState<number>(0);
+  const lastAutoPageRef = useRef<number | null>(null);
 
   // Note Editing State
   const [isEditingNote, setIsEditingNote] = useState(false);
@@ -345,6 +404,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [audioUnavailable, setAudioUnavailable] = useState<AudioUnavailableState | null>(null);
   // v0.6.0: `audioRef` is now HTMLMediaElement so the same ref can
   // point at either the hidden <audio> (live-recorded lecture) or the
   // visible <video> (imported video lecture). All existing playback
@@ -353,41 +413,89 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const audioRef = useRef<HTMLMediaElement>(null);
   const [playbackVolume, setPlaybackVolume] = useState(100); // Output volume for playback
 
+  useEffect(() => {
+    setAudioUnavailable(null);
+  }, [currentLectureData?.id, currentLectureData?.audio_path]);
+
   // Initialize audio when review mode starts or lecture loads
   // Initialize audio when review mode starts or lecture loads
   useEffect(() => {
+    let cancelled = false;
     let objectUrl: string | null = null;
 
     const loadAudio = async () => {
-      if (viewMode === 'review' && currentLectureData?.audio_path && audioRef.current) {
-        try {
-          console.log('[NotesView] Loading audio file:', currentLectureData.audio_path);
-          // Use readFile from plugin-fs to bypass asset protocol issues
-          const data = await readFile(currentLectureData.audio_path);
-          const blob = new Blob([data], { type: 'audio/wav' }); // Default to wav as per recorder
-          objectUrl = URL.createObjectURL(blob);
+      if (viewMode !== 'review' || currentLectureData?.video_path || !audioRef.current) {
+        return;
+      }
 
-          if (audioRef.current) {
-            audioRef.current.src = objectUrl;
-            audioRef.current.load();
-            console.log('[NotesView] Audio loaded via Blob URL');
-          }
-        } catch (error) {
-          console.error('[NotesView] Failed to load audio file:', error);
-          // Fallback to convertFileSrc if readFile fails (e.g. permission error but assuming asset protocol works?)
-          // But since asset URL is failing, better to just log error.
+      const storedAudioPath = currentLectureData?.audio_path?.trim() || null;
+      const clearAudioElement = () => {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.removeAttribute('src');
+          audioRef.current.load();
         }
+        setIsPlaying(false);
+        setAudioCurrentTime(0);
+        setAudioDuration(0);
+      };
+
+      const resolvedAudioPath = await resolveAudioPath(storedAudioPath);
+      if (cancelled) {
+        return;
+      }
+
+      if (!storedAudioPath) {
+        clearAudioElement();
+        setAudioUnavailable({ message: '此課堂未錄製音檔。' });
+        return;
+      }
+
+      if (!resolvedAudioPath) {
+        clearAudioElement();
+        setAudioUnavailable({
+          message: '音檔遺失，無法播放。',
+          path: storedAudioPath,
+        });
+        return;
+      }
+
+      try {
+        console.log('[NotesView] Loading audio file:', resolvedAudioPath);
+        // Use readFile from plugin-fs to bypass asset protocol issues
+        const data = await readFile(resolvedAudioPath);
+        if (cancelled) {
+          return;
+        }
+
+        const blob = new Blob([data], { type: 'audio/wav' }); // Default to wav as per recorder
+        objectUrl = URL.createObjectURL(blob);
+
+        if (audioRef.current) {
+          audioRef.current.src = objectUrl;
+          audioRef.current.load();
+          setAudioUnavailable(null);
+          console.log('[NotesView] Audio loaded via Blob URL');
+        }
+      } catch (error) {
+        console.error('[NotesView] Failed to load audio file:', error);
+        clearAudioElement();
+        setAudioUnavailable({
+          message: '音檔遺失，無法播放。',
+          path: resolvedAudioPath,
+        });
       }
     };
 
     loadAudio();
 
     return () => {
+      cancelled = true;
       if (objectUrl) {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [viewMode, currentLectureData?.audio_path]);
+  }, [viewMode, currentLectureData?.audio_path, currentLectureData?.video_path]);
 
   const togglePlay = () => {
     if (audioRef.current) {
@@ -646,18 +754,15 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   }, [autoFollow, viewMode, pdfData, modelLoaded, currentLectureData?.id]);
 
   // Sync PDF to the current playback time when Auto Follow is on.
-  // Debounced via "last page scrolled" so we don't thrash the PDF
-  // viewer on every timeupdate (which fires ~4x/s).
   useEffect(() => {
-    if (!autoFollow) return;
-    if (viewMode !== 'review') return;
-    if (!isPlaying) return;
-    if (pageTimeline.length === 0) return;
+    if (!autoFollow || pageTimeline.length === 0) {
+      lastAutoPageRef.current = null;
+      return;
+    }
 
-    // Binary search for largest timeline entry with t <= currentTime.
     let lo = 0;
     let hi = pageTimeline.length - 1;
-    let best = -1;
+    let best = 0;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       if (pageTimeline[mid].t <= audioCurrentTime) {
@@ -667,14 +772,14 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         hi = mid - 1;
       }
     }
-    if (best < 0) return;
     const targetPage = pageTimeline[best].page;
-    if (targetPage === lastAutoFollowPage) return;
-    setLastAutoFollowPage(targetPage);
-    if (pdfViewerRef.current) {
-      pdfViewerRef.current.scrollToPage(targetPage);
+    // Manual page turns while autoFollow=true will be overridden on the next timeupdate tick.
+    const viewer = pdfViewerRef.current;
+    if (viewer && lastAutoPageRef.current !== targetPage) {
+      viewer.scrollToPage(targetPage);
+      lastAutoPageRef.current = targetPage;
     }
-  }, [audioCurrentTime, autoFollow, isPlaying, viewMode, pageTimeline, lastAutoFollowPage]);
+  }, [autoFollow, pageTimeline, audioCurrentTime]);
 
   // Assemble the Whisper initial_prompt from three sources:
   //   1. Course context (topic from syllabus)
@@ -878,66 +983,123 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           console.log('[NotesView] No notes found but subtitles exist. Auto-generating notes...');
 
           const SECTION_DURATION_SEC = 300; // 5 minutes per section
-          const sections: { title: string; content: string; timestamp: number }[] = [];
+
+          // Keep per-section sentence arrays + page tracking alongside
+          // the user-visible section object. The sentence array feeds
+          // `extract_section_highlights` to produce the bullet summary
+          // (Layer 1 of Note AI structurization); page_range gives the
+          // "投影片 3-5" header. Sections without any PDF alignment
+          // simply stay page_range = null.
+          const sectionBuild: Array<{
+            title: string;
+            sentences: string[];
+            timestamp: number;
+            pages: number[];
+          }> = [];
 
           let currentSectionStart = 0;
-          let currentSectionContent: string[] = [];
+          let currentSentences: string[] = [];
+          let currentPages: number[] = [];
           let sectionIndex = 1;
 
-          // Use database subtitles if available, otherwise use in-memory segments
+          const flushSection = () => {
+            if (currentSentences.length === 0) return;
+            sectionBuild.push({
+              title: `Section ${sectionIndex}`,
+              sentences: [...currentSentences],
+              timestamp: currentSectionStart,
+              pages: [...currentPages],
+            });
+            sectionIndex++;
+          };
+
           if (subtitles.length > 0) {
             for (const sub of subtitles) {
               const segTimestamp = sub.timestamp;
-
-              if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
-                sections.push({
-                  title: `Section ${sectionIndex}`,
-                  content: currentSectionContent.join(' '),
-                  timestamp: currentSectionStart,
-                });
-                sectionIndex++;
+              if (
+                segTimestamp - currentSectionStart >= SECTION_DURATION_SEC &&
+                currentSentences.length > 0
+              ) {
+                flushSection();
                 currentSectionStart = segTimestamp;
-                currentSectionContent = [];
+                currentSentences = [];
+                currentPages = [];
               }
-
-              const text = sub.text_zh || sub.text_en || '';
-              if (text.trim()) {
-                currentSectionContent.push(text.trim());
-              }
+              const text = (sub.text_zh || sub.text_en || '').trim();
+              if (text) currentSentences.push(text);
+              // Subtitles don't carry page_number — that field lives on
+              // EmbeddingRow (chunks are page-aware after indexing). Leave
+              // page_range empty for now; a future pass can back-fill from
+              // embeddings once the RAG index has been built.
             }
           } else {
-            // Use in-memory segments as fallback
             for (const seg of inMemorySegments) {
               const segTimestamp = seg.startTime / 1000;
-
-              if (segTimestamp - currentSectionStart >= SECTION_DURATION_SEC && currentSectionContent.length > 0) {
-                sections.push({
-                  title: `Section ${sectionIndex}`,
-                  content: currentSectionContent.join(' '),
-                  timestamp: currentSectionStart,
-                });
-                sectionIndex++;
+              if (
+                segTimestamp - currentSectionStart >= SECTION_DURATION_SEC &&
+                currentSentences.length > 0
+              ) {
+                flushSection();
                 currentSectionStart = segTimestamp;
-                currentSectionContent = [];
+                currentSentences = [];
+                currentPages = [];
               }
+              const text = (
+                seg.displayTranslation ||
+                seg.roughTranslation ||
+                seg.displayText ||
+                seg.roughText ||
+                ''
+              ).trim();
+              if (text) currentSentences.push(text);
+            }
+          }
+          flushSection();
 
-              const text = seg.displayTranslation || seg.roughTranslation || seg.displayText || seg.roughText || '';
-              if (text.trim()) {
-                currentSectionContent.push(text.trim());
-              }
+          // Compute Layer-1 AI structure: representative bullets per
+          // section via the Rust side's Candle centroid extractor.
+          // Runs on whichever device the embedding service picked —
+          // GPU on a gpu-cuda build with a working driver, CPU
+          // otherwise. One IPC round-trip for the entire lecture.
+          let bulletsPerSection: string[][] = [];
+          if (sectionBuild.length > 0) {
+            try {
+              bulletsPerSection = await invoke<string[][]>(
+                'extract_section_highlights',
+                {
+                  sections: sectionBuild.map((s) => s.sentences),
+                  topK: 3,
+                },
+              );
+              console.log(
+                '[NotesView] Extracted bullets for',
+                bulletsPerSection.length,
+                'sections',
+              );
+            } catch (e) {
+              // Extraction failure shouldn't block note creation —
+              // the section content remains readable even without
+              // bullets. Log once and fall through to empty bullets.
+              console.warn('[NotesView] bullet extraction failed:', e);
+              bulletsPerSection = sectionBuild.map(() => []);
             }
           }
 
-          // Save the last section
-          if (currentSectionContent.length > 0) {
-            sections.push({
-              title: `Section ${sectionIndex}`,
-              content: currentSectionContent.join(' '),
-              timestamp: currentSectionStart,
-            });
-          }
+          const sections = sectionBuild.map((s, i) => {
+            const pages = s.pages.filter((p) => Number.isFinite(p));
+            const page_range =
+              pages.length > 0
+                ? { min: Math.min(...pages), max: Math.max(...pages) }
+                : null;
+            return {
+              title: s.title,
+              content: s.sentences.join(' '),
+              timestamp: s.timestamp,
+              bullets: bulletsPerSection[i] ?? [],
+              page_range,
+            };
+          });
 
-          // Create and save the Note
           if (sections.length > 0) {
             const generatedNote: Note = {
               lecture_id: lecture.id,
@@ -959,6 +1121,109 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           } else {
             console.log('[NotesView] No sections generated, skipping note creation');
             setSelectedNote(null);
+          }
+        } else if (note) {
+          // Existing Note path. v0.6.0 added bullets + page_range to
+          // the Section schema; Notes written before that are missing
+          // both fields and would render as "subtitle-like" walls of
+          // text (the very thing the bullets are meant to replace).
+          // Lazy-migrate on first Review-mode entry: if any section
+          // is missing bullets, rebuild per-section sentence arrays
+          // from the subtitle table, run one extract pass, and patch
+          // the Note in place. Title/content stay untouched so any
+          // user edits to headings or rewritten sections are
+          // preserved.
+          const sectionsMissingBullets = (note.sections || []).some(
+            (s) => !s.bullets || s.bullets.length === 0,
+          );
+          if (sectionsMissingBullets && subtitles.length > 0 && note.sections) {
+            console.log(
+              '[NotesView] Migrating existing Note: adding bullets to',
+              note.sections.filter((s) => !s.bullets || s.bullets.length === 0)
+                .length,
+              'of',
+              note.sections.length,
+              'sections',
+            );
+            setSelectedNote(note); // show the old view immediately while we re-derive
+
+            try {
+              // Re-derive sentence arrays by slicing subtitles into each
+              // section's time window. `section.timestamp` is the start;
+              // the next section's timestamp is the exclusive end.
+              // Sort defensively in case saved ordering drifted.
+              const sorted = [...note.sections].sort(
+                (a, b) => a.timestamp - b.timestamp,
+              );
+              const perSectionSentences: string[][] = [];
+              // page_range migration deferred — subtitles don't carry
+              // page_number (see auto-gen path comment). When we add an
+              // embedding-backed back-fill, slot it in here.
+              const perSectionPages: number[][] = [];
+              for (let i = 0; i < sorted.length; i++) {
+                const start = sorted[i].timestamp;
+                const end =
+                  i + 1 < sorted.length ? sorted[i + 1].timestamp : Infinity;
+                const subsInSection = subtitles.filter(
+                  (s) => s.timestamp >= start && s.timestamp < end,
+                );
+                perSectionSentences.push(
+                  subsInSection
+                    .map((s) => (s.text_zh || s.text_en || '').trim())
+                    .filter((t) => t),
+                );
+                perSectionPages.push([]);
+              }
+
+              let bulletsPerSection: string[][] = [];
+              try {
+                bulletsPerSection = await invoke<string[][]>(
+                  'extract_section_highlights',
+                  { sections: perSectionSentences, topK: 3 },
+                );
+              } catch (e) {
+                console.warn(
+                  '[NotesView] Migration bullet extraction failed:',
+                  e,
+                );
+                bulletsPerSection = sorted.map(() => []);
+              }
+
+              const migratedSections = sorted.map((s, i) => {
+                const pages = perSectionPages[i] ?? [];
+                const page_range =
+                  pages.length > 0
+                    ? { min: Math.min(...pages), max: Math.max(...pages) }
+                    : null;
+                return {
+                  ...s,
+                  bullets:
+                    s.bullets && s.bullets.length > 0
+                      ? s.bullets
+                      : bulletsPerSection[i] ?? [],
+                  page_range: s.page_range ?? page_range,
+                };
+              });
+
+              const migratedNote: Note = { ...note, sections: migratedSections };
+              try {
+                await storageService.saveNote(migratedNote);
+                console.log(
+                  '[NotesView] Migration complete, Note resaved with bullets',
+                );
+              } catch (saveErr) {
+                console.warn(
+                  '[NotesView] Note save after migration failed; UI still updated:',
+                  saveErr,
+                );
+              }
+              setSelectedNote(migratedNote);
+            } catch (migErr) {
+              // Leave the existing Note showing — graceful degradation.
+              console.error('[NotesView] Note migration failed:', migErr);
+            }
+          } else {
+            setSelectedNote(note);
           }
         } else {
           setSelectedNote(note);
@@ -1121,7 +1386,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       // keep a stale reference than nuke it to null).
       const updatedLecture = {
         ...currentLectureData,
-        audio_path: audioPath ?? currentLectureData.audio_path,
+        audio_path: audioPath ? toRelativeAudioPath(audioDir, audioPath) : currentLectureData.audio_path,
         status: 'completed' as const,
         updated_at: new Date().toISOString()
       };
@@ -1176,35 +1441,55 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // with subtitles + AI 助教 fully indexed.
   /** Reload subtitles from DB into subtitleService so the Review
    *  mode subtitle panel reflects progressive video-import progress.
-   *  Called from the import progress callback whenever a chunk has
-   *  just been saved — cheap enough (single SQLite query) to rerun
-   *  per chunk for a 70-min lecture (70 chunks). */
-  const reloadSubtitlesFromDb = async (lid: string) => {
+   *
+   *  v0.6.1 perf fix: uses `subtitleService.setSegments` (single
+   *  notify) instead of the old `clear() + addSegment × N` loop
+   *  (N+1 notifies, each triggering a full React re-render of the
+   *  subtitle panel). The import pipeline fires `subtitlesChanged`
+   *  up to 2× per chunk = ~140 refreshes on a 70-chunk lecture;
+   *  with 1000 segments total, the old path racked up ~140k
+   *  unnecessary re-renders.
+   *
+   *  Debounced at the callsite (`scheduleSubtitlesReload`) so
+   *  back-to-back chunks don't even queue redundant DB reads. */
+  const reloadSubtitlesFromDb = useCallback(async (lid: string) => {
     try {
       const subs = await storageService.getSubtitles(lid);
-      subtitleService.clear();
-      subtitleService.setLectureId(lid);
-      for (const sub of subs) {
-        subtitleService.addSegment({
-          id: sub.id,
-          roughText: sub.text_en,
-          roughTranslation: sub.text_zh,
-          displayText: sub.text_en,
-          displayTranslation: sub.text_zh,
-          startTime: sub.timestamp * 1000,
-          endTime: (sub.timestamp + 5) * 1000,
-          source: sub.type === 'fine' ? 'fine' : 'rough',
-          translationSource: sub.text_zh
-            ? (sub.type === 'fine' ? 'fine' : 'rough')
-            : undefined,
-          text: sub.text_en,
-          translatedText: sub.text_zh,
-        });
-      }
+      const segments = subs.map((sub) => ({
+        id: sub.id,
+        roughText: sub.text_en,
+        roughTranslation: sub.text_zh,
+        displayText: sub.text_en,
+        displayTranslation: sub.text_zh,
+        startTime: sub.timestamp * 1000,
+        endTime: (sub.timestamp + 5) * 1000,
+        source: (sub.type === 'fine' ? 'fine' : 'rough') as 'fine' | 'rough',
+        translationSource: (sub.text_zh
+          ? sub.type === 'fine'
+            ? ('fine' as const)
+            : ('rough' as const)
+          : undefined),
+        text: sub.text_en,
+        translatedText: sub.text_zh,
+      }));
+      subtitleService.setSegments(segments, lid);
     } catch (err) {
       console.warn('[NotesView] reloadSubtitlesFromDb failed:', err);
     }
-  };
+  }, []);
+
+  /** Coalesces rapid `subtitlesChanged` events into at most one
+   *  reload per 400 ms. Video import with fast transcribe + parallel
+   *  translate fires reload requests every 100-500 ms; without
+   *  coalescing the DB + React work stacks up and blocks paint. */
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleSubtitlesReload = useCallback((lid: string) => {
+    if (reloadTimer.current) return; // already scheduled
+    reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = null;
+      void reloadSubtitlesFromDb(lid);
+    }, 400);
+  }, [reloadSubtitlesFromDb]);
 
   const runVideoImport = async (
     sourcePath: string,
@@ -1231,17 +1516,25 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             const fresh = await storageService.getLecture(lectureId);
             if (fresh) setCurrentLectureData(fresh);
             setIsImportModalOpen(false);
+            // Video import = the lecture is done recording. Switch to
+            // Notes Review and open the Subtitles/Audio tab, because
+            // the import's streaming caption updates happen there — the
+            // Notes tab is for post-hoc reading and would stay empty
+            // until loadLectureData runs at the end.
             setViewMode('review');
+            setActiveTab('subtitles');
             toastService.success(
               '影片已就緒',
               '可以開始觀看，字幕會隨轉錄逐步填入。',
             );
           }
           // A chunk just persisted new subtitles (or translations).
-          // Reload the in-memory subtitle set so the display updates
-          // without waiting for the whole pipeline to finish.
+          // Schedule a coalesced reload — on a fast transcribe run
+          // (GPU + base model) the pipeline fires this 2-3× per
+          // second, and running it synchronously here would block the
+          // JS thread on DB + re-render before the next chunk emits.
           if (p.subtitlesChanged) {
-            await reloadSubtitlesFromDb(lectureId);
+            scheduleSubtitlesReload(lectureId);
           }
         },
       });
@@ -1796,7 +2089,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               const relativeTime = Math.max(0, section.timestamp - baseTime);
               const minutes = Math.floor(relativeTime / 60);
               const seconds = Math.floor(relativeTime % 60);
-              markdown += `*時間戳: ${minutes}:${seconds.toString().padStart(2, '0')}*\n\n`;
+              const centis = Math.floor((relativeTime % 1) * 100);
+              markdown += `*時間戳: ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centis.toString().padStart(2, '0')}*\n\n`;
             }
           });
         }
@@ -1812,7 +2106,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               const relativeTime = Math.max(0, qa.timestamp - baseTime);
               const minutes = Math.floor(relativeTime / 60);
               const seconds = Math.floor(relativeTime % 60);
-              markdown += `*時間戳: ${minutes}:${seconds.toString().padStart(2, '0')}*\n\n`;
+              const centis = Math.floor((relativeTime % 1) * 100);
+              markdown += `*時間戳: ${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${centis.toString().padStart(2, '0')}*\n\n`;
             }
           });
         }
@@ -2342,7 +2637,16 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                                 ) : (
                                   <>
                                     <div className="flex items-center justify-between mb-1">
-                                      <h4 className="font-semibold text-gray-900 dark:text-gray-100">{section.title}</h4>
+                                      <div className="flex items-center gap-2">
+                                        <h4 className="font-semibold text-gray-900 dark:text-gray-100">{section.title}</h4>
+                                        {section.page_range && (
+                                          <span className="text-xs text-gray-500 dark:text-gray-400 px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-800">
+                                            {section.page_range.min === section.page_range.max
+                                              ? `投影片 ${section.page_range.min}`
+                                              : `投影片 ${section.page_range.min}–${section.page_range.max}`}
+                                          </span>
+                                        )}
+                                      </div>
                                       {section.timestamp && (() => {
                                         const baseTime = currentLectureData?.created_at ? new Date(currentLectureData.created_at).getTime() / 1000 : section.timestamp;
                                         const relativeTime = Math.max(0, section.timestamp - baseTime);
@@ -2351,12 +2655,34 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                                             onClick={() => handleSeek(relativeTime)}
                                             className="text-xs text-blue-500 hover:text-blue-600 opacity-0 group-hover:opacity-100 transition-opacity"
                                           >
-                                            {Math.floor(relativeTime / 60)}:{Math.floor(relativeTime % 60).toString().padStart(2, '0')}
+                                            {Math.floor(relativeTime / 60).toString().padStart(2, '0')}:{Math.floor(relativeTime % 60).toString().padStart(2, '0')}.{Math.floor((relativeTime % 1) * 100).toString().padStart(2, '0')}
                                           </button>
                                         );
                                       })()}
                                     </div>
-                                    <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{section.content}</p>
+                                    {section.bullets && section.bullets.length > 0 ? (
+                                      // Layer-1 structured view: bullets (centroid-extracted
+                                      // representative sentences) above a collapsed raw content.
+                                      // Reading the bullets alone gives the gist; click to
+                                      // expand when the full transcript is wanted.
+                                      <>
+                                        <ul className="list-disc pl-5 space-y-1 text-gray-800 dark:text-gray-200 text-sm leading-relaxed">
+                                          {section.bullets.map((b, bi) => (
+                                            <li key={bi}>{b}</li>
+                                          ))}
+                                        </ul>
+                                        <details className="mt-2 text-xs">
+                                          <summary className="cursor-pointer text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 select-none">
+                                            原始字幕（{section.content.length} 字）
+                                          </summary>
+                                          <p className="text-gray-500 dark:text-gray-400 text-xs leading-relaxed whitespace-pre-wrap mt-1 pl-1">
+                                            {section.content}
+                                          </p>
+                                        </details>
+                                      </>
+                                    ) : (
+                                      <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">{section.content}</p>
+                                    )}
                                   </>
                                 )}
                               </div>
@@ -2386,8 +2712,19 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             </PanelGroup>
 
             {/* Audio Player Bar */}
-            {currentLectureData?.audio_path && (
+            {!currentLectureData?.video_path && (audioUnavailable || currentLectureData?.audio_path) && (
               <div>
+                {audioUnavailable ? (
+                  <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                    <p className="font-medium">{audioUnavailable.message}</p>
+                    {audioUnavailable.path && (
+                      <p className="mt-1 break-all font-mono text-xs text-amber-800 dark:text-amber-200">
+                        {audioUnavailable.path}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <>
                 {/* Auto Follow toggle — only shown in Review mode. On
                     enables PDF + subtitle sync to current playback
                     timestamp; off is plain audio playback. */}
@@ -2435,6 +2772,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                   onVolumeChange={setPlaybackVolume}
                   onSkip={(sec) => handleSeek(audioCurrentTime + sec)}
                 />
+                  </>
+                )}
               </div>
             )}
 
@@ -2444,7 +2783,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                 target switches based on `currentLectureData.video_path`
                 — all playback wiring (togglePlay / handleSeek /
                 subtitle sync) is media-type agnostic. */}
-            {!currentLectureData?.video_path && (
+            {!currentLectureData?.video_path && !audioUnavailable && (
               <audio
                 ref={audioRef as React.RefObject<HTMLAudioElement>}
                 onTimeUpdate={handleTimeUpdate}

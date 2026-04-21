@@ -11,8 +11,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { generateLocalEmbedding } from './embeddingService';
-import { storageService } from './storageService';
+import { authService } from './authService';
 import { TextChunk } from './chunkingService';
 
 export interface EmbeddingRecord {
@@ -71,18 +70,36 @@ function toBackend(r: EmbeddingRecord) {
     };
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
-    let dot = 0;
-    let normA = 0;
-    let normB = 0;
-    for (let i = 0; i < a.length; i++) {
-        dot += a[i] * b[i];
-        normA += a[i] * a[i];
-        normB += b[i] * b[i];
-    }
-    const denom = Math.sqrt(normA) * Math.sqrt(normB);
-    return denom === 0 ? 0 : dot / denom;
+/// Backend `SearchHit` payload from `semantic_search_*` commands.
+/// Shape mirrors `BackendEmbeddingRow` (so we can reuse field names)
+/// plus a `similarity` score.
+interface BackendSearchHit {
+    id: string;
+    lecture_id: string;
+    chunk_text: string;
+    source_type: string;
+    position: number;
+    page_number: number | null;
+    created_at: string;
+    similarity: number;
+}
+
+function hitToResult(hit: BackendSearchHit): SearchResult {
+    return {
+        chunk: {
+            id: hit.id,
+            lectureId: hit.lecture_id,
+            chunkText: hit.chunk_text,
+            // Omit `embedding` — search consumers only need text + metadata,
+            // and skipping it saves a ~1.5 KB copy per result across the IPC.
+            embedding: [],
+            sourceType: hit.source_type === 'transcript' ? 'transcript' : 'pdf',
+            position: hit.position,
+            pageNumber: hit.page_number ?? undefined,
+            createdAt: hit.created_at,
+        },
+        similarity: hit.similarity,
+    };
 }
 
 class EmbeddingStorageService {
@@ -196,9 +213,13 @@ class EmbeddingStorageService {
     }
 
     /**
-     * In-process semantic search over a lecture's embeddings. Optionally
-     * boosts matches near `preferredPage` so PDF-slide-aware queries
-     * surface locally-relevant chunks first.
+     * Semantic search over a single lecture. Delegates to the Rust
+     * `semantic_search_lecture` command, which does the whole pipeline
+     * (query embed → batched cosine matmul → page boost → top-K) on
+     * whichever Candle device the embedding service picked — CUDA on
+     * GPU builds, Metal on macOS, CPU otherwise. Previously this ran
+     * a per-chunk JS cosine loop on the main renderer thread, which
+     * was the last CPU-bound step in the RAG query path.
      */
     public async semanticSearch(
         lectureId: string,
@@ -206,44 +227,34 @@ class EmbeddingStorageService {
         topK = 5,
         preferredPage?: number
     ): Promise<SearchResult[]> {
-        const queryEmbedding = await generateLocalEmbedding(query);
-        const records = await this.getEmbeddingsByLecture(lectureId);
-        if (!records.length) return [];
-
-        const scored: SearchResult[] = records.map((chunk) => {
-            let sim = cosineSimilarity(queryEmbedding, chunk.embedding);
-            if (preferredPage !== undefined && chunk.pageNumber !== undefined) {
-                const gap = Math.abs(chunk.pageNumber - preferredPage);
-                if (gap <= 5) sim += 0.1;
-                else if (gap <= 10) sim += 0.05;
-            }
-            return { chunk, similarity: sim };
+        const hits = await invoke<BackendSearchHit[]>('semantic_search_lecture', {
+            lectureId,
+            query,
+            topK,
+            preferredPage: preferredPage ?? null,
         });
-
-        scored.sort((a, b) => b.similarity - a.similarity);
-        return scored.slice(0, topK);
+        return hits.map(hitToResult);
     }
 
     /**
-     * Cross-lecture semantic search scoped to a course. Pulls the
-     * course's lectures via storageService, unions their embeddings,
-     * and ranks them all against `query`.
+     * Cross-lecture search scoped to a course. The Rust side unions
+     * every lecture's embeddings into a single matrix and runs one
+     * matmul against the query, so a 10-lecture × 200-chunk course
+     * finishes in the same few ms as a single-lecture search.
      */
     public async semanticSearchByCourse(
         query: string,
         courseId: string,
         topK = 5
     ): Promise<SearchResult[]> {
-        const lectures = await storageService.listLecturesByCourse(courseId);
-        const queryEmbedding = await generateLocalEmbedding(query);
-        const all: EmbeddingRecord[] = [];
-        for (const lecture of lectures) {
-            all.push(...(await this.getEmbeddingsByLecture(lecture.id)));
-        }
-        return all
-            .map((chunk) => ({ chunk, similarity: cosineSimilarity(queryEmbedding, chunk.embedding) }))
-            .sort((a, b) => b.similarity - a.similarity)
-            .slice(0, topK);
+        const userId = authService.getUser()?.username || 'default_user';
+        const hits = await invoke<BackendSearchHit[]>('semantic_search_course', {
+            courseId,
+            userId,
+            query,
+            topK,
+        });
+        return hits.map(hitToResult);
     }
 
     public async deleteByLecture(lectureId: string): Promise<void> {

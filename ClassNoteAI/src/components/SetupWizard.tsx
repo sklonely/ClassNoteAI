@@ -16,8 +16,10 @@ import {
     Zap,
     Mic,
     Languages,
-    HardDrive
+    HardDrive,
+    ExternalLink
 } from 'lucide-react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { setupService } from '../services/setupService';
 import { consentService } from '../services/consentService';
 import AIProviderSettings from './AIProviderSettings';
@@ -43,9 +45,26 @@ type WizardStep =
     | 'ai-config'     // v0.5.2: configure the chosen provider (PAT / OAuth)
     | 'recording-consent'
     | 'checking'
+    | 'gpu-check'     // v0.6.1: detect NVIDIA/Vulkan/Metal + save preference
     | 'review'
     | 'installing'
     | 'complete';
+
+interface DriverHint {
+    severity: string;
+    title: string;
+    message: string;
+    action_url: string;
+    action_label: string;
+}
+
+interface GpuDetection {
+    cuda: { gpu_name: string; driver_version: string } | null;
+    metal: boolean;
+    vulkan: boolean;
+    effective: string;
+    driver_hint?: DriverHint | null;
+}
 
 type SourceLang = 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
 
@@ -72,7 +91,14 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     const [consentChecked, setConsentChecked] = useState(false);
     const [consentError, setConsentError] = useState<string | null>(null);
 
-    // Check requirements when entering checking step
+    // v0.6.1: GPU backend detection state for the `gpu-check` step.
+    const [gpuDetection, setGpuDetection] = useState<GpuDetection | null>(null);
+
+    // Check requirements when entering checking step. v0.6.1: after
+    // the env check we insert `gpu-check` so users see their hardware
+    // story (CUDA / Vulkan / Metal / CPU) before committing to a
+    // multi-GB model download — avoids the "why is this so slow?"
+    // surprise post-install.
     const checkRequirements = useCallback(async () => {
         setStep('checking');
         setError(null);
@@ -80,19 +106,57 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
         try {
             const setupStatus = await setupService.checkStatus();
             setStatus(setupStatus);
+            // Kick off GPU detection in parallel with the env check so
+            // the gpu-check step has data ready when we transition.
+            // Swallow errors: older binaries missing the command just
+            // skip the GPU step content gracefully.
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                const d = await invoke<GpuDetection>('detect_gpu_backends', {
+                    preference: 'auto',
+                });
+                setGpuDetection(d);
+            } catch {
+                /* detection unavailable — step still renders a CPU fallback notice */
+            }
 
-            // If everything is already installed, skip to complete
+            // If everything is already installed, skip past review
+            // but still show the GPU summary so the user knows what
+            // backend they're on.
             if (setupStatus.is_complete) {
-                await setupService.markComplete();
-                setStep('complete');
+                setStep('gpu-check');
             } else {
-                setStep('review');
+                setStep('gpu-check');
             }
         } catch (err) {
             setError(`環境檢查失敗: ${err}`);
             setStep('review');
         }
     }, []);
+
+    const continueFromGpuCheck = useCallback(async () => {
+        // Persist the auto preference so the ImportModal / settings
+        // both pick it up on first open. User can override in settings.
+        try {
+            const { storageService } = await import('../services/storageService');
+            const existing = (await storageService.getAppSettings()) ?? {} as any;
+            await storageService.saveAppSettings({
+                ...existing,
+                experimental: {
+                    ...(existing.experimental ?? {}),
+                    asrBackend: 'auto',
+                },
+            });
+        } catch {
+            /* non-fatal; settings can be set later */
+        }
+        if (status?.is_complete) {
+            await setupService.markComplete();
+            setStep('complete');
+        } else {
+            setStep('review');
+        }
+    }, [status]);
 
     const advanceToRecordingConsent = useCallback(async () => {
         const state = await consentService.getRecordingConsentState();
@@ -540,6 +604,157 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
         </div>
     );
 
+    // v0.6.1: GPU-check step. Reuses the same `requirements-list` /
+    // `requirement-item` classes as the env-check step for visual
+    // consistency with the rest of the wizard (dark translucent cards
+    // on the gradient background). Previously used ad-hoc white
+    // cards that looked out of place.
+    const renderGpuCheck = () => {
+        const rows: { ok: boolean; label: string; detail: string }[] = gpuDetection
+            ? [
+                  {
+                      ok: !!gpuDetection.cuda,
+                      label: 'CUDA (NVIDIA)',
+                      detail: gpuDetection.cuda
+                          ? `${gpuDetection.cuda.gpu_name} · driver ${gpuDetection.cuda.driver_version}`
+                          : '未偵測到 NVIDIA 驅動',
+                  },
+                  {
+                      ok: gpuDetection.vulkan,
+                      label: 'Vulkan',
+                      detail: gpuDetection.vulkan
+                          ? 'Vulkan loader 已存在'
+                          : '未偵測到 Vulkan runtime',
+                  },
+                  {
+                      ok: gpuDetection.metal,
+                      label: 'Metal (macOS)',
+                      detail: gpuDetection.metal ? '原生支援' : '不適用此系統',
+                  },
+              ]
+            : [];
+        const driverHint = gpuDetection?.driver_hint;
+        return (
+            <div className="setup-step review-step">
+                <h2 className="setup-subtitle">硬體加速偵測</h2>
+                <p className="setup-description">可用的 Whisper 加速後端</p>
+
+                {driverHint && (
+                    // Non-blocking driver-version advisory. Matches the
+                    // banner in LocalModelExperimentalSettings so users
+                    // see the same wording in the wizard + in the live
+                    // settings panel.
+                    <div
+                        style={{
+                            display: 'flex',
+                            gap: '0.75rem',
+                            padding: '0.875rem',
+                            marginBottom: '1rem',
+                            borderRadius: '0.5rem',
+                            background:
+                                driverHint.severity === 'warning'
+                                    ? 'rgba(251, 191, 36, 0.08)'
+                                    : 'rgba(59, 130, 246, 0.08)',
+                            border:
+                                driverHint.severity === 'warning'
+                                    ? '1px solid rgba(251, 191, 36, 0.3)'
+                                    : '1px solid rgba(59, 130, 246, 0.3)',
+                        }}
+                    >
+                        <AlertTriangle
+                            className="w-5 h-5"
+                            style={{
+                                marginTop: '0.125rem',
+                                flexShrink: 0,
+                                color:
+                                    driverHint.severity === 'warning'
+                                        ? '#f59e0b'
+                                        : '#3b82f6',
+                            }}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                                style={{
+                                    fontSize: '0.875rem',
+                                    fontWeight: 600,
+                                    marginBottom: '0.25rem',
+                                    color:
+                                        driverHint.severity === 'warning'
+                                            ? '#d97706'
+                                            : '#2563eb',
+                                }}
+                            >
+                                {driverHint.title}
+                            </div>
+                            <p
+                                style={{
+                                    fontSize: '0.8125rem',
+                                    lineHeight: 1.5,
+                                    color: 'rgba(255,255,255,0.8)',
+                                    margin: 0,
+                                }}
+                            >
+                                {driverHint.message}
+                            </p>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    void openUrl(driverHint.action_url);
+                                }}
+                                style={{
+                                    marginTop: '0.5rem',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    fontSize: '0.8125rem',
+                                    fontWeight: 500,
+                                    color: '#818cf8',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    padding: 0,
+                                }}
+                            >
+                                {driverHint.action_label}
+                                <ExternalLink className="w-3.5 h-3.5" />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                <div className="requirements-list">
+                    {rows.map((r) => (
+                        <div
+                            key={r.label}
+                            className={`requirement-item ${r.ok ? 'installed' : 'missing'}`}
+                        >
+                            <div className="requirement-info">
+                                {r.ok ? (
+                                    <CheckCircle className="w-5 h-5" style={{ color: '#22c55e' }} />
+                                ) : (
+                                    <XCircle className="w-5 h-5" style={{ color: 'rgba(255,255,255,0.3)' }} />
+                                )}
+                                <div className="requirement-details">
+                                    <span className="requirement-name">{r.label}</span>
+                                    <span className="requirement-desc">{r.detail}</span>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                        className="btn-primary"
+                        onClick={continueFromGpuCheck}
+                    >
+                        繼續 <ArrowRight className="w-5 h-5" />
+                    </button>
+                </div>
+            </div>
+        );
+    };
+
     // Render review step
     const renderReview = () => {
         if (!status) return null;
@@ -774,6 +989,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 {step === 'ai-config' && renderAIConfig()}
                 {step === 'recording-consent' && renderRecordingConsent()}
                 {step === 'checking' && renderChecking()}
+                {step === 'gpu-check' && renderGpuCheck()}
                 {step === 'review' && renderReview()}
                 {step === 'installing' && renderInstalling()}
                 {step === 'complete' && renderComplete()}

@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ClassNote AI — 把你的筆電變成隨堂助教</title>
+  <meta name="description" content="即時英文轉錄、AI 精修翻譯、RAG 筆記問答 — 全部跑在你自己的電腦上。" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop offset='0' stop-color='%233b82f6'/%3E%3Cstop offset='1' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect rx='14' width='64' height='64' fill='url(%23g)'/%3E%3Ctext x='32' y='42' font-family='system-ui,sans-serif' font-size='30' font-weight='700' fill='white' text-anchor='middle'%3EC%3C/text%3E%3C/svg%3E" />
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #f8fafc;
+      --ink: #0f172a;
+      --ink-soft: #475569;
+      --ink-muted: #94a3b8;
+      --card: #ffffff;
+      --card-border: #e2e8f0;
+      --brand: #3b82f6;
+      --brand2: #8b5cf6;
+      --brand-grad: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      --brand-grad-soft: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(139,92,246,0.12));
+      --shadow-lg: 0 20px 50px -20px rgba(59,130,246,0.35);
+      --radius: 18px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b1220;
+        --bg-soft: #0f172a;
+        --ink: #e2e8f0;
+        --ink-soft: #cbd5e1;
+        --ink-muted: #64748b;
+        --card: #111a2e;
+        --card-border: #1e293b;
+        --brand-grad-soft: linear-gradient(135deg, rgba(59,130,246,0.22), rgba(139,92,246,0.22));
+        --shadow-lg: 0 20px 60px -20px rgba(139,92,246,0.5);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC",
+                   "Microsoft JhengHei", "PingFang TC", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    h1, h2, h3 { line-height: 1.2; margin: 0; font-weight: 700; letter-spacing: -0.02em; }
+    h1 { font-size: clamp(2.5rem, 5vw, 4rem); }
+    h2 { font-size: clamp(1.75rem, 3.5vw, 2.75rem); }
+    h3 { font-size: 1.25rem; }
+    p  { margin: 0; color: var(--ink-soft); }
+
+    .container { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+    .grad-text {
+      background: var(--brand-grad);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .icon { flex-shrink: 0; display: inline-block; vertical-align: -0.18em; }
+    .icon-14 { width: 14px; height: 14px; }
+    .icon-18 { width: 18px; height: 18px; }
+    .icon-20 { width: 20px; height: 20px; }
+    .feat-h3-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 36px; height: 36px; border-radius: 10px;
+      background: var(--brand-grad-soft);
+      color: var(--brand2);
+      margin-right: 10px; vertical-align: middle;
+    }
+    .feat-h3-icon svg { width: 20px; height: 20px; }
+
+    header.nav {
+      position: sticky; top: 0; z-index: 30;
+      background: color-mix(in srgb, var(--bg) 85%, transparent);
+      backdrop-filter: saturate(160%) blur(12px);
+      border-bottom: 1px solid var(--card-border);
+    }
+    .nav-inner {
+      display: flex; align-items: center; justify-content: space-between;
+      height: 64px;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -0.01em;
+    }
+    .brand-mark {
+      width: 34px; height: 34px; border-radius: 10px;
+      background: var(--brand-grad);
+      display: grid; place-items: center;
+      color: white; font-weight: 800;
+      box-shadow: 0 6px 20px -8px rgba(59,130,246,0.6);
+    }
+    .nav-links { display: flex; gap: 28px; font-size: 0.95rem; color: var(--ink-soft); }
+    .nav-links a:hover { color: var(--ink); }
+    @media (max-width: 720px) { .nav-links { display: none; } }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px; border-radius: 999px;
+      font-weight: 600; font-size: 0.95rem;
+      transition: transform 0.15s ease, box-shadow 0.2s ease;
+      white-space: nowrap;
+    }
+    .btn-primary {
+      background: var(--brand-grad);
+      color: white;
+      box-shadow: 0 8px 22px -10px rgba(59,130,246,0.7);
+    }
+    .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 28px -10px rgba(139,92,246,0.7); }
+    .btn-ghost {
+      border: 1px solid var(--card-border);
+      color: var(--ink);
+      background: var(--card);
+    }
+    .btn-ghost:hover { border-color: var(--brand); color: var(--brand); }
+
+    .hero {
+      padding: 80px 0 40px;
+      position: relative; overflow: hidden;
+    }
+    .hero::before {
+      content: ""; position: absolute; inset: 0 0 auto 0; height: 600px;
+      background: radial-gradient(ellipse at 30% 0%, rgba(59,130,246,0.18), transparent 60%),
+                  radial-gradient(ellipse at 80% 10%, rgba(139,92,246,0.18), transparent 50%);
+      z-index: -1; pointer-events: none;
+    }
+    .hero-grid {
+      display: grid; gap: 56px;
+      grid-template-columns: 1.1fr 1fr;
+      align-items: center;
+    }
+    @media (max-width: 900px) {
+      .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+    }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: 999px;
+      background: var(--brand-grad-soft);
+      color: var(--brand2); font-weight: 600; font-size: 0.85rem;
+      margin-bottom: 20px;
+    }
+    .eyebrow::before {
+      content: ""; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--brand); box-shadow: 0 0 0 4px rgba(59,130,246,0.25);
+      animation: pulse 2.2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.25); }
+    }
+    .hero p.lede { margin-top: 22px; font-size: 1.2rem; max-width: 540px; }
+    .hero-cta { margin-top: 34px; display: flex; gap: 14px; flex-wrap: wrap; }
+    .hero-meta {
+      margin-top: 22px; font-size: 0.9rem; color: var(--ink-muted);
+      display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: center;
+    }
+    .hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
+    .hero-meta .dot { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-muted); }
+
+    .hero-art {
+      aspect-ratio: 1 / 1;
+      max-width: 520px; margin: 0 auto; width: 100%;
+      display: grid; place-items: center;
+    }
+
+    section { padding: 80px 0; }
+    .section-head {
+      text-align: center; max-width: 720px; margin: 0 auto 56px;
+    }
+    .section-head .eyebrow { margin-bottom: 14px; }
+    .section-head p { margin-top: 16px; font-size: 1.1rem; }
+
+    .features {
+      display: grid; gap: 22px;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    @media (max-width: 960px) { .features { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 640px) { .features { grid-template-columns: 1fr; } }
+    .feature {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 26px;
+      display: flex; flex-direction: column; gap: 14px;
+      transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+      overflow: hidden;
+      position: relative;
+    }
+    .feature:hover {
+      transform: translateY(-4px);
+      border-color: color-mix(in srgb, var(--brand) 40%, var(--card-border));
+      box-shadow: var(--shadow-lg);
+    }
+    .feature-art {
+      height: 140px; width: 100%;
+      border-radius: 12px;
+      background: var(--brand-grad-soft);
+      display: grid; place-items: center;
+      overflow: hidden;
+    }
+    .feature h3 { font-size: 1.15rem; display: flex; align-items: center; }
+    .feature p { font-size: 0.95rem; }
+
+    .download {
+      background: var(--bg-soft);
+      border-top: 1px solid var(--card-border);
+      border-bottom: 1px solid var(--card-border);
+    }
+    .download-grid {
+      display: grid; gap: 16px;
+      grid-template-columns: repeat(3, 1fr);
+      margin-top: 40px;
+    }
+    @media (max-width: 800px) { .download-grid { grid-template-columns: 1fr; } }
+    .dl-card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 28px;
+      display: flex; flex-direction: column; gap: 12px;
+      transition: border-color 0.2s ease, transform 0.15s ease;
+    }
+    .dl-card:hover { border-color: var(--brand); transform: translateY(-2px); }
+    .dl-icon {
+      width: 44px; height: 44px; border-radius: 10px;
+      background: var(--brand-grad-soft);
+      display: grid; place-items: center;
+    }
+    .dl-card h3 { font-size: 1.05rem; }
+    .dl-card p  { font-size: 0.88rem; }
+    .dl-card .btn { align-self: flex-start; margin-top: 4px; }
+
+    .privacy {
+      border-radius: calc(var(--radius) + 4px);
+      padding: 44px 36px;
+      background: var(--brand-grad);
+      color: white;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .privacy::before {
+      content: ""; position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 20% 0%, rgba(255,255,255,0.2), transparent 60%);
+      pointer-events: none;
+    }
+    .privacy-eyebrow {
+      display: inline-flex; align-items: center; gap: 8px;
+      margin-bottom: 14px; font-weight: 700; letter-spacing: 0.05em;
+      font-size: 0.85rem;
+    }
+    .privacy h2 { color: white; }
+    .privacy p.lead {
+      color: rgba(255,255,255,0.9);
+      max-width: 620px; margin: 16px auto 0; font-size: 1.05rem;
+    }
+    .privacy-grid {
+      margin: 28px auto 0;
+      display: grid; gap: 14px;
+      grid-template-columns: repeat(3, 1fr);
+      max-width: 720px;
+    }
+    @media (max-width: 700px) { .privacy-grid { grid-template-columns: 1fr; } }
+    .privacy-item {
+      background: rgba(255,255,255,0.12);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 12px;
+      padding: 14px;
+      backdrop-filter: blur(8px);
+      font-size: 0.92rem;
+      color: white;
+      text-align: left;
+    }
+    .privacy-item strong {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-weight: 700;
+    }
+
+    footer { padding: 48px 0 64px; font-size: 0.9rem; color: var(--ink-muted); }
+    .footer-inner {
+      display: flex; justify-content: space-between; gap: 16px;
+      align-items: center; flex-wrap: wrap;
+    }
+    .footer-inner a:hover { color: var(--ink); }
+
+    .wave-bar { transform-origin: center; animation: waveOsc 1.2s ease-in-out infinite; }
+    @keyframes waveOsc { 0%,100%{transform:scaleY(0.35);} 50%{transform:scaleY(1);} }
+
+    .ring { transform-origin: center; animation: ring 2.6s ease-out infinite; opacity: 0; }
+    @keyframes ring { 0%{transform:scale(0.4);opacity:0.7;} 70%{transform:scale(1.6);opacity:0;} 100%{transform:scale(1.6);opacity:0;} }
+
+    .line-reveal { animation: reveal 3.8s ease-in-out infinite; transform-origin: left center; }
+    @keyframes reveal { 0%{transform:scaleX(0);opacity:0.3;} 40%{transform:scaleX(1);opacity:1;} 80%{transform:scaleX(1);opacity:1;} 100%{transform:scaleX(1);opacity:0;} }
+
+    .orbit { transform-origin: center; animation: orbit 14s linear infinite; }
+    @keyframes orbit { to { transform: rotate(360deg); } }
+    .orbit-reverse { transform-origin: center; animation: orbit 18s linear infinite reverse; }
+
+    .page-flip { transform-origin: left center; animation: pageFlip 3.2s ease-in-out infinite; }
+    @keyframes pageFlip { 0%,15%{transform:perspective(400px) rotateY(0deg);} 50%{transform:perspective(400px) rotateY(-155deg);} 85%,100%{transform:perspective(400px) rotateY(0deg);} }
+
+    .bubble-rise { animation: bubbleRise 3.6s ease-out infinite; opacity: 0; }
+    @keyframes bubbleRise { 0%{opacity:0;transform:translateY(12px);} 20%{opacity:1;transform:translateY(0);} 85%{opacity:1;} 100%{opacity:0;transform:translateY(-4px);} }
+
+    .lock-glow { animation: lockGlow 3s ease-in-out infinite; }
+    @keyframes lockGlow { 0%,100%{filter:drop-shadow(0 0 0 rgba(59,130,246,0));} 50%{filter:drop-shadow(0 0 14px rgba(59,130,246,0.55));} }
+
+    .bolt { animation: bolt 2.1s ease-in-out infinite; transform-origin: center; }
+    @keyframes bolt { 0%,60%,100%{opacity:0.9;transform:scale(1);} 30%{opacity:1;transform:scale(1.12);filter:drop-shadow(0 0 10px rgba(139,92,246,0.9));} }
+
+    @media (prefers-reduced-motion: reduce) {
+      .wave-bar, .ring, .line-reveal, .orbit, .orbit-reverse,
+      .page-flip, .bubble-rise, .lock-glow, .bolt, .eyebrow::before {
+        animation: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="#">
+      <span class="brand-mark">C</span>
+      <span>ClassNote <span class="grad-text">AI</span></span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#download">下載</a>
+      <a href="#privacy">隱私</a>
+      <a href="https://github.com/sklonely/ClassNoteAI">GitHub</a>
+    </nav>
+    <a class="btn btn-primary" href="https://github.com/sklonely/ClassNoteAI/releases/latest">
+      <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+      下載
+    </a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="container hero-grid">
+    <div>
+      <div class="eyebrow">本地運行 · 零 telemetry</div>
+      <h1>把英文授課變得<br/><span class="grad-text">好跟得上</span></h1>
+      <p class="lede">
+        即時轉錄老師的英文講解、AI 精修翻譯成中文，下課後和你的筆記對話 ——
+        全部跑在你自己的電腦上，沒有中間伺服器偷看你的錄音。
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/sklonely/ClassNoteAI/releases/latest">
+          免費下載
+          <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+        </a>
+        <a class="btn btn-ghost" href="#features">看看能做什麼</a>
+      </div>
+      <div class="hero-meta">
+        <span>
+          <svg class="icon icon-14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.08-2.608 1.5-2.608 4.5 0 3.4 3.058 4.62 3.08 4.63z"/></svg>
+          macOS
+        </span>
+        <span class="dot"></span>
+        <span>
+          <svg class="icon icon-14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.479l7.548-1.027v7.316H3V5.479zM3 18.521l7.548 1.027v-7.317H3v6.29zm8.377 1.14L21 20.979V12.5h-9.623v7.161zm0-16.185V11.5H21V3.02L11.377 3.476z"/></svg>
+          Windows + CUDA
+        </span>
+        <span class="dot"></span>
+        <span>
+          <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="2" x2="22" y1="2" y2="22"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/></svg>
+          離線可用
+        </span>
+        <span class="dot"></span>
+        <span>
+          <svg class="icon icon-14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/></svg>
+          MIT License
+        </span>
+      </div>
+    </div>
+
+    <div class="hero-art">
+      <svg viewBox="0 0 520 520" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="heroGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#3b82f6"/>
+            <stop offset="1" stop-color="#8b5cf6"/>
+          </linearGradient>
+        </defs>
+        <circle cx="260" cy="260" r="220" fill="url(#heroGrad)" opacity="0.08"/>
+        <circle cx="260" cy="260" r="160" fill="url(#heroGrad)" opacity="0.06"/>
+
+        <g transform="translate(140 240)">
+          <circle cx="0" cy="0" r="60" fill="none" stroke="url(#heroGrad)" stroke-width="2" class="ring"/>
+          <circle cx="0" cy="0" r="60" fill="none" stroke="url(#heroGrad)" stroke-width="2" class="ring" style="animation-delay: 0.8s"/>
+          <circle cx="0" cy="0" r="60" fill="none" stroke="url(#heroGrad)" stroke-width="2" class="ring" style="animation-delay: 1.6s"/>
+          <rect x="-18" y="-32" width="36" height="56" rx="18" fill="url(#heroGrad)"/>
+          <path d="M-28 10 Q-28 40 0 40 Q28 40 28 10" fill="none" stroke="url(#heroGrad)" stroke-width="4" stroke-linecap="round"/>
+          <line x1="0" y1="40" x2="0" y2="58" stroke="url(#heroGrad)" stroke-width="4" stroke-linecap="round"/>
+          <line x1="-14" y1="58" x2="14" y2="58" stroke="url(#heroGrad)" stroke-width="4" stroke-linecap="round"/>
+        </g>
+
+        <g transform="translate(230 240)">
+          <rect class="wave-bar" x="0"   y="-6" width="4" height="12" rx="2" fill="#3b82f6"/>
+          <rect class="wave-bar" x="10"  y="-14" width="4" height="28" rx="2" fill="#3b82f6" style="animation-delay: 0.1s"/>
+          <rect class="wave-bar" x="20"  y="-22" width="4" height="44" rx="2" fill="#6366f1" style="animation-delay: 0.2s"/>
+          <rect class="wave-bar" x="30"  y="-18" width="4" height="36" rx="2" fill="#8b5cf6" style="animation-delay: 0.3s"/>
+          <rect class="wave-bar" x="40"  y="-10" width="4" height="20" rx="2" fill="#8b5cf6" style="animation-delay: 0.4s"/>
+        </g>
+
+        <g transform="translate(290 130)">
+          <rect width="200" height="250" rx="16" style="fill: var(--card); stroke: var(--card-border);"/>
+          <rect x="14" y="14" width="54" height="8" rx="4" fill="#8b5cf6" opacity="0.6"/>
+          <circle cx="184" cy="18" r="4" fill="#3b82f6">
+            <animate attributeName="opacity" values="0.3;1;0.3" dur="1.3s" repeatCount="indefinite"/>
+          </circle>
+          <g transform="translate(14 46)">
+            <rect class="line-reveal" width="150" height="8" rx="4" fill="#0f172a" opacity="0.85"/>
+            <rect class="line-reveal" y="18" width="120" height="8" rx="4" fill="#0f172a" opacity="0.85" style="animation-delay: 0.6s"/>
+            <rect class="line-reveal" y="36" width="170" height="8" rx="4" fill="#0f172a" opacity="0.85" style="animation-delay: 1.2s"/>
+          </g>
+          <g transform="translate(14 110)">
+            <rect class="line-reveal" width="90" height="8" rx="4" fill="url(#heroGrad)" style="animation-delay: 1.8s"/>
+            <rect class="line-reveal" y="18" width="140" height="8" rx="4" fill="url(#heroGrad)" style="animation-delay: 2.2s"/>
+            <rect class="line-reveal" y="36" width="110" height="8" rx="4" fill="url(#heroGrad)" style="animation-delay: 2.6s"/>
+          </g>
+          <g transform="translate(14 182)">
+            <circle cx="4" cy="4" r="3" fill="#3b82f6"/>
+            <rect x="14" y="0" width="140" height="8" rx="4" fill="#94a3b8" opacity="0.5"/>
+            <circle cx="4" cy="22" r="3" fill="#8b5cf6"/>
+            <rect x="14" y="18" width="120" height="8" rx="4" fill="#94a3b8" opacity="0.5"/>
+            <circle cx="4" cy="40" r="3" fill="#3b82f6"/>
+            <rect x="14" y="36" width="150" height="8" rx="4" fill="#94a3b8" opacity="0.5"/>
+          </g>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="container">
+    <div class="section-head">
+      <div class="eyebrow">核心特色</div>
+      <h2>為上課而生，不只是另一個錄音 App</h2>
+      <p>每一個功能都為了一個目標：讓英文授課變得好跟得上、好複習、好整理。</p>
+    </div>
+
+    <div class="features">
+
+      <div class="feature">
+        <div class="feature-art">
+          <svg viewBox="0 0 220 140" width="100%" height="100%" aria-hidden="true">
+            <g transform="translate(44 70)">
+              <circle r="30" fill="none" stroke="#3b82f6" stroke-width="2" class="ring"/>
+              <circle r="30" fill="none" stroke="#8b5cf6" stroke-width="2" class="ring" style="animation-delay: 1s"/>
+              <rect x="-9" y="-18" width="18" height="32" rx="9" fill="url(#heroGrad)"/>
+              <path d="M-16 4 Q-16 22 0 22 Q16 22 16 4" fill="none" stroke="url(#heroGrad)" stroke-width="3" stroke-linecap="round"/>
+            </g>
+            <g transform="translate(100 40)">
+              <rect class="line-reveal" width="90" height="6" rx="3" fill="currentColor" opacity="0.7"/>
+              <rect class="line-reveal" y="14" width="70" height="6" rx="3" fill="currentColor" opacity="0.7" style="animation-delay: 0.6s"/>
+              <rect class="line-reveal" y="28" width="100" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 1.1s"/>
+              <rect class="line-reveal" y="42" width="80" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 1.6s"/>
+              <rect class="line-reveal" y="56" width="50" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 2.1s"/>
+            </g>
+          </svg>
+        </div>
+        <h3>
+          <span class="feat-h3-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+          </span>
+          即時英文轉錄
+        </h3>
+        <p>本地 Whisper 推論，<strong>完全離線可用</strong>。從 Tiny 到 Large-v3 Turbo 依硬體自選，~2 秒延遲的滾動式字幕。</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-art">
+          <svg viewBox="0 0 220 140" width="100%" height="100%" aria-hidden="true">
+            <g transform="translate(16 40)">
+              <text x="0" y="0" font-size="14" font-weight="700" fill="#3b82f6">EN</text>
+              <rect x="0" y="14" width="72" height="6" rx="3" fill="currentColor" opacity="0.55"/>
+              <rect x="0" y="28" width="56" height="6" rx="3" fill="currentColor" opacity="0.55"/>
+              <rect x="0" y="42" width="80" height="6" rx="3" fill="currentColor" opacity="0.55"/>
+              <rect x="0" y="56" width="64" height="6" rx="3" fill="currentColor" opacity="0.55"/>
+            </g>
+            <g transform="translate(110 70)">
+              <line x1="-18" y1="0" x2="18" y2="0" stroke="url(#heroGrad)" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 4">
+                <animate attributeName="stroke-dashoffset" from="16" to="0" dur="1s" repeatCount="indefinite"/>
+              </line>
+              <path d="M14 -6 L22 0 L14 6" fill="none" stroke="url(#heroGrad)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            </g>
+            <g transform="translate(140 40)">
+              <text x="0" y="0" font-size="14" font-weight="700" fill="#8b5cf6">中</text>
+              <rect class="line-reveal" x="0" y="14" width="64" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 0.2s"/>
+              <rect class="line-reveal" x="0" y="28" width="48" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 0.7s"/>
+              <rect class="line-reveal" x="0" y="42" width="60" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 1.2s"/>
+              <rect class="line-reveal" x="0" y="56" width="52" height="6" rx="3" fill="url(#heroGrad)" style="animation-delay: 1.7s"/>
+            </g>
+          </svg>
+        </div>
+        <h3>
+          <span class="feat-h3-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+          </span>
+          兩階段翻譯
+        </h3>
+        <p>即時粗翻秒回，背景 LLM 精修再自動覆寫上去。字幕一開始就有，看完整課後全部升級成自然流暢版本。</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-art">
+          <svg viewBox="0 0 220 140" width="100%" height="100%" aria-hidden="true">
+            <g transform="translate(110 70)">
+              <circle r="16" fill="url(#heroGrad)"/>
+              <text x="0" y="5" text-anchor="middle" fill="white" font-weight="800" font-size="14">AI</text>
+              <g class="orbit">
+                <circle r="46" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 4" opacity="0.3"/>
+                <g transform="translate(46 0)">
+                  <circle r="10" fill="#111a2e" stroke="#3b82f6" stroke-width="2"/>
+                  <text y="3" text-anchor="middle" fill="#3b82f6" font-weight="800" font-size="9">GH</text>
+                </g>
+                <g transform="translate(-46 0)">
+                  <circle r="10" fill="#111a2e" stroke="#8b5cf6" stroke-width="2"/>
+                  <text y="3" text-anchor="middle" fill="#8b5cf6" font-weight="800" font-size="9">GPT</text>
+                </g>
+              </g>
+              <g class="orbit-reverse">
+                <circle r="62" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 6" opacity="0.2"/>
+                <g transform="translate(0 -62)">
+                  <circle r="10" fill="#111a2e" stroke="#3b82f6" stroke-width="2"/>
+                  <text y="3" text-anchor="middle" fill="#3b82f6" font-weight="800" font-size="9">AC</text>
+                </g>
+                <g transform="translate(0 62)">
+                  <circle r="10" fill="#111a2e" stroke="#8b5cf6" stroke-width="2"/>
+                  <text y="3" text-anchor="middle" fill="#8b5cf6" font-weight="800" font-size="9">GEM</text>
+                </g>
+              </g>
+            </g>
+          </svg>
+        </div>
+        <h3>
+          <span class="feat-h3-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+          </span>
+          帶著你的 AI 來
+        </h3>
+        <p>Copilot Pro、ChatGPT Plus OAuth、OpenAI / Anthropic / Gemini API key 都支援。用你已經付過錢的訂閱，不用再開一份。</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-art">
+          <svg viewBox="0 0 220 140" width="100%" height="100%" aria-hidden="true">
+            <g transform="translate(30 26)">
+              <rect x="4" y="6" width="100" height="80" rx="8" fill="currentColor" opacity="0.1"/>
+              <rect x="2" y="3" width="100" height="80" rx="8" fill="currentColor" opacity="0.2"/>
+              <rect class="page-flip" width="100" height="80" rx="8" stroke="url(#heroGrad)" stroke-width="1.5" style="fill: var(--card);"/>
+              <g class="page-flip" pointer-events="none">
+                <rect x="12" y="12" width="52" height="6" rx="3" fill="url(#heroGrad)"/>
+                <rect x="12" y="26" width="76" height="4" rx="2" fill="currentColor" opacity="0.4"/>
+                <rect x="12" y="36" width="60" height="4" rx="2" fill="currentColor" opacity="0.4"/>
+                <rect x="12" y="46" width="72" height="4" rx="2" fill="currentColor" opacity="0.4"/>
+                <rect x="12" y="62" width="40" height="10" rx="3" fill="#8b5cf6" opacity="0.7"/>
+              </g>
+            </g>
+            <g transform="translate(150 70)">
+              <rect width="50" height="8" rx="4" fill="url(#heroGrad)">
+                <animate attributeName="width" values="20;50;50;20" keyTimes="0;0.4;0.8;1" dur="3.2s" repeatCount="indefinite"/>
+              </rect>
+              <rect y="16" width="40" height="4" rx="2" fill="currentColor" opacity="0.4"/>
+              <rect y="28" width="46" height="4" rx="2" fill="currentColor" opacity="0.4"/>
+              <rect y="40" width="34" height="4" rx="2" fill="currentColor" opacity="0.4"/>
+            </g>
+          </svg>
+        </div>
+        <h3>
+          <span class="feat-h3-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><line x1="16" x2="8" y1="13" y2="13"/><line x1="16" x2="8" y1="17" y2="17"/><line x1="10" x2="8" y1="9" y2="9"/></svg>
+          </span>
+          PDF 投影片同步
+        </h3>
+        <p>上傳講義，字幕自動對齊到你正在講的那張投影片。複習時點一下任一頁，直接跳到那段錄音。</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-art">
+          <svg viewBox="0 0 220 140" width="100%" height="100%" aria-hidden="true">
+            <g transform="translate(16 22)" class="bubble-rise">
+              <rect width="110" height="30" rx="14" fill="#3b82f6" opacity="0.18"/>
+              <rect x="10" y="10" width="60" height="4" rx="2" fill="#3b82f6"/>
+              <rect x="10" y="18" width="84" height="4" rx="2" fill="#3b82f6"/>
+            </g>
+            <g transform="translate(120 60)" class="bubble-rise" style="animation-delay: 1s">
+              <rect width="26" height="14" rx="7" fill="url(#heroGrad)"/>
+              <text x="13" y="10" font-size="9" fill="white" text-anchor="middle" font-weight="700">p.7</text>
+              <rect x="32" width="32" height="14" rx="7" fill="url(#heroGrad)" opacity="0.7"/>
+              <text x="48" y="10" font-size="9" fill="white" text-anchor="middle" font-weight="700">12:30</text>
+            </g>
+            <g transform="translate(40 86)" class="bubble-rise" style="animation-delay: 1.8s">
+              <rect width="160" height="38" rx="14" fill="url(#heroGrad)" opacity="0.18"/>
+              <rect x="10" y="9" width="120" height="4" rx="2" fill="#8b5cf6"/>
+              <rect x="10" y="18" width="100" height="4" rx="2" fill="#8b5cf6"/>
+              <rect x="10" y="27" width="80" height="4" rx="2" fill="#8b5cf6"/>
+            </g>
+          </svg>
+        </div>
+        <h3>
+          <span class="feat-h3-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 12a2 2 0 0 0 2-2V8H8"/><path d="M14 12a2 2 0 0 0 2-2V8h-2"/></svg>
+          </span>
+          RAG 課程問答
+        </h3>
+        <p>下課後和你的筆記對話。投影片 + 錄音都切塊算 embedding（本地 Candle 跑），AI 答題自動引用出自哪張投影片、哪段時間。</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-art">
+          <svg viewBox="0 0 220 140" width="100%" height="100%" aria-hidden="true">
+            <g opacity="0.5">
+              <line x1="20" y1="40" x2="60" y2="40" stroke="currentColor" stroke-width="2">
+                <animate attributeName="x1" values="20;60" dur="1.1s" repeatCount="indefinite"/>
+                <animate attributeName="x2" values="60;100" dur="1.1s" repeatCount="indefinite"/>
+              </line>
+              <line x1="14" y1="60" x2="70" y2="60" stroke="currentColor" stroke-width="2">
+                <animate attributeName="x1" values="14;70" dur="1.3s" repeatCount="indefinite"/>
+                <animate attributeName="x2" values="70;126" dur="1.3s" repeatCount="indefinite"/>
+              </line>
+              <line x1="24" y1="80" x2="58" y2="80" stroke="currentColor" stroke-width="2">
+                <animate attributeName="x1" values="24;58" dur="0.9s" repeatCount="indefinite"/>
+                <animate attributeName="x2" values="58;92" dur="0.9s" repeatCount="indefinite"/>
+              </line>
+              <line x1="18" y1="100" x2="56" y2="100" stroke="currentColor" stroke-width="2">
+                <animate attributeName="x1" values="18;56" dur="1.2s" repeatCount="indefinite"/>
+                <animate attributeName="x2" values="56;94" dur="1.2s" repeatCount="indefinite"/>
+              </line>
+            </g>
+            <g transform="translate(130 26)" class="bolt">
+              <path d="M30 0 L8 50 L26 50 L18 90 L52 34 L34 34 Z" fill="url(#heroGrad)" stroke="url(#heroGrad)" stroke-width="2" stroke-linejoin="round"/>
+            </g>
+          </svg>
+        </div>
+        <h3>
+          <span class="feat-h3-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </span>
+          GPU 加速
+        </h3>
+        <p>Windows CUDA / macOS Metal 皆支援。RTX 4060 Ti 上 Whisper 推論 <strong>~20× realtime</strong>，一小時的課 3 分鐘轉完。</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<section id="download" class="download">
+  <div class="container">
+    <div class="section-head">
+      <div class="eyebrow">跨平台支援</div>
+      <h2>挑一個版本<span class="grad-text">開始</span></h2>
+      <p>macOS 已簽章 + notarize，首次開啟不跳 Gatekeeper 警告。Windows 有 NVIDIA GPU 的請用 CUDA 版加速。</p>
+    </div>
+
+    <div class="download-grid">
+
+      <a class="dl-card" href="https://github.com/sklonely/ClassNoteAI/releases/latest">
+        <div class="dl-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" style="color:#8b5cf6" aria-hidden="true"><path d="M16.365 1.43c0 1.14-.493 2.27-1.177 3.08-.744.9-1.99 1.57-2.987 1.57-.12 0-.23-.02-.3-.03-.01-.06-.04-.22-.04-.39 0-1.15.572-2.27 1.206-2.98.804-.94 2.142-1.64 3.248-1.68.03.13.05.28.05.43zm4.565 15.71c-.03.07-.463 1.58-1.518 3.12-.945 1.34-1.94 2.71-3.43 2.71-1.517 0-1.9-.88-3.63-.88-1.698 0-2.302.91-3.67.91-1.377 0-2.332-1.26-3.428-2.8-1.287-1.82-2.323-4.63-2.323-7.28 0-4.28 2.797-6.55 5.552-6.55 1.448 0 2.675.95 3.6.95.865 0 2.222-1.01 3.902-1.01.613 0 2.886.06 4.374 2.19-.13.08-2.608 1.5-2.608 4.5 0 3.4 3.058 4.62 3.08 4.63z"/></svg>
+        </div>
+        <h3>macOS（Apple Silicon）</h3>
+        <p>已簽章 + notarize。M1 / M2 / M3 皆支援，Metal GPU 自動啟用。</p>
+        <span class="btn btn-primary">下載 .dmg →</span>
+      </a>
+
+      <a class="dl-card" href="https://github.com/sklonely/ClassNoteAI/releases/latest">
+        <div class="dl-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" style="color:#3b82f6" aria-hidden="true"><path d="M3 5.479l7.548-1.027v7.316H3V5.479zM3 18.521l7.548 1.027v-7.317H3v6.29zm8.377 1.14L21 20.979V12.5h-9.623v7.161zm0-16.185V11.5H21V3.02L11.377 3.476z"/></svg>
+        </div>
+        <h3>Windows（一般）</h3>
+        <p>Intel / AMD CPU 皆可。全部用 CPU 轉錄，不需要顯卡。</p>
+        <span class="btn btn-primary">下載 .exe →</span>
+      </a>
+
+      <a class="dl-card" href="https://github.com/sklonely/ClassNoteAI/releases/latest">
+        <div class="dl-icon">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:#76b900" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+        <h3>Windows + NVIDIA GPU</h3>
+        <p>CUDA 加速版。RTX 系列 / GTX 16xx 以上享 ~20× realtime 轉錄速度。</p>
+        <span class="btn btn-primary">下載 CUDA 版 →</span>
+      </a>
+
+    </div>
+  </div>
+</section>
+
+<section id="privacy">
+  <div class="container">
+    <div class="privacy">
+      <div class="privacy-eyebrow">
+        <svg class="icon icon-18 lock-glow" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="5" y="11" width="14" height="10" rx="2"/>
+          <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+        </svg>
+        PRIVACY BY DESIGN
+      </div>
+      <h2>你的錄音，不會離開你的電腦</h2>
+      <p class="lead">
+        ClassNote AI 把所有錄音、字幕、筆記、embedding 都存在你電腦的 SQLite 資料庫。
+        沒有中間伺服器。沒有 telemetry。沒有使用者追蹤。帳號也不需要。
+      </p>
+      <div class="privacy-grid">
+        <div class="privacy-item">
+          <strong>
+            <svg class="icon icon-18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            本機儲存
+          </strong><br/>
+          <span style="opacity:0.9">所有課程資料都在你電腦上的 SQLite</span>
+        </div>
+        <div class="privacy-item">
+          <strong>
+            <svg class="icon icon-18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.69 14a6.9 6.9 0 0 0 .31-2V5l-8-3-3.16 1.18"/><path d="M4.73 4.73 4 5v7c0 6 8 10 8 10a20.29 20.29 0 0 0 5.62-4.38"/><line x1="2" x2="22" y1="2" y2="22"/></svg>
+            零 telemetry
+          </strong><br/>
+          <span style="opacity:0.9">App 不回傳任何使用資料</span>
+        </div>
+        <div class="privacy-item">
+          <strong>
+            <svg class="icon icon-18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
+            你的 API key
+          </strong><br/>
+          <span style="opacity:0.9">AI 呼叫直接走你自己的訂閱，不經我方</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container footer-inner">
+    <div>
+      © 2026 ClassNote AI · MIT License · 以
+      <svg class="icon icon-14" viewBox="0 0 24 24" fill="currentColor" style="color: #ec4899" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      做給學生用
+    </div>
+    <div style="display:flex;gap:20px;">
+      <a href="https://github.com/sklonely/ClassNoteAI">GitHub</a>
+      <a href="https://github.com/sklonely/ClassNoteAI/releases/latest">Releases</a>
+      <a href="https://github.com/sklonely/ClassNoteAI/blob/main/ClassNoteAI/README.md">使用文件</a>
+      <a href="https://github.com/sklonely/ClassNoteAI/blob/main/CONTRIBUTING.md">開發者</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

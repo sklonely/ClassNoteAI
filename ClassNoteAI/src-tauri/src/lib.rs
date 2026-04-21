@@ -16,15 +16,23 @@ mod setup;
 pub mod paths;
 // 統一下載管理模塊
 pub mod downloads;
+pub mod diagnostics;
 // 同步模塊
 mod sync;
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
 mod oauth;
 // Crash-safe recording — incremental PCM persistence + orphan recovery
 pub mod recording;
+// GPU backend detection (CUDA via nvidia-smi, Metal via cfg, Vulkan via filesystem)
+mod gpu;
+// Pre-WebView2 experimental toggles (remote debug port, etc). Public
+// so `main()` can `remote_debug_enabled()` before Tauri spins up.
+pub mod dev_flags;
 
 use embedding::EmbeddingService;
-use tauri::Emitter;
+use log::LevelFilter;
+use tauri::{Emitter, Manager};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tokio::sync::Mutex;
 use whisper::WhisperService; // For window.emit()
 
@@ -509,9 +517,55 @@ async fn load_translation_model_by_name(model_name: String) -> Result<String, St
         return Err(format!("模型目錄不存在: {:?}", model_dir));
     }
 
-    // 檢查 CT2 模型文件 (model.bin)
+    // 檢查 CT2 模型文件 (model.bin).
+    //
+    // Some older app builds / manual extracts left the model files
+    // one directory deeper than expected:
+    //     .../m2m100-418M-ct2-int8/m2m100-418M-ct2-int8/model.bin
+    // instead of the flat layout this command expects:
+    //     .../m2m100-418M-ct2-int8/model.bin
+    // The current downloader strips the top-level dir correctly, so
+    // fresh installs don't hit this — but users migrating from older
+    // versions do, and the error ("CT2 模型文件不存在") is opaque. We
+    // self-heal on first load: if outer model.bin is missing but a
+    // nested `{model_name}/model.bin` exists under the same root,
+    // flatten it by moving every entry up one level. One-shot;
+    // subsequent loads hit the check_path fast path.
     let model_bin_path = model_dir.join("model.bin");
-
+    if !model_bin_path.exists() {
+        let nested_dir = model_dir.join(&model_name);
+        let nested_bin = nested_dir.join("model.bin");
+        if nested_bin.exists() {
+            println!(
+                "[TranslationModel] 偵測到巢狀模型目錄，自動 flatten: {:?} -> {:?}",
+                nested_dir, model_dir
+            );
+            match std::fs::read_dir(&nested_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let from = entry.path();
+                        let to = model_dir.join(entry.file_name());
+                        if let Err(e) = std::fs::rename(&from, &to) {
+                            return Err(format!(
+                                "自動 flatten 失敗 ({} → {}): {}",
+                                from.display(),
+                                to.display(),
+                                e
+                            ));
+                        }
+                    }
+                    // Now the inner dir should be empty — remove it.
+                    let _ = std::fs::remove_dir(&nested_dir);
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "讀取巢狀目錄失敗 {:?}: {}",
+                        nested_dir, e
+                    ));
+                }
+            }
+        }
+    }
     if !model_bin_path.exists() {
         return Err(format!("CT2 模型文件不存在: {:?}", model_bin_path));
     }
@@ -1182,6 +1236,217 @@ async fn calculate_similarity(text_a: String, text_b: String) -> Result<f32, Str
     Ok(EmbeddingService::cosine_similarity(&emb_a, &emb_b))
 }
 
+/// Read the current "Remote debug port" experimental toggle.
+/// Returns the persisted flag from `dev-flags.toml`; `false` when
+/// the file doesn't exist or is unreadable.
+#[tauri::command]
+fn get_remote_debug_enabled() -> bool {
+    dev_flags::remote_debug_enabled()
+}
+
+/// Persist the toggle. Frontend Settings shows a "請重啟應用程式"
+/// hint after calling this — the change doesn't take effect until
+/// the next `main()` runs, because WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+/// is read at WebView2 process-start time only.
+#[tauri::command]
+fn set_remote_debug_enabled(enabled: bool) -> Result<(), String> {
+    let mut flags = dev_flags::load();
+    flags.remote_debug_port_enabled = enabled;
+    dev_flags::save(&flags)
+}
+
+/// Given N sentence-groups (one per Note section), return `top_k`
+/// representative sentences per group via a GPU-capable centroid
+/// extractor. Empty or small groups are passed through unchanged.
+///
+/// This is Layer-1 of Note AI structurization — the extractive pass
+/// that runs automatically on section creation. The opt-in LLM
+/// enrichment (Layer 2) happens through a separate command.
+#[tauri::command]
+async fn extract_section_highlights(
+    sections: Vec<Vec<String>>,
+    top_k: Option<usize>,
+) -> Result<Vec<Vec<String>>, String> {
+    let top_k = top_k.unwrap_or(3).max(1);
+    let mut service_guard = EMBEDDING_SERVICE.lock().await;
+    let service = service_guard
+        .as_mut()
+        .ok_or("Embedding 模型未加載".to_string())?;
+    service
+        .extract_representative_sentences(&sections, top_k)
+        .map_err(|e| format!("section highlight extraction failed: {}", e))
+}
+
+/// Structured search hit returned by `semantic_search_*`. Wraps the
+/// embedding row's metadata (minus the raw embedding vector, which the
+/// frontend doesn't need for display) plus the computed similarity.
+///
+/// Field names use snake_case to match the existing `BackendEmbeddingRow`
+/// payload — the frontend's `toRecord` helper can then reuse its
+/// existing camelCase mapping.
+#[derive(serde::Serialize, Debug)]
+struct SearchHit {
+    id: String,
+    lecture_id: String,
+    chunk_text: String,
+    source_type: String,
+    position: i64,
+    page_number: Option<i64>,
+    created_at: String,
+    similarity: f32,
+}
+
+/// Apply the same preferred-page boost the old JS path did. Kept as a
+/// tiny helper so the single-lecture and course-wide paths below
+/// don't drift.
+fn boost_for_page(sim: f32, chunk_page: Option<i64>, preferred_page: Option<i64>) -> f32 {
+    match (preferred_page, chunk_page) {
+        (Some(pref), Some(page)) => {
+            let gap = (page - pref).abs();
+            if gap <= 5 {
+                sim + 0.1
+            } else if gap <= 10 {
+                sim + 0.05
+            } else {
+                sim
+            }
+        }
+        _ => sim,
+    }
+}
+
+/// Rank chunks in one lecture by cosine similarity to `query`, with an
+/// optional boost for chunks near `preferred_page` (PDF-slide-aware
+/// RAG). Single Candle matmul on the service's device replaces the
+/// per-chunk JS cosine loop we used to run in the renderer.
+#[tauri::command]
+async fn semantic_search_lecture(
+    lecture_id: String,
+    query: String,
+    top_k: Option<usize>,
+    preferred_page: Option<i64>,
+) -> Result<Vec<SearchHit>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    let rows = db
+        .get_embeddings_by_lecture(&lecture_id)
+        .map_err(|e| format!("get embeddings: {}", e))?;
+    drop(db);
+
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut service_guard = EMBEDDING_SERVICE.lock().await;
+    let service = service_guard
+        .as_mut()
+        .ok_or("Embedding 模型未加載".to_string())?;
+    let query_emb = service
+        .generate_embedding(&query)
+        .map_err(|e| format!("query embed: {}", e))?;
+    let chunks: Vec<Vec<f32>> = rows.iter().map(|r| r.embedding.clone()).collect();
+    let sims = service
+        .batch_cosine_similarity(&query_emb, &chunks)
+        .map_err(|e| format!("similarity: {}", e))?;
+    drop(service_guard);
+
+    let top_k = top_k.unwrap_or(5);
+    let mut scored: Vec<(usize, f32)> = sims
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| (i, boost_for_page(s, rows[i].page_number, preferred_page)))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+
+    Ok(scored
+        .into_iter()
+        .map(|(i, score)| {
+            let r = &rows[i];
+            SearchHit {
+                id: r.id.clone(),
+                lecture_id: r.lecture_id.clone(),
+                chunk_text: r.chunk_text.clone(),
+                source_type: r.source_type.clone(),
+                position: r.position,
+                page_number: r.page_number,
+                created_at: r.created_at.clone(),
+                similarity: score,
+            }
+        })
+        .collect())
+}
+
+/// Cross-lecture search: union every lecture in a course and rank the
+/// combined chunk pool. One matmul over the union, not per-lecture —
+/// for a typical 10-lecture × 200-chunk course that's 2000 rows, and
+/// the GPU finishes the whole search in a handful of ms.
+#[tauri::command]
+async fn semantic_search_course(
+    course_id: String,
+    user_id: String,
+    query: String,
+    top_k: Option<usize>,
+) -> Result<Vec<SearchHit>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("db init: {}", e))?;
+    let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+    let lectures = db
+        .list_lectures_by_course(&course_id, &user_id)
+        .map_err(|e| format!("list lectures: {}", e))?;
+
+    let mut all_rows: Vec<storage::EmbeddingRow> = Vec::new();
+    for lec in &lectures {
+        let rows = db
+            .get_embeddings_by_lecture(&lec.id)
+            .map_err(|e| format!("get embeddings for {}: {}", lec.id, e))?;
+        all_rows.extend(rows);
+    }
+    drop(db);
+
+    if all_rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut service_guard = EMBEDDING_SERVICE.lock().await;
+    let service = service_guard
+        .as_mut()
+        .ok_or("Embedding 模型未加載".to_string())?;
+    let query_emb = service
+        .generate_embedding(&query)
+        .map_err(|e| format!("query embed: {}", e))?;
+    let chunks: Vec<Vec<f32>> = all_rows.iter().map(|r| r.embedding.clone()).collect();
+    let sims = service
+        .batch_cosine_similarity(&query_emb, &chunks)
+        .map_err(|e| format!("similarity: {}", e))?;
+    drop(service_guard);
+
+    let top_k = top_k.unwrap_or(5);
+    let mut scored: Vec<(usize, f32)> = sims.iter().enumerate().map(|(i, &s)| (i, s)).collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+
+    Ok(scored
+        .into_iter()
+        .map(|(i, score)| {
+            let r = &all_rows[i];
+            SearchHit {
+                id: r.id.clone(),
+                lecture_id: r.lecture_id.clone(),
+                chunk_text: r.chunk_text.clone(),
+                source_type: r.source_type.clone(),
+                position: r.position,
+                page_number: r.page_number,
+                created_at: r.created_at.clone(),
+                similarity: score,
+            }
+        })
+        .collect())
+}
+
 #[cfg(feature = "candle-embed")]
 #[tauri::command]
 async fn download_embedding_model_cmd(
@@ -1460,7 +1725,7 @@ fn try_keynote_conversion(
 
     println!("Executing Keynote conversion...");
 
-    let output = Command::new("osascript")
+    let output = crate::utils::command::no_window("osascript")
         .arg("-e")
         .arg(&script)
         .output()
@@ -1499,7 +1764,7 @@ fn try_pages_conversion(input_path: &str, output_path: &std::path::Path) -> Resu
         output_path.to_string_lossy().replace("\"", "\\\"")
     );
 
-    let output = Command::new("osascript")
+    let output = crate::utils::command::no_window("osascript")
         .arg("-e")
         .arg(&script)
         .output()
@@ -1544,7 +1809,7 @@ fn try_office_mac_conversion(
         output_path.to_string_lossy().replace("\"", "\\\"")
     );
 
-    let output = Command::new("osascript")
+    let output = crate::utils::command::no_window("osascript")
         .arg("-e")
         .arg(&script)
         .output()
@@ -1597,7 +1862,7 @@ fn convert_with_libreoffice(
 
     println!("Using LibreOffice: {}", soffice_cmd);
 
-    let output = Command::new(soffice_cmd)
+    let output = crate::utils::command::no_window(soffice_cmd)
         .arg("--headless")
         .arg("--convert-to")
         .arg("pdf")
@@ -1723,6 +1988,61 @@ async fn close_devtools(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn read_recent_log(lines: usize, app_handle: tauri::AppHandle) -> Result<String, String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to resolve log dir: {}", e))?;
+    let log_path = log_dir.join("classnoteai.log");
+
+    if !log_path.exists() {
+        return Ok(String::new());
+    }
+
+    let file = File::open(&log_path).map_err(|e| format!("Failed to open log file: {}", e))?;
+    let reader = BufReader::new(file);
+    let all_lines = reader
+        .lines()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read log file: {}", e))?;
+
+    let limit = lines.min(2000);
+    if limit == 0 {
+        return Ok(String::new());
+    }
+
+    let start = all_lines.len().saturating_sub(limit);
+    Ok(all_lines[start..].join("\n"))
+}
+
+#[tauri::command]
+async fn open_log_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to resolve log dir: {}", e))?;
+
+    app_handle
+        .opener()
+        .open_path(log_dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn export_diagnostic_package(
+    input: crate::diagnostics::DiagnosticPackageInput,
+    include_audio: bool,
+) -> Result<String, String> {
+    let path = crate::diagnostics::build_diagnostic_zip(input, include_audio)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Populate HTTP_PROXY/HTTPS_PROXY from Windows Internet Settings so
@@ -1744,11 +2064,28 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("classnoteai".into()),
+                    }),
+                    Target::new(TargetKind::Stdout),
+                ])
+                .level(if cfg!(debug_assertions) {
+                    LevelFilter::Info
+                } else {
+                    LevelFilter::Warn
+                })
+                .rotation_strategy(RotationStrategy::KeepSome(5))
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .manage(oauth::OAuthListenerState::default())
         .setup(|app| {
             // DevTools 現在由前端控制，根據 developerMode 設定
             // 前端可透過 invoke 呼叫開啟
@@ -1771,6 +2108,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             close_devtools,
+            read_recent_log,
+            open_log_folder,
+            export_diagnostic_package,
             detect_speech_segments,
             greet,
             load_whisper_model,
@@ -1784,7 +2124,8 @@ pub fn run() {
             list_available_translation_models,
             load_translation_model_by_name,
             // OAuth callback listener
-            oauth::oauth_listen_for_code,
+            oauth::oauth_bind_port,
+            oauth::oauth_wait_for_code,
             oauth::oauth_cancel,
             // 數據存儲相關
             save_course,
@@ -1837,6 +2178,11 @@ pub fn run() {
             generate_embedding,
             generate_embeddings_batch,
             calculate_similarity,
+            semantic_search_lecture,
+            semantic_search_course,
+            extract_section_highlights,
+            get_remote_debug_enabled,
+            set_remote_debug_enabled,
             download_embedding_model_cmd,
             // 文檔轉換相關
             convert_to_pdf,
@@ -1891,6 +2237,8 @@ pub fn run() {
             recording::video_import::delete_temp_pcm,
             recording::video_import::release_import_whisper,
             recording::video_import::resolve_whisper_model_path,
+            gpu::detect_gpu_backends,
+            gpu::get_build_variant,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())

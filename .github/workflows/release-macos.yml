@@ -94,8 +94,62 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      # ===== Apple code-signing setup =====
+      # We import the Developer ID Application cert into a dedicated
+      # keychain, then discover the identity name and export it for
+      # `tauri build` to consume. Skips cleanly on PR / manual runs that
+      # don't have the secrets set so unsigned local builds still work.
+      - name: Import Apple code-signing certificate
+        id: apple_cert
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: .
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Put our keychain in the search list so codesign can see it.
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Discover the first Developer ID Application identity so we
+          # don't need a 6th APPLE_SIGNING_IDENTITY secret.
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No 'Developer ID Application' identity found in imported cert."
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            exit 1
+          fi
+          echo "signing_identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "Discovered signing identity: $IDENTITY"
+
       # ===== Build Tauri =====
+      # When APPLE_* secrets are present, Tauri's macOS bundler signs the
+      # .app with APPLE_SIGNING_IDENTITY (discovered above) and notarizes
+      # via APPLE_ID / APPLE_PASSWORD (app-specific password) / APPLE_TEAM_ID.
+      # PR / manual runs without secrets skip signing — env vars just expand
+      # to empty strings and Tauri produces an unsigned dev bundle.
       - name: Build Tauri (Apple Silicon)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_cert.outputs.signing_identity }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri build -- --target aarch64-apple-darwin
 
       # Intel x86_64 暫時禁用 - GitHub Actions macOS runner 不支持 AVX-512

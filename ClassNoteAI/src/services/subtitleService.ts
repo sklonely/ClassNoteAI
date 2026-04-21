@@ -166,6 +166,31 @@ class SubtitleService {
   }
 
   /**
+   * Replace the entire segment array in one shot + notify once.
+   *
+   * Intended for reload-from-DB flows (e.g. video-import's per-chunk
+   * refresh): the old pattern was `clear() + addSegment() × N`,
+   * which fires N+1 notifyListeners calls — a 1000-segment lecture
+   * re-triggered 1001 React re-renders per refresh, and the video
+   * import does up to 140 refreshes for 70 chunks = ~140k re-renders.
+   * This method does 1 notify per refresh instead.
+   *
+   * Caller is responsible for passing fully-formed segments (same
+   * shape `addSegment` would produce). We deliberately do NOT run
+   * the display-text fallback chain here — bulk callers already
+   * have clean data from DB rows.
+   */
+  setSegments(segments: SubtitleSegment[], lectureId?: string): void {
+    this.segments = segments;
+    if (lectureId !== undefined) {
+      this.lectureId = lectureId;
+    }
+    this.currentText = '';
+    this.currentTranslation = undefined;
+    this.notifyListeners();
+  }
+
+  /**
    * 訂閱狀態變化
    */
   subscribe(listener: (state: SubtitleState) => void): () => void {

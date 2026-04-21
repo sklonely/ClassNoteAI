@@ -122,9 +122,21 @@ export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: Subti
                   : segment.startTime;
             const relativeMs = Math.max(0, segment.startTime - refEpochMs);
 
+            // MM:SS.cc — centiseconds precision. Whisper.cpp's native
+            // timing grid is 10 ms (centiseconds) so two digits after
+            // the decimal fully reflect what the model actually knows;
+            // showing a third millisecond digit would just be `0` all
+            // the time. Live-recording segments store Date.now() so
+            // they can theoretically be ms-precise, but rounding down
+            // to centiseconds for display keeps the format uniform
+            // between both paths.
             const minutes = Math.floor(relativeMs / 60000);
             const seconds = Math.floor((relativeMs % 60000) / 1000);
-            const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            const centis = Math.floor((relativeMs % 1000) / 10);
+            const timeString =
+                `${minutes.toString().padStart(2, '0')}:` +
+                `${seconds.toString().padStart(2, '0')}.` +
+                `${centis.toString().padStart(2, '0')}`;
 
             const isActive = index === activeIdx;
 

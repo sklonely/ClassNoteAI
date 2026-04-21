@@ -78,6 +78,40 @@ interface PcmExtractResult {
     sample_count: number;
 }
 
+/** Minimal FIFO semaphore — caps concurrent execution of the async
+ *  tasks handed to `run`. Used to stop the translate pipeline from
+ *  firing 70 simultaneous `translate_ct2_batch` invokes at a single
+ *  CT2 translator (which thread-parallelizes internally and thrashes
+ *  the CPU/GPU when over-saturated).
+ *
+ *  Not worth pulling a `p-limit` npm dep for 15 lines.
+ */
+function makeLimiter(max: number) {
+    let running = 0;
+    const queue: (() => void)[] = [];
+    const next = () => {
+        if (running >= max) return;
+        const run = queue.shift();
+        if (run) {
+            running++;
+            run();
+        }
+    };
+    return async <T>(task: () => Promise<T>): Promise<T> => {
+        return new Promise<T>((resolve, reject) => {
+            queue.push(() => {
+                task()
+                    .then(resolve, reject)
+                    .finally(() => {
+                        running--;
+                        next();
+                    });
+            });
+            next();
+        });
+    };
+}
+
 /** Chunk length trade-off. Smaller chunks → first subtitles appear
  *  faster (better perceived latency) at the cost of more per-chunk
  *  warmup overhead. 60 s is the sweet spot for batch import:
@@ -95,7 +129,21 @@ interface PcmExtractResult {
  *  video where we already have the whole file — so we don't need
  *  LocalAgreement; just a small-enough chunk to feel responsive. */
 const CHUNK_SEC = 60;
-const TRANSLATE_BATCH = 64;
+/** Segments per invoke to translate_ct2_batch. Larger = fewer IPC
+ *  round-trips; CT2's internal batching handles the work. Bumped from
+ *  64 → 256 after the first probe showed translation stuck on IPC
+ *  overhead (user observation: "卡在等待資料傳入的部分"). A 60s
+ *  chunk has ~15-25 segments, so one chunk now fits in a single call
+ *  with headroom. Larger batches would need us to aggregate across
+ *  chunks and that loses the per-chunk save boundary. */
+const TRANSLATE_BATCH = 256;
+/** Ceiling on concurrent `translate_ct2_batch` invokes. The first
+ *  probe fired 70 in parallel at the same CT2 translator; CT2 already
+ *  thread-parallelizes per call, so stacking 70 on top thrashes the
+ *  CPU scheduler and actually *slows* each call. Empirically 2 is a
+ *  good ceiling — the translator stays busy, no idle slots, no
+ *  contention. Raise only if per-chunk translate_p95 is >> 1s. */
+const TRANSLATE_CONCURRENCY = 2;
 
 /** LLM-backed fine refinement pass. Runs AFTER rough transcribe +
  *  CT2 translate have landed all subtitles to DB. Each batch asks the
@@ -313,6 +361,18 @@ export const videoImportService = {
             const savedSubtitleIds = new Map<WhisperSegment, string>();
             const allSegments: WhisperSegment[] = [];
             const translationPromises: Promise<void>[] = [];
+            const translateLimit = makeLimiter(TRANSLATE_CONCURRENCY);
+
+            // Per-chunk latency records so the end-of-run TIMING line
+            // can surface p50/p95 for each stage. Distinguishes I/O
+            // (DB save) from compute (Whisper/CT2) — with GPU Whisper
+            // getting near-instant, the next bottleneck is almost
+            // always the DB writes or the Tauri IPC round-trip.
+            const chunkTimings: {
+                transcribeMs: number;
+                saveMs: number;
+                translateMs: number;
+            }[] = [];
 
             let transcribed = 0;
             let translated = 0;
@@ -368,7 +428,8 @@ export const videoImportService = {
                     },
                 );
 
-                const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                const transcribeMs = performance.now() - t0;
+                const elapsed = (transcribeMs / 1000).toFixed(1);
                 console.log(
                     `[videoImport] chunk ${i + 1}/${total} transcribe done in ${elapsed}s — segments=${result.segments.length}, lang=${result.language ?? 'unknown'}`,
                 );
@@ -420,31 +481,54 @@ export const videoImportService = {
                         created_at: nowIso,
                     };
                 });
+                let saveMs = 0;
                 if (chunkSubtitles.length > 0) {
+                    const tSave = performance.now();
                     try {
+                        // Save EN silently — persistence for crash
+                        // safety + AI index. Deliberately NO
+                        // `subtitlesChanged` emit here: we only refresh
+                        // the visible subtitle panel once translation
+                        // lands so EN and ZH always appear together.
+                        // Prior behaviour fired EN-only refreshes and
+                        // users saw minutes of English with ZH trailing
+                        // awkwardly as translate backed up.
                         await storageService.saveSubtitles(chunkSubtitles);
+                        saveMs = performance.now() - tSave;
+                        // Still emit a progress message (no
+                        // subtitlesChanged) so the header progress
+                        // indicator keeps ticking.
                         emit({
                             stage: 'transcribing',
                             message: `轉錄第 ${i + 1}/${total} 段中（已完成 ${transcribed}，翻譯 ${translated}/${total}）`,
                             transcribedChunks: transcribed,
                             translatedChunks: translated,
                             totalChunks: total,
-                            subtitlesChanged: true,
                         });
                     } catch (err) {
+                        saveMs = performance.now() - tSave;
                         console.warn(
                             `[videoImport] chunk ${i + 1} subtitle save failed:`,
                             err,
                         );
                     }
                 }
+                // Reserve a timing slot now; translate promise below
+                // writes to this exact index when it finishes.
+                const timingIdx = chunkTimings.length;
+                chunkTimings.push({
+                    transcribeMs,
+                    saveMs,
+                    translateMs: 0,
+                });
 
                 // (b) Kick off translation for just this chunk. When it
                 //     finishes we update the rows saved in (a) in place
                 //     with the Chinese text. Errors degrade to
                 //     English-only — same graceful fallback as before.
                 translationPromises.push(
-                    (async () => {
+                    translateLimit(async () => {
+                        const tTr = performance.now();
                         const texts = chunkSegs.map((s) => s.text.trim());
                         const outputs: string[] = new Array(texts.length).fill('');
                         for (let i = 0; i < texts.length; i += TRANSLATE_BATCH) {
@@ -488,8 +572,9 @@ export const videoImportService = {
                             );
                         }
                         translated++;
+                        chunkTimings[timingIdx].translateMs = performance.now() - tTr;
                         console.log(
-                            `[videoImport] chunk ${chunkIndex + 1}/${total} translate done — ${translated}/${total} total`,
+                            `[videoImport] chunk ${chunkIndex + 1}/${total} translate done in ${(chunkTimings[timingIdx].translateMs / 1000).toFixed(2)}s — ${translated}/${total} total`,
                         );
                         emit({
                             stage: transcribed < total ? 'transcribing' : 'translating',
@@ -502,7 +587,7 @@ export const videoImportService = {
                             totalChunks: total,
                             subtitlesChanged: true,
                         });
-                    })(),
+                    }),
                 );
             }
 
@@ -575,6 +660,29 @@ export const videoImportService = {
             }
             console.log(
                 `[videoImport] TIMING total=${((performance.now() - t0) / 1000).toFixed(1)}s  |  ${breakdown.join('  ')}`,
+            );
+
+            // Per-chunk latency percentiles. With GPU transcribe
+            // dropping to sub-second, the bottleneck shifts from
+            // compute to IPC / DB writes — this surfaces which
+            // stage is worth optimising next (e.g. if saveMs p95
+            // > transcribeMs p95 you're SQLite-bound, not model-
+            // bound).
+            const pct = (arr: number[], p: number) => {
+                if (arr.length === 0) return 0;
+                const s = [...arr].sort((a, b) => a - b);
+                return s[Math.min(s.length - 1, Math.floor((s.length - 1) * p))];
+            };
+            const tr = chunkTimings.map((c) => c.transcribeMs);
+            const sv = chunkTimings.map((c) => c.saveMs);
+            const tl = chunkTimings.map((c) => c.translateMs).filter((v) => v > 0);
+            const sum = (arr: number[]) => arr.reduce((a, b) => a + b, 0);
+            const fmt = (ms: number) => (ms / 1000).toFixed(2) + 's';
+            console.log(
+                `[videoImport] PER-CHUNK n=${tr.length}` +
+                    ` | transcribe p50=${fmt(pct(tr, 0.5))} p95=${fmt(pct(tr, 0.95))} sum=${fmt(sum(tr))}` +
+                    ` | save p50=${fmt(pct(sv, 0.5))} p95=${fmt(pct(sv, 0.95))} sum=${fmt(sum(sv))}` +
+                    ` | translate p50=${fmt(pct(tl, 0.5))} p95=${fmt(pct(tl, 0.95))} sum=${fmt(sum(tl))}`,
             );
 
             emit({ stage: 'done', message: '完成' });

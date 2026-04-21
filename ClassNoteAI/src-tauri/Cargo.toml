@@ -1,6 +1,6 @@
 [package]
 name = "classnoteai"
-version = "0.5.3"
+version = "0.6.0-alpha.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -22,23 +22,100 @@ default = ["candle-embed"]
 # Candle embedding - 使用 Candle 框架進行文本 Embedding（預設啟用）
 candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 
+# Whisper GPU backends. All three are opt-in and OFF by default — the
+# CPU build stays the baseline, so any regression from a broken
+# backend can't brick the default install. Enable exactly one of
+# these at build time depending on the target platform.
+#
+#   gpu-cuda     NVIDIA CUDA. Requires CUDA Toolkit (~3 GB) present at
+#                build time; at runtime the cudart64_* DLL ships next
+#                to the app (~10–30 MB). On an RTX 4060 Ti,
+#                large-v3-turbo runs ~20× realtime vs ~0.5× on CPU.
+#                Windows + Linux only.
+#   gpu-vulkan   Cross-vendor GPU via Vulkan. Build needs the Vulkan
+#                SDK (~500 MB); runtime uses the Vulkan loader that
+#                ships with every modern GPU driver — no extra DLLs.
+#                Works on NVIDIA, AMD, Intel. Slightly slower than
+#                native CUDA but the broadest GPU coverage.
+#   gpu-metal    Apple Metal. Auto-enabled below via target_os cfg, so
+#                macOS users never need to pass a flag.
+#
+# Build examples:
+#   cargo build                                        # CPU (default)
+#   cargo build --features gpu-cuda                    # Windows + NVIDIA
+#   cargo build --features gpu-vulkan                  # Windows + AMD/Intel or Linux
+#   # (no extra flag on macOS — metal is wired via target-specific dep below)
+# Each GPU feature fans out to every crate that can benefit. User
+# directive: "GPU 的加速可以用在任何支援 GPU 加速的項目上。只要我們手邊
+# 有 GPU 資源，且執行速度比 CPU 快，就應該盡可能地使用". So:
+#   - whisper-rs              speech-to-text (headline win; 20× on RTX)
+#   - candle-core/nn/transformers   BGE-small embedding for the RAG
+#                             index. Halves index time on a 400-chunk
+#                             lecture.
+#   - ct2rs                   local translation (M2M-100). `cuda-dynamic-
+#                             loading` means the built binary still
+#                             starts on a machine without cudart + just
+#                             falls back to CPU for translation, rather
+#                             than refusing to launch. Important because
+#                             the same binary ships to users without
+#                             NVIDIA drivers.
+# Vulkan/Metal aren't supported by ct2rs (CUDA-only GPU backend). Metal
+# covers whisper + candle; Vulkan covers only whisper.
+gpu-cuda = [
+    "whisper-rs/cuda",
+    # candle-core/cuda disabled in the Windows CI build. candle-kernels
+    # 0.9.2 compiles src/moe/moe_wmma.cu through bindgen_cuda 0.1.6's
+    # rayon-parallel nvcc invocation. On a 4-core windows-latest runner
+    # (16GB RAM) the parallel PTXAS processes OOM silently — nvcc
+    # returns exit 1 with empty stdout + stderr. candle 0.10.2 has the
+    # same breakage. Ampere (sm_80+) users would also lose native SASS
+    # if we bumped CUDA_COMPUTE_CAP to paper over the OOM.
+    #
+    # Net effect: BGE embedding stays on CPU in shipped Windows builds.
+    # For a 70-min lecture that's ~3 min of CPU embedding vs. ~10 s on
+    # GPU — noticeable but not blocking. Whisper + CT2 retain full GPU
+    # acceleration (each on a separate crate's CUDA path, neither hits
+    # the moe_wmma.cu compile step).
+    #
+    # When candle 0.11 / bindgen_cuda 0.2 land upstream fixes, or when
+    # we move CI to a larger runner, fold these back in.
+    # "candle-core/cuda",
+    # "candle-nn/cuda",
+    # "candle-transformers/cuda",
+    "ct2rs/cuda-dynamic-loading",
+]
+gpu-vulkan = ["whisper-rs/vulkan"]
+gpu-metal = [
+    "whisper-rs/metal",
+    "candle-core/metal",
+    "candle-nn/metal",
+    "candle-transformers/metal",
+]
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset", "devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+tauri-plugin-log = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-whisper-rs = "0.11"
+log = "0.4"
+whisper-rs = { version = "0.16", default-features = false }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 num_cpus = "1.0"
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
 futures-util = "0.3"
-# Candle ML framework for embeddings (no protobuf conflict)
-candle-core = { version = "0.8", optional = true }
-candle-nn = { version = "0.8", optional = true }
-candle-transformers = { version = "0.8", optional = true }
+# Candle ML framework for embeddings (no protobuf conflict).
+# Pinned to 0.9: bumped from 0.8 because 0.8's cudarc 0.13 hardcodes
+# a "supported CUDA toolkit" list that rejects 13.x. 0.9 uses cudarc
+# 0.16 which accepts CUDA 13 via the `cuda-version-from-build-system`
+# feature. No source changes needed for the 0.8→0.9 bump — the
+# Module / VarBuilder / tensor APIs we use are unchanged.
+candle-core = { version = "0.9", optional = true }
+candle-nn = { version = "0.9", optional = true }
+candle-transformers = { version = "0.9", optional = true }
 # Hugging Face Hub for model downloads
 hf-hub = { version = "0.3", optional = true }
 # Tokenizer for text preprocessing
@@ -64,6 +141,9 @@ ct2rs = { version = "0.9", features = ["default"] }
 # File system utilities
 walkdir = "2"
 dirs = "5"
+# Tiny TOML parser for `dev_flags.rs` — experimental toggles read
+# before Tauri / SQLite init (so they can't live in the main DB).
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tauri-plugin-http = "2"
 tauri-plugin-process = "2"
 ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }
@@ -71,6 +151,28 @@ ndarray = "0.15"
 
 [dev-dependencies]
 tempfile = "3.8"
+
+# macOS-only auto-enable of the Metal backends for every crate that
+# supports it. This keeps the default-feature story simple on
+# Windows/Linux (CPU unless the packager opts into gpu-cuda/gpu-vulkan)
+# while giving every macOS build GPU acceleration across Whisper AND
+# the BGE embedding model with zero extra build flags — Metal is
+# universally available on every Mac since ~2016 so there's no
+# detection story to worry about.
+#
+# Cargo unifies features between the main `[dependencies]` block and
+# these target-specific overrides, so `candle-core` (already declared
+# above as `optional = true`) gets its `metal` feature union'd in
+# when building for macOS.
+#
+# ct2rs has no Metal backend (CUDA-only for GPU), so local translation
+# stays on CPU on macOS. Apple Silicon's NEON + Accelerate framework
+# make CPU CT2 competitive enough that this isn't a priority gap.
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { version = "0.16", default-features = false, features = ["metal"] }
+candle-core = { version = "0.9", optional = true, features = ["metal"] }
+candle-nn = { version = "0.9", optional = true, features = ["metal"] }
+candle-transformers = { version = "0.9", optional = true, features = ["metal"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"

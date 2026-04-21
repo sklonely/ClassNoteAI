@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use crate::utils::command::no_window;
+use std::process::Stdio;
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::whisper::WhisperService;
@@ -48,7 +49,7 @@ pub fn extract_pcm_16k_mono(video_path: &Path) -> Result<Vec<i16>, String> {
 
     let ffmpeg = locate_ffmpeg()?;
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = no_window(&ffmpeg)
         // Suppress the extremely verbose default banner; keep warnings/errors.
         .args([
             "-hide_banner",
@@ -126,7 +127,7 @@ fn locate_ffmpeg() -> Result<String, String> {
     // Fast path: PATH lookup via `which`-equivalent. `ffmpeg` alone
     // works on every shell that has it resolvable, so we just try to
     // spawn it with `-version` to see if it's there.
-    let probe = Command::new("ffmpeg")
+    let probe = no_window("ffmpeg")
         .arg("-version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -141,20 +142,55 @@ fn locate_ffmpeg() -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         if let Some(home) = dirs::home_dir() {
-            let winget_path = home.join(
+            let winget_root = home.join(
                 "AppData/Local/Microsoft/WinGet/Packages/\
-                 Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/\
-                 ffmpeg-8.0.1-full_build/bin/ffmpeg.exe",
+                 Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/",
             );
-            if winget_path.exists() {
-                return Ok(winget_path.to_string_lossy().into_owned());
+            if let Ok(entries) = std::fs::read_dir(&winget_root) {
+                let mut newest_dir: Option<(std::time::SystemTime, PathBuf)> = None;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    let matches_full = name.starts_with("ffmpeg-")
+                        && name.ends_with("-full_build")
+                        && name.len() > "ffmpeg-".len() + "-full_build".len();
+                    let matches_essentials = name.starts_with("ffmpeg-")
+                        && name.ends_with("-essentials_build")
+                        && name.len() > "ffmpeg-".len() + "-essentials_build".len();
+                    if !(matches_full || matches_essentials) {
+                        continue;
+                    }
+                    let Ok(metadata) = entry.metadata() else {
+                        continue;
+                    };
+                    if !metadata.is_dir() {
+                        continue;
+                    }
+                    let Ok(modified) = metadata.modified() else {
+                        continue;
+                    };
+                    match &newest_dir {
+                        Some((best_modified, _)) if modified <= *best_modified => {}
+                        _ => newest_dir = Some((modified, path)),
+                    }
+                }
+                if let Some((_, chosen_dir)) = newest_dir {
+                    let winget_path = chosen_dir.join("bin/ffmpeg.exe");
+                    if winget_path.exists() {
+                        return Ok(winget_path.to_string_lossy().into_owned());
+                    }
+                }
             }
         }
     }
 
     Err(
-        "ffmpeg 未安裝或不在 PATH 中。\
-         請從 https://ffmpeg.org/download.html 下載後重新啟動應用程式。"
+        "ffmpeg was not found on PATH or in standard install locations. \
+         Install it from https://ffmpeg.org/download.html and restart the application after installing. \
+         (ffmpeg 未安裝、不在 PATH 中，或不在標準安裝位置。\
+         請從 https://ffmpeg.org/download.html 下載安裝後重新啟動應用程式。)"
             .to_string(),
     )
 }
@@ -271,7 +307,7 @@ fn extract_pcm_to_file(video_path: &Path, pcm_path: &Path) -> Result<u64, String
         .map_err(|e| format!("failed to create pcm file: {}", e))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, output);
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = no_window(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(video_path)
         .args(["-ac", "1", "-ar", "16000", "-f", "s16le", "-y", "-"])

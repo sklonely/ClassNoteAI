@@ -72,6 +72,21 @@ export interface Section {
   title: string;
   content: string;
   timestamp: number;
+  /**
+   * Representative sentences for this section, extracted by
+   * `extract_section_highlights` (centroid-nearest sentences from the
+   * section's subtitle body). Optional so legacy notes saved before
+   * v0.6.2 still load. When present, the UI renders these as bullets
+   * above a collapsed `content` block.
+   */
+  bullets?: string[];
+  /**
+   * Range of slide / PDF pages covered by this section, taken from
+   * the `page_number` fields of the subtitles it was built from.
+   * `null` when the section has no PDF pages (audio-only lecture or
+   * pre-PDF-alignment note).
+   */
+  page_range?: { min: number; max: number } | null;
 }
 
 export interface QARecord {
@@ -178,12 +193,91 @@ export interface AppSettings {
   lectureLayout?: {
     videoPdfMode?: 'split' | 'pip';
   };
+  /**
+   * Experimental / opt-in defaults for the video-import pipeline.
+   * These used to live only in the ImportModal's per-import toggles;
+   * promoting them to settings lets the user set a preferred default
+   * once instead of re-picking for every import. The modal still
+   * honours per-import overrides when the user touches the control,
+   * so nothing regresses for "I want to change THIS one run".
+   */
+  experimental?: {
+    /** Default model preset for new video imports: `fast` (ggml-base,
+     *  ~5× realtime CPU) or `standard` (user's main model, slower but
+     *  more accurate). The ImportModal quality selector pre-fills from
+     *  this. */
+    importSpeed?: 'fast' | 'standard';
+    /** Default value of the "AI 精修字幕" checkbox in ImportModal.
+     *  Off by default because a 70-min lecture is ~130 k tokens of
+     *  LLM usage; users who have plentiful tokens can flip it on once
+     *  and forget it. */
+    importAiRefine?: boolean;
+    /** Refinement intensity. Controls how aggressively the LLM
+     *  rewrites the rough CT2 translation:
+     *    - `off`    : no LLM call (same as `importAiRefine: false`)
+     *    - `light`  : mid-tier model (GPT-4o-mini / Haiku / Gemini
+     *                 Flash), batched per 5-min section, grammar +
+     *                 term fixes only. ~14 calls / 70-min lecture,
+     *                 ~15k tokens. Fits free-tier Gemini easily.
+     *    - `deep`   : upper-mid model (Mistral Large 2 / Claude
+     *                 Sonnet / Llama 3.3 70B), batched per section,
+     *                 full rewrite with cross-subtitle consistency.
+     *                 ~14 calls, ~50k tokens. Shows a cost estimate
+     *                 in the UI before running.
+     *  The old `importAiRefine: true` maps to `deep`. */
+    refineIntensity?: 'off' | 'light' | 'deep';
+    /** Which LLM provider to prefer for refinement. `auto` picks
+     *  the first configured provider in this order: user's
+     *  ChatGPT Plus OAuth (already signed in? use it — the app
+     *  reuses Codex CLI's OAuth client) → GitHub Models /
+     *  Copilot OAuth → local Ollama (if GPU ≥ 12 GB VRAM detected)
+     *  → Gemini free tier → Groq free tier → Mistral Experiment
+     *  → user-provided raw key. The OAuth paths come first
+     *  because they're what most of our users already have signed
+     *  in (Copilot Pro = $10/mo, ChatGPT Plus = $20/mo are both
+     *  common). Pinning a specific value bypasses the chain. */
+    refineProvider?:
+        | 'auto'
+        | 'chatgpt-oauth'
+        | 'github-models'
+        | 'ollama'
+        | 'gemini'
+        | 'groq'
+        | 'mistral'
+        | 'openrouter'
+        | 'user-key';
+    /** Whisper GPU backend preference. `auto` picks the first available
+     *  at runtime (Phase 2+); the other values let power users pin a
+     *  specific backend. Ignored in Phase 1 builds where no GPU features
+     *  are compiled in. */
+    asrBackend?: 'auto' | 'cuda' | 'metal' | 'vulkan' | 'cpu';
+  };
   sync?: {
     username: string;
     deviceId?: string;
     deviceName?: string;
     autoSync: boolean;
     lastSyncTime?: string;
+  };
+  /**
+   * Release channel preference for the updater.
+   *   - `stable` — only stable tags (vX.Y.Z). Uses the Tauri updater
+   *                plugin's default endpoint from tauri.conf.json,
+   *                which maps to GitHub's /releases/latest/ alias and
+   *                skips prereleases.
+   *   - `beta`   — stable + `*-beta*` prereleases. Uses GitHub API to
+   *                find the newest matching release; download bypasses
+   *                the plugin (runtime endpoint override not supported)
+   *                and opens the platform installer for the user to
+   *                click through.
+   *   - `alpha`  — stable + any prerelease (alpha, beta, rc). Same
+   *                GitHub-API + manual-download path as beta.
+   * Default is `stable` when unset. The manual path shows the same
+   * progress UI as the stable plugin flow; the only visible difference
+   * is that the installer window opens instead of auto-restart.
+   */
+  updates?: {
+    channel?: 'stable' | 'beta' | 'alpha';
   };
 }
 

@@ -3,9 +3,11 @@ import AIProviderSettings from "../AIProviderSettings";
 import { Card } from "./shared";
 import UsageSummary from "./UsageSummary";
 import OcrSettings from "./OcrSettings";
-import AiTutorDisplaySettings from "./AiTutorDisplaySettings";
-import VideoLayoutSettings from "./VideoLayoutSettings";
+import CloudAIExperimentalSettings from "./CloudAIExperimentalSettings";
 
+// v0.6.1: trimmed to cloud-LLM-only concerns. Layout / UI-display
+// settings moved to Settings → 介面與顯示; local-model / GPU toggles
+// moved to Settings → 本地轉錄模型.
 export default function SettingsCloudAI() {
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -17,8 +19,7 @@ export default function SettingsCloudAI() {
         <div className="space-y-4">
           <AIProviderSettings />
           <OcrSettings />
-          <AiTutorDisplaySettings />
-          <VideoLayoutSettings />
+          <CloudAIExperimentalSettings />
           <UsageSummary />
         </div>
       </Card>

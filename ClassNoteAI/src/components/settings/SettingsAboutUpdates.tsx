@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Info,
   RefreshCw,
@@ -6,11 +8,23 @@ import {
   CheckCircle,
   Cpu,
   RotateCcw,
+  FlaskConical,
+  Copy,
+  FolderOpen,
+  Bug,
+  Package,
 } from "lucide-react";
 import { Card } from "./shared";
 import { setupService } from "../../services/setupService";
+import { storageService } from "../../services/storageService";
 import { toastService } from "../../services/toastService";
 import { confirmService } from "../../services/confirmService";
+import {
+  redactLogContent,
+  buildGithubIssueUrl,
+} from "../../services/logDiagnostics";
+import type { ReleaseChannel } from "../../services/updateService";
+import type { Lecture } from "../../types";
 
 interface Props {
   appVersion: string;
@@ -25,6 +39,107 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [channel, setChannel] = useState<ReleaseChannel>("stable");
+  const [logPreview, setLogPreview] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportIncludeAudio, setExportIncludeAudio] = useState(false);
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [selectedLectureId, setSelectedLectureId] = useState<string>("");
+  const [logHits, setLogHits] = useState<Record<string, number>>({});
+  const [hasGithubProvider, setHasGithubProvider] = useState(true);
+
+  // Load the user's current channel selection on mount. Default to
+  // stable on any failure — see getReleaseChannel() for the same
+  // defensive stance on the service side.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { updateService } = await import("../../services/updateService");
+        const current = await updateService.getReleaseChannel();
+        if (!cancelled) setChannel(current);
+      } catch (e) {
+        console.warn("[SettingsAboutUpdates] Failed to read release channel:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const settings = await storageService.getAppSettings();
+        const canReadLocalStorage = typeof window !== "undefined" &&
+          typeof window.localStorage !== "undefined";
+        const storedPat = canReadLocalStorage
+          ? window.localStorage.getItem("llm.github-models.pat")
+          : null;
+        const configured = typeof storedPat === "string"
+          ? storedPat.trim().length > 0
+          : !canReadLocalStorage
+          ? true
+          : settings?.experimental?.refineProvider === "github-models"
+          ? true
+          : false;
+        if (!cancelled) setHasGithubProvider(configured);
+      } catch (e) {
+        console.warn("[SettingsAboutUpdates] Failed to inspect GitHub Models state:", e);
+        if (!cancelled) setHasGithubProvider(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await storageService.listLectures();
+        const sorted = [...list].sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+        );
+        if (cancelled) return;
+        setLectures(sorted);
+        setSelectedLectureId((current) => {
+          if (current && sorted.some((lecture) => lecture.id === current)) {
+            return current;
+          }
+          return sorted[0]?.id ?? "";
+        });
+      } catch (e) {
+        console.warn("[SettingsAboutUpdates] Failed to load lectures:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleChannelChange = async (next: ReleaseChannel) => {
+    const prev = channel;
+    setChannel(next);
+    // Clear any prior check result — the new channel might see a
+    // different "available" answer, and showing the stale one is
+    // misleading.
+    setUpdateInfo(null);
+    setUpdateError(null);
+    try {
+      const { updateService } = await import("../../services/updateService");
+      await updateService.setReleaseChannel(next);
+    } catch (e) {
+      console.error("[SettingsAboutUpdates] Failed to save channel:", e);
+      setChannel(prev);
+      toastService.error(
+        "無法儲存更新通道設定",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
 
   const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
@@ -71,9 +186,90 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
     }
   };
 
+  const handleCopyLog = async () => {
+    try {
+      const raw = await invoke<string>("read_recent_log", { lines: 500 });
+      const { redacted, hits } = redactLogContent(raw);
+      setLogPreview(redacted);
+      setLogHits(hits);
+    } catch (e) {
+      toastService.error(
+        "無法讀取診斷 log",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  const handleOpenLogFolder = async () => {
+    try {
+      await invoke("open_log_folder");
+    } catch (e) {
+      toastService.error(
+        "無法開啟 log 資料夾",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  const handleExportPackage = async () => {
+    if (!selectedLectureId) {
+      toastService.error("請先選擇要匯出的講座");
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const buildVariant = await invoke<string>("get_build_variant").catch(() => "cpu");
+      const { exportDiagnosticPackage, revealZipInFileManager } = await import(
+        "../../services/diagnosticsService"
+      );
+      const zipPath = await exportDiagnosticPackage({
+        lectureId: selectedLectureId,
+        includeAudio: exportIncludeAudio,
+        appVersion,
+        buildVariant,
+      });
+      toastService.success("診斷封包已匯出到下載資料夾");
+      await revealZipInFileManager(zipPath);
+    } catch (e) {
+      toastService.error(
+        "匯出診斷封包失敗",
+        e instanceof Error ? e.message : String(e),
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleGithubIssue = async () => {
+    if (logPreview === null) return;
+    try {
+      await openUrl(buildGithubIssueUrl(logPreview, appVersion));
+    } catch (e) {
+      toastService.error(
+        "無法開啟 GitHub issue 頁面",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
+  const handleConfirmCopyToClipboard = async () => {
+    if (logPreview === null) return;
+    try {
+      await navigator.clipboard.writeText(logPreview);
+      toastService.success("診斷 log 已複製");
+      setLogPreview(null);
+      setLogHits({});
+    } catch (e) {
+      toastService.error(
+        "無法複製診斷 log",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
+
   const handleOpenDevTools = async () => {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       await invoke("open_devtools");
     } catch (e) {
       console.error("Failed to open devtools:", e);
@@ -110,6 +306,8 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
 
   const isWindows = typeof navigator !== "undefined" &&
     navigator.userAgent.includes("Windows");
+  const redactionEntries = Object.entries(logHits).filter(([, count]) => count > 0);
+  const totalRedactions = redactionEntries.reduce((sum, [, count]) => sum + count, 0);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -123,7 +321,39 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
             <span className="font-mono">{appVersion}</span>
           </div>
 
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+                <label
+                  htmlFor="release-channel"
+                  className="text-sm text-gray-700 dark:text-gray-300"
+                >
+                  更新通道
+                </label>
+              </div>
+              <select
+                id="release-channel"
+                value={channel}
+                onChange={(e) => handleChannelChange(e.target.value as ReleaseChannel)}
+                disabled={isCheckingUpdate || isDownloading}
+                className="text-sm px-2 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 disabled:opacity-50"
+              >
+                <option value="stable">穩定版 (Stable)</option>
+                <option value="beta">Beta (公開測試版)</option>
+                <option value="alpha">Alpha (開發測試版)</option>
+              </select>
+            </div>
+            {channel !== "stable" && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                {channel === "alpha"
+                  ? "Alpha 版本可能包含未穩定功能，安裝時會開啟安裝程式請你手動完成。"
+                  : "Beta 版本功能接近正式版但仍在測試中，安裝時會開啟安裝程式請你手動完成。"}
+              </p>
+            )}
+          </div>
+
+          <div>
             <button
               onClick={handleCheckUpdate}
               disabled={isCheckingUpdate || isDownloading}
@@ -177,7 +407,7 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
                     )}
                   </button>
 
-                  {!isWindows && (
+                  {!isWindows && channel === "stable" && (
                     <>
                       <div className="relative flex py-1 items-center">
                         <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
@@ -215,6 +445,133 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
               {updateError}
             </div>
           )}
+
+        </div>
+      </Card>
+
+      <Card
+        title="診斷 log"
+        icon={<Info className="w-5 h-5 text-slate-500" />}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            預覽最近 500 行 app log，先在前端做敏感資訊遮罩，再決定是否複製或回報。
+          </p>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button
+              onClick={handleCopyLog}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-slate-700 hover:bg-slate-800 text-white rounded-lg transition-colors"
+            >
+              <Copy className="w-4 h-4" />
+              預覽並複製 log
+            </button>
+            <button
+              onClick={handleOpenLogFolder}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+            >
+              <FolderOpen className="w-4 h-4" />
+              開啟 log 資料夾
+            </button>
+          </div>
+
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-sm font-medium text-gray-800 dark:text-gray-100">
+                <Package className="w-4 h-4 text-violet-500" />
+                <span>匯出完整診斷封包</span>
+              </div>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                會將講座資料、字幕、已遮罩的 log 與中繼資料打包成 ZIP 存到下載資料夾，可選擇是否附帶音訊；不會自動上傳。
+              </p>
+            </div>
+
+            <select
+              value={selectedLectureId}
+              onChange={(e) => setSelectedLectureId(e.target.value)}
+              disabled={isExporting || lectures.length === 0}
+              className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 disabled:opacity-50"
+            >
+              {lectures.length === 0 ? (
+                <option value="">目前沒有可匯出的講座</option>
+              ) : (
+                lectures.map((lecture) => (
+                  <option key={lecture.id} value={lecture.id}>
+                    {lecture.title} · {new Date(lecture.created_at).toLocaleString()}
+                  </option>
+                ))
+              )}
+            </select>
+
+            <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={exportIncludeAudio}
+                onChange={(e) => setExportIncludeAudio(e.target.checked)}
+                disabled={isExporting}
+                className="h-4 w-4 rounded border-gray-300 text-violet-600 focus:ring-violet-500"
+              />
+              包含原始音訊檔（若存在）
+            </label>
+
+            <button
+              onClick={handleExportPackage}
+              disabled={isExporting || !selectedLectureId}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-violet-600 hover:bg-violet-700 disabled:bg-gray-400 text-white rounded-lg transition-colors"
+            >
+              <Package className="w-4 h-4" />
+              {isExporting ? "正在匯出診斷封包..." : "匯出診斷封包 ZIP"}
+            </button>
+          </div>
+
+          {logPreview !== null && (
+              <div className="p-4 rounded-lg bg-gray-50 dark:bg-gray-900/50 border border-gray-200 dark:border-gray-700 space-y-3">
+                <div className="text-sm text-gray-700 dark:text-gray-300">
+                  <div className="font-medium">Redaction summary</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {redactionEntries.length > 0
+                      ? `已遮罩 ${totalRedactions} 項：${redactionEntries
+                          .map(([label, count]) => `${label} ×${count}`)
+                          .join(", ")}`
+                      : "未偵測到需要遮罩的內容。"}
+                  </div>
+                </div>
+
+                <textarea
+                  readOnly
+                  value={logPreview}
+                  rows={12}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-mono text-gray-800 dark:text-gray-100"
+                />
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <button
+                    onClick={handleConfirmCopyToClipboard}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                  >
+                    <Copy className="w-4 h-4" />
+                    複製到剪貼簿
+                  </button>
+                  {hasGithubProvider && (
+                    <button
+                      onClick={handleGithubIssue}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                    >
+                      <Bug className="w-4 h-4" />
+                      GitHub issue
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setLogPreview(null);
+                      setLogHits({});
+                    }}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-white dark:bg-slate-800 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                  >
+                    取消
+                  </button>
+                </div>
+              </div>
+            )}
         </div>
       </Card>
 

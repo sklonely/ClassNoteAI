@@ -125,7 +125,8 @@ pub async fn transcribe_audio(
         }
     }
     params.set_suppress_blank(true); // 抑制空白
-    params.set_suppress_non_speech_tokens(true); // 抑制非語音標記
+    // whisper-rs 0.16 renamed `set_suppress_non_speech_tokens` → `set_suppress_nst`.
+    params.set_suppress_nst(true); // 抑制非語音標記
 
     // 設置初始提示（如果提供）
     if let Some(prompt) = initial_prompt {
@@ -189,41 +190,32 @@ pub async fn transcribe_audio(
     let duration_ms = start_time.elapsed().as_millis() as u64;
     println!("[Whisper] 轉錄完成，耗時: {}ms", duration_ms);
 
-    // 獲取轉錄結果
-    let num_segments = state
-        .full_n_segments()
-        .map_err(|e| anyhow::anyhow!("獲取片段數量失敗: {:?}", e))?;
+    // 獲取轉錄結果。whisper-rs 0.16 重構了 segment API：
+    //   - `full_n_segments()` 現在直接回傳 `c_int`（不再是 Result）
+    //   - 用 `get_segment(i) -> Option<WhisperSegment>` 取段落物件
+    //   - 文字: `seg.to_str()`，時間: `seg.start_timestamp()` /
+    //     `seg.end_timestamp()` 皆回傳 centiseconds (i64)
+    let num_segments = state.full_n_segments();
+    let _ = sample_rate; // 單位轉換與 sample_rate 無關（見下）
 
     let mut segments = Vec::new();
     let mut full_text = String::new();
 
     for i in 0..num_segments {
-        let segment_text = state
-            .full_get_segment_text(i)
-            .map_err(|e| anyhow::anyhow!("獲取片段文本失敗: {:?}", e))?;
+        let seg = state
+            .get_segment(i)
+            .ok_or_else(|| anyhow::anyhow!("獲取片段 {} 失敗", i))?;
 
-        let start_timestamp = state
-            .full_get_segment_t0(i)
-            .map_err(|e| anyhow::anyhow!("獲取片段開始時間失敗: {:?}", e))?;
+        let segment_text = seg
+            .to_str_lossy()
+            .map_err(|e| anyhow::anyhow!("獲取片段文本失敗: {:?}", e))?
+            .into_owned();
 
-        let end_timestamp = state
-            .full_get_segment_t1(i)
-            .map_err(|e| anyhow::anyhow!("獲取片段結束時間失敗: {:?}", e))?;
-
-        // whisper.cpp's `full_get_segment_t{0,1}` return values in
-        // **centiseconds** (10 ms units) — not sample indices. The
-        // old code `(t * 1000) / sample_rate` treated them as samples
-        // at 16 kHz, which compressed every segment's timestamp to
-        // ~1/16 of its true value and clumped all subtitles at the
-        // start of each chunk (the user-visible "字幕只有分鐘級別
-        // 精度" symptom).
-        //
-        // `sample_rate` is intentionally dropped from the math here —
-        // the unit conversion is purely t_cs * 10 = t_ms, independent
-        // of the input audio's sample rate.
-        let _ = sample_rate;
-        let start_ms = (start_timestamp * 10) as i64;
-        let end_ms = (end_timestamp * 10) as i64;
+        // Centiseconds → milliseconds: × 10. Independent of sample rate.
+        // Pre-0.6.0 bug here treated these as sample indices and
+        // divided by sample_rate; see commit 05d000b.
+        let start_ms = (seg.start_timestamp() * 10) as i64;
+        let end_ms = (seg.end_timestamp() * 10) as i64;
 
         segments.push(TranscriptionSegment {
             text: segment_text.trim().to_string(),
@@ -234,7 +226,7 @@ pub async fn transcribe_audio(
         if !full_text.is_empty() {
             full_text.push(' ');
         }
-        full_text.push_str(&segment_text.trim());
+        full_text.push_str(segment_text.trim());
     }
 
     // 使用設置的語言
