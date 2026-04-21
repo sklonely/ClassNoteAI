@@ -67,6 +67,65 @@ interface NotesViewProps {
   onBack?: () => void;
 }
 
+type AudioUnavailableState = {
+  message: string;
+  path?: string;
+};
+
+const ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
+
+function stripLeadingPathSeparators(value: string): string {
+  return value.replace(/^[\\/]+/, '');
+}
+
+function stripTrailingPathSeparators(value: string): string {
+  return value.replace(/[\\/]+$/, '');
+}
+
+function normalizePathSeparators(value: string): string {
+  return value.replace(/[\\/]+/g, '/');
+}
+
+function joinAudioPath(baseDir: string, childPath: string): string {
+  const separator = baseDir.includes('\\') ? '\\' : '/';
+  const normalizedChild = stripLeadingPathSeparators(childPath).replace(/[\\/]+/g, separator);
+  return `${stripTrailingPathSeparators(baseDir)}${separator}${normalizedChild}`;
+}
+
+function toRelativeAudioPath(audioDir: string, absolutePath: string): string {
+  const normalizedDir = normalizePathSeparators(stripTrailingPathSeparators(audioDir));
+  const normalizedPath = normalizePathSeparators(absolutePath);
+
+  if (normalizedPath.startsWith(`${normalizedDir}/`)) {
+    return normalizedPath.slice(normalizedDir.length + 1);
+  }
+
+  const filename = absolutePath.split(/[\\/]/).pop();
+  return filename && filename.length > 0 ? filename : absolutePath;
+}
+
+async function resolveAudioPath(storedPath: string | null | undefined): Promise<string | null> {
+  if (!storedPath) {
+    return null;
+  }
+
+  const trimmedPath = storedPath.trim();
+  if (!trimmedPath) {
+    return null;
+  }
+
+  const resolvedPath = ABSOLUTE_PATH_PATTERN.test(trimmedPath)
+    ? trimmedPath
+    : joinAudioPath(await invoke<string>('get_audio_dir'), trimmedPath);
+
+  try {
+    await readFile(resolvedPath);
+    return resolvedPath;
+  } catch {
+    return null;
+  }
+}
+
 export default function NotesView({ courseId: propCourseId, lectureId: propLectureId, onBack }: NotesViewProps) {
   const navigate = useNavigate();
   const params = useParams<{ courseId: string; lectureId: string }>();
@@ -239,6 +298,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [audioUnavailable, setAudioUnavailable] = useState<AudioUnavailableState | null>(null);
   // v0.6.0: `audioRef` is now HTMLMediaElement so the same ref can
   // point at either the hidden <audio> (live-recorded lecture) or the
   // visible <video> (imported video lecture). All existing playback
@@ -247,41 +307,89 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const audioRef = useRef<HTMLMediaElement>(null);
   const [playbackVolume, setPlaybackVolume] = useState(100); // Output volume for playback
 
+  useEffect(() => {
+    setAudioUnavailable(null);
+  }, [currentLectureData?.id, currentLectureData?.audio_path]);
+
   // Initialize audio when review mode starts or lecture loads
   // Initialize audio when review mode starts or lecture loads
   useEffect(() => {
+    let cancelled = false;
     let objectUrl: string | null = null;
 
     const loadAudio = async () => {
-      if (viewMode === 'review' && currentLectureData?.audio_path && audioRef.current) {
-        try {
-          console.log('[NotesView] Loading audio file:', currentLectureData.audio_path);
-          // Use readFile from plugin-fs to bypass asset protocol issues
-          const data = await readFile(currentLectureData.audio_path);
-          const blob = new Blob([data], { type: 'audio/wav' }); // Default to wav as per recorder
-          objectUrl = URL.createObjectURL(blob);
+      if (viewMode !== 'review' || currentLectureData?.video_path || !audioRef.current) {
+        return;
+      }
 
-          if (audioRef.current) {
-            audioRef.current.src = objectUrl;
-            audioRef.current.load();
-            console.log('[NotesView] Audio loaded via Blob URL');
-          }
-        } catch (error) {
-          console.error('[NotesView] Failed to load audio file:', error);
-          // Fallback to convertFileSrc if readFile fails (e.g. permission error but assuming asset protocol works?)
-          // But since asset URL is failing, better to just log error.
+      const storedAudioPath = currentLectureData?.audio_path?.trim() || null;
+      const clearAudioElement = () => {
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.removeAttribute('src');
+          audioRef.current.load();
         }
+        setIsPlaying(false);
+        setAudioCurrentTime(0);
+        setAudioDuration(0);
+      };
+
+      const resolvedAudioPath = await resolveAudioPath(storedAudioPath);
+      if (cancelled) {
+        return;
+      }
+
+      if (!storedAudioPath) {
+        clearAudioElement();
+        setAudioUnavailable({ message: '此課堂未錄製音檔。' });
+        return;
+      }
+
+      if (!resolvedAudioPath) {
+        clearAudioElement();
+        setAudioUnavailable({
+          message: '音檔遺失，無法播放。',
+          path: storedAudioPath,
+        });
+        return;
+      }
+
+      try {
+        console.log('[NotesView] Loading audio file:', resolvedAudioPath);
+        // Use readFile from plugin-fs to bypass asset protocol issues
+        const data = await readFile(resolvedAudioPath);
+        if (cancelled) {
+          return;
+        }
+
+        const blob = new Blob([data], { type: 'audio/wav' }); // Default to wav as per recorder
+        objectUrl = URL.createObjectURL(blob);
+
+        if (audioRef.current) {
+          audioRef.current.src = objectUrl;
+          audioRef.current.load();
+          setAudioUnavailable(null);
+          console.log('[NotesView] Audio loaded via Blob URL');
+        }
+      } catch (error) {
+        console.error('[NotesView] Failed to load audio file:', error);
+        clearAudioElement();
+        setAudioUnavailable({
+          message: '音檔遺失，無法播放。',
+          path: resolvedAudioPath,
+        });
       }
     };
 
     loadAudio();
 
     return () => {
+      cancelled = true;
       if (objectUrl) {
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [viewMode, currentLectureData?.audio_path]);
+  }, [viewMode, currentLectureData?.audio_path, currentLectureData?.video_path]);
 
   const togglePlay = () => {
     if (audioRef.current) {
@@ -1166,7 +1274,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       // keep a stale reference than nuke it to null).
       const updatedLecture = {
         ...currentLectureData,
-        audio_path: audioPath ?? currentLectureData.audio_path,
+        audio_path: audioPath ? toRelativeAudioPath(audioDir, audioPath) : currentLectureData.audio_path,
         status: 'completed' as const,
         updated_at: new Date().toISOString()
       };
@@ -2489,8 +2597,19 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             </PanelGroup>
 
             {/* Audio Player Bar */}
-            {currentLectureData?.audio_path && (
+            {!currentLectureData?.video_path && (audioUnavailable || currentLectureData?.audio_path) && (
               <div>
+                {audioUnavailable ? (
+                  <div className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-100">
+                    <p className="font-medium">{audioUnavailable.message}</p>
+                    {audioUnavailable.path && (
+                      <p className="mt-1 break-all font-mono text-xs text-amber-800 dark:text-amber-200">
+                        {audioUnavailable.path}
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <>
                 {/* Auto Follow toggle — only shown in Review mode. On
                     enables PDF + subtitle sync to current playback
                     timestamp; off is plain audio playback. */}
@@ -2538,6 +2657,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                   onVolumeChange={setPlaybackVolume}
                   onSkip={(sec) => handleSeek(audioCurrentTime + sec)}
                 />
+                  </>
+                )}
               </div>
             )}
 
@@ -2547,7 +2668,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                 target switches based on `currentLectureData.video_path`
                 — all playback wiring (togglePlay / handleSeek /
                 subtitle sync) is media-type agnostic. */}
-            {!currentLectureData?.video_path && (
+            {!currentLectureData?.video_path && !audioUnavailable && (
               <audio
                 ref={audioRef as React.RefObject<HTMLAudioElement>}
                 onTimeUpdate={handleTimeUpdate}
