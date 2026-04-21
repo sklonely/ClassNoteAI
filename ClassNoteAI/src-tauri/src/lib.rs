@@ -29,7 +29,9 @@ mod gpu;
 pub mod dev_flags;
 
 use embedding::EmbeddingService;
+use log::LevelFilter;
 use tauri::Emitter;
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tokio::sync::Mutex;
 use whisper::WhisperService; // For window.emit()
 
@@ -2006,6 +2008,22 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .targets([
+                    Target::new(TargetKind::LogDir {
+                        file_name: Some("classnoteai".into()),
+                    }),
+                    Target::new(TargetKind::Stdout),
+                ])
+                .level(if cfg!(debug_assertions) {
+                    LevelFilter::Info
+                } else {
+                    LevelFilter::Warn
+                })
+                .rotation_strategy(RotationStrategy::KeepSome(5))
+                .build(),
+        )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
