@@ -255,6 +255,26 @@ export interface AppSettings {
     autoSync: boolean;
     lastSyncTime?: string;
   };
+  /**
+   * Release channel preference for the updater.
+   *   - `stable` — only stable tags (vX.Y.Z). Uses the Tauri updater
+   *                plugin's default endpoint from tauri.conf.json,
+   *                which maps to GitHub's /releases/latest/ alias and
+   *                skips prereleases.
+   *   - `beta`   — stable + `*-beta*` prereleases. Uses GitHub API to
+   *                find the newest matching release; download bypasses
+   *                the plugin (runtime endpoint override not supported)
+   *                and opens the platform installer for the user to
+   *                click through.
+   *   - `alpha`  — stable + any prerelease (alpha, beta, rc). Same
+   *                GitHub-API + manual-download path as beta.
+   * Default is `stable` when unset. The manual path shows the same
+   * progress UI as the stable plugin flow; the only visible difference
+   * is that the installer window opens instead of auto-restart.
+   */
+  updates?: {
+    channel?: 'stable' | 'beta' | 'alpha';
+  };
 }
 
 // 錄音狀態

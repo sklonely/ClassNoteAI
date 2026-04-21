@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Info,
   RefreshCw,
@@ -6,11 +6,13 @@ import {
   CheckCircle,
   Cpu,
   RotateCcw,
+  FlaskConical,
 } from "lucide-react";
 import { Card } from "./shared";
 import { setupService } from "../../services/setupService";
 import { toastService } from "../../services/toastService";
 import { confirmService } from "../../services/confirmService";
+import type { ReleaseChannel } from "../../services/updateService";
 
 interface Props {
   appVersion: string;
@@ -25,6 +27,47 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [channel, setChannel] = useState<ReleaseChannel>("stable");
+
+  // Load the user's current channel selection on mount. Default to
+  // stable on any failure — see getReleaseChannel() for the same
+  // defensive stance on the service side.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { updateService } = await import("../../services/updateService");
+        const current = await updateService.getReleaseChannel();
+        if (!cancelled) setChannel(current);
+      } catch (e) {
+        console.warn("[SettingsAboutUpdates] Failed to read release channel:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleChannelChange = async (next: ReleaseChannel) => {
+    const prev = channel;
+    setChannel(next);
+    // Clear any prior check result — the new channel might see a
+    // different "available" answer, and showing the stale one is
+    // misleading.
+    setUpdateInfo(null);
+    setUpdateError(null);
+    try {
+      const { updateService } = await import("../../services/updateService");
+      await updateService.setReleaseChannel(next);
+    } catch (e) {
+      console.error("[SettingsAboutUpdates] Failed to save channel:", e);
+      setChannel(prev);
+      toastService.error(
+        "無法儲存更新通道設定",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  };
 
   const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
@@ -123,7 +166,39 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
             <span className="font-mono">{appVersion}</span>
           </div>
 
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+                <label
+                  htmlFor="release-channel"
+                  className="text-sm text-gray-700 dark:text-gray-300"
+                >
+                  更新通道
+                </label>
+              </div>
+              <select
+                id="release-channel"
+                value={channel}
+                onChange={(e) => handleChannelChange(e.target.value as ReleaseChannel)}
+                disabled={isCheckingUpdate || isDownloading}
+                className="text-sm px-2 py-1 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100 disabled:opacity-50"
+              >
+                <option value="stable">穩定版 (Stable)</option>
+                <option value="beta">Beta (公開測試版)</option>
+                <option value="alpha">Alpha (開發測試版)</option>
+              </select>
+            </div>
+            {channel !== "stable" && (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                {channel === "alpha"
+                  ? "Alpha 版本可能包含未穩定功能，安裝時會開啟安裝程式請你手動完成。"
+                  : "Beta 版本功能接近正式版但仍在測試中，安裝時會開啟安裝程式請你手動完成。"}
+              </p>
+            )}
+          </div>
+
+          <div>
             <button
               onClick={handleCheckUpdate}
               disabled={isCheckingUpdate || isDownloading}
@@ -177,7 +252,7 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
                     )}
                   </button>
 
-                  {!isWindows && (
+                  {!isWindows && channel === "stable" && (
                     <>
                       <div className="relative flex py-1 items-center">
                         <div className="flex-grow border-t border-gray-200 dark:border-gray-700"></div>
