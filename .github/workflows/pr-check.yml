@@ -144,5 +144,10 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cd src-tauri
-          # --no-default-features skips candle-embed heavy deps; embedding regressions caught at release build (saves ~3-5 min, fixes #29)
-          cargo check --no-default-features --message-format=short
+          # NOTE: --no-default-features removed. It skipped candle-embed but
+          # lib.rs unconditionally calls EmbeddingService::{extract_representative_sentences,
+          # batch_cosine_similarity} at lines 1276/1351/1423 which only exist
+          # under that feature. So the "speedup" was actually breaking every
+          # PR check on Windows. sccache alone keeps most of the win.
+          # Follow-up: feature-gate those call sites, then re-add --no-default-features.
+          cargo check --message-format=short
