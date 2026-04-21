@@ -25,6 +25,7 @@ mod oauth;
 pub mod recording;
 // GPU backend detection (CUDA via nvidia-smi, Metal via cfg, Vulkan via filesystem)
 mod gpu;
+mod updater;
 // Pre-WebView2 experimental toggles (remote debug port, etc). Public
 // so `main()` can `remote_debug_enabled()` before Tauri spins up.
 pub mod dev_flags;
@@ -2239,6 +2240,8 @@ pub fn run() {
             recording::video_import::resolve_whisper_model_path,
             gpu::detect_gpu_backends,
             gpu::get_build_variant,
+            crate::updater::check_update_for_channel,
+            crate::updater::download_and_install_update,
             list_orphaned_recording_lectures,
         ])
         .run(tauri::generate_context!())
