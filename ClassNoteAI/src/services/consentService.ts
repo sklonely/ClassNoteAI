@@ -27,7 +27,6 @@ function mergeSettings(existing: AppSettings | null, patch: AppSettings['recordi
     ocr: existing?.ocr,
     aiTutor: existing?.aiTutor,
     lectureLayout: existing?.lectureLayout,
-    sync: existing?.sync,
     recording: {
       ...existing?.recording,
       ...patch,

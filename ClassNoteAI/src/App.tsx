@@ -11,7 +11,6 @@ import AIChatWindow from "./components/AIChatWindow";
 import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
-import { syncService } from "./services/syncService";
 import { toastService } from "./services/toastService";
 import { buildInterruptedRecordingNotice } from "./services/recordingInterruptionNotice";
 import { useAuth } from "./contexts/AuthContext";
@@ -55,6 +54,18 @@ function App() {
     };
     checkSetup();
   }, []);
+
+  // Recover stale syllabus generations left over from a prior session.
+  // Background LLM tasks are fire-and-forget (`void`), so if the app was
+  // closed mid-flight the course stays stuck in `_classnote_status=generating`
+  // and the UI shows a perpetual spinner. Flip those to `failed` with a
+  // retry hint once, right after we know we're in a ready state.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    storageService
+      .recoverStaleGeneratingSyllabuses()
+      .catch((err) => console.warn('[App] 課程大綱狀態回收失敗：', err));
+  }, [appState]);
 
   // 初始化主題
   useEffect(() => {
@@ -182,40 +193,6 @@ function App() {
     const timer = setTimeout(checkForUpdates, 3000);
     return () => clearTimeout(timer);
 
-  }, [appState]);
-
-  // 啟動時自動同步
-  useEffect(() => {
-    const autoSync = async () => {
-      if (appState !== 'ready') return;
-
-      try {
-        const settings = await storageService.getAppSettings();
-        if (settings?.sync?.autoSync && settings.sync.username && settings.server?.url) {
-          console.log('[App] 觸發啟動自動同步...');
-          // 確保 server url 正確
-          const serverUrl = settings.server.url;
-          await syncService.sync(serverUrl, settings.sync.username);
-          console.log('[App] 啟動自動同步完成');
-
-          // 更新上次同步時間
-          const now = new Date().toISOString();
-          await storageService.saveAppSettings({
-            ...settings,
-            sync: {
-              ...settings.sync,
-              lastSyncTime: now
-            }
-          });
-        }
-      } catch (error) {
-        console.error('[App] 啟動自動同步失敗:', error);
-      }
-    };
-
-    // 延遲 5 秒執行，避免與啟動重資源競爭
-    const timer = setTimeout(autoSync, 5000);
-    return () => clearTimeout(timer);
   }, [appState]);
 
   const handleSetupComplete = () => {

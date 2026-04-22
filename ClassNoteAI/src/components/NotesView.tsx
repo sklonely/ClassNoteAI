@@ -58,7 +58,6 @@ import VideoPiP from "./VideoPiP";
 import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
 import { pdfService } from "../services/pdfService";
-import { syncService } from "../services/syncService";
 import AIChatPanel from "./AIChatPanel";
 
 type ViewMode = 'recording' | 'review';
@@ -1936,19 +1935,6 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         } catch (e) {
           console.warn('[NotesView] Failed to extract PDF context:', e);
         }
-      }
-
-      // Pre-flight: Sync metadata to server to ensure FK constraints
-      try {
-        const settings = await storageService.getAppSettings();
-        // Default to localhost:3001 and 'default_user' if not configured to ensure Task works.
-        const serverUrl = settings?.server?.url || 'http://localhost:3001';
-        const username = settings?.sync?.username || 'default_user';
-
-        console.log(`[NotesView] Syncing metadata to ${serverUrl} as ${username} before task...`);
-        await syncService.pushData(serverUrl, username, { skipFiles: true });
-      } catch (e) {
-        console.warn('[NotesView] Pre-task sync failed, task might fail if lecture is missing on server:', e);
       }
 
       // Generate summary via the map-reduce streaming path. For short

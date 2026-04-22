@@ -58,10 +58,6 @@ export default function TaskIndicator() {
 
     const getActionLabel = (type: string) => {
         switch (type) {
-            case 'SYNC_PUSH': return '同步上傳';
-            case 'SYNC_PULL': return '同步下載';
-            case 'DEVICE_REGISTER': return '裝置註冊';
-            case 'DEVICE_DELETE': return '移除裝置';
             case 'AUTH_REGISTER': return '用戶註冊';
             case 'PURGE_ITEM': return '永久刪除';
             default: return type;

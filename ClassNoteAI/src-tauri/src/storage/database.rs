@@ -663,19 +663,6 @@ impl Database {
         Ok(courses)
     }
 
-    /// 列出指定使用者的所有科目 (包含已刪除，用於同步)
-    pub fn list_courses_sync(&self, user_id: &str) -> SqlResult<Vec<Course>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
-             FROM courses WHERE user_id = ?1 ORDER BY updated_at DESC",
-        )?;
-
-        let courses = stmt
-            .query_map([user_id], |row| Course::try_from(row))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(courses)
-    }
-
     /// 刪除科目 (軟刪除)
     pub fn delete_course(&self, id: &str) -> SqlResult<()> {
         let now = Utc::now().to_rfc3339();
@@ -779,22 +766,6 @@ impl Database {
              JOIN courses c ON l.course_id = c.id
              WHERE c.user_id = ?1 AND l.is_deleted = 0 AND c.is_deleted = 0
              ORDER BY l.created_at DESC",
-        )?;
-
-        let lectures = stmt
-            .query_map([user_id], |row| Lecture::try_from(row))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(lectures)
-    }
-
-    /// 列出指定用戶的所有課程 (包含已刪除，用於同步)
-    pub fn list_lectures_sync(&self, user_id: &str) -> SqlResult<Vec<Lecture>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted, l.video_path
-             FROM lectures l
-             JOIN courses c ON l.course_id = c.id
-             WHERE c.user_id = ?1
-             ORDER BY l.updated_at DESC",
         )?;
 
         let lectures = stmt
@@ -1541,14 +1512,10 @@ mod tests {
         // Soft delete
         db.delete_course(&course.id).unwrap();
         
-        // After delete: not visible in normal list
+        // After delete: not visible in normal list. Soft-delete row still
+        // exists on disk (for TrashView restore); covered by test_trash below.
         let courses = db.list_courses("test_user").unwrap();
         assert_eq!(courses.len(), 0);
-        
-        // But visible in sync list
-        let sync_courses = db.list_courses_sync("test_user").unwrap();
-        assert_eq!(sync_courses.len(), 1);
-        assert!(sync_courses[0].is_deleted);
     }
 
     // ===== Lecture CRUD Tests =====

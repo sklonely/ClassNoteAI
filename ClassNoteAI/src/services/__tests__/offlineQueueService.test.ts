@@ -50,10 +50,6 @@ describe('OfflineQueueService - Enhanced', () => {
     // ===== Action Types Tests =====
     describe('Action Types', () => {
         const validTypes: ActionType[] = [
-            'SYNC_PUSH',
-            'SYNC_PULL',
-            'DEVICE_REGISTER',
-            'DEVICE_DELETE',
             'AUTH_REGISTER',
             'PURGE_ITEM',
             'TASK_CREATE',
@@ -75,7 +71,7 @@ describe('OfflineQueueService - Enhanced', () => {
             const processor = vi.fn(() => Promise.resolve());
 
             expect(() =>
-                offlineQueueService.registerProcessor('SYNC_PUSH', processor)
+                offlineQueueService.registerProcessor('AUTH_REGISTER', processor)
             ).not.toThrow();
         });
 
@@ -85,7 +81,7 @@ describe('OfflineQueueService - Enhanced', () => {
             };
 
             expect(() =>
-                offlineQueueService.registerProcessor('SYNC_PULL', asyncProcessor)
+                offlineQueueService.registerProcessor('PURGE_ITEM', asyncProcessor)
             ).not.toThrow();
         });
 
@@ -93,11 +89,11 @@ describe('OfflineQueueService - Enhanced', () => {
             const processor1 = vi.fn(() => Promise.resolve());
             const processor2 = vi.fn(() => Promise.resolve());
 
-            offlineQueueService.registerProcessor('DEVICE_REGISTER', processor1);
+            offlineQueueService.registerProcessor('TASK_CREATE', processor1);
 
             // Should not throw when registering again
             expect(() =>
-                offlineQueueService.registerProcessor('DEVICE_REGISTER', processor2)
+                offlineQueueService.registerProcessor('TASK_CREATE', processor2)
             ).not.toThrow();
         });
     });
@@ -176,8 +172,8 @@ describe('OfflineQueueService - Enhanced', () => {
 
         it('should parse action list correctly', async () => {
             mockInvokeResults.set('list_pending_actions', [
-                ['id-1', 'SYNC_PUSH', '{"test":true}', 'pending', 0],
-                ['id-2', 'SYNC_PULL', '{}', 'failed', 2],
+                ['id-1', 'AUTH_REGISTER', '{"test":true}', 'pending', 0],
+                ['id-2', 'PURGE_ITEM', '{}', 'failed', 2],
             ]);
 
             const actions = await offlineQueueService.listActions();
@@ -185,7 +181,7 @@ describe('OfflineQueueService - Enhanced', () => {
             expect(actions).toHaveLength(2);
             expect(actions[0]).toEqual({
                 id: 'id-1',
-                actionType: 'SYNC_PUSH',
+                actionType: 'AUTH_REGISTER',
                 payload: '{"test":true}',
                 status: 'pending',
                 retryCount: 0,
@@ -260,7 +256,7 @@ describe('OfflineQueueService - Enhanced', () => {
     describe('Edge Cases', () => {
         it('should handle empty payload in listActions', async () => {
             mockInvokeResults.set('list_pending_actions', [
-                ['id-1', 'SYNC_PUSH', '', 'pending', 0],
+                ['id-1', 'AUTH_REGISTER', '', 'pending', 0],
             ]);
 
             const actions = await offlineQueueService.listActions();
@@ -270,7 +266,7 @@ describe('OfflineQueueService - Enhanced', () => {
 
         it('should handle high retry count', async () => {
             mockInvokeResults.set('list_pending_actions', [
-                ['id-1', 'SYNC_PUSH', '{}', 'failed', 999],
+                ['id-1', 'AUTH_REGISTER', '{}', 'failed', 999],
             ]);
 
             const actions = await offlineQueueService.listActions();

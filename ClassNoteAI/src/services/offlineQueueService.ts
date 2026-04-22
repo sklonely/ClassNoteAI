@@ -1,10 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
 export type ActionType =
-    | 'SYNC_PUSH'
-    | 'SYNC_PULL'
-    | 'DEVICE_REGISTER'
-    | 'DEVICE_DELETE'
     | 'AUTH_REGISTER'
     | 'PURGE_ITEM'
     | 'TASK_CREATE';

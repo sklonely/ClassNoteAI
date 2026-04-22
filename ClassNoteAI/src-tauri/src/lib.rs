@@ -18,7 +18,6 @@ pub mod paths;
 pub mod downloads;
 pub mod diagnostics;
 // 同步模塊
-mod sync;
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
 mod oauth;
 // Crash-safe recording — incremental PCM persistence + orphan recovery
@@ -631,21 +630,6 @@ async fn list_courses(user_id: String) -> Result<Vec<storage::Course>, String> {
         .map_err(|e| format!("列出科目失敗: {}", e))
 }
 
-/// 列出所有科目 (包含已刪除，用於同步)
-#[tauri::command]
-async fn list_courses_sync(user_id: String) -> Result<Vec<storage::Course>, String> {
-    let manager = storage::get_db_manager()
-        .await
-        .map_err(|e| format!("數據庫未初始化: {}", e))?;
-
-    let db = manager
-        .get_db()
-        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
-
-    db.list_courses_sync(&user_id)
-        .map_err(|e| format!("列出科目失敗: {}", e))
-}
-
 /// 刪除科目
 #[tauri::command]
 async fn delete_course(id: String) -> Result<(), String> {
@@ -725,21 +709,6 @@ async fn list_lectures(user_id: String) -> Result<Vec<storage::Lecture>, String>
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
     db.list_lectures(&user_id)
-        .map_err(|e| format!("列出課程失敗: {}", e))
-}
-
-/// 列出所有課程 (包含已刪除，用於同步)
-#[tauri::command]
-async fn list_lectures_sync(user_id: String) -> Result<Vec<storage::Lecture>, String> {
-    let manager = storage::get_db_manager()
-        .await
-        .map_err(|e| format!("數據庫未初始化: {}", e))?;
-
-    let db = manager
-        .get_db()
-        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
-
-    db.list_lectures_sync(&user_id)
         .map_err(|e| format!("列出課程失敗: {}", e))
 }
 
@@ -2132,13 +2101,11 @@ pub fn run() {
             save_course,
             get_course,
             list_courses,
-            list_courses_sync, // Added
             delete_course,
             list_lectures_by_course,
             save_lecture,
             get_lecture,
             list_lectures,
-            list_lectures_sync, // Added
             delete_lecture,
             update_lecture_status,
             save_subtitle,
@@ -2197,9 +2164,6 @@ pub fn run() {
             get_storage_usage,
             clear_model_cache,
             reset_app_data,
-            // Sync 相關
-            sync::upload_file,
-            sync::download_file,
             write_binary_file,
             get_audio_dir,
             get_documents_dir,

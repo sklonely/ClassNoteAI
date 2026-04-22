@@ -252,13 +252,6 @@ export interface AppSettings {
      *  are compiled in. */
     asrBackend?: 'auto' | 'cuda' | 'metal' | 'vulkan' | 'cpu';
   };
-  sync?: {
-    username: string;
-    deviceId?: string;
-    deviceName?: string;
-    autoSync: boolean;
-    lastSyncTime?: string;
-  };
   /**
    * Release channel preference for the updater.
    *   - `stable` — only stable tags (vX.Y.Z). Uses the Tauri updater

@@ -191,7 +191,6 @@ export default function SettingsView({}: Props) {
             models: saved.models,
             recording: saved.recording,
             translation: saved.translation,
-            sync: saved.sync,
           });
           if (saved.audio?.device_id) {
             setSelectedDeviceId(saved.audio.device_id);
