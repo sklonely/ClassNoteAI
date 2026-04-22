@@ -20,22 +20,23 @@ class AudioDeviceService {
   async getAudioInputDevices(): Promise<AudioDevice[]> {
     try {
       // 檢查 navigator.mediaDevices 是否可用
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
         console.warn('[AudioDeviceService] navigator.mediaDevices 不可用，返回空列表');
         return [];
       }
 
-      // 請求權限以獲取設備標籤
-      await navigator.mediaDevices.getUserMedia({ audio: true });
-      
       const allDevices = await navigator.mediaDevices.enumerateDevices();
       
       // 過濾出音頻輸入設備
       const audioInputDevices = allDevices
         .filter(device => device.kind === 'audioinput')
-        .map(device => ({
+        .map((device, index) => ({
           deviceId: device.deviceId,
-          label: device.label || `麥克風 ${device.deviceId.substring(0, 8)}`,
+          label: device.label || (device.deviceId && device.deviceId !== 'default' && device.deviceId !== 'communications'
+            ? `麥克風 ${device.deviceId.substring(0, 8)}（請在錄音時允許權限）`
+            : index === 0
+              ? '麥克風（請在錄音時允許權限）'
+              : `麥克風 ${index + 1}（請在錄音時允許權限）`),
           kind: device.kind as MediaDeviceKind,
           groupId: device.groupId,
         }));
