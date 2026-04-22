@@ -1,0 +1,19 @@
+{
+  "version": "0.6.0-alpha.8",
+  "notes": "ClassNoteAI 0.6.0-alpha.8 update (alpha channel)",
+  "pub_date": "2026-04-22T02:14:52Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_x64-setup.exe"
+    },
+    "windows-x86_64-cuda": {
+      "signature": "",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_x64-cuda-setup.exe"
+    },
+    "darwin-aarch64": {
+      "signature": "",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_aarch64.app.tar.gz"
+    }
+  }
+}
