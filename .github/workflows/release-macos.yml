@@ -78,17 +78,24 @@ jobs:
           # 保存 ~/.cargo 目錄 (crates.io index + 已下載的 crates)
           cache-all-crates: true
 
-      # ===== 快取 CTranslate2 編譯結果 =====
-      - name: Cache ct2rs build
+      # ===== 快取 Native C++ 編譯結果 =====
+      # Normalize away the root package version before hashing so alpha /
+      # beta bumps don't blow the native cache when the dependency graph is
+      # otherwise unchanged.
+      - name: Compute native C++ cache key
+        id: native-cache-key
+        shell: bash
+        run: |
+          echo "value=$(bash scripts/native-build-cache-key.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache native C++ builds
         uses: actions/cache@v4
         with:
           path: |
             ClassNoteAI/src-tauri/target/aarch64-apple-darwin/release/build/ct2rs-*
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: ct2rs-macos-aarch64-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ct2rs-macos-aarch64-
+            ClassNoteAI/src-tauri/target/aarch64-apple-darwin/release/build/whisper-rs-sys-*
+            ClassNoteAI/src-tauri/target/aarch64-apple-darwin/release/build/sentencepiece-sys-*
+          key: native-macos-aarch64-${{ steps.native-cache-key.outputs.value }}
 
       # ===== Hydrate vendor/ =====
       # Cargo.toml has [patch.crates-io] pointing at src-tauri/vendor/*,
