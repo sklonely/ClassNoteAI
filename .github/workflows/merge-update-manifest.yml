@@ -21,6 +21,17 @@ on:
       - "Build and Release (Windows)"
     types:
       - completed
+  # Manual re-run for a specific tag — useful when a prior run died
+  # mid-flight (e.g., the whole history of failures that piled up
+  # during the alpha.7/.8 cycle because of a YAML syntax regression).
+  # Bypasses the peer-wait step; assumes both release workflows have
+  # already completed successfully.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to (re)publish manifests for (e.g. v0.6.0-alpha.8)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -28,29 +39,40 @@ permissions:
 
 jobs:
   merge:
-    # Only proceed when the triggering workflow succeeded AND was triggered
-    # by a tag push (head_branch is the tag name for tag-triggered runs,
-    # e.g. "v0.5.2").
+    # Proceed when:
+    # (a) triggered by a successful release workflow on a tag ref, OR
+    # (b) manually dispatched by a maintainer against a specific tag.
     if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Determine tag + peer workflow
         id: ctx
         env:
-          THIS: ${{ github.event.workflow_run.name }}
-          TAG: ${{ github.event.workflow_run.head_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.tag }}
+          RUN_WORKFLOW: ${{ github.event.workflow_run.name }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          case "$THIS" in
-            "Build and Release (macOS)")   echo "peer=Build and Release (Windows)" >> "$GITHUB_OUTPUT" ;;
-            "Build and Release (Windows)") echo "peer=Build and Release (macOS)"   >> "$GITHUB_OUTPUT" ;;
-            *) echo "Unknown triggering workflow: $THIS"; exit 1 ;;
-          esac
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=$DISPATCH_TAG"    >> "$GITHUB_OUTPUT"
+            echo "skip_wait=true"       >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$RUN_BRANCH"      >> "$GITHUB_OUTPUT"
+            echo "skip_wait=false"      >> "$GITHUB_OUTPUT"
+            case "$RUN_WORKFLOW" in
+              "Build and Release (macOS)")   echo "peer=Build and Release (Windows)" >> "$GITHUB_OUTPUT" ;;
+              "Build and Release (Windows)") echo "peer=Build and Release (macOS)"   >> "$GITHUB_OUTPUT" ;;
+              *) echo "Unknown triggering workflow: $RUN_WORKFLOW"; exit 1 ;;
+            esac
+          fi
 
       - name: Wait for peer release workflow
         id: wait
+        if: steps.ctx.outputs.skip_wait != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ctx.outputs.tag }}
@@ -84,14 +106,14 @@ jobs:
           echo "Peer did not complete within 40 minutes."
 
       - name: Checkout default branch
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Download manifest fragments
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ctx.outputs.tag }}
@@ -113,7 +135,7 @@ jobs:
           ls -la latest-*.json || true
 
       - name: Merge into latest.json
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         run: |
           # Take version/notes/pub_date from the macOS fragment (arbitrary —
           # all fragments carry the same version for a given tag) and union
@@ -134,7 +156,7 @@ jobs:
           cat latest.json
 
       - name: Determine channel tier and write per-channel manifests
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         shell: bash
         env:
           TAG: ${{ steps.ctx.outputs.tag }}
@@ -154,7 +176,7 @@ jobs:
           done
 
       - name: Sanity check merged manifest
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         run: |
           # Both baseline platforms must be present. Windows-cuda is
           # optional for back-compat with pre-v0.6.1 tags.
@@ -173,7 +195,7 @@ jobs:
           echo "OK: latest.json has all required platforms."
 
       - name: Open PR for manifest update
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         id: manifest_pr
         uses: peter-evans/create-pull-request@v6
         with:
@@ -185,7 +207,7 @@ jobs:
           body: "Automated per-channel manifest update for ${{ steps.ctx.outputs.tag }}"
 
       - name: Auto-merge manifest PR
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -199,7 +221,7 @@ jobs:
           fi
 
       - name: Upload merged manifest
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ctx.outputs.tag }}
@@ -213,7 +235,7 @@ jobs:
       # on the release AND the merged latest.json is uploaded, flip
       # the draft to published.
       - name: Publish release
-        if: steps.wait.outputs.ok == 'true'
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ctx.outputs.tag }}
