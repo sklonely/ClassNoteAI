@@ -514,6 +514,23 @@ export class ChatGPTOAuthProvider implements LLMProvider {
     // drifting into markdown code fences.
     if (request.jsonMode) {
       body.text = { format: { type: 'json_object' } };
+      // The Responses API validator rejects `format:json_object` unless the
+      // literal word "json" appears in `input`. Our task prompts put "JSON"
+      // in the system message, but the provider maps system to the separate
+      // `instructions` field — which the validator does NOT count. Append a
+      // tiny hint to the final user message when none of the input parts
+      // already mention JSON so the validator passes. Case-insensitive match.
+      const containsJson = (text: string) => /json/i.test(text);
+      const inputHasJson = input.some((msg) =>
+        msg.content.some((p) => {
+          if (p.type === 'input_text' || p.type === 'output_text') return containsJson(p.text);
+          return false;
+        }),
+      );
+      if (!inputHasJson && input.length > 0) {
+        const last = input[input.length - 1];
+        last.content.push({ type: 'input_text', text: '以 JSON 格式回傳。' });
+      }
     }
     // NOTE: Codex's Responses backend rejects several parameters the
     // public Responses API accepts (observed 2026-04: `max_output_tokens`
