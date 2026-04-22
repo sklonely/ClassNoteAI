@@ -13,8 +13,14 @@ on:
     branches: [main]
     paths-ignore:
       - '**.md'
-      - 'docs/**'
       - '.github/workflows/release-*.yml'
+      # NOTE: 'docs/**' intentionally NOT ignored. Bot manifest PRs
+      # (from merge-update-manifest.yml) only touch `docs/updater/` and
+      # our ruleset requires pr-check-{macos,windows} to report. If
+      # pr-check skips the PR, the ruleset says "2 of 2 required
+      # checks are expected" and auto-merge forever blocks. ~5-10 min
+      # of extra CI per manifest PR is the cost; they're rare (one
+      # per release) so net cost is marginal.
   workflow_dispatch:
 
 permissions:
