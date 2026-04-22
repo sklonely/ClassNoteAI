@@ -132,9 +132,16 @@ jobs:
           shared-key: "windows-${{ matrix.variant.id }}-rust-cache"
           cache-all-crates: true
 
-      # CTranslate2 + whisper.cpp + sentencepiece each take a few minutes;
-      # cache their build dirs keyed to Cargo.lock + vendor patches +
-      # variant so we only rebuild when those actually change.
+      # CTranslate2 + whisper.cpp + sentencepiece each take a few minutes.
+      # Normalize away the root package version before hashing so alpha /
+      # beta bumps don't blow the cache when the native dependency graph is
+      # otherwise unchanged.
+      - name: Compute native C++ cache key
+        id: native-cache-key
+        shell: bash
+        run: |
+          echo "value=$(bash scripts/native-build-cache-key.sh)" >> "$GITHUB_OUTPUT"
+
       - name: Cache native C++ builds
         uses: actions/cache@v4
         with:
@@ -142,7 +149,7 @@ jobs:
             ClassNoteAI/src-tauri/target/release/build/ct2rs-*
             ClassNoteAI/src-tauri/target/release/build/whisper-rs-sys-*
             ClassNoteAI/src-tauri/target/release/build/sentencepiece-sys-*
-          key: native-windows-${{ matrix.variant.id }}-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock', 'ClassNoteAI/src-tauri/vendor-patches/**') }}
+          key: native-windows-${{ matrix.variant.id }}-${{ steps.native-cache-key.outputs.value }}
 
       - name: Hydrate vendor/ (ct2rs, esaxx-rs with Windows patches)
         shell: bash

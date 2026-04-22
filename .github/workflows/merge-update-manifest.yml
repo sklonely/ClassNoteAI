@@ -180,9 +180,9 @@ jobs:
           add-paths: |
             docs/updater
           branch: updater-manifest/${{ steps.ctx.outputs.tag }}
-          title: chore(updater): publish manifest for ${{ steps.ctx.outputs.tag }}
-          commit-message: chore(updater): update channel manifests for ${{ steps.ctx.outputs.tag }}
-          body: Automated per-channel manifest update for ${{ steps.ctx.outputs.tag }}
+          title: "chore(updater): publish manifest for ${{ steps.ctx.outputs.tag }}"
+          commit-message: "chore(updater): update channel manifests for ${{ steps.ctx.outputs.tag }}"
+          body: "Automated per-channel manifest update for ${{ steps.ctx.outputs.tag }}"
 
       - name: Auto-merge manifest PR
         if: steps.wait.outputs.ok == 'true'
