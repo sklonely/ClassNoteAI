@@ -5,6 +5,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { AudioProcessor } from '../utils/audioProcessor';
+import { mediaPermissionService } from './mediaPermissionService';
 import { toastService } from './toastService';
 
 export interface AudioRecorderConfig {
@@ -82,6 +83,14 @@ export class AudioRecorder {
     this.audioProcessor = new AudioProcessor(16000);
   }
 
+  setDeviceId(deviceId?: string): void {
+    this.config.deviceId = deviceId || '';
+  }
+
+  getDeviceId(): string | undefined {
+    return this.config.deviceId || undefined;
+  }
+
   /**
    * 初始化音頻上下文
    */
@@ -108,100 +117,93 @@ export class AudioRecorder {
    * 請求麥克風權限並獲取音頻流
    */
   private async getMediaStream(): Promise<MediaStream> {
-    const getConstraints = (deviceId?: string): MediaStreamConstraints => ({
-      audio: {
-        deviceId: deviceId ? { exact: deviceId } : undefined,
-        sampleRate: this.config.sampleRate,
-        channelCount: this.config.channelCount,
-        echoCancellation: true, // 回音消除
-        noiseSuppression: true, // 噪音抑制
-        autoGainControl: true, // 自動增益控制
-      },
-    });
+    try {
+      console.log('[AudioRecorder] 請求麥克風權限...');
 
-    const logStreamInfo = (stream: MediaStream) => {
-      console.log('[AudioRecorder] 麥克風權限獲取成功');
-
-      // 獲取實際的音頻軌道信息
-      const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length > 0) {
-        const track = audioTracks[0];
-        const settings = track.getSettings();
-        console.log('[AudioRecorder] 音頻軌道設置:', {
-          deviceId: settings.deviceId,
-          sampleRate: settings.sampleRate,
-          channelCount: settings.channelCount,
-          label: track.label,
-        });
-      }
-    };
-
-    const throwFriendlyError = (error: unknown): never => {
-      if (error instanceof Error) {
-        if (error.name === 'NotAllowedError') {
-          throw new Error('麥克風權限被拒絕，請到系統設定（macOS：系統偏好設定 → 安全性與隱私權 → 麥克風；Windows：設定 → 隱私權 → 麥克風）允許 ClassNote AI 使用麥克風');
-        } else if (error.name === 'NotFoundError') {
-          throw new Error('未找到麥克風設備，請檢查設備連接');
-        } else if (error.name === 'NotReadableError') {
-          throw new Error('麥克風設備無法訪問，可能被其他應用佔用');
-        }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('瀏覽器不支持音頻錄製 API (navigator.mediaDevices.getUserMedia)');
       }
 
-      throw error;
-    };
-
-    console.log('[AudioRecorder] 請求麥克風權限...');
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('瀏覽器不支持音頻錄製 API (navigator.mediaDevices.getUserMedia)');
-    }
-
-    const savedDeviceId = this.config.deviceId;
-    if (savedDeviceId) {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia(getConstraints(savedDeviceId));
-        logStreamInfo(stream);
-        return stream;
+        return await this.requestMediaStream(this.config.deviceId || undefined);
       } catch (error) {
         console.error('[AudioRecorder] 麥克風權限獲取失敗:', error);
 
-        if (error instanceof Error &&
-          (error.name === 'OverconstrainedError' || error.name === 'NotFoundError')) {
-          console.warn('[AudioRecorder] 已儲存的麥克風不可用，改用系統預設麥克風。', error);
+        if (
+          this.config.deviceId &&
+          mediaPermissionService.isRecoverableDeviceSelectionError(error)
+        ) {
+          console.warn(
+            `[AudioRecorder] Saved device ${this.config.deviceId} is unavailable, retrying with system default microphone.`,
+          );
           this.config.deviceId = undefined;
 
-          const fallbackMessage = '原本選擇的麥克風已不可用，已自動切換到系統預設麥克風。';
           if (!this._deviceFallbackWarned) {
             this._deviceFallbackWarned = true;
-            if (typeof toastService?.warning === 'function') {
-              toastService.warning(fallbackMessage);
-            } else {
-              console.warn(fallbackMessage);
-            }
+            toastService.warning('原本選擇的麥克風已不可用，已自動切換到系統預設麥克風。');
           }
 
           try {
-            const stream = await navigator.mediaDevices.getUserMedia(getConstraints());
-            logStreamInfo(stream);
-            return stream;
+            return await this.requestMediaStream(undefined);
           } catch (fallbackError) {
-            console.error('[AudioRecorder] 系統預設麥克風回退失敗:', fallbackError);
-            throw error;
+            console.error(
+              '[AudioRecorder] 系統預設麥克風回退失敗:',
+              fallbackError,
+            );
+            throw mediaPermissionService.normalizeMicrophoneError(fallbackError);
           }
         }
 
-        throw error;
+        throw mediaPermissionService.normalizeMicrophoneError(error);
       }
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  private async requestMediaStream(deviceId?: string): Promise<MediaStream> {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: this.buildAudioConstraints(deviceId),
+    });
+
+    console.log('[AudioRecorder] 麥克風權限獲取成功');
+    this.syncResolvedDeviceId(stream);
+
+    return stream;
+  }
+
+  private buildAudioConstraints(
+    deviceId?: string,
+  ): MediaTrackConstraints {
+    return {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      sampleRate: this.config.sampleRate,
+      channelCount: this.config.channelCount,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    };
+  }
+
+  private syncResolvedDeviceId(stream: MediaStream): void {
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      return;
     }
 
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia(getConstraints());
-      logStreamInfo(stream);
-      return stream;
-    } catch (error) {
-      console.error('[AudioRecorder] 麥克風權限獲取失敗:', error);
-      return throwFriendlyError(error);
+    const track = audioTracks[0];
+    const settings = track.getSettings();
+
+    if (typeof settings.deviceId === 'string' && settings.deviceId.length > 0) {
+      this.config.deviceId = settings.deviceId;
     }
+
+    console.log('[AudioRecorder] 音頻軌道設置:', {
+      deviceId: settings.deviceId,
+      sampleRate: settings.sampleRate,
+      channelCount: settings.channelCount,
+      label: track.label,
+    });
   }
 
   /**

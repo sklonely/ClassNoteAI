@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Mic, Type, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
 import { AppSettings } from "../../types";
 import { AudioDevice } from "../../services/audioDeviceService";
+import type { MicrophonePermissionState } from "../../services/mediaPermissionService";
 import { Card } from "./shared";
 
 interface Props {
@@ -12,6 +13,9 @@ interface Props {
   setSelectedDeviceId: (id: string) => void;
   isLoadingDevices: boolean;
   onRefreshDevices: () => void;
+  onRequestMicrophonePermission: () => void;
+  hasMicrophonePermissionDetails: boolean;
+  microphonePermissionState: MicrophonePermissionState;
 }
 
 export default function SettingsAudioSubtitles({
@@ -22,6 +26,9 @@ export default function SettingsAudioSubtitles({
   setSelectedDeviceId,
   isLoadingDevices,
   onRefreshDevices,
+  onRequestMicrophonePermission,
+  hasMicrophonePermissionDetails,
+  microphonePermissionState,
 }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -35,18 +42,37 @@ export default function SettingsAudioSubtitles({
           <div>
             <div className="flex items-center justify-between mb-2">
               <label className="block text-sm font-medium">麥克風設備</label>
-              <button
-                onClick={onRefreshDevices}
-                disabled={isLoadingDevices}
-                className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 disabled:opacity-50"
-              >
-                <RefreshCw
-                  size={14}
-                  className={isLoadingDevices ? "animate-spin" : ""}
-                />
-                刷新
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={onRequestMicrophonePermission}
+                  disabled={isLoadingDevices}
+                  className="text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 disabled:opacity-50"
+                >
+                  請求權限
+                </button>
+                <button
+                  onClick={onRefreshDevices}
+                  disabled={isLoadingDevices}
+                  className="flex items-center gap-1 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 disabled:opacity-50"
+                >
+                  <RefreshCw
+                    size={14}
+                    className={isLoadingDevices ? "animate-spin" : ""}
+                  />
+                  刷新
+                </button>
+              </div>
             </div>
+            {!hasMicrophonePermissionDetails && (
+              <p className="mb-2 text-xs text-amber-600 dark:text-amber-400">
+                目前尚未取得完整麥克風資訊。請先授權，否則裝置列表可能不完整。
+              </p>
+            )}
+            {microphonePermissionState === "denied" && (
+              <p className="mb-2 text-xs text-red-500">
+                系統目前拒絕麥克風存取，錄音前需要先重新允許權限。
+              </p>
+            )}
             <select
               value={selectedDeviceId}
               onChange={(e) => setSelectedDeviceId(e.target.value)}

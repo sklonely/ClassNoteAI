@@ -13,6 +13,7 @@ import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
 import { toastService } from "./services/toastService";
 import { buildInterruptedRecordingNotice } from "./services/recordingInterruptionNotice";
+import { audioDeviceService } from "./services/audioDeviceService";
 import { useAuth } from "./contexts/AuthContext";
 
 type AppState = 'loading' | 'setup' | 'ready';
@@ -83,6 +84,25 @@ function App() {
     };
     initTheme();
   }, []);
+
+  // App-level 音訊裝置同步：啟動後先 enumerate，之後靠
+  // focus / visibility / devicechange 自動刷新，避免設定頁成為
+  // 唯一會修復 stale device 狀態的入口。
+  useEffect(() => {
+    if (appState !== 'ready' || !user) return;
+
+    let cancelled = false;
+    void audioDeviceService.initialize().catch((error) => {
+      if (!cancelled) {
+        console.warn('[App] Failed to initialize audio device service:', error);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      audioDeviceService.destroy();
+    };
+  }, [appState, user]);
 
   // v0.5.2 audit follow-up: surface migration notices to the user.
   // The DB init runs migrations eagerly (e.g. dropping stale embedding

@@ -1247,8 +1247,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       }
 
       const settings = await storageService.getAppSettings();
+      const preferredInputDeviceId =
+        await audioDeviceService.preparePreferredInputDeviceForRecording();
       audioRecorderRef.current.updateConfig({
-        deviceId: settings?.audio?.device_id || '',
+        deviceId: preferredInputDeviceId,
       });
 
       // CRITICAL: Save lecture to DB BEFORE setting lectureId on transcription service
@@ -1282,6 +1284,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       audioRecorderRef.current.enablePersistence(currentLectureData.id);
 
       await audioRecorderRef.current.start();
+
+      const resolvedInputDeviceId = audioRecorderRef.current.getDeviceId();
+      if (resolvedInputDeviceId && resolvedInputDeviceId !== preferredInputDeviceId) {
+        await audioDeviceService.setPreferredDevice(resolvedInputDeviceId);
+      }
+
       await startRecordingDeviceMonitor();
       setRecordingStatus("recording");
       setRecordingStartTime(Date.now());
