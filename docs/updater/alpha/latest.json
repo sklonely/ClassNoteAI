@@ -1,8 +1,12 @@
 {
   "version": "0.6.0-alpha.8",
-  "notes": "ClassNoteAI 0.6.0-alpha.8 update (alpha channel)",
-  "pub_date": "2026-04-22T02:14:52Z",
+  "notes": "ClassNoteAI 0.6.0-alpha.8 更新",
+  "pub_date": "2026-04-21T23:36:17Z",
   "platforms": {
+    "darwin-aarch64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNENQc3ptbDd4OEtuMGx1R0lsMW5vZGF3VGRHNGRiWTF3Q2tIOFNlT1lDamVtT3NadFVpVGloTWQzRUZYTlpMV0VkNGpQNXdXVksvWVlVK3JpUUorNVE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc2ODE0NTc2CWZpbGU6Q2xhc3NOb3RlQUkuYXBwLnRhci5nego5eFFaWkdVUXhSbGpiVEd3aU1rWGo5VzJZaFdacUFUbmM4THo4K21nM1hXdGplVlFiODJpRHduSklhWS9NN2h4dXhTb3JxMnp4NEN0OXM5TS9jVUxDdz09Cg==",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_aarch64.app.tar.gz"
+    },
     "windows-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNEg1ZzNyV0NWeWZjR2hFTE5TVUtxZnovTTRQRm9McVpNWngwZnJBREtqSWtNSWlJNDNFYjZBR0d4eXhTelFVaDR4QUlveDlsNU8zSU5vUTJBcDNNL1E0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc2ODE0OTQzCWZpbGU6Q2xhc3NOb3RlQUlfMC42LjAtYWxwaGEuOF94NjQtc2V0dXAuZXhlCmFlZWFOMWd3dGsyYkFnYWtaL3dqWWVIL3JQTlJUVFpwQnV6ejM5YnB4VkxPWlJwbUZ4RFFYOGhKaHlPVDZYekZkb0tJU2h0dE1QV0R6NzVGOHg2REJnPT0K",
       "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_x64-setup.exe"
@@ -10,10 +14,6 @@
     "windows-x86_64-cuda": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNEJYM1FUd1FsT0VFcHZRS3RhTUVLRDhsRWNkcW9QRklGamZHd0t3UjBzSUpBTUJSdU1DMDJBNHBWUDVaOG5BTFBxOTRFclB6d2ZkeGw1cUNOZWtSdFFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc2ODE3MDgzCWZpbGU6Q2xhc3NOb3RlQUlfMC42LjAtYWxwaGEuOF94NjQtc2V0dXAuZXhlCjBLdlIrUVVuaTNUeklINXhqR0VxdkhseDFnWHFVN2RJZ0ZxR25lK25oclpJSTlvcnZCWjB4d1ZLNkNGa3dtZTZHZW5nNHB3LzR4K3l4OWhEY1JpaEJ3PT0K",
       "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_x64-cuda-setup.exe"
-    },
-    "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNENQc3ptbDd4OEtuMGx1R0lsMW5vZGF3VGRHNGRiWTF3Q2tIOFNlT1lDamVtT3NadFVpVGloTWQzRUZYTlpMV0VkNGpQNXdXVksvWVlVK3JpUUorNVE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc2ODE0NTc2CWZpbGU6Q2xhc3NOb3RlQUkuYXBwLnRhci5nego5eFFaWkdVUXhSbGpiVEd3aU1rWGo5VzJZaFdacUFUbmM4THo4K21nM1hXdGplVlFiODJpRHduSklhWS9NN2h4dXhTb3JxMnp4NEN0OXM5TS9jVUxDdz09Cg==",
-      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.0-alpha.8/ClassNoteAI_0.6.0-alpha.8_aarch64.app.tar.gz"
     }
   }
 }
