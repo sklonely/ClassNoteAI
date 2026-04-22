@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { X, BookOpen, FileText, Cpu, Loader2 } from "lucide-react";
-import { selectPDFFile } from "../services/fileService";
+import DragDropZone from "./DragDropZone";
+import { readPDFFile, selectPDFFile } from "../services/fileService";
 import { pdfService } from "../services/pdfService";
 import { extractKeywords as llmExtractKeywords } from "../services/llm";
+import { toastService } from "../services/toastService";
 
 interface CourseCreationDialogProps {
   isOpen: boolean;
@@ -49,11 +51,17 @@ export default function CourseCreationDialog({
   if (!isOpen) return null;
 
   // ... existing state ...
-  const [title, setTitle] = useState(initialTitle);
-  const [keywords, setKeywords] = useState(initialKeywords);
+  // Rust `Option<String>` serializes to JSON null, but the TS prop type says
+  // `string | undefined` — so `course.description == null` slips through the
+  // compiler and lands here as an actual `null`. Coerce at every boundary
+  // (initializer + useEffect sync) so the .trim() calls downstream never
+  // crash on edit-mode mount. Same rule for title/keywords even though
+  // they're non-nullable in the model today (defensive against future drift).
+  const [title, setTitle] = useState(initialTitle ?? "");
+  const [keywords, setKeywords] = useState(initialKeywords ?? "");
   const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
   const [pdfFileName, setPdfFileName] = useState<string>("");
-  const [description, setDescription] = useState(initialDescription);
+  const [description, setDescription] = useState(initialDescription ?? "");
   const [contextTab, setContextTab] = useState<'pdf' | 'text'>('pdf');
 
   const [isLoading, setIsLoading] = useState(false);
@@ -63,10 +71,11 @@ export default function CourseCreationDialog({
 
   // Sync prompts to state when they change (e.g. when opening edit mode)
   useEffect(() => {
-    setTitle(initialTitle);
-    setKeywords(initialKeywords);
-    setDescription(initialDescription);
+    setTitle(initialTitle ?? "");
+    setKeywords(initialKeywords ?? "");
+    setDescription(initialDescription ?? "");
     setPdfData(null); // Reset PDF on open/mode change? Or should we keep?
+    setPdfFileName("");
     // If editing, we might want to keep existing context if passed, but usually we just reset for new course.
     // For edit mode, we sync.
   }, [initialTitle, initialKeywords, initialDescription, mode, isOpen]);
@@ -78,18 +87,58 @@ export default function CourseCreationDialog({
     }
   }, [isOpen]);
 
+  // Must match the cap enforced downstream in storageService.saveCourseSyllabusPdf.
+  // Catching it here gives the user a clear, immediate reason on select/drop
+  // instead of a generic "保存失敗" alert after they hit the submit button.
+  const MAX_PDF_BYTES = 50 * 1024 * 1024;
+
+  const applySelectedPdf = (path: string, data: ArrayBuffer): boolean => {
+    if (data.byteLength > MAX_PDF_BYTES) {
+      toastService.error(
+        "PDF 檔案過大",
+        `${(data.byteLength / 1024 / 1024).toFixed(1)} MB 超過 50 MB 上限，請壓縮或拆分後再上傳`
+      );
+      return false;
+    }
+    const name = path.split(/[/\\]/).pop() || "document.pdf";
+    setPdfFileName(name);
+    setPdfData(data);
+    return true;
+  };
+
+  const handleDroppedPdf = async (paths: string[]) => {
+    const path = paths[0];
+    if (!path) return;
+    if (!path.toLowerCase().endsWith(".pdf")) {
+      toastService.warning("只支援 PDF 檔案");
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const dropped = await readPDFFile(path);
+      if (!dropped) {
+        throw new Error("無法讀取拖入的 PDF");
+      }
+      applySelectedPdf(dropped.path, dropped.data);
+    } catch (error) {
+      console.error("Failed to read dropped PDF:", error);
+      toastService.error("PDF 讀取失敗", error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleSelectPDF = async () => {
     setIsLoading(true);
     try {
       const selected = await selectPDFFile();
       if (selected) {
-        const name = selected.path.split(/[/\\]/).pop() || "document.pdf";
-        setPdfFileName(name);
-        setPdfData(selected.data);
+        applySelectedPdf(selected.path, selected.data);
       }
     } catch (error) {
       console.error("Failed to select PDF:", error);
-      alert("無法讀取 PDF 文件");
+      toastService.error("PDF 讀取失敗", error instanceof Error ? error.message : String(error));
     } finally {
       setIsLoading(false);
     }
@@ -329,6 +378,13 @@ export default function CourseCreationDialog({
 
             {contextTab === 'pdf' ? (
               <div className="space-y-2">
+                <DragDropZone
+                  onFileDrop={handleDroppedPdf}
+                  enabled={!isLoading && contextTab === 'pdf'}
+                  overlayLabel="拖放 PDF 到這裡"
+                  overlayHint="鬆開以上傳課程 syllabus PDF"
+                  className="w-full"
+                >
                 <button
                   onClick={handleSelectPDF}
                   disabled={isLoading}
@@ -339,6 +395,7 @@ export default function CourseCreationDialog({
                     {isLoading ? "加載中..." : pdfFileName || "點擊選擇 PDF 文件"}
                   </span>
                 </button>
+                </DragDropZone>
                 {pdfFileName && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
                     已選擇: {pdfFileName}

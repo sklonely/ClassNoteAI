@@ -18,9 +18,13 @@ import {
     MoreVertical
 } from 'lucide-react';
 import { Course, Lecture } from '../types';
-import { storageService } from '../services/storageService';
-import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
+import {
+    storageService,
+    getCourseSyllabusState,
+    getCourseSyllabusFailureReason
+} from '../services/storageService';
 import CourseCreationDialog from './CourseCreationDialog';
+import { toastService } from '../services/toastService';
 
 /**
  * LLM syllabus output is best-effort JSON. Even with strict prompts,
@@ -73,6 +77,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
     const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
     const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [isRetrying, setIsRetrying] = useState(false);
 
     useEffect(() => {
         loadData();
@@ -163,43 +168,48 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
             setIsLoading(false);
         }
     };
+    const handleRetrySyllabusGeneration = async () => {
+        if (!course || isRetrying) return;
+
+        try {
+            setIsRetrying(true);
+            await storageService.retryCourseSyllabusGeneration(course.id);
+            const refreshedCourse = await storageService.getCourse(course.id);
+            if (refreshedCourse) {
+                setCourse(refreshedCourse);
+            }
+        } catch (error) {
+            toastService.error('重試失敗', error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsRetrying(false);
+        }
+    };
 
     const handleUpdateCourse = async (
         title: string,
         keywords: string,
-        _pdfData?: ArrayBuffer,
+        pdfData?: ArrayBuffer,
         description?: string,
         shouldClose: boolean = true,
     ) => {
         if (!course) return;
         try {
-            let syllabusInfo = undefined;
-
-            // Only extract if description changed and is long enough
             const descriptionChanged = description !== course.description;
-
-            if (descriptionChanged && description && description.trim().length > 50) {
-                // 嘗試透過 LLM 提取結構化資訊
-                try {
-                    const extracted = await llmExtractSyllabus(course.title, description, 'zh');
-                    if (extracted && Object.keys(extracted).length > 0) {
-                        syllabusInfo = extracted;
-                    }
-                } catch (e) {
-                    console.warn('[CourseDetailView] Syllabus extraction skipped:', e);
-                }
-            }
 
             const updatedCourse: Course = {
                 ...course,
                 title,
                 keywords,
                 description: description || '',
-                syllabus_info: syllabusInfo || course.syllabus_info, // 保留舊的或使用新的
+                syllabus_info: course.syllabus_info,
                 updated_at: new Date().toISOString()
             };
-            await storageService.saveCourse(updatedCourse);
             setCourse(updatedCourse);
+            if (descriptionChanged || pdfData) {
+                await storageService.saveCourseWithSyllabus(updatedCourse, { pdfData, triggerSyllabusGeneration: true });
+            } else {
+                await storageService.saveCourse(updatedCourse);
+            }
             // Keyword-extraction flow passes shouldClose=false so the
             // dialog stays open while the background LLM call runs
             // and merges the extracted keywords back into the
@@ -228,6 +238,8 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
     }
 
     const { syllabus_info } = course;
+    const syllabusState = getCourseSyllabusState(syllabus_info);
+    const syllabusFailureReason = getCourseSyllabusFailureReason(syllabus_info);
 
     return (
         <div className="h-full flex flex-col bg-gray-50 dark:bg-gray-900">
@@ -271,7 +283,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                 課程大綱
                             </h2>
 
-                            {syllabus_info ? (
+                            {syllabusState === 'ready' && syllabus_info ? (
                                 <div className="space-y-4">
                                     {syllabus_info.topic && (
                                         <div>
@@ -366,7 +378,7 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                         </div>
                                     )}
                                 </div>
-                            ) : (
+                            ) : syllabusState === 'generating' ? (
                                 <div className="text-sm text-gray-500 dark:text-gray-400">
                                     {course.description ? (
                                         <div className="space-y-2">
@@ -377,8 +389,33 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                             </div>
                                         </div>
                                     ) : (
-                                        <p className="italic">暫無課程大綱信息</p>
+                                        <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 p-2 rounded-lg animate-pulse">
+                                            <Clock className="w-4 h-4" />
+                                            <span>AI 正在生成課程大綱...</span>
+                                        </div>
                                     )}
+                                </div>
+                            ) : syllabusState === 'failed' ? (
+                                <div className="space-y-3 text-sm text-gray-500 dark:text-gray-400">
+                                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/30 dark:bg-red-900/20">
+                                        <p className="font-medium text-red-700 dark:text-red-300">生成失敗</p>
+                                        {syllabusFailureReason && (
+                                            <p className="mt-1 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap">{syllabusFailureReason}</p>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={handleRetrySyllabusGeneration}
+                                        disabled={isRetrying}
+                                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/30 dark:text-red-300 dark:hover:bg-red-900/20 transition-colors"
+                                    >
+                                        <Clock className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
+                                        <span>{isRetrying ? '重試中...' : '重試生成'}</span>
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="text-sm text-gray-500 dark:text-gray-400">
+                                    <p className="italic">暫無課程大綱信息</p>
                                 </div>
                             )}
                         </div>

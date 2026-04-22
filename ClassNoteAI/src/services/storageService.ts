@@ -2,12 +2,302 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Course, Lecture, Subtitle, Note, AppSettings } from '../types';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { authService } from './authService';
+import { extractSyllabus } from './llm';
+import { toastService } from './toastService';
+// Note: pdfService is imported lazily inside generateCourseSyllabusInBackground.
+// Eager import pulls in pdfjs-dist at module-load time, which references
+// browser-only globals (DOMMatrix). Several vitest suites (consentService,
+// ragService.crossLingual, storageService) run under the node environment
+// and transitively import storageService — a top-level `import './pdfService'`
+// would crash those suites with `ReferenceError: DOMMatrix is not defined`
+// before a single test ran.
+
+const COURSE_SYLLABUS_TIMEOUT_MS = 90_000;
+const COURSE_SYLLABUS_MIN_DESCRIPTION_LENGTH = 50;
+const COURSE_SYLLABUS_STATUS_KEY = '_classnote_status';
+const COURSE_SYLLABUS_SOURCE_KEY = '_classnote_source';
+const COURSE_SYLLABUS_UPDATED_AT_KEY = '_classnote_updated_at';
+const COURSE_SYLLABUS_ERROR_MESSAGE_KEY = '_classnote_error_message';
+const COURSE_SYLLABUS_CONTENT_KEYS = [
+  'topic',
+  'time',
+  'instructor',
+  'office_hours',
+  'teaching_assistants',
+  'location',
+  'grading',
+  'schedule',
+] as const;
+
+type CourseSyllabusLifecycle = 'idle' | 'generating' | 'failed' | 'ready';
+type CourseSyllabusSource = 'pdf' | 'description' | 'pdf+description';
+type CourseSyllabusRecord = Record<string, unknown>;
+
+function joinAppPath(baseDir: string, ...parts: string[]): string {
+  const separator = baseDir.includes('\\') ? '\\' : '/';
+  const normalizedBase = baseDir.replace(/[\\/]+$/, '');
+  const normalizedParts = parts.map((part) => part.replace(/^[\\/]+|[\\/]+$/g, ''));
+  return [normalizedBase, ...normalizedParts].join(separator);
+}
+
+function toCourseSyllabusRecord(info: Course['syllabus_info']): CourseSyllabusRecord | null {
+  if (!info || typeof info !== 'object' || Array.isArray(info)) return null;
+  return info as CourseSyllabusRecord;
+}
+
+function hasCourseSyllabusContent(info: Course['syllabus_info']): boolean {
+  const record = toCourseSyllabusRecord(info);
+  if (!record) return false;
+  return COURSE_SYLLABUS_CONTENT_KEYS.some((key) => {
+    const value = record[key];
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'string') return value.trim().length > 0;
+    return value != null;
+  });
+}
+
+function getCourseSyllabusSource(hasPdf: boolean, hasDescription: boolean): CourseSyllabusSource {
+  if (hasPdf && hasDescription) return 'pdf+description';
+  if (hasPdf) return 'pdf';
+  return 'description';
+}
+
+function buildGeneratingCourseSyllabusInfo(
+  existing: Course['syllabus_info'],
+  source: CourseSyllabusSource,
+): CourseSyllabusRecord {
+  const now = new Date().toISOString();
+  const preserved = hasCourseSyllabusContent(existing) ? { ...(toCourseSyllabusRecord(existing) ?? {}) } : {};
+  delete preserved[COURSE_SYLLABUS_ERROR_MESSAGE_KEY];
+  return {
+    ...preserved,
+    [COURSE_SYLLABUS_STATUS_KEY]: 'generating',
+    [COURSE_SYLLABUS_SOURCE_KEY]: source,
+    [COURSE_SYLLABUS_UPDATED_AT_KEY]: now,
+  };
+}
+
+function buildFailedCourseSyllabusInfo(
+  message: string,
+  source: CourseSyllabusSource,
+): CourseSyllabusRecord {
+  return {
+    [COURSE_SYLLABUS_STATUS_KEY]: 'failed',
+    [COURSE_SYLLABUS_SOURCE_KEY]: source,
+    [COURSE_SYLLABUS_UPDATED_AT_KEY]: new Date().toISOString(),
+    [COURSE_SYLLABUS_ERROR_MESSAGE_KEY]: message,
+  };
+}
+
+function buildReadyCourseSyllabusInfo(
+  info: Record<string, unknown>,
+  source: CourseSyllabusSource,
+): CourseSyllabusRecord {
+  return {
+    ...info,
+    [COURSE_SYLLABUS_STATUS_KEY]: 'ready',
+    [COURSE_SYLLABUS_SOURCE_KEY]: source,
+    [COURSE_SYLLABUS_UPDATED_AT_KEY]: new Date().toISOString(),
+  };
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function getCourseSyllabusState(info: Course['syllabus_info']): CourseSyllabusLifecycle {
+  const record = toCourseSyllabusRecord(info);
+  if (!record) return 'idle';
+  const explicit = record[COURSE_SYLLABUS_STATUS_KEY];
+  if (explicit === 'generating' || explicit === 'failed' || explicit === 'ready') {
+    return explicit;
+  }
+  return hasCourseSyllabusContent(info) ? 'ready' : 'idle';
+}
+
+export function getCourseSyllabusFailureReason(info: Course['syllabus_info']): string | undefined {
+  const record = toCourseSyllabusRecord(info);
+  const message = record?.[COURSE_SYLLABUS_ERROR_MESSAGE_KEY];
+  return typeof message === 'string' && message.trim() ? message : undefined;
+}
 
 /**
  * 數據存儲服務
  * 封裝所有與數據庫相關的 Tauri Commands
  */
 class StorageService {
+  private async getCourseTargetLanguage(): Promise<'zh' | 'en'> {
+    const settings = await this.getAppSettings();
+    return settings?.translation?.target_language?.startsWith('en') ? 'en' : 'zh';
+  }
+
+  async getCourseSyllabusPdfPath(courseId: string): Promise<string> {
+    const appDataDir = await invoke<string>('get_app_data_dir');
+    return joinAppPath(appDataDir, 'courses', courseId, 'syllabus.pdf');
+  }
+
+  async saveCourseSyllabusPdf(courseId: string, pdfData: ArrayBuffer): Promise<string> {
+    // Guard against pathological uploads. 50 MB is generous for a syllabus
+    // (typical is 50 KB – 5 MB); anything above this is almost certainly a
+    // wrong-file drop, and `Array.from(new Uint8Array(...))` would OOM the
+    // webview long before reaching the Tauri IPC boundary.
+    const MAX_PDF_BYTES = 50 * 1024 * 1024;
+    if (pdfData.byteLength > MAX_PDF_BYTES) {
+      throw new Error(`課綱 PDF 過大（${(pdfData.byteLength / 1024 / 1024).toFixed(1)} MB），上限為 50 MB`);
+    }
+    const path = await this.getCourseSyllabusPdfPath(courseId);
+    await invoke('write_binary_file', {
+      path,
+      data: Array.from(new Uint8Array(pdfData)),
+    });
+    return path;
+  }
+
+  async getCourseSyllabusPdfData(courseId: string): Promise<ArrayBuffer | null> {
+    const path = await this.getCourseSyllabusPdfPath(courseId);
+    try {
+      const data = await invoke<number[]>('read_binary_file', { path });
+      return new Uint8Array(data).buffer;
+    } catch {
+      return null;
+    }
+  }
+
+  private async generateCourseSyllabusInBackground(
+    course: Course,
+    options: {
+      pdfData?: ArrayBuffer;
+      source: CourseSyllabusSource;
+    },
+  ): Promise<void> {
+    try {
+      const description = course.description?.trim() ?? '';
+      let pdfData = options.pdfData ?? null;
+      if (!pdfData) {
+        pdfData = await this.getCourseSyllabusPdfData(course.id);
+      }
+
+      let pdfText = '';
+      if (pdfData) {
+        const { pdfService } = await import('./pdfService');
+        // Bump from the 5-page default — course syllabi often run 10–20 pages
+        // (weekly schedule + grading rubric + reading list). Capping at 5
+        // truncated the schedule table on most real syllabi we tested.
+        pdfText = await pdfService.extractText(pdfData, 20);
+      }
+
+      const hasDescription = description.length > 0;
+      const hasPdf = pdfText.trim().length > 0;
+      if (!hasDescription && !hasPdf) {
+        throw new Error('沒有可用的課程 PDF 或課程描述可供生成大綱');
+      }
+
+      const targetLanguage = await this.getCourseTargetLanguage();
+      const promptParts: string[] = [];
+      if (hasDescription) {
+        promptParts.push(description);
+      }
+      if (hasPdf) {
+        promptParts.push(`PDF syllabus content:\n${pdfText}`);
+      }
+
+      const syllabus = await withTimeout(
+        extractSyllabus(
+          course.title,
+          promptParts.join('\n\n'),
+          targetLanguage,
+        ),
+        COURSE_SYLLABUS_TIMEOUT_MS,
+        '課程大綱生成逾時（90 秒）',
+      );
+
+      if (!syllabus || Object.keys(syllabus).length === 0) {
+        throw new Error('AI 未返回可用的課程大綱資料');
+      }
+
+      const refreshedCourse = (await this.getCourse(course.id)) ?? course;
+      await this.saveCourse({
+        ...refreshedCourse,
+        syllabus_info: buildReadyCourseSyllabusInfo(
+          syllabus as Record<string, unknown>,
+          getCourseSyllabusSource(hasPdf, hasDescription),
+        ),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      const message = getErrorMessage(error);
+      const refreshedCourse = (await this.getCourse(course.id)) ?? course;
+      await this.saveCourse({
+        ...refreshedCourse,
+        syllabus_info: buildFailedCourseSyllabusInfo(message, options.source),
+        updated_at: new Date().toISOString(),
+      });
+      toastService.error('課程大綱生成失敗', message);
+    }
+  }
+
+  async saveCourseWithSyllabus(
+    course: Course,
+    options: {
+      pdfData?: ArrayBuffer;
+      triggerSyllabusGeneration?: boolean;
+      forceRegenerate?: boolean;
+    } = {},
+  ): Promise<void> {
+    const description = course.description?.trim() ?? '';
+    const hasLongDescription = description.length >= COURSE_SYLLABUS_MIN_DESCRIPTION_LENGTH;
+    const shouldGenerate =
+      options.forceRegenerate ||
+      !!options.pdfData ||
+      (!!options.triggerSyllabusGeneration && hasLongDescription);
+
+    if (options.pdfData) {
+      await this.saveCourseSyllabusPdf(course.id, options.pdfData);
+    }
+
+    const source = getCourseSyllabusSource(
+      !!options.pdfData || !!options.forceRegenerate,
+      description.length > 0,
+    );
+    const courseToSave = shouldGenerate
+      ? {
+        ...course,
+        syllabus_info: buildGeneratingCourseSyllabusInfo(course.syllabus_info, source),
+        updated_at: new Date().toISOString(),
+      }
+      : course;
+
+    await this.saveCourse(courseToSave);
+
+    if (!shouldGenerate) return;
+    void this.generateCourseSyllabusInBackground(courseToSave, {
+      pdfData: options.pdfData,
+      source,
+    });
+  }
+
+  async retryCourseSyllabusGeneration(courseId: string): Promise<void> {
+    const course = await this.getCourse(courseId);
+    if (!course) {
+      throw new Error(`找不到課程：${courseId}`);
+    }
+    await this.saveCourseWithSyllabus(course, { forceRegenerate: true });
+  }
   /**
    * 保存科目
    */
@@ -44,11 +334,48 @@ class StorageService {
   }
 
   /**
-   * 列出所有科目 (包含已刪除，用於同步)
+   * Recover courses stuck in `syllabus_info._classnote_status='generating'`.
+   *
+   * The background syllabus task is fire-and-forget (`void`): if the user
+   * closes the app (or the process crashes) between the "generating" write
+   * and the "ready"/"failed" write, the DB stays stuck on "generating" and
+   * CourseDetailView shows a perpetual spinner. There is no in-flight task
+   * to ever resolve it on next launch.
+   *
+   * Call this once on startup. For each course whose lifecycle is still
+   * "generating" and whose `_classnote_updated_at` is older than
+   * `staleAfterMs` (default 10 min — the real task has a 90 s timeout so
+   * anything beyond that is a leftover from a prior session), flip it to
+   * "failed" with a recovery hint. User can then hit "重試生成" to kick
+   * off a fresh run.
    */
-  async listCoursesSync(): Promise<Course[]> {
-    const currentUser = authService.getUser()?.username || 'default_user';
-    return await invoke<Course[]>('list_courses_sync', { userId: currentUser });
+  async recoverStaleGeneratingSyllabuses(staleAfterMs: number = 10 * 60 * 1000): Promise<void> {
+    const courses = await this.listCourses();
+    const now = Date.now();
+    for (const course of courses) {
+      const info = course.syllabus_info as Record<string, unknown> | undefined;
+      if (!info || info._classnote_status !== 'generating') continue;
+      const updatedAtRaw = info._classnote_updated_at;
+      const updatedAtMs = typeof updatedAtRaw === 'string' ? Date.parse(updatedAtRaw) : NaN;
+      // If timestamp is missing or unparseable we still recover — the
+      // alternative is leaving the spinner forever.
+      if (!Number.isNaN(updatedAtMs) && now - updatedAtMs < staleAfterMs) continue;
+      const recoveredInfo: Record<string, unknown> = {
+        ...info,
+        _classnote_status: 'failed',
+        _classnote_updated_at: new Date().toISOString(),
+        _classnote_error_message: '上次生成中斷（可能是 app 被關閉），請點擊重試。',
+      };
+      try {
+        await this.saveCourse({
+          ...course,
+          syllabus_info: recoveredInfo as Course['syllabus_info'],
+          updated_at: new Date().toISOString(),
+        });
+      } catch (error) {
+        console.warn(`[storageService] 恢復課程 ${course.id} 的生成狀態失敗：`, error);
+      }
+    }
   }
 
   /**
@@ -89,14 +416,6 @@ class StorageService {
   async listLectures(): Promise<Lecture[]> {
     const currentUser = authService.getUser()?.username || 'default_user';
     return await invoke<Lecture[]>('list_lectures', { userId: currentUser });
-  }
-
-  /**
-   * 列出所有課程 (包含已刪除，用於同步)
-   */
-  async listLecturesSync(): Promise<Lecture[]> {
-    const currentUser = authService.getUser()?.username || 'default_user';
-    return await invoke<Lecture[]>('list_lectures_sync', { userId: currentUser });
   }
 
   /**

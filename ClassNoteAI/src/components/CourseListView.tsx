@@ -14,7 +14,6 @@ import {
 import { Course } from '../types';
 import { storageService } from '../services/storageService';
 import CourseCreationDialog from './CourseCreationDialog';
-import { extractSyllabus as llmExtractSyllabus } from '../services/llm';
 
 /** Same defensive normalization as CourseDetailView — LLM JSON sometimes
  *  emits objects where we expect strings. Keeps the card from crashing. */
@@ -74,7 +73,7 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
         }
     };
 
-    const handleCreateCourse = async (title: string, keywords: string, _pdfData?: ArrayBuffer, description?: string) => {
+    const handleCreateCourse = async (title: string, keywords: string, pdfData?: ArrayBuffer, description?: string) => {
         if (!title.trim()) return;
 
         try {
@@ -92,17 +91,10 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                     syllabus_info: editingCourse.syllabus_info,
                     updated_at: new Date().toISOString()
                 };
-                await storageService.saveCourse(updatedCourse);
-
-                // Trigger async syllabus extraction via LLM if description changed
-                if (descriptionChanged && description && description.trim().length > 10) {
-                    storageService.getAppSettings().then(async (settings) => {
-                        const targetLang = settings?.translation?.target_language?.startsWith('en') ? 'en' : 'zh';
-                        const syllabus = await llmExtractSyllabus(title, description, targetLang);
-                        if (syllabus && Object.keys(syllabus).length > 0) {
-                            await storageService.saveCourse({ ...updatedCourse, syllabus_info: syllabus });
-                        }
-                    }).catch(err => console.error('[CourseListView] Syllabus extraction failed:', err));
+                if (descriptionChanged || pdfData) {
+                    await storageService.saveCourseWithSyllabus(updatedCourse, { pdfData, triggerSyllabusGeneration: true });
+                } else {
+                    await storageService.saveCourse(updatedCourse);
                 }
 
             } else {
@@ -118,20 +110,7 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString()
                 };
-                await storageService.saveCourse(newCourse);
-
-                if (description && description.trim().length > 10) {
-                    storageService.getAppSettings().then(async (settings) => {
-                        const targetLang = settings?.translation?.target_language?.startsWith('en') ? 'en' : 'zh';
-                        const syllabus = await llmExtractSyllabus(title, description, targetLang);
-                        if (syllabus && Object.keys(syllabus).length > 0) {
-                            const refreshed = await storageService.getCourse(newCourseId);
-                            if (refreshed) {
-                                await storageService.saveCourse({ ...refreshed, syllabus_info: syllabus });
-                            }
-                        }
-                    }).catch(err => console.error('[CourseListView] Syllabus extraction failed:', err));
-                }
+                await storageService.saveCourseWithSyllabus(newCourse, { pdfData, triggerSyllabusGeneration: true });
 
                 // Return ID for auto-save use cases
                 setIsDialogOpen(false);

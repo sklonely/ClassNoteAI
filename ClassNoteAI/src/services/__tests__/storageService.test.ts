@@ -18,7 +18,11 @@ vi.mock('../authService', () => ({
 }));
 
 // Import after mocking
-import { storageService } from '../storageService';
+import {
+    storageService,
+    getCourseSyllabusState,
+    getCourseSyllabusFailureReason,
+} from '../storageService';
 import type { Course, Lecture, Subtitle } from '../../types';
 
 describe('StorageService', () => {
@@ -119,6 +123,87 @@ describe('StorageService', () => {
             await storageService.deleteCourse('course-1');
 
             expect(invoke).toHaveBeenCalledWith('delete_course', { id: 'course-1' });
+        });
+    });
+
+    // ===== Course Syllabus Lifecycle State Machine =====
+    // These pure helpers gate every UI branch in CourseDetailView. Back-compat
+    // with pre-alpha.9 courses (no `_classnote_status` meta key) is critical —
+    // old courses with real content must still register as 'ready'.
+    //
+    // The lifecycle meta keys (`_classnote_status` etc.) are intentionally
+    // internal to storageService and NOT on the public `SyllabusInfo` type,
+    // so test literals that exercise them need a cast. Keep casts explicit
+    // per-assertion rather than hiding behind a helper — the cast itself is
+    // the signal that we're testing a storage-layer protocol, not UI contract.
+    const asSyllabus = (v: Record<string, unknown>): Course['syllabus_info'] =>
+        v as unknown as Course['syllabus_info'];
+
+    describe('Course Syllabus Lifecycle', () => {
+        it('treats undefined/null syllabus_info as idle', () => {
+            expect(getCourseSyllabusState(undefined)).toBe('idle');
+            // Backend may round-trip missing values as either undefined or null;
+            // cast so we can cover the null branch that the runtime actually sees.
+            expect(getCourseSyllabusState(null as unknown as Course['syllabus_info'])).toBe('idle');
+        });
+
+        it('treats empty object as idle', () => {
+            expect(getCourseSyllabusState({})).toBe('idle');
+        });
+
+        it('treats pre-alpha.9 course with real content as ready (no _classnote_status)', () => {
+            // Back-compat: courses saved before the lifecycle was introduced have
+            // raw SyllabusInfo objects with no meta keys. The UI must render them.
+            expect(getCourseSyllabusState({ topic: 'Physics 101' })).toBe('ready');
+            expect(getCourseSyllabusState({ schedule: ['Week 1', 'Week 2'] })).toBe('ready');
+            expect(getCourseSyllabusState({ grading: [{ item: 'Midterm', percentage: '30%' }] })).toBe('ready');
+        });
+
+        it('honors explicit _classnote_status over content inference', () => {
+            // A failed regeneration carries no content but the UI must still show
+            // the failed state rather than falling back to 'idle'.
+            expect(getCourseSyllabusState(asSyllabus({ _classnote_status: 'failed', _classnote_error_message: 'Timeout' }))).toBe('failed');
+            expect(getCourseSyllabusState(asSyllabus({ _classnote_status: 'generating' }))).toBe('generating');
+            // Generating while old content still present (regenerate path).
+            expect(getCourseSyllabusState(asSyllabus({ topic: 'Old', _classnote_status: 'generating' }))).toBe('generating');
+        });
+
+        it('ignores invalid _classnote_status values and falls back to content check', () => {
+            expect(getCourseSyllabusState(asSyllabus({ _classnote_status: 'bogus', topic: 'Physics' }))).toBe('ready');
+            expect(getCourseSyllabusState(asSyllabus({ _classnote_status: 'bogus' }))).toBe('idle');
+        });
+
+        it('does NOT count lifecycle meta keys as content', () => {
+            // Pure meta object (status written during bg task but no content yet)
+            // must not register as 'ready'. Without this filter, the generating
+            // state would briefly flash 'ready' with empty fields.
+            expect(getCourseSyllabusState(asSyllabus({
+                _classnote_status: 'failed',
+                _classnote_source: 'pdf',
+                _classnote_updated_at: '2024-01-01T00:00:00Z',
+                _classnote_error_message: 'LLM timeout',
+            }))).toBe('failed');
+        });
+
+        it('treats empty-string / empty-array content as no content', () => {
+            expect(getCourseSyllabusState({ topic: '' })).toBe('idle');
+            expect(getCourseSyllabusState({ topic: '   ' })).toBe('idle');
+            expect(getCourseSyllabusState({ schedule: [] })).toBe('idle');
+        });
+
+        it('returns failure reason only when _classnote_error_message is non-empty string', () => {
+            expect(getCourseSyllabusFailureReason(asSyllabus({ _classnote_error_message: 'LLM timeout' }))).toBe('LLM timeout');
+            expect(getCourseSyllabusFailureReason(asSyllabus({ _classnote_error_message: '' }))).toBeUndefined();
+            expect(getCourseSyllabusFailureReason(asSyllabus({ _classnote_error_message: '   ' }))).toBeUndefined();
+            expect(getCourseSyllabusFailureReason({})).toBeUndefined();
+            expect(getCourseSyllabusFailureReason(undefined)).toBeUndefined();
+        });
+
+        it('handles non-object syllabus_info gracefully', () => {
+            // Defensive: SQLite round-trip or sync bugs could theoretically yield
+            // an array / string. The helpers must not crash.
+            expect(getCourseSyllabusState([] as unknown as Course['syllabus_info'])).toBe('idle');
+            expect(getCourseSyllabusFailureReason([] as unknown as Course['syllabus_info'])).toBeUndefined();
         });
     });
 
