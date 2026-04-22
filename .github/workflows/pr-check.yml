@@ -41,6 +41,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Enable sccache for rustc
+        run: |
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+        shell: bash
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -56,6 +65,21 @@ jobs:
           workspaces: ClassNoteAI/src-tauri -> target
           shared-key: "pr-check-macos-cache"
           cache-all-crates: true
+
+      - name: Compute native C++ cache key
+        id: native-cache-key
+        shell: bash
+        run: |
+          echo "value=$(bash scripts/native-build-cache-key.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache native C++ builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            ClassNoteAI/src-tauri/target/debug/build/ct2rs-*
+            ClassNoteAI/src-tauri/target/debug/build/whisper-rs-sys-*
+            ClassNoteAI/src-tauri/target/debug/build/sentencepiece-sys-*
+          key: pr-check-native-macos-${{ steps.native-cache-key.outputs.value }}
 
       # Needed because Cargo.toml's [patch.crates-io] points at vendored
       # crates that are gitignored — the path must exist for cargo to
@@ -113,6 +137,12 @@ jobs:
           shared-key: "pr-check-windows-cache"
           cache-all-crates: true
 
+      - name: Compute native C++ cache key
+        id: native-cache-key
+        shell: bash
+        run: |
+          echo "value=$(bash scripts/native-build-cache-key.sh)" >> "$GITHUB_OUTPUT"
+
       - name: Cache native C++ builds
         uses: actions/cache@v4
         with:
@@ -120,7 +150,7 @@ jobs:
             ClassNoteAI/src-tauri/target/debug/build/ct2rs-*
             ClassNoteAI/src-tauri/target/debug/build/whisper-rs-sys-*
             ClassNoteAI/src-tauri/target/debug/build/sentencepiece-sys-*
-          key: pr-check-native-windows-${{ hashFiles('ClassNoteAI/src-tauri/Cargo.lock', 'ClassNoteAI/src-tauri/vendor-patches/**') }}
+          key: pr-check-native-windows-${{ steps.native-cache-key.outputs.value }}
 
       - name: Hydrate vendor/
         shell: bash
