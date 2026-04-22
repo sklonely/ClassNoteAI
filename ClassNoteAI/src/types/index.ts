@@ -132,39 +132,20 @@ export interface AppSettings {
     target_language?: string; // 目標語言 (e.g. "zh-TW", "en")。v0.5.1 預設 zh-TW。
   };
   /**
-   * @deprecated Remnant of the pre-v0.5.0 Ollama-backed setup. Only the
-   * optional `host` field is still consulted (by `ocrService.ts` — if a
-   * user has a local deepseek-ocr running, RAG indexing will use it).
-   * All other sub-fields are unread. Kept in the type so existing users'
-   * persisted JSON doesn't produce `unknown-key` warnings on migration.
-   */
-  ollama?: {
-    host?: string;
-    model?: string;
-    enabled?: boolean;
-    aiModels?: {
-      embedding?: string;
-      light?: string;
-      standard?: string;
-      heavy?: string;
-    };
-  };
-  /**
    * OCR / slide-text-extraction strategy for RAG indexing (v0.5.2+).
    *
-   *   - `auto`  — prefer remote (cloud LLM vision), fall back to local
-   *               Ollama deepseek-ocr, fall back to pdfjs text layer
+   *   - `auto`  — prefer remote (cloud LLM vision), fall back to pdfjs
+   *               text layer
    *   - `remote`— cloud LLM vision only; pdfjs if no LLM configured
-   *   - `local` — Ollama deepseek-ocr only; pdfjs if Ollama not running
    *   - `off`   — skip OCR entirely, always use pdfjs text layer
    *
    * Default is `auto`. Users who care about privacy can switch to
-   * `local` or `off` from Settings → 資料管理. Users who don't have
-   * Ollama (~99% of installs) get remote OCR for the first time in
-   * v0.5.2; previously they silently got pdfjs-only.
+   * `off` from Settings → 資料管理. Historical `local` values from the
+   * retired local-OCR path are normalized to `off` on load so upgrades
+   * never silently switch a privacy-sensitive user to cloud OCR.
    */
   ocr?: {
-    mode?: 'auto' | 'remote' | 'local' | 'off';
+    mode?: 'auto' | 'remote' | 'off';
   };
   /**
    * AI 助教 (RAG chat) window mode.
@@ -230,8 +211,7 @@ export interface AppSettings {
      *  the first configured provider in this order: user's
      *  ChatGPT Plus OAuth (already signed in? use it — the app
      *  reuses Codex CLI's OAuth client) → GitHub Models /
-     *  Copilot OAuth → local Ollama (if GPU ≥ 12 GB VRAM detected)
-     *  → Gemini free tier → Groq free tier → Mistral Experiment
+     *  Copilot OAuth → Gemini free tier → Groq free tier → Mistral Experiment
      *  → user-provided raw key. The OAuth paths come first
      *  because they're what most of our users already have signed
      *  in (Copilot Pro = $10/mo, ChatGPT Plus = $20/mo are both
@@ -240,7 +220,6 @@ export interface AppSettings {
         | 'auto'
         | 'chatgpt-oauth'
         | 'github-models'
-        | 'ollama'
         | 'gemini'
         | 'groq'
         | 'mistral'

@@ -173,7 +173,7 @@ class PdfToImageService {
 
     /**
      * Extract all plain text from a PDF via pdfjs (no OCR). Used as the
-     * pre-flight fallback when Ollama deepseek-ocr isn't reachable —
+     * pre-flight fallback when no OCR backend is available —
      * avoids spending minutes on per-page OCR timeouts.
      *
      * Pages are joined with form-feed so downstream chunking can still

@@ -9,15 +9,13 @@
  * better MTEB scores than a multilingual 384-d encoder could.
  * No network calls — everything runs on-device.
  *
- * OCR: optional Ollama `deepseek-ocr` for complex slide decks. If not
- * reachable, we pre-flight-skip and fall back to pdfjs text extraction.
+ * OCR: remote LLM vision when available, otherwise pdfjs text extraction.
  */
 
 import { chunkingService, TextChunk } from './chunkingService';
 import { embeddingStorageService, SearchResult } from './embeddingStorageService';
 import { generateLocalEmbedding, generateLocalEmbeddingsBatch } from './embeddingService';
 import { chat as llmChat, chatStream as llmChatStream, translateForRetrieval } from './llm';
-import { computeContentHash, ocrService } from './ocrService';
 import { remoteOcrService } from './remoteOcrService';
 import { pdfToImageService } from './pdfToImageService';
 // `pdfService` pulls in pdfjs-dist at module load, which needs the
@@ -38,6 +36,12 @@ async function getPdfService() {
 }
 import { storageService } from './storageService';
 import { bm25Service, reciprocalRankFusion } from './bm25Service';
+
+async function computeContentHash(bytes: ArrayBuffer | Uint8Array): Promise<string> {
+    const input = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const digest = await crypto.subtle.digest('SHA-256', input);
+    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+}
 
 /**
  * Returns true if the query contains any CJK Unified Ideograph, Hiragana,
@@ -249,7 +253,7 @@ class RAGService {
     }
 
     /**
-     * 使用 DeepSeek-OCR 為課堂 PDF 建立索引
+     * 使用 OCR 為課堂 PDF 建立索引
      * 適合包含表格、數學公式的複雜 PDF
      * @param lectureId 課堂 ID
      * @param pdfData PDF 的 ArrayBuffer
@@ -264,20 +268,16 @@ class RAGService {
         forceRefresh: boolean = false // 是否強制刷新 (忽略緩存)
     ): Promise<{ chunksCount: number; success: boolean }> {
         try {
-            // v0.5.2 OCR decision tree. Settings → `ocr.mode` picks the
-            // strategy; defaults to `auto` (remote preferred, local
-            // fallback, pdfjs last resort). See src/types/index.ts for
-            // the mode semantics. The picked backend implements the
-            // same `recognizePages(pages, onProgress)` contract so the
-            // downstream OCR loop below doesn't branch.
+            // OCR decision tree. Settings → `ocr.mode` picks the
+            // strategy; defaults to `auto` (remote preferred, pdfjs
+            // fallback). Historical `local` values from the retired
+            // local-OCR path are treated as `off` so upgrades never
+            // surprise users by silently sending pages to the cloud.
             type OcrRecognize = (
                 pages: { pageNumber: number; imageBase64: string }[],
                 onProgress?: (current: number, total: number) => void,
-                _concurrency?: number,
-                _lectureId?: string,
-                _forceRefresh?: boolean,
             ) => Promise<Array<{ pageNumber: number; text: string; success: boolean; error?: string }>>;
-            type OcrBackend = { name: 'remote' | 'local'; recognize: OcrRecognize } | null;
+            type OcrBackend = { name: 'remote'; recognize: OcrRecognize } | null;
 
             const contentHashKey = `lecture_content_hash_${lectureId}`;
             const pdfHash = pdfData
@@ -311,43 +311,23 @@ class RAGService {
 
             if (pdfData) {
                 const settings = await storageService.getAppSettings().catch(() => null);
-                const mode = settings?.ocr?.mode ?? 'auto';
+                const rawMode = settings?.ocr?.mode as string | undefined;
+                const mode = rawMode === 'local' ? 'off' : (rawMode ?? 'auto');
 
                 if (mode !== 'off') {
-                    const wantRemote = mode === 'auto' || mode === 'remote';
-                    const wantLocal = mode === 'auto' || mode === 'local';
-
-                    // Try remote first (cloud LLM vision). Fast availability
-                    // check — doesn't do a real request, just probes
-                    // `resolveActiveProvider` + listModels capabilities.
-                    if (wantRemote) {
-                        const remoteReady = await remoteOcrService.isAvailable();
-                        if (remoteReady) {
-                            backend = {
-                                name: 'remote',
-                                recognize: (pages, cb) =>
-                                    remoteOcrService.recognizePages(pages, cb),
-                            };
-                        }
-                    }
-                    // Fall through to Ollama if allowed by mode.
-                    if (!backend && wantLocal) {
-                        const ollamaReady = await ocrService.isAvailable();
-                        if (ollamaReady) {
-                            backend = {
-                                name: 'local',
-                                recognize: (pages, cb, _conc, lecId, force) =>
-                                    ocrService.recognizePages(pages, cb, 1, lecId, force),
-                            };
-                        }
+                    const remoteReady = await remoteOcrService.isAvailable();
+                    if (remoteReady) {
+                        backend = {
+                            name: 'remote',
+                            recognize: (pages, cb) =>
+                                remoteOcrService.recognizePages(pages, cb),
+                        };
                     }
                 }
 
                 if (!backend) {
-                    // pdfjs-only fallback. Either OCR is off, or neither
-                    // remote nor local backend is ready. No 32×60s
-                    // wait-for-timeout like the pre-v0.5.2 code -- we
-                    // bailed fast on the availability probes.
+                    // pdfjs-only fallback. Either OCR is off, or no
+                    // remote vision provider is ready.
                     const reason = mode === 'off'
                         ? '已停用 OCR，改用 PDF 文字提取'
                         : '未偵測到可用 OCR，改用 PDF 文字提取';
@@ -408,17 +388,13 @@ class RAGService {
                     }
                 );
 
-                // OCR 識別 — dispatch via whichever backend was picked
-                // in the decision tree above (remote LLM vision vs local
-                // Ollama). Progress label mentions the backend so users
-                // can tell which path they're on.
+                // OCR 識別 — dispatch via the selected backend (remote
+                // LLM vision). Progress label mentions the path so users
+                // can tell when pages are being sent to the provider.
                 if (!backend) {
-                    // Defensive: decision tree should have populated
-                    // `backend` or returned before this point. If not,
-                    // fall back to pdfjs silently.
                     throw new Error('OCR backend not selected');
                 }
-                const backendLabel = backend.name === 'remote' ? '雲端' : '本機';
+                const backendLabel = '雲端';
                 const ocrResults = await backend.recognize(
                     pageImages,
                     (current, total) => {
@@ -429,9 +405,6 @@ class RAGService {
                             message: `OCR 識別頁面 ${current}/${total}（${backendLabel}）...`,
                         });
                     },
-                    1,
-                    lectureId,
-                    forceRefresh,
                 );
 
                 // 分塊處理 OCR 結果

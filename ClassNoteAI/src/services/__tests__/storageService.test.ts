@@ -23,7 +23,7 @@ import {
     getCourseSyllabusState,
     getCourseSyllabusFailureReason,
 } from '../storageService';
-import type { Course, Lecture, Subtitle } from '../../types';
+import type { AppSettings, Course, Lecture, Subtitle } from '../../types';
 
 describe('StorageService', () => {
     beforeEach(() => {
@@ -339,6 +339,26 @@ describe('StorageService', () => {
 
     // ===== Settings Tests =====
     describe('Settings Operations', () => {
+        const baseAppSettings: AppSettings = {
+            server: {
+                url: 'http://localhost',
+                port: 3000,
+                enabled: false,
+            },
+            audio: {
+                sample_rate: 16000,
+                chunk_duration: 5,
+            },
+            subtitle: {
+                font_size: 16,
+                font_color: '#ffffff',
+                background_opacity: 0.8,
+                position: 'bottom',
+                display_mode: 'both',
+            },
+            theme: 'light',
+        };
+
         it('should save setting', async () => {
             setMockInvokeResult('save_setting', undefined);
 
@@ -362,6 +382,50 @@ describe('StorageService', () => {
             const result = await storageService.getSetting('non_existent');
 
             expect(result).toBeNull();
+        });
+
+        it('normalizes retired local OCR / Ollama settings on read', async () => {
+            const legacySettings = {
+                ...baseAppSettings,
+                ocr: { mode: 'local' },
+                experimental: { refineProvider: 'ollama' },
+                ollama: {
+                    host: 'http://127.0.0.1:11434',
+                },
+            } as unknown as AppSettings & Record<string, unknown>;
+
+            setMockInvokeResult('get_setting', JSON.stringify(legacySettings));
+
+            const result = await storageService.getAppSettings();
+
+            expect(invoke).toHaveBeenCalledWith('get_setting', { key: 'app_settings' });
+            expect(result?.ocr?.mode).toBe('off');
+            expect(result?.experimental?.refineProvider).toBe('auto');
+            expect('ollama' in ((result ?? {}) as Record<string, unknown>)).toBe(false);
+        });
+
+        it('strips retired local OCR / Ollama settings before persisting app settings', async () => {
+            setMockInvokeResult('save_setting', undefined);
+
+            const legacySettings = {
+                ...baseAppSettings,
+                ocr: { mode: 'local' },
+                experimental: { refineProvider: 'ollama' },
+                ollama: {
+                    host: 'http://127.0.0.1:11434',
+                },
+            } as unknown as AppSettings & Record<string, unknown>;
+
+            await storageService.saveAppSettings(legacySettings as AppSettings);
+
+            expect(invoke).toHaveBeenCalledWith('save_setting', {
+                key: 'app_settings',
+                value: JSON.stringify({
+                    ...baseAppSettings,
+                    ocr: { mode: 'off' },
+                    experimental: { refineProvider: 'auto' },
+                }),
+            });
         });
     });
 });

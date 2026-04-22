@@ -23,7 +23,6 @@ function mergeSettings(existing: AppSettings | null, patch: AppSettings['recordi
     theme: existing?.theme ?? 'light',
     models: existing?.models,
     translation: existing?.translation,
-    ollama: existing?.ollama,
     ocr: existing?.ocr,
     aiTutor: existing?.aiTutor,
     lectureLayout: existing?.lectureLayout,

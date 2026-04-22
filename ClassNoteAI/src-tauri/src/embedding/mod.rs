@@ -31,7 +31,10 @@ impl EmbeddingService {
         Err(anyhow::anyhow!("Candle embedding feature is disabled"))
     }
 
-    pub fn generate_embeddings_batch(&mut self, _texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+    pub fn generate_embeddings_batch(
+        &mut self,
+        _texts: &[String],
+    ) -> anyhow::Result<Vec<Vec<f32>>> {
         Err(anyhow::anyhow!("Candle embedding feature is disabled"))
     }
 

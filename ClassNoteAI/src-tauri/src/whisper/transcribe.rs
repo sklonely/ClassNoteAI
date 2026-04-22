@@ -106,12 +106,12 @@ pub async fn transcribe_audio(
     // 允許更多線程以提高性能（但不超過 8 個，避免過度使用 CPU）
     params.set_n_threads((num_cpus::get().min(8)) as i32);
     params.set_translate(false); // 不翻譯，只轉錄
-    // Language selection. Prior to v0.5.2 this was hardcoded to "en" and
-    // the UI's language setting was silently ignored — any user with a
-    // Chinese or auto-detect preference still got English-only
-    // transcription. Now the caller's preference flows through.
-    //   None  → whisper.cpp auto-detect (first 30s)
-    //   Some  → force that language (e.g. "en", "zh", "ja")
+                                 // Language selection. Prior to v0.5.2 this was hardcoded to "en" and
+                                 // the UI's language setting was silently ignored — any user with a
+                                 // Chinese or auto-detect preference still got English-only
+                                 // transcription. Now the caller's preference flows through.
+                                 //   None  → whisper.cpp auto-detect (first 30s)
+                                 //   Some  → force that language (e.g. "en", "zh", "ja")
     let whisper_lang = normalize_language(language);
     match whisper_lang.as_deref() {
         Some(lang) => {
@@ -125,7 +125,7 @@ pub async fn transcribe_audio(
         }
     }
     params.set_suppress_blank(true); // 抑制空白
-    // whisper-rs 0.16 renamed `set_suppress_non_speech_tokens` → `set_suppress_nst`.
+                                     // whisper-rs 0.16 renamed `set_suppress_non_speech_tokens` → `set_suppress_nst`.
     params.set_suppress_nst(true); // 抑制非語音標記
 
     // 設置初始提示（如果提供）

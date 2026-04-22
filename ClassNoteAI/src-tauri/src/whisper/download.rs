@@ -95,8 +95,9 @@ pub fn get_medium_quantized_model_config(output_dir: &Path) -> ModelDownloadConf
 /// better-than-small accuracy without paying the full large-v3 cost.
 pub fn get_large_v3_turbo_quantized_model_config(output_dir: &Path) -> ModelDownloadConfig {
     ModelDownloadConfig {
-        url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
-            .to_string(),
+        url:
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+                .to_string(),
         output_path: output_dir.join("ggml-large-v3-turbo-q5_0.bin"),
         expected_size: Some(574_000_000), // ~574 MB
     }
@@ -326,8 +327,8 @@ async fn download_model_internal(
                 if let Some(eta) = eta_seconds {
                     let eta_min = eta / 60;
                     let eta_sec = eta % 60;
-                    println!("[下載] 進度: {:.2}% ({:.2} MB / {:.2} MB) - 速度: {:.2} MB/s - 剩餘: {}分{}秒", 
-                        percent, 
+                    println!("[下載] 進度: {:.2}% ({:.2} MB / {:.2} MB) - 速度: {:.2} MB/s - 剩餘: {}分{}秒",
+                        percent,
                         downloaded as f64 / 1_000_000.0,
                         total_size as f64 / 1_000_000.0,
                         speed_mbps,

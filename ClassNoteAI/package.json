@@ -10,6 +10,7 @@
     "test": "vitest",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --coverage",
+    "smoke:ocr": "tsx evals/scripts/ocr-smoke.ts",
     "eval:asr": "tsx evals/scripts/asr-wer.ts",
     "eval:rag": "tsx evals/scripts/rag-mrr.ts",
     "eval:report": "tsx evals/scripts/report.ts",

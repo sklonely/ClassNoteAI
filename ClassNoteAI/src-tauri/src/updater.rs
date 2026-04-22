@@ -74,10 +74,7 @@ pub async fn check_update_for_channel(
 }
 
 #[tauri::command]
-pub async fn download_and_install_update(
-    app: AppHandle,
-    channel: String,
-) -> Result<(), String> {
+pub async fn download_and_install_update(app: AppHandle, channel: String) -> Result<(), String> {
     let updater = build_updater(&app, &channel)?;
     let update = updater
         .check()

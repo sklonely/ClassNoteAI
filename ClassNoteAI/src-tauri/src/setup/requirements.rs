@@ -103,9 +103,7 @@ pub fn check_os_version() -> RequirementStatus {
         match no_window("cmd").args(["/c", "ver"]).output() {
             Ok(output) => {
                 if !output.status.success() {
-                    return RequirementStatus::Error(
-                        "Failed to get Windows version".to_string(),
-                    );
+                    return RequirementStatus::Error("Failed to get Windows version".to_string());
                 }
                 let raw = String::from_utf8_lossy(&output.stdout);
                 // Expect `Microsoft Windows [Version 10.0.22631.4890]` on
@@ -122,9 +120,7 @@ pub fn check_os_version() -> RequirementStatus {
                 let version_str = inside_brackets
                     .split_whitespace()
                     .find(|tok| {
-                        tok.chars()
-                            .all(|c| c.is_ascii_digit() || c == '.')
-                            && tok.contains('.')
+                        tok.chars().all(|c| c.is_ascii_digit() || c == '.') && tok.contains('.')
                     })
                     .unwrap_or("")
                     .to_string();
@@ -143,7 +139,10 @@ pub fn check_os_version() -> RequirementStatus {
                 }
 
                 if build >= MIN_BUILD {
-                    println!("[Setup] Windows version: {} (build {}) OK", version_str, build);
+                    println!(
+                        "[Setup] Windows version: {} (build {}) OK",
+                        version_str, build
+                    );
                     RequirementStatus::Installed
                 } else {
                     RequirementStatus::Outdated {
@@ -251,9 +250,7 @@ pub fn check_disk_space(required_mb: u64) -> RequirementStatus {
                         String::from_utf8_lossy(&output.stderr).trim()
                     ));
                 }
-                let trimmed = String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .to_string();
+                let trimmed = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 match trimmed.parse::<u64>() {
                     Ok(bytes) => {
                         let available_mb = bytes / 1024 / 1024;

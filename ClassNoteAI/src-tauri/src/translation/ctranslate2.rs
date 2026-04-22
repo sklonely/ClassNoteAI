@@ -242,9 +242,7 @@ impl CT2Translator {
         // We strip both unconditionally rather than try to fix the
         // prompting — post-processing is deterministic and cheap.
         let mut output = vec![String::new(); texts.len()];
-        for ((orig_idx, _), (translation, _score)) in
-            non_empty.iter().zip(results.into_iter())
-        {
+        for ((orig_idx, _), (translation, _score)) in non_empty.iter().zip(results.into_iter()) {
             output[*orig_idx] = clean_translation(&translation, target_lang);
         }
 
@@ -279,7 +277,9 @@ fn clean_translation(raw: &str, target_lang: &str) -> String {
     loop {
         let Some(start) = s.find("__") else { break };
         let remaining = &s[start + 2..];
-        let Some(end_offset) = remaining.find("__") else { break };
+        let Some(end_offset) = remaining.find("__") else {
+            break;
+        };
         if end_offset == 0 || end_offset > 4 {
             // Not a plausible lang token — bail to avoid eating user text.
             break;
@@ -393,11 +393,8 @@ pub async fn translate_text(
     let translator = get_translator().await;
     let guard = translator.read().await;
 
-    let results = guard.translate_batch(
-        &[text.to_string()],
-        Some(target_lang),
-        Some(source_lang),
-    )?;
+    let results =
+        guard.translate_batch(&[text.to_string()], Some(target_lang), Some(source_lang))?;
     results
         .into_iter()
         .next()

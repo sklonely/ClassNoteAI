@@ -1,125 +1,81 @@
-/**
- * Whisper 轉錄功能測試
- *
- * 使用方法：
- * cargo test --test whisper_test -- --nocapture
- *
- * 注意：需要先下載 Whisper Base 模型文件
- */
-use classnoteai_lib::whisper::{transcribe, WhisperModel};
-use std::path::Path;
+use classnoteai_lib::{transcribe, WhisperModel};
+use std::path::PathBuf;
 
-#[tokio::test]
-#[ignore] // 默認忽略，需要手動運行
-async fn test_model_loading() {
-    let model_path = "models/ggml-base.bin";
-
-    if !Path::new(model_path).exists() {
-        println!("[測試] 模型文件不存在: {}", model_path);
-        println!("[測試] 請先下載 Whisper Base 模型");
-        println!("[測試] 下載地址: https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin");
-        return;
-    }
-
-    println!("[測試] 開始加載模型: {}", model_path);
-    let result = WhisperModel::load(model_path).await;
-
-    match result {
-        Ok(model) => {
-            println!("[測試] ✅ 模型加載成功");
-            println!("[測試] 模型路徑: {}", model.get_model_path());
-        }
-        Err(e) => {
-            println!("[測試] ❌ 模型加載失敗: {}", e);
-            panic!("模型加載失敗");
-        }
-    }
+fn whisper_model_path_from_env() -> Option<PathBuf> {
+    std::env::var_os("CLASSNOTEAI_WHISPER_MODEL_PATH").map(PathBuf::from)
 }
 
 #[tokio::test]
-#[ignore] // 默認忽略，需要手動運行
-async fn test_transcription_with_silence() {
-    let model_path = "models/ggml-base.bin";
-
-    if !Path::new(model_path).exists() {
-        println!("[測試] 模型文件不存在，跳過測試");
-        return;
-    }
-
-    println!("[測試] 測試靜音音頻轉錄");
-
-    // 加載模型
-    let model = WhisperModel::load(model_path).await.expect("模型加載失敗");
-
-    // 生成 2 秒靜音音頻（16kHz, 16-bit, Mono）
-    let sample_rate = 16000u32;
-    let duration_seconds = 2u32;
-    let audio_data: Vec<i16> = vec![0i16; (sample_rate * duration_seconds) as usize];
-
-    println!(
-        "[測試] 音頻數據: {} 樣本, {}Hz",
-        audio_data.len(),
-        sample_rate
+async fn test_missing_whisper_model_returns_error() {
+    let missing = format!(
+        "/tmp/classnoteai-missing-whisper-model-{}.bin",
+        uuid::Uuid::new_v4()
     );
-
-    // 執行轉錄
-    let result = transcribe::transcribe_audio(&model, &audio_data, sample_rate, None).await;
-
-    match result {
-        Ok(transcription) => {
-            println!("[測試] ✅ 轉錄成功");
-            println!("[測試] 轉錄文本: '{}'", transcription.text);
-            println!("[測試] 片段數量: {}", transcription.segments.len());
-            println!("[測試] 轉錄耗時: {}ms", transcription.duration_ms);
-
-            // 靜音音頻應該產生很少或沒有文本
-            assert!(transcription.text.trim().is_empty() || transcription.text.len() < 10);
-        }
-        Err(e) => {
-            println!("[測試] ❌ 轉錄失敗: {}", e);
-            panic!("轉錄失敗");
-        }
-    }
+    let error = match WhisperModel::load(&missing).await {
+        Ok(_) => panic!("missing model path should not load successfully"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("模型文件不存在"));
 }
 
 #[tokio::test]
-#[ignore] // 默認忽略，需要手動運行
-async fn test_transcription_with_initial_prompt() {
-    let model_path = "models/ggml-base.bin";
-
-    if !Path::new(model_path).exists() {
-        println!("[測試] 模型文件不存在，跳過測試");
+#[ignore = "manual smoke test: requires CLASSNOTEAI_WHISPER_MODEL_PATH"]
+async fn test_model_loading() {
+    let Some(model_path) = whisper_model_path_from_env() else {
+        eprintln!("skipping whisper smoke test: CLASSNOTEAI_WHISPER_MODEL_PATH not set");
         return;
-    }
+    };
 
-    println!("[測試] 測試帶初始提示的轉錄");
+    let model = WhisperModel::load(model_path.to_string_lossy().as_ref())
+        .await
+        .expect("whisper model should load");
+    assert_eq!(model.get_model_path(), model_path.to_string_lossy());
+}
 
-    // 加載模型
-    let model = WhisperModel::load(model_path).await.expect("模型加載失敗");
+#[tokio::test]
+#[ignore = "manual smoke test: requires CLASSNOTEAI_WHISPER_MODEL_PATH"]
+async fn test_transcription_with_silence() {
+    let Some(model_path) = whisper_model_path_from_env() else {
+        eprintln!(
+            "skipping whisper transcription smoke test: CLASSNOTEAI_WHISPER_MODEL_PATH not set"
+        );
+        return;
+    };
 
-    // 生成簡單測試音頻（這裡使用靜音，實際應該使用真實音頻）
-    let sample_rate = 16000u32;
+    let model = WhisperModel::load(model_path.to_string_lossy().as_ref())
+        .await
+        .expect("whisper model should load");
+
+    let sample_rate = 16_000u32;
     let duration_seconds = 2u32;
     let audio_data: Vec<i16> = vec![0i16; (sample_rate * duration_seconds) as usize];
 
-    // 設置初始提示
+    let transcription =
+        transcribe::transcribe_audio(&model, &audio_data, sample_rate, None, None, None)
+            .await
+            .expect("transcription should succeed");
+
+    assert!(transcription.text.trim().is_empty() || transcription.text.len() < 10);
+}
+
+#[tokio::test]
+#[ignore = "manual smoke test: requires CLASSNOTEAI_WHISPER_MODEL_PATH"]
+async fn test_transcription_with_initial_prompt() {
+    let Some(model_path) = whisper_model_path_from_env() else {
+        eprintln!("skipping whisper prompt smoke test: CLASSNOTEAI_WHISPER_MODEL_PATH not set");
+        return;
+    };
+
+    let model = WhisperModel::load(model_path.to_string_lossy().as_ref())
+        .await
+        .expect("whisper model should load");
+    let sample_rate = 16_000u32;
+    let duration_seconds = 2u32;
+    let audio_data: Vec<i16> = vec![0i16; (sample_rate * duration_seconds) as usize];
     let initial_prompt = Some("ClassNote AI, Tauri, React, TypeScript, transcription, lecture");
 
-    println!("[測試] 使用初始提示: {:?}", initial_prompt);
-
-    // 執行轉錄
-    let result =
-        transcribe::transcribe_audio(&model, &audio_data, sample_rate, initial_prompt).await;
-
-    match result {
-        Ok(transcription) => {
-            println!("[測試] ✅ 轉錄成功（帶初始提示）");
-            println!("[測試] 轉錄文本: '{}'", transcription.text);
-            println!("[測試] 轉錄耗時: {}ms", transcription.duration_ms);
-        }
-        Err(e) => {
-            println!("[測試] ❌ 轉錄失敗: {}", e);
-            panic!("轉錄失敗");
-        }
-    }
+    let _transcription =
+        transcribe::transcribe_audio(&model, &audio_data, sample_rate, initial_prompt, None, None)
+            .await
+            .expect("transcription with initial prompt should succeed");
 }

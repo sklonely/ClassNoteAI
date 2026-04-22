@@ -36,6 +36,7 @@ import { extractKeywords } from "../utils/pdfKeywordExtractor";
 import { detectSectionBoundaries } from "../utils/topicSegmentation";
 import { summarizeStream, usageTracker } from "../services/llm";
 import { toastService } from "../services/toastService";
+import { resolveOrRecoverAudioPath, toRelativeAudioPath } from "../services/audioPathService";
 import { generateLocalEmbedding } from "../services/embeddingService";
 import { embeddingStorageService } from "../services/embeddingStorageService";
 import { openDetachedAiTutor } from "../services/aiTutorWindow";
@@ -72,60 +73,6 @@ type AudioUnavailableState = {
   message: string;
   path?: string;
 };
-
-const ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
-
-function stripLeadingPathSeparators(value: string): string {
-  return value.replace(/^[\\/]+/, '');
-}
-
-function stripTrailingPathSeparators(value: string): string {
-  return value.replace(/[\\/]+$/, '');
-}
-
-function normalizePathSeparators(value: string): string {
-  return value.replace(/[\\/]+/g, '/');
-}
-
-function joinAudioPath(baseDir: string, childPath: string): string {
-  const separator = baseDir.includes('\\') ? '\\' : '/';
-  const normalizedChild = stripLeadingPathSeparators(childPath).replace(/[\\/]+/g, separator);
-  return `${stripTrailingPathSeparators(baseDir)}${separator}${normalizedChild}`;
-}
-
-function toRelativeAudioPath(audioDir: string, absolutePath: string): string {
-  const normalizedDir = normalizePathSeparators(stripTrailingPathSeparators(audioDir));
-  const normalizedPath = normalizePathSeparators(absolutePath);
-
-  if (normalizedPath.startsWith(`${normalizedDir}/`)) {
-    return normalizedPath.slice(normalizedDir.length + 1);
-  }
-
-  const filename = absolutePath.split(/[\\/]/).pop();
-  return filename && filename.length > 0 ? filename : absolutePath;
-}
-
-async function resolveAudioPath(storedPath: string | null | undefined): Promise<string | null> {
-  if (!storedPath) {
-    return null;
-  }
-
-  const trimmedPath = storedPath.trim();
-  if (!trimmedPath) {
-    return null;
-  }
-
-  const resolvedPath = ABSOLUTE_PATH_PATTERN.test(trimmedPath)
-    ? trimmedPath
-    : joinAudioPath(await invoke<string>('get_audio_dir'), trimmedPath);
-
-  try {
-    await readFile(resolvedPath);
-    return resolvedPath;
-  } catch {
-    return null;
-  }
-}
 
 export default function NotesView({ courseId: propCourseId, lectureId: propLectureId, onBack }: NotesViewProps) {
   const navigate = useNavigate();
@@ -355,8 +302,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         }
 
         // Embedding Model: local Candle bge-small-en-v1.5 (shipped
-        // via the embedding-model download flow in Settings). No remote
-        // Ollama call — stale comment was fixed in v0.5.2.
+        // via the embedding-model download flow in Settings).
         console.log('[NotesView] Using local Candle bge-small-en-v1.5 for auto-alignment');
         // Load Translation Model if provider is local
         const translationProvider = settings?.translation?.provider || 'local';
@@ -423,10 +369,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     let objectUrl: string | null = null;
 
     const loadAudio = async () => {
-      if (viewMode !== 'review' || currentLectureData?.video_path || !audioRef.current) {
+      if (viewMode !== 'review' || !currentLectureData || currentLectureData.video_path || !audioRef.current) {
         return;
       }
 
+      const currentLectureId = currentLectureData.id;
       const storedAudioPath = currentLectureData?.audio_path?.trim() || null;
       const clearAudioElement = () => {
         if (audioRef.current) {
@@ -439,12 +386,46 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         setAudioDuration(0);
       };
 
-      const resolvedAudioPath = await resolveAudioPath(storedAudioPath);
+      const setRecoveredLectureAudioPath = (nextAudioPath: string) => {
+        setCurrentLectureData((prev) => {
+          if (!prev || prev.id !== currentLectureId || prev.audio_path === nextAudioPath) {
+            return prev;
+          }
+          return { ...prev, audio_path: nextAudioPath };
+        });
+      };
+
+      const setAudioSourceFromPath = async (resolvedAudioPath: string) => {
+        console.log('[NotesView] Loading audio file:', resolvedAudioPath);
+        const data = await readFile(resolvedAudioPath);
+        if (cancelled) {
+          return;
+        }
+
+        const blob = new Blob([data], { type: 'audio/wav' });
+        objectUrl = URL.createObjectURL(blob);
+
+        if (audioRef.current) {
+          audioRef.current.src = objectUrl;
+          audioRef.current.load();
+          setAudioUnavailable(null);
+          console.log('[NotesView] Audio loaded via Blob URL');
+        }
+      };
+
+      const recovery = await resolveOrRecoverAudioPath(currentLectureId, storedAudioPath);
       if (cancelled) {
         return;
       }
 
-      if (!storedAudioPath) {
+      const effectiveStoredAudioPath = recovery.storedPath ?? storedAudioPath;
+      const resolvedAudioPath = recovery.resolvedPath;
+      if (recovery.recovered && recovery.storedPath) {
+        console.log('[NotesView] Audio path recovered during review load:', recovery.storedPath);
+        setRecoveredLectureAudioPath(recovery.storedPath);
+      }
+
+      if (!effectiveStoredAudioPath) {
         clearAudioElement();
         setAudioUnavailable({ message: '此課堂未錄製音檔。' });
         return;
@@ -454,34 +435,35 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
         clearAudioElement();
         setAudioUnavailable({
           message: '音檔遺失，無法播放。',
-          path: storedAudioPath,
+          path: effectiveStoredAudioPath ?? undefined,
         });
         return;
       }
 
       try {
-        console.log('[NotesView] Loading audio file:', resolvedAudioPath);
-        // Use readFile from plugin-fs to bypass asset protocol issues
-        const data = await readFile(resolvedAudioPath);
-        if (cancelled) {
-          return;
-        }
-
-        const blob = new Blob([data], { type: 'audio/wav' }); // Default to wav as per recorder
-        objectUrl = URL.createObjectURL(blob);
-
-        if (audioRef.current) {
-          audioRef.current.src = objectUrl;
-          audioRef.current.load();
-          setAudioUnavailable(null);
-          console.log('[NotesView] Audio loaded via Blob URL');
-        }
+        await setAudioSourceFromPath(resolvedAudioPath);
       } catch (error) {
         console.error('[NotesView] Failed to load audio file:', error);
+        try {
+          const retry = await resolveOrRecoverAudioPath(currentLectureId, effectiveStoredAudioPath);
+          if (cancelled) {
+            return;
+          }
+          if (retry.recovered && retry.storedPath) {
+            console.log('[NotesView] Audio path recovered after load failure:', retry.storedPath);
+            setRecoveredLectureAudioPath(retry.storedPath);
+          }
+          if (retry.resolvedPath) {
+            await setAudioSourceFromPath(retry.resolvedPath);
+            return;
+          }
+        } catch (retryError) {
+          console.warn('[NotesView] Audio recovery after load failure failed:', retryError);
+        }
         clearAudioElement();
         setAudioUnavailable({
           message: '音檔遺失，無法播放。',
-          path: resolvedAudioPath,
+          path: effectiveStoredAudioPath,
         });
       }
     };
@@ -908,24 +890,6 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             }
           } catch (e) {
             console.warn('[NotesView] PDF recovery attempt failed (non-fatal):', e);
-          }
-        }
-
-        // Try to recover audio path if missing (Fix for Schema migration issue)
-        if (!lecture.audio_path) {
-          console.log('[NotesView] Audio path missing, attempting recovery...');
-          try {
-            const recoveredPath = await invoke<string | null>('try_recover_audio_path', { lectureId: lecture.id });
-            if (recoveredPath) {
-              console.log('[NotesView] Audio path recovered:', recoveredPath);
-              lecture.audio_path = recoveredPath;
-              // Update state immediately so UI renders
-              setCurrentLectureData({ ...lecture });
-            } else {
-              console.log('[NotesView] No audio file found for recovery.');
-            }
-          } catch (recErr) {
-            console.error('[NotesView] Audio recovery failed:', recErr);
           }
         }
 

@@ -39,8 +39,13 @@ pub fn build_diagnostic_zip(
     let metadata_json = serde_json::to_vec_pretty(&metadata)
         .map_err(|e| format!("Failed to serialize metadata JSON: {}", e))?;
 
-    let file = File::create(&zip_path)
-        .map_err(|e| format!("Failed to create diagnostic zip {}: {}", zip_path.display(), e))?;
+    let file = File::create(&zip_path).map_err(|e| {
+        format!(
+            "Failed to create diagnostic zip {}: {}",
+            zip_path.display(),
+            e
+        )
+    })?;
     let mut zip = ZipWriter::new(file);
     let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
 

@@ -7,7 +7,6 @@ type Provider =
     | 'auto'
     | 'chatgpt-oauth'
     | 'github-models'
-    | 'ollama'
     | 'gemini'
     | 'groq'
     | 'mistral'
@@ -30,7 +29,7 @@ type Provider =
  *     the codebase (`llm/providers/chatgpt-oauth.ts`, `github-
  *     models.ts`) — the refine path just picks from those same
  *     configured providers.
- *   - free-tier options (Gemini, Groq, Mistral, local Ollama) are
+ *   - free-tier options (Gemini, Groq, Mistral) are
  *     shown for users with neither subscription or when a user
  *     wants to keep their paid quota for other tasks.
  *
@@ -174,10 +173,9 @@ export default function CloudAIExperimentalSettings() {
                             }}
                             className="w-full text-sm px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-slate-800 text-gray-900 dark:text-gray-100"
                         >
-                            <option value="auto">自動（ChatGPT OAuth → Copilot OAuth → 本機 → 免費 API → 使用者金鑰）</option>
+                            <option value="auto">自動（ChatGPT OAuth → Copilot OAuth → 免費 API → 使用者金鑰）</option>
                             <option value="chatgpt-oauth">ChatGPT Plus（已登入）— 用你的訂閱額度</option>
                             <option value="github-models">GitHub Models（Copilot 已登入）— 用你的 Copilot 額度</option>
-                            <option value="ollama">本機 Ollama — 無限，需 GPU ≥ 12 GB VRAM</option>
                             <option value="gemini">Google Gemini 2.5 Flash — 免費 500 req/day</option>
                             <option value="groq">Groq Llama 3.3 70B — 免費 14.4k req/day、速度最快</option>
                             <option value="mistral">Mistral La Plateforme Experiment — 免費 1B token/月</option>

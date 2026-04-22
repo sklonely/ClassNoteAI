@@ -209,8 +209,10 @@ impl Database {
         if !has_user_id {
             println!("Migrating courses table: adding user_id column");
             // Default to 'default_user' for existing data
-            self.conn
-                .execute("ALTER TABLE courses ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'", [])?;
+            self.conn.execute(
+                "ALTER TABLE courses ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'",
+                [],
+            )?;
         }
 
         // 1.5 檢查 courses 表是否有 is_deleted 列 (Soft Delete Migration)
@@ -222,10 +224,15 @@ impl Database {
 
         if !has_is_deleted {
             println!("Migrating courses table: adding is_deleted column");
-            self.conn
-                .execute("ALTER TABLE courses ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
+            self.conn.execute(
+                "ALTER TABLE courses ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
             // Index for performance on sync/filtering
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_is_deleted ON courses(is_deleted)", [])?;
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_courses_is_deleted ON courses(is_deleted)",
+                [],
+            )?;
         }
 
         // 1.4 創建 local_users 表
@@ -237,7 +244,7 @@ impl Database {
             )",
             [],
         )?;
-        
+
         // 確保預設使用者存在
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
@@ -246,11 +253,14 @@ impl Database {
         )?;
 
         // 2. 檢查 lectures 表是否存在
-        let lectures_table_exists: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lectures')",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(false);
+        let lectures_table_exists: bool = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='lectures')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
 
         if !lectures_table_exists {
             // Fresh install - create lectures table directly
@@ -275,62 +285,89 @@ impl Database {
         } else {
             // 2.1 檢查 lectures 表是否需要遷移
             let mut stmt = self.conn.prepare("PRAGMA table_info(lectures)")?;
-            let has_course_id = stmt
+            let lecture_columns = stmt
                 .query_map([], |row| row.get::<_, String>(1))?
-                .any(|name| name.unwrap_or_default() == "course_id");
+                .filter_map(|name| name.ok())
+                .collect::<Vec<_>>();
             drop(stmt); // 釋放語句
 
-            if !has_course_id {
-            println!("Migrating lectures table...");
-            // 遷移邏輯
-            // A. 重命名舊表
-            self.conn
-                .execute("ALTER TABLE lectures RENAME TO lectures_old", [])?;
+            let has_course_id = lecture_columns.iter().any(|name| name == "course_id");
+            let has_legacy_audio_path = lecture_columns.iter().any(|name| name == "audio_path");
 
-            // B. 創建新表
-            self.conn.execute(
-                "CREATE TABLE IF NOT EXISTS lectures (
+            if !has_course_id {
+                println!("Migrating lectures table...");
+                // 遷移邏輯
+                // A. 重命名舊表
+                self.conn
+                    .execute("ALTER TABLE lectures RENAME TO lectures_old", [])?;
+
+                // B. 創建新表
+                self.conn.execute(
+                    "CREATE TABLE IF NOT EXISTS lectures (
                     id TEXT PRIMARY KEY,
                     course_id TEXT NOT NULL,
                     title TEXT NOT NULL,
                     date TEXT NOT NULL,
                     duration INTEGER NOT NULL,
                     pdf_path TEXT,
+                    audio_path TEXT,
+                    video_path TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    is_deleted INTEGER NOT NULL DEFAULT 0,
                     FOREIGN KEY (course_id) REFERENCES courses(id) ON DELETE CASCADE
                 )",
-                [],
-            )?;
+                    [],
+                )?;
 
-            // C. 遷移數據
-            let mut stmt = self.conn.prepare("SELECT id, title, date, duration, pdf_path, status, created_at, updated_at FROM lectures_old")?;
-            let lectures_iter = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,         // id
-                    row.get::<_, String>(1)?,         // title
-                    row.get::<_, String>(2)?,         // date
-                    row.get::<_, i64>(3)?,            // duration
-                    row.get::<_, Option<String>>(4)?, // pdf_path
-                    row.get::<_, String>(5)?,         // status
-                    row.get::<_, String>(6)?,         // created_at
-                    row.get::<_, String>(7)?,         // updated_at
-                ))
-            })?;
+                // C. 遷移數據
+                let select_audio_path = if has_legacy_audio_path {
+                    "audio_path"
+                } else {
+                    "NULL AS audio_path"
+                };
+                let select_sql = format!(
+                "SELECT id, title, date, duration, pdf_path, {}, status, created_at, updated_at FROM lectures_old",
+                select_audio_path
+            );
+                let mut stmt = self.conn.prepare(&select_sql)?;
+                let lectures_iter = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,         // id
+                        row.get::<_, String>(1)?,         // title
+                        row.get::<_, String>(2)?,         // date
+                        row.get::<_, i64>(3)?,            // duration
+                        row.get::<_, Option<String>>(4)?, // pdf_path
+                        row.get::<_, Option<String>>(5)?, // audio_path
+                        row.get::<_, String>(6)?,         // status
+                        row.get::<_, String>(7)?,         // created_at
+                        row.get::<_, String>(8)?,         // updated_at
+                    ))
+                })?;
 
-            for lecture in lectures_iter {
-                let (id, title, date, duration, pdf_path, status, created_at, updated_at) =
-                    lecture?;
+                for lecture in lectures_iter {
+                    let (
+                        id,
+                        title,
+                        date,
+                        duration,
+                        pdf_path,
+                        audio_path,
+                        status,
+                        created_at,
+                        updated_at,
+                    ) = lecture?;
 
-                // 為每個舊課程創建一個新的科目
-                let course = Course::new("default_user".to_string(), title.clone(), None, None, None);
-                self.save_course(&course)?;
+                    // 為每個舊課程創建一個新的科目
+                    let course =
+                        Course::new("default_user".to_string(), title.clone(), None, None, None);
+                    self.save_course(&course)?;
 
-                // 插入新課程記錄
-                self.conn.execute(
-                    "INSERT INTO lectures (id, course_id, title, date, duration, pdf_path, status, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    // 插入新課程記錄
+                    self.conn.execute(
+                    "INSERT INTO lectures (id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                     rusqlite::params![
                         id,
                         course.id,
@@ -338,16 +375,17 @@ impl Database {
                         date,
                         duration,
                         pdf_path,
+                        audio_path,
                         status,
                         created_at,
                         updated_at
                     ],
                 )?;
-            }
+                }
 
-            // D. 刪除舊表 (可選，這裡保留以防萬一，或者刪除)
-            // self.conn.execute("DROP TABLE lectures_old", [])?;
-            println!("Migration completed.");
+                // D. 刪除舊表 (可選，這裡保留以防萬一，或者刪除)
+                // self.conn.execute("DROP TABLE lectures_old", [])?;
+                println!("Migration completed.");
             } else {
                 // 確保表存在 (如果已遷移過)
                 self.conn.execute(
@@ -378,7 +416,7 @@ impl Database {
         // 原代碼遷移邏輯中 create table 沒有 audio_path 嗎？
         // 讓我檢查遷移邏輯... 遷移邏輯中 self.conn.execute 用的是舊結構（在之前的步驟中）。
         // 所以無論如何，檢查並添加列是安全的。
-        
+
         let mut stmt = self.conn.prepare("PRAGMA table_info(lectures)")?;
         let has_audio_path = stmt
             .query_map([], |row| row.get::<_, String>(1))?
@@ -400,9 +438,14 @@ impl Database {
 
         if !has_is_deleted {
             println!("Migrating lectures table: adding is_deleted column");
-            self.conn
-                .execute("ALTER TABLE lectures ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
-            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_lectures_is_deleted ON lectures(is_deleted)", [])?;
+            self.conn.execute(
+                "ALTER TABLE lectures ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lectures_is_deleted ON lectures(is_deleted)",
+                [],
+            )?;
         }
 
         // 2.3 v0.6.0 video_path migration. Idempotent — only adds the
@@ -417,7 +460,6 @@ impl Database {
             self.conn
                 .execute("ALTER TABLE lectures ADD COLUMN video_path TEXT", [])?;
         }
-
 
         // 創建 subtitles 表
         self.conn.execute(
@@ -468,8 +510,10 @@ impl Database {
 
         if !has_is_deleted {
             println!("Migrating notes table: adding is_deleted column");
-            self.conn
-                .execute("ALTER TABLE notes ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0", [])?;
+            self.conn.execute(
+                "ALTER TABLE notes ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
         }
 
         // 創建 settings 表
@@ -668,7 +712,7 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE courses SET is_deleted = 1, updated_at = ?2 WHERE id = ?1",
-             rusqlite::params![id, now],
+            rusqlite::params![id, now],
         )?;
         Ok(())
     }
@@ -678,7 +722,7 @@ impl Database {
     /// 保存課程
     pub fn save_lecture(&self, lecture: &Lecture, user_id: &str) -> SqlResult<()> {
         // 預先檢查 course 是否存在且屬於該用戶
-        // 注意：這裡應該也檢查 c.is_deleted = 0 ? 
+        // 注意：這裡應該也檢查 c.is_deleted = 0 ?
         // 為了向前兼容同步（同步可能寫入舊數據），暫不嚴格檢查 is_deleted，只檢查物理存在。
         let course_exists: bool = self
             .conn
@@ -695,7 +739,7 @@ impl Database {
                 lecture.course_id, user_id
             );
             // ... (Auto creation logic removed/commented out in previous steps, just return error or log)
-             return Err(rusqlite::Error::QueryReturnedNoRows); // Or ignore
+            return Err(rusqlite::Error::QueryReturnedNoRows); // Or ignore
         }
 
         // CRITICAL: same reasoning as save_course — a plain
@@ -775,7 +819,11 @@ impl Database {
     }
 
     /// 列出特定科目的所有課堂 (需驗證科目所屬權)
-    pub fn list_lectures_by_course(&self, course_id: &str, user_id: &str) -> SqlResult<Vec<Lecture>> {
+    pub fn list_lectures_by_course(
+        &self,
+        course_id: &str,
+        user_id: &str,
+    ) -> SqlResult<Vec<Lecture>> {
         let mut stmt = self.conn.prepare(
             "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, l.status, l.created_at, l.updated_at, l.is_deleted, l.video_path
              FROM lectures l
@@ -793,9 +841,10 @@ impl Database {
     /// 刪除課程 (軟刪除)
     pub fn delete_lecture(&self, id: &str) -> SqlResult<()> {
         let now = Utc::now().to_rfc3339();
-        self.conn
-            .execute("UPDATE lectures SET is_deleted = 1, updated_at = ?2 WHERE id = ?1", 
-            rusqlite::params![id, now])?;
+        self.conn.execute(
+            "UPDATE lectures SET is_deleted = 1, updated_at = ?2 WHERE id = ?1",
+            rusqlite::params![id, now],
+        )?;
         Ok(())
     }
 
@@ -973,7 +1022,13 @@ impl Database {
         self.conn.execute(
             "INSERT OR REPLACE INTO notes (lecture_id, title, content, generated_at, is_deleted)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![note.lecture_id, note.title, note.content, note.generated_at, note.is_deleted],
+            rusqlite::params![
+                note.lecture_id,
+                note.title,
+                note.content,
+                note.generated_at,
+                note.is_deleted
+            ],
         )?;
         Ok(())
     }
@@ -1054,7 +1109,9 @@ impl Database {
 
     /// 檢查本地使用者是否存在
     pub fn check_local_user(&self, username: &str) -> SqlResult<bool> {
-        let mut stmt = self.conn.prepare("SELECT 1 FROM local_users WHERE username = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT 1 FROM local_users WHERE username = ?1")?;
         Ok(stmt.exists([username])?)
     }
 
@@ -1076,15 +1133,17 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, action_type, payload, status, retry_count FROM pending_actions WHERE status = 'pending' OR status = 'failed' ORDER BY created_at ASC"
         )?;
-        let actions = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, i32>(4)?,
-            ))
-        })?.collect::<Result<Vec<_>, _>>()?;
+        let actions = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i32>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(actions)
     }
 
@@ -1100,7 +1159,8 @@ impl Database {
 
     /// 移除待處理動作
     pub fn remove_pending_action(&self, id: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM pending_actions WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM pending_actions WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -1154,13 +1214,15 @@ impl Database {
 
     /// 永久刪除課程 (物理刪除)
     pub fn purge_course(&self, id: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM courses WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM courses WHERE id = ?1", [id])?;
         Ok(())
     }
 
     /// 永久刪除課堂 (物理刪除)
     pub fn purge_lecture(&self, id: &str) -> SqlResult<()> {
-        self.conn.execute("DELETE FROM lectures WHERE id = ?1", [id])?;
+        self.conn
+            .execute("DELETE FROM lectures WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -1170,10 +1232,9 @@ impl Database {
 
     /// 刪除課堂的所有字幕 (用於全量替換)
     pub fn delete_subtitles_by_lecture(&self, lecture_id: &str) -> SqlResult<usize> {
-        let deleted = self.conn.execute(
-            "DELETE FROM subtitles WHERE lecture_id = ?1",
-            [lecture_id]
-        )?;
+        let deleted = self
+            .conn
+            .execute("DELETE FROM subtitles WHERE lecture_id = ?1", [lecture_id])?;
         Ok(deleted)
     }
 
@@ -1182,7 +1243,17 @@ impl Database {
     // ============================================================
 
     /// 保存聊天會話
-    pub fn save_chat_session(&self, id: &str, lecture_id: Option<&str>, user_id: &str, title: &str, summary: Option<&str>, created_at: &str, updated_at: &str, is_deleted: bool) -> SqlResult<()> {
+    pub fn save_chat_session(
+        &self,
+        id: &str,
+        lecture_id: Option<&str>,
+        user_id: &str,
+        title: &str,
+        summary: Option<&str>,
+        created_at: &str,
+        updated_at: &str,
+        is_deleted: bool,
+    ) -> SqlResult<()> {
         // CRITICAL: use `INSERT ... ON CONFLICT DO UPDATE` NOT `INSERT OR REPLACE`.
         //
         // SQLite implements REPLACE as DELETE-then-INSERT, which fires
@@ -1212,23 +1283,40 @@ impl Database {
     }
 
     /// 獲取所有聊天會話
-    pub fn get_all_chat_sessions(&self, user_id: &str) -> SqlResult<Vec<(String, Option<String>, String, String, Option<String>, String, String, bool)>> {
+    pub fn get_all_chat_sessions(
+        &self,
+        user_id: &str,
+    ) -> SqlResult<
+        Vec<(
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            bool,
+        )>,
+    > {
         let mut stmt = self.conn.prepare(
             "SELECT id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted 
-             FROM chat_sessions WHERE user_id = ?1 ORDER BY updated_at DESC"
+             FROM chat_sessions WHERE user_id = ?1 ORDER BY updated_at DESC",
         )?;
-        let sessions: Vec<_> = stmt.query_map([user_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, String>(6)?,
-                row.get::<_, i32>(7)? != 0,
-            ))
-        })?.filter_map(|r| r.ok()).collect();
+        let sessions: Vec<_> = stmt
+            .query_map([user_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i32>(7)? != 0,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(sessions)
     }
 
@@ -1236,13 +1324,21 @@ impl Database {
     pub fn delete_chat_messages_by_session(&self, session_id: &str) -> SqlResult<usize> {
         let deleted = self.conn.execute(
             "DELETE FROM chat_messages WHERE session_id = ?1",
-            [session_id]
+            [session_id],
         )?;
         Ok(deleted)
     }
 
     /// 保存聊天訊息
-    pub fn save_chat_message(&self, id: &str, session_id: &str, role: &str, content: &str, sources: Option<&str>, timestamp: &str) -> SqlResult<()> {
+    pub fn save_chat_message(
+        &self,
+        id: &str,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        sources: Option<&str>,
+        timestamp: &str,
+    ) -> SqlResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO chat_messages (id, session_id, role, content, sources, timestamp) 
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1252,42 +1348,54 @@ impl Database {
     }
 
     /// 獲取會話的所有訊息
-    pub fn get_chat_messages(&self, session_id: &str) -> SqlResult<Vec<(String, String, String, String, Option<String>, String)>> {
+    pub fn get_chat_messages(
+        &self,
+        session_id: &str,
+    ) -> SqlResult<Vec<(String, String, String, String, Option<String>, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, session_id, role, content, sources, timestamp 
-             FROM chat_messages WHERE session_id = ?1 ORDER BY timestamp ASC"
+             FROM chat_messages WHERE session_id = ?1 ORDER BY timestamp ASC",
         )?;
-        let msgs: Vec<_> = stmt.query_map([session_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })?.filter_map(|r| r.ok()).collect();
-            Ok(msgs)
+        let msgs: Vec<_> = stmt
+            .query_map([session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(msgs)
     }
 
     /// 獲取多個會話的所有訊息
-    pub fn get_all_chat_messages(&self, user_id: &str) -> SqlResult<Vec<(String, String, String, String, Option<String>, String)>> {
+    pub fn get_all_chat_messages(
+        &self,
+        user_id: &str,
+    ) -> SqlResult<Vec<(String, String, String, String, Option<String>, String)>> {
         let mut stmt = self.conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.sources, m.timestamp 
              FROM chat_messages m
              INNER JOIN chat_sessions s ON m.session_id = s.id
-             WHERE s.user_id = ?1 ORDER BY m.timestamp ASC"
+             WHERE s.user_id = ?1 ORDER BY m.timestamp ASC",
         )?;
-        let msgs: Vec<_> = stmt.query_map([user_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })?.filter_map(|r| r.ok()).collect();
+        let msgs: Vec<_> = stmt
+            .query_map([user_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
         Ok(msgs)
     }
 
@@ -1326,10 +1434,7 @@ impl Database {
     }
 
     /// Load all embedding rows for a lecture, ordered by position.
-    pub fn get_embeddings_by_lecture(
-        &self,
-        lecture_id: &str,
-    ) -> SqlResult<Vec<EmbeddingRow>> {
+    pub fn get_embeddings_by_lecture(&self, lecture_id: &str) -> SqlResult<Vec<EmbeddingRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, lecture_id, chunk_text, embedding, source_type, position, page_number, created_at
              FROM embeddings WHERE lecture_id = ?1 ORDER BY position ASC",
@@ -1354,10 +1459,8 @@ impl Database {
     }
 
     pub fn delete_embeddings_by_lecture(&self, lecture_id: &str) -> SqlResult<usize> {
-        self.conn.execute(
-            "DELETE FROM embeddings WHERE lecture_id = ?1",
-            [lecture_id],
-        )
+        self.conn
+            .execute("DELETE FROM embeddings WHERE lecture_id = ?1", [lecture_id])
     }
 
     /// Atomically replace every embedding row for a lecture.
@@ -1374,10 +1477,7 @@ impl Database {
         rows: &[EmbeddingRow],
     ) -> SqlResult<()> {
         let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "DELETE FROM embeddings WHERE lecture_id = ?1",
-            [lecture_id],
-        )?;
+        tx.execute("DELETE FROM embeddings WHERE lecture_id = ?1", [lecture_id])?;
         for row in rows {
             let blob = pack_f32_le(&row.embedding);
             tx.execute(
@@ -1456,7 +1556,7 @@ mod tests {
     #[test]
     fn test_save_and_get_course() {
         let (db, _temp) = create_test_db();
-        
+
         let course = Course::new(
             "test_user".to_string(),
             "Test Course".to_string(),
@@ -1464,12 +1564,12 @@ mod tests {
             Some("keyword1, keyword2".to_string()),
             None,
         );
-        
+
         db.save_course(&course).expect("Failed to save course");
-        
+
         let retrieved = db.get_course(&course.id).expect("Failed to get course");
         assert!(retrieved.is_some());
-        
+
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.id, course.id);
         assert_eq!(retrieved.title, "Test Course");
@@ -1482,18 +1582,36 @@ mod tests {
     #[test]
     fn test_list_courses() {
         let (db, _temp) = create_test_db();
-        
-        let course1 = Course::new("user1".to_string(), "Course 1".to_string(), None, None, None);
-        let course2 = Course::new("user1".to_string(), "Course 2".to_string(), None, None, None);
-        let course3 = Course::new("user2".to_string(), "Course 3".to_string(), None, None, None);
-        
+
+        let course1 = Course::new(
+            "user1".to_string(),
+            "Course 1".to_string(),
+            None,
+            None,
+            None,
+        );
+        let course2 = Course::new(
+            "user1".to_string(),
+            "Course 2".to_string(),
+            None,
+            None,
+            None,
+        );
+        let course3 = Course::new(
+            "user2".to_string(),
+            "Course 3".to_string(),
+            None,
+            None,
+            None,
+        );
+
         db.save_course(&course1).unwrap();
         db.save_course(&course2).unwrap();
         db.save_course(&course3).unwrap();
-        
+
         let user1_courses = db.list_courses("user1").unwrap();
         assert_eq!(user1_courses.len(), 2);
-        
+
         let user2_courses = db.list_courses("user2").unwrap();
         assert_eq!(user2_courses.len(), 1);
     }
@@ -1501,17 +1619,23 @@ mod tests {
     #[test]
     fn test_delete_course_soft_delete() {
         let (db, _temp) = create_test_db();
-        
-        let course = Course::new("test_user".to_string(), "To Delete".to_string(), None, None, None);
+
+        let course = Course::new(
+            "test_user".to_string(),
+            "To Delete".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         // Before delete: course visible
         let courses = db.list_courses("test_user").unwrap();
         assert_eq!(courses.len(), 1);
-        
+
         // Soft delete
         db.delete_course(&course.id).unwrap();
-        
+
         // After delete: not visible in normal list. Soft-delete row still
         // exists on disk (for TrashView restore); covered by test_trash below.
         let courses = db.list_courses("test_user").unwrap();
@@ -1523,18 +1647,24 @@ mod tests {
     #[test]
     fn test_save_and_get_lecture() {
         let (db, _temp) = create_test_db();
-        
+
         // First create a course
-        let course = Course::new("test_user".to_string(), "Test Course".to_string(), None, None, None);
+        let course = Course::new(
+            "test_user".to_string(),
+            "Test Course".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         // Then create a lecture
         let lecture = Lecture::new(course.id.clone(), "Test Lecture".to_string(), None);
         db.save_lecture(&lecture, "test_user").unwrap();
-        
+
         let retrieved = db.get_lecture(&lecture.id).unwrap();
         assert!(retrieved.is_some());
-        
+
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.id, lecture.id);
         assert_eq!(retrieved.title, "Test Lecture");
@@ -1545,16 +1675,22 @@ mod tests {
     #[test]
     fn test_list_lectures_by_course() {
         let (db, _temp) = create_test_db();
-        
-        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+
+        let course = Course::new(
+            "test_user".to_string(),
+            "Course".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         let lecture1 = Lecture::new(course.id.clone(), "Lecture 1".to_string(), None);
         let lecture2 = Lecture::new(course.id.clone(), "Lecture 2".to_string(), None);
-        
+
         db.save_lecture(&lecture1, "test_user").unwrap();
         db.save_lecture(&lecture2, "test_user").unwrap();
-        
+
         let lectures = db.list_lectures_by_course(&course.id, "test_user").unwrap();
         assert_eq!(lectures.len(), 2);
     }
@@ -1562,15 +1698,21 @@ mod tests {
     #[test]
     fn test_update_lecture_status() {
         let (db, _temp) = create_test_db();
-        
-        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+
+        let course = Course::new(
+            "test_user".to_string(),
+            "Course".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
         db.save_lecture(&lecture, "test_user").unwrap();
-        
+
         db.update_lecture_status(&lecture.id, "completed").unwrap();
-        
+
         let updated = db.get_lecture(&lecture.id).unwrap().unwrap();
         assert_eq!(updated.status, "completed");
     }
@@ -1580,13 +1722,19 @@ mod tests {
     #[test]
     fn test_save_and_get_subtitles() {
         let (db, _temp) = create_test_db();
-        
-        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+
+        let course = Course::new(
+            "test_user".to_string(),
+            "Course".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
         db.save_lecture(&lecture, "test_user").unwrap();
-        
+
         let sub1 = Subtitle::new(
             lecture.id.clone(),
             0.0,
@@ -1603,10 +1751,10 @@ mod tests {
             "fine".to_string(),
             Some(0.98),
         );
-        
+
         db.save_subtitle(&sub1).unwrap();
         db.save_subtitle(&sub2).unwrap();
-        
+
         let subtitles = db.get_subtitles(&lecture.id).unwrap();
         assert_eq!(subtitles.len(), 2);
         assert_eq!(subtitles[0].text_en, "Hello");
@@ -1616,20 +1764,33 @@ mod tests {
     #[test]
     fn test_delete_subtitle_by_id() {
         let (db, _temp) = create_test_db();
-        
-        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+
+        let course = Course::new(
+            "test_user".to_string(),
+            "Course".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
         db.save_lecture(&lecture, "test_user").unwrap();
-        
-        let subtitle = Subtitle::new(lecture.id.clone(), 0.0, "Test".to_string(), None, "rough".to_string(), None);
+
+        let subtitle = Subtitle::new(
+            lecture.id.clone(),
+            0.0,
+            "Test".to_string(),
+            None,
+            "rough".to_string(),
+            None,
+        );
         db.save_subtitle(&subtitle).unwrap();
-        
+
         assert_eq!(db.get_subtitles(&lecture.id).unwrap().len(), 1);
-        
+
         db.delete_subtitle_by_id(&subtitle.id).unwrap();
-        
+
         assert_eq!(db.get_subtitles(&lecture.id).unwrap().len(), 0);
     }
 
@@ -1638,12 +1799,12 @@ mod tests {
     #[test]
     fn test_save_and_get_setting() {
         let (db, _temp) = create_test_db();
-        
+
         db.save_setting("theme", "dark").unwrap();
-        
+
         let value = db.get_setting("theme").unwrap();
         assert_eq!(value, Some("dark".to_string()));
-        
+
         // Update
         db.save_setting("theme", "light").unwrap();
         let value = db.get_setting("theme").unwrap();
@@ -1653,10 +1814,10 @@ mod tests {
     #[test]
     fn test_get_all_settings() {
         let (db, _temp) = create_test_db();
-        
+
         db.save_setting("key1", "value1").unwrap();
         db.save_setting("key2", "value2").unwrap();
-        
+
         let settings = db.get_all_settings().unwrap();
         assert!(settings.len() >= 2); // May include defaults
     }
@@ -1666,19 +1827,29 @@ mod tests {
     #[test]
     fn test_save_and_get_note() {
         let (db, _temp) = create_test_db();
-        
-        let course = Course::new("test_user".to_string(), "Course".to_string(), None, None, None);
+
+        let course = Course::new(
+            "test_user".to_string(),
+            "Course".to_string(),
+            None,
+            None,
+            None,
+        );
         db.save_course(&course).unwrap();
-        
+
         let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
         db.save_lecture(&lecture, "test_user").unwrap();
-        
-        let note = Note::new(lecture.id.clone(), "Notes Title".to_string(), r#"{"sections":[]}"#.to_string());
+
+        let note = Note::new(
+            lecture.id.clone(),
+            "Notes Title".to_string(),
+            r#"{"sections":[]}"#.to_string(),
+        );
         db.save_note(&note).unwrap();
-        
+
         let retrieved = db.get_note(&lecture.id).unwrap();
         assert!(retrieved.is_some());
-        
+
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.title, "Notes Title");
         assert_eq!(retrieved.lecture_id, lecture.id);
@@ -1721,12 +1892,19 @@ mod tests {
         // launches, and is where the cleanup must fire.
         db.init_tables().unwrap();
 
-        let remaining: Vec<String> = db.conn
-            .prepare("SELECT id FROM embeddings").unwrap()
-            .query_map([], |r| r.get::<_, String>(0)).unwrap()
+        let remaining: Vec<String> = db
+            .conn
+            .prepare("SELECT id FROM embeddings")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert_eq!(remaining, vec!["new".to_string()], "legacy 768-d rows must be dropped");
+        assert_eq!(
+            remaining,
+            vec!["new".to_string()],
+            "legacy 768-d rows must be dropped"
+        );
     }
 
     /// Contract guard: if a future refactor changes the expected dimension
@@ -1737,6 +1915,95 @@ mod tests {
     fn embedding_dimension_contract_is_384() {
         const EXPECTED_BYTES_PER_VECTOR: usize = 384 * 4;
         assert_eq!(EXPECTED_BYTES_PER_VECTOR, 1536);
+    }
+
+    #[test]
+    fn migration_preserves_legacy_audio_path_when_course_id_is_missing() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("legacy.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE lectures (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                date TEXT NOT NULL,
+                duration INTEGER NOT NULL,
+                pdf_path TEXT,
+                audio_path TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lectures (id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "legacy-lecture",
+                "Legacy Lecture",
+                "2026-04-20T10:00:00Z",
+                123_i64,
+                Option::<String>::None,
+                Some("lecture_legacy-lecture_123.wav".to_string()),
+                "completed",
+                "2026-04-20T10:00:00Z",
+                "2026-04-20T10:00:00Z",
+            ],
+        ).unwrap();
+        drop(conn);
+
+        let db = Database::new(&db_path).expect("migration should succeed");
+        let lectures = db.list_lectures("default_user").unwrap();
+
+        assert_eq!(lectures.len(), 1);
+        assert_eq!(
+            lectures[0].audio_path.as_deref(),
+            Some("lecture_legacy-lecture_123.wav"),
+        );
+    }
+
+    #[test]
+    fn migration_without_legacy_audio_path_still_succeeds() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let db_path = temp_dir.path().join("legacy-no-audio.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE lectures (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                date TEXT NOT NULL,
+                duration INTEGER NOT NULL,
+                pdf_path TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lectures (id, title, date, duration, pdf_path, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                "legacy-lecture",
+                "Legacy Lecture",
+                "2026-04-20T10:00:00Z",
+                123_i64,
+                Option::<String>::None,
+                "completed",
+                "2026-04-20T10:00:00Z",
+                "2026-04-20T10:00:00Z",
+            ],
+        ).unwrap();
+        drop(conn);
+
+        let db = Database::new(&db_path).expect("migration should succeed");
+        let lectures = db.list_lectures("default_user").unwrap();
+
+        assert_eq!(lectures.len(), 1);
+        assert_eq!(lectures[0].audio_path, None);
     }
 
     // ===== v0.5.2 Crash-Recovery Orphan Detection =====
@@ -1805,4 +2072,3 @@ mod tests {
         assert!(orphans.is_empty());
     }
 }
-

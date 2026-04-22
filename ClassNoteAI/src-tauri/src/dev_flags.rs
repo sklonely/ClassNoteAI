@@ -51,7 +51,8 @@ pub fn load() -> DevFlags {
 pub fn save(flags: &DevFlags) -> Result<(), String> {
     let path = flags_file().ok_or_else(|| "config dir unavailable".to_string())?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
     let text = toml::to_string_pretty(flags).map_err(|e| format!("toml serialize: {}", e))?;
     std::fs::write(&path, text).map_err(|e| format!("write {}: {}", path.display(), e))?;

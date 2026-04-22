@@ -14,11 +14,11 @@
  * the downstream transcription path needs zero changes.
  */
 
+use crate::utils::command::no_window;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use crate::utils::command::no_window;
 use std::process::Stdio;
 use tokio::sync::Mutex as TokioMutex;
 
@@ -51,20 +51,11 @@ pub fn extract_pcm_16k_mono(video_path: &Path) -> Result<Vec<i16>, String> {
 
     let mut child = no_window(&ffmpeg)
         // Suppress the extremely verbose default banner; keep warnings/errors.
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-        ])
+        .args(["-hide_banner", "-loglevel", "error", "-i"])
         .arg(video_path)
         .args([
             // Mono, 16 kHz, signed 16-bit little-endian (whisper input).
-            "-ac", "1",
-            "-ar", "16000",
-            "-f", "s16le",
-            "-y",
-            "-",
+            "-ac", "1", "-ar", "16000", "-f", "s16le", "-y", "-",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -231,10 +222,7 @@ pub fn stage_video_inner(
         ));
     }
     std::fs::create_dir_all(videos_dir)?;
-    let ext = source
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("mp4");
+    let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
     let dest = videos_dir.join(format!("{}.{}", lecture_id, ext));
     // We copy rather than move: the user may want to keep their
     // original file, and moving from arbitrary user dirs gets brittle
@@ -248,8 +236,8 @@ pub async fn import_video_for_lecture(
     lecture_id: String,
     source_path: String,
 ) -> Result<String, String> {
-    let videos_dir = crate::paths::get_video_dir()
-        .map_err(|e| format!("video dir unavailable: {}", e))?;
+    let videos_dir =
+        crate::paths::get_video_dir().map_err(|e| format!("video dir unavailable: {}", e))?;
     let dest = stage_video_inner(&videos_dir, &lecture_id, Path::new(&source_path))
         .map_err(|e| format!("failed to stage video: {}", e))?;
     Ok(dest.to_string_lossy().into_owned())
@@ -298,13 +286,11 @@ fn extract_pcm_to_file(video_path: &Path, pcm_path: &Path) -> Result<u64, String
         return Err(format!("video file not found: {}", video_path.display()));
     }
     if let Some(parent) = pcm_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create pcm dir: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create pcm dir: {}", e))?;
     }
 
     let ffmpeg = locate_ffmpeg()?;
-    let output = File::create(pcm_path)
-        .map_err(|e| format!("failed to create pcm file: {}", e))?;
+    let output = File::create(pcm_path).map_err(|e| format!("failed to create pcm file: {}", e))?;
     let mut writer = BufWriter::with_capacity(1024 * 1024, output);
 
     let mut child = no_window(&ffmpeg)
@@ -370,10 +356,7 @@ pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractR
     // Drop the temp PCM next to the staged video so it lives and dies
     // with the lecture — same directory already has the app's write
     // permission and our cleanup routines.
-    let stem = source
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("pcm");
+    let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("pcm");
     let parent = source
         .parent()
         .map(|p| p.to_path_buf())
@@ -465,10 +448,7 @@ pub async fn transcribe_pcm_file_slice(
         };
         if needs_load {
             if !Path::new(override_path).exists() {
-                return Err(format!(
-                    "指定的 Whisper 模型檔案不存在: {}",
-                    override_path
-                ));
+                return Err(format!("指定的 Whisper 模型檔案不存在: {}", override_path));
             }
             println!(
                 "[video_import] loading import-side Whisper model: {}",

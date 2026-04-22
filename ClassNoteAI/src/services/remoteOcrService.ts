@@ -1,14 +1,10 @@
 /**
  * Remote LLM OCR service.
  *
- * Why this exists: the original `ocrService.ts` speaks to a local Ollama
- * with deepseek-ocr loaded. In practice ~99% of users don't have that
- * configured, so `ragService.indexLectureWithOCR` pre-flight-skipped to
- * pdfjs text extraction — which is blind to images, handwritten math,
- * tables-as-image, and any scanned slides. v0.5.2 adds this service as
- * the default OCR path: routes page images through whatever cloud LLM
- * the user already has configured (GitHub Models / ChatGPT OAuth), so
- * real OCR "just works" without another local daemon.
+ * Routes page images through whatever cloud LLM the user already has
+ * configured (GitHub Models / ChatGPT OAuth), so OCR "just works"
+ * without any extra local daemon. When no vision-capable provider is
+ * configured, callers fall back to pdfjs text extraction.
  *
  * Provider picking:
  *   - Uses `resolveActiveProvider()` — the same one powering AI 助教 /
@@ -130,8 +126,7 @@ class RemoteOcrService {
                 };
             }
 
-            // Normalise to a data URL. Callers pass bare base64 (matching
-            // the ocrService contract); LLM providers universally accept
+            // Normalise to a data URL. Callers pass bare base64; LLM providers universally accept
             // `data:image/png;base64,...`.
             const imageUrl = imageBase64.startsWith('data:')
                 ? imageBase64
@@ -174,9 +169,8 @@ class RemoteOcrService {
 
     /**
      * Multi-page OCR with concurrency control.
-     * Contract matches the local `ocrService.recognizePages` so
-     * `ragService.indexLectureWithOCR` can swap between them by
-     * one line change.
+     * Contract matches what `ragService.indexLectureWithOCR` expects
+     * from an OCR backend.
      */
     public async recognizePages(
         pages: { pageNumber: number; imageBase64: string }[],

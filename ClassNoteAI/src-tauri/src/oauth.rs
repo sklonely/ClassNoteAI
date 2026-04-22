@@ -13,8 +13,8 @@
 use std::borrow::Cow;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::State;
 

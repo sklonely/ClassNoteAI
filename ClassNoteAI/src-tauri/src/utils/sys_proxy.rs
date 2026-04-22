@@ -13,8 +13,7 @@
 
 #[cfg(target_os = "windows")]
 pub fn apply_system_proxy_env() {
-    const REG_PATH: &str =
-        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    const REG_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
     let enabled = read_reg_value(REG_PATH, "ProxyEnable")
         .and_then(|s| parse_dword(&s))
@@ -31,18 +30,14 @@ pub fn apply_system_proxy_env() {
 
     let (http_proxy, https_proxy) = split_per_scheme(&server);
 
-    if std::env::var_os("HTTP_PROXY").is_none()
-        && std::env::var_os("http_proxy").is_none()
-    {
+    if std::env::var_os("HTTP_PROXY").is_none() && std::env::var_os("http_proxy").is_none() {
         if let Some(url) = normalize_proxy_url(&http_proxy, "http") {
             println!("[net] Windows system HTTP_PROXY = {}", url);
             std::env::set_var("HTTP_PROXY", &url);
         }
     }
 
-    if std::env::var_os("HTTPS_PROXY").is_none()
-        && std::env::var_os("https_proxy").is_none()
-    {
+    if std::env::var_os("HTTPS_PROXY").is_none() && std::env::var_os("https_proxy").is_none() {
         if let Some(url) = normalize_proxy_url(&https_proxy, "http") {
             println!("[net] Windows system HTTPS_PROXY = {}", url);
             std::env::set_var("HTTPS_PROXY", &url);
@@ -51,13 +46,14 @@ pub fn apply_system_proxy_env() {
 
     if std::env::var_os("NO_PROXY").is_none() && std::env::var_os("no_proxy").is_none() {
         if let Some(bypass) = read_reg_value(REG_PATH, "ProxyOverride") {
-            let normalized = bypass.replace(';', ",").replace("<local>", "localhost,127.0.0.1");
+            let normalized = bypass
+                .replace(';', ",")
+                .replace("<local>", "localhost,127.0.0.1");
             if !normalized.trim().is_empty() {
                 std::env::set_var("NO_PROXY", normalized);
             }
         }
     }
-
 }
 
 #[cfg(not(target_os = "windows"))]
