@@ -3,6 +3,7 @@
  * 使用滾動緩衝區實現低延遲流式轉錄
  */
 
+import { invoke } from '@tauri-apps/api/core';
 import { transcribeAudio } from './whisperService';
 import { subtitleService } from './subtitleService';
 import { AudioChunk } from './audioRecorder';
@@ -187,6 +188,36 @@ export class TranscriptionService {
         console.error('[TranscriptionService] final savePendingSubtitles failed:', err);
       }
     })();
+  }
+
+  /**
+   * Phase 1 of speech-pipeline-v0.6.5 (#52): mirror every committed
+   * segment into an append-only JSONL on disk so a crash between sqlite
+   * flushes (we batch every 10 s, see {@link saveInterval}) doesn't
+   * silently lose the segments captured in the gap. The Rust side
+   * cleans the file up on `discard_orphaned_recording` /
+   * `discard_orphaned_transcript`; the recovery flow imports it back
+   * into sqlite before the user sees a "completed" lecture.
+   *
+   * Best-effort: if the IPC throws (disk full, no in-progress dir,
+   * lecture id rejected), we log and move on — the in-memory
+   * pendingSubtitles plus the 10 s flush is still the primary path,
+   * the JSONL only matters when crash precedes flush.
+   */
+  private persistSegmentToDisk(segment: {
+    id: string;
+    timestamp: number;
+    text_en: string;
+    text_zh?: string;
+    type: 'rough' | 'fine';
+  }): void {
+    if (!this.lectureId) return;
+    void invoke('append_transcript_segment', {
+      lectureId: this.lectureId,
+      segment,
+    }).catch((err) => {
+      console.warn('[TranscriptionService] transcript JSONL append failed:', err);
+    });
   }
 
   private async savePendingSubtitles(): Promise<void> {
@@ -635,6 +666,16 @@ export class TranscriptionService {
         text_zh: undefined, // 翻譯完成後更新
         type: 'rough'
       });
+      // Crash-safety: write the rough segment to the JSONL sidecar NOW,
+      // before the next sqlite flush. This is the only line of defence
+      // against a crash inside the 10 s save window.
+      this.persistSegmentToDisk({
+        id,
+        timestamp: timestamp / 1000,
+        text_en: text,
+        text_zh: undefined,
+        type: 'rough',
+      });
     }
 
     // 3. 異步進行翻譯，完成後更新字幕（不阻塞 UI）
@@ -677,6 +718,17 @@ export class TranscriptionService {
       const pending = this.pendingSubtitles.find((s) => s.id === id);
       if (pending) {
         pending.text_zh = translation;
+        // Append a second JSONL line carrying the translation. Recovery
+        // takes the latest line per id, so this upgrades the row from
+        // text_zh=undefined to text_zh=<translation> if the next sqlite
+        // flush misses.
+        this.persistSegmentToDisk({
+          id,
+          timestamp: pending.timestamp,
+          text_en: text,
+          text_zh: translation,
+          type: 'rough',
+        });
       }
     } catch (e) {
       console.warn('[TranscriptionService] 翻譯失敗', e);

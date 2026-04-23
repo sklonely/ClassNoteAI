@@ -76,6 +76,35 @@ pub struct OrphanedRecording {
     pub sample_rate: u32,
     pub channels: u16,
     pub started_at: Option<String>,
+    /// Number of transcript segments persisted to the sidecar JSONL
+    /// while recording. 0 means no transcript was captured (older builds,
+    /// or a crash before the first segment committed).
+    #[serde(default)]
+    pub transcript_segments: u64,
+}
+
+/// One transcript segment as it lived in the frontend's pending queue.
+/// JSONL = one of these per line, append-only, written by the renderer
+/// every time `commitStableText` lands a stable rough/fine pass. On
+/// recovery we parse the file into this shape and let the frontend
+/// insert any rows that never made it to sqlite (the periodic
+/// `savePendingSubtitles` flush is every 10s, so a crash in the
+/// 9.999s gap loses everything in between without this sidecar).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedTranscriptSegment {
+    pub id: String,
+    /// Seconds from epoch (matches `pending_subtitles.timestamp` shape
+    /// in the frontend; sqlite expects f64 seconds, so we keep it as-is).
+    pub timestamp: f64,
+    pub text_en: String,
+    #[serde(default)]
+    pub text_zh: Option<String>,
+    /// `"rough"` for the streaming pass; `"fine"` for the LLM-refined
+    /// follow-up that overwrites it. Only `"rough"` lines are required
+    /// for recovery; `"fine"` is best-effort (the refinement queue is
+    /// allowed to drop on crash without data loss).
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 /// Validates a lecture_id is a plain UUID-ish identifier with no
@@ -113,6 +142,10 @@ fn pcm_path(in_progress_dir: &Path, lecture_id: &str) -> PathBuf {
 
 fn meta_path(in_progress_dir: &Path, lecture_id: &str) -> PathBuf {
     in_progress_dir.join(format!("{}.meta.json", lecture_id))
+}
+
+fn transcript_path(in_progress_dir: &Path, lecture_id: &str) -> PathBuf {
+    in_progress_dir.join(format!("{}.transcript.jsonl", lecture_id))
 }
 
 fn read_meta_or_default(in_progress_dir: &Path, lecture_id: &str) -> RecordingMeta {
@@ -163,6 +196,96 @@ pub fn append_pcm_chunk_inner(
     }
 
     Ok(fs::metadata(&p).map(|m| m.len()).unwrap_or(0))
+}
+
+/// Append a single transcript segment to the lecture's JSONL sidecar.
+/// One write per line — append-only, atomic enough that a partially-
+/// written final line is just dropped by `read_transcript_segments_inner`'s
+/// per-line parse. We never rewrite the file, so a crash mid-line at
+/// most loses the in-flight segment, never anything previously committed.
+pub fn append_transcript_segment_inner(
+    in_progress_dir: &Path,
+    lecture_id: &str,
+    segment: &PersistedTranscriptSegment,
+) -> std::io::Result<u64> {
+    let lecture_id = validate_lecture_id(lecture_id)?;
+    fs::create_dir_all(in_progress_dir)?;
+    let p = transcript_path(in_progress_dir, lecture_id);
+
+    let mut line = serde_json::to_string(segment)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    line.push('\n');
+
+    let mut f = OpenOptions::new().create(true).append(true).open(&p)?;
+    f.write_all(line.as_bytes())?;
+    f.flush()?;
+
+    Ok(fs::metadata(&p).map(|m| m.len()).unwrap_or(0))
+}
+
+/// Read every well-formed JSON line out of the transcript sidecar.
+/// Any line that fails to parse is logged-and-skipped — recovery is
+/// best-effort by design, and a single corrupted final line should
+/// never block restoration of everything that came before it.
+pub fn read_transcript_segments_inner(
+    in_progress_dir: &Path,
+    lecture_id: &str,
+) -> std::io::Result<Vec<PersistedTranscriptSegment>> {
+    let lecture_id = validate_lecture_id(lecture_id)?;
+    let p = transcript_path(in_progress_dir, lecture_id);
+    if !p.exists() {
+        return Ok(vec![]);
+    }
+    let raw = fs::read_to_string(&p)?;
+    let mut out = Vec::new();
+    for (idx, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<PersistedTranscriptSegment>(trimmed) {
+            Ok(seg) => out.push(seg),
+            Err(e) => {
+                eprintln!(
+                    "[recording] transcript JSONL line {} for {} unparseable, skipping: {}",
+                    idx + 1,
+                    lecture_id,
+                    e
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Count parseable lines without materialising the full segment list.
+/// Used by `find_orphaned_recordings_inner` so the recovery UI can
+/// show "+N transcript segments" alongside the audio duration without
+/// pulling potentially-thousands of segments into a Tauri payload
+/// every app boot.
+fn count_transcript_segments(in_progress_dir: &Path, lecture_id: &str) -> u64 {
+    let p = transcript_path(in_progress_dir, lecture_id);
+    let Ok(raw) = fs::read_to_string(&p) else {
+        return 0;
+    };
+    raw.lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && serde_json::from_str::<serde_json::Value>(t).is_ok()
+        })
+        .count() as u64
+}
+
+/// Delete the transcript JSONL for a lecture. Called by `discard_*`
+/// (user chose to throw the recording away) and after recovery has
+/// successfully migrated segments into sqlite.
+pub fn discard_transcript_segments_inner(
+    in_progress_dir: &Path,
+    lecture_id: &str,
+) -> std::io::Result<()> {
+    let lecture_id = validate_lecture_id(lecture_id)?;
+    let _ = fs::remove_file(transcript_path(in_progress_dir, lecture_id));
+    Ok(())
 }
 
 /// Build a WAV byte stream from raw i16-LE PCM.
@@ -216,6 +339,9 @@ pub fn finalize_recording_inner(
 
     // Clean up the scratch files. Best-effort — the finalized WAV is
     // already safely on disk, so partial cleanup won't lose anything.
+    // Transcript JSONL is the caller's responsibility (the frontend
+    // recovery flow imports those rows into sqlite first, then asks
+    // us to discard); we don't touch it here.
     let _ = fs::remove_file(&p);
     let _ = fs::remove_file(meta_path(in_progress_dir, lecture_id));
 
@@ -250,6 +376,7 @@ pub fn find_orphaned_recordings_inner(
         } else {
             0
         };
+        let transcript_segments = count_transcript_segments(in_progress_dir, &lecture_id);
         out.push(OrphanedRecording {
             lecture_id,
             duration_seconds,
@@ -257,6 +384,7 @@ pub fn find_orphaned_recordings_inner(
             sample_rate: meta.sample_rate,
             channels: meta.channels,
             started_at: Some(meta.started_at),
+            transcript_segments,
         });
     }
     // Stable order for UI — oldest first.
@@ -276,6 +404,7 @@ pub fn discard_orphaned_recording_inner(
     let lecture_id = validate_lecture_id(lecture_id)?;
     let _ = fs::remove_file(pcm_path(in_progress_dir, lecture_id));
     let _ = fs::remove_file(meta_path(in_progress_dir, lecture_id));
+    let _ = fs::remove_file(transcript_path(in_progress_dir, lecture_id));
     Ok(())
 }
 
@@ -343,6 +472,32 @@ pub async fn discard_orphaned_recording(lecture_id: String) -> Result<(), String
     let dir = crate::paths::get_in_progress_audio_dir()?;
     discard_orphaned_recording_inner(&dir, &lecture_id)
         .map_err(|e| format!("Failed to discard orphan: {}", e))
+}
+
+#[tauri::command]
+pub async fn append_transcript_segment(
+    lecture_id: String,
+    segment: PersistedTranscriptSegment,
+) -> Result<u64, String> {
+    let dir = crate::paths::get_in_progress_audio_dir()?;
+    append_transcript_segment_inner(&dir, &lecture_id, &segment)
+        .map_err(|e| format!("Failed to append transcript segment: {}", e))
+}
+
+#[tauri::command]
+pub async fn read_orphaned_transcript(
+    lecture_id: String,
+) -> Result<Vec<PersistedTranscriptSegment>, String> {
+    let dir = crate::paths::get_in_progress_audio_dir()?;
+    read_transcript_segments_inner(&dir, &lecture_id)
+        .map_err(|e| format!("Failed to read transcript: {}", e))
+}
+
+#[tauri::command]
+pub async fn discard_orphaned_transcript(lecture_id: String) -> Result<(), String> {
+    let dir = crate::paths::get_in_progress_audio_dir()?;
+    discard_transcript_segments_inner(&dir, &lecture_id)
+        .map_err(|e| format!("Failed to discard transcript: {}", e))
 }
 
 #[cfg(test)]
@@ -547,5 +702,180 @@ mod tests {
         let wav = wrap_pcm_as_wav(&pcm, 48_000, 2);
         let data_size = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]);
         assert_eq!(data_size as usize, 10_000);
+    }
+
+    // ===== Transcript JSONL persistence (Phase 1 of speech-pipeline-v0.6.5) =====
+
+    fn sample_segment(id: &str, text: &str) -> PersistedTranscriptSegment {
+        PersistedTranscriptSegment {
+            id: id.to_string(),
+            timestamp: 1.0,
+            text_en: text.to_string(),
+            text_zh: None,
+            kind: "rough".to_string(),
+        }
+    }
+
+    #[test]
+    fn append_transcript_creates_file_and_each_call_adds_one_line() {
+        let (_tmp, dir) = fresh();
+        append_transcript_segment_inner(&dir, "lec-t", &sample_segment("a", "first")).unwrap();
+        append_transcript_segment_inner(&dir, "lec-t", &sample_segment("b", "second")).unwrap();
+        let raw = fs::read_to_string(transcript_path(&dir, "lec-t")).unwrap();
+        assert_eq!(raw.lines().count(), 2, "one line per segment");
+    }
+
+    #[test]
+    fn read_transcript_round_trips_all_well_formed_segments() {
+        let (_tmp, dir) = fresh();
+        let s1 = sample_segment("a", "hello");
+        let s2 = PersistedTranscriptSegment {
+            id: "b".to_string(),
+            timestamp: 2.5,
+            text_en: "world".to_string(),
+            text_zh: Some("世界".to_string()),
+            kind: "fine".to_string(),
+        };
+        append_transcript_segment_inner(&dir, "lec-r", &s1).unwrap();
+        append_transcript_segment_inner(&dir, "lec-r", &s2).unwrap();
+
+        let segs = read_transcript_segments_inner(&dir, "lec-r").unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].id, "a");
+        assert_eq!(segs[1].id, "b");
+        assert_eq!(segs[1].text_zh.as_deref(), Some("世界"));
+        assert_eq!(segs[1].kind, "fine");
+    }
+
+    #[test]
+    fn read_transcript_skips_corrupt_lines_but_keeps_good_ones() {
+        // Simulates a crash mid-write: previous lines are clean JSONL,
+        // last line is a half-flushed garbage. Recovery must NOT discard
+        // the first N segments because of the truncated tail.
+        let (_tmp, dir) = fresh();
+        fs::create_dir_all(&dir).unwrap();
+        let mut content = String::new();
+        content.push_str(&serde_json::to_string(&sample_segment("good-1", "first")).unwrap());
+        content.push('\n');
+        content.push_str(&serde_json::to_string(&sample_segment("good-2", "second")).unwrap());
+        content.push('\n');
+        content.push_str("{\"id\":\"truncated"); // half-written line, no closing }
+        fs::write(transcript_path(&dir, "lec-mix"), content).unwrap();
+
+        let segs = read_transcript_segments_inner(&dir, "lec-mix").unwrap();
+        assert_eq!(segs.len(), 2, "must keep the 2 well-formed lines");
+        assert_eq!(segs[0].id, "good-1");
+        assert_eq!(segs[1].id, "good-2");
+    }
+
+    #[test]
+    fn read_transcript_returns_empty_when_no_jsonl_file() {
+        let (_tmp, dir) = fresh();
+        let segs = read_transcript_segments_inner(&dir, "never-recorded").unwrap();
+        assert!(segs.is_empty());
+    }
+
+    #[test]
+    fn count_transcript_segments_matches_read_length() {
+        let (_tmp, dir) = fresh();
+        for i in 0..7 {
+            append_transcript_segment_inner(
+                &dir,
+                "lec-c",
+                &sample_segment(&format!("s-{}", i), "x"),
+            )
+            .unwrap();
+        }
+        assert_eq!(count_transcript_segments(&dir, "lec-c"), 7);
+        assert_eq!(count_transcript_segments(&dir, "missing"), 0);
+    }
+
+    #[test]
+    fn find_orphaned_recordings_includes_transcript_segment_count() {
+        let (_tmp, dir) = fresh();
+        append_pcm_chunk_inner(&dir, "lec-with-tx", &vec![0i16; 16_000], 16_000, 1).unwrap();
+        for i in 0..3 {
+            append_transcript_segment_inner(
+                &dir,
+                "lec-with-tx",
+                &sample_segment(&format!("seg-{}", i), "text"),
+            )
+            .unwrap();
+        }
+        let orphans = find_orphaned_recordings_inner(&dir).unwrap();
+        let lec = orphans.iter().find(|o| o.lecture_id == "lec-with-tx").unwrap();
+        assert_eq!(lec.transcript_segments, 3);
+    }
+
+    #[test]
+    fn find_orphaned_recordings_reports_zero_segments_for_audio_only_session() {
+        // A pre-Phase-1 .pcm with no JSONL companion must still be
+        // recoverable — the field defaults to 0, never errors.
+        let (_tmp, dir) = fresh();
+        append_pcm_chunk_inner(&dir, "audio-only", &vec![0i16; 16_000], 16_000, 1).unwrap();
+        let orphans = find_orphaned_recordings_inner(&dir).unwrap();
+        let lec = orphans
+            .iter()
+            .find(|o| o.lecture_id == "audio-only")
+            .unwrap();
+        assert_eq!(lec.transcript_segments, 0);
+    }
+
+    #[test]
+    fn discard_orphaned_recording_removes_transcript_jsonl_too() {
+        let (_tmp, dir) = fresh();
+        append_pcm_chunk_inner(&dir, "to-discard", &vec![0i16; 100], 16_000, 1).unwrap();
+        append_transcript_segment_inner(
+            &dir,
+            "to-discard",
+            &sample_segment("seg-1", "should be deleted"),
+        )
+        .unwrap();
+        assert!(transcript_path(&dir, "to-discard").exists());
+
+        discard_orphaned_recording_inner(&dir, "to-discard").unwrap();
+
+        assert!(!pcm_path(&dir, "to-discard").exists());
+        assert!(!meta_path(&dir, "to-discard").exists());
+        assert!(
+            !transcript_path(&dir, "to-discard").exists(),
+            "transcript JSONL must be cleaned on discard"
+        );
+    }
+
+    #[test]
+    fn finalize_recording_does_not_delete_transcript_jsonl() {
+        // The frontend recovery flow imports the JSONL into sqlite BEFORE
+        // calling finalize. If finalize wiped the JSONL too, a recovery
+        // failure between import and finalize would lose segments. The
+        // explicit cleanup is `discard_orphaned_transcript` after the
+        // import succeeds, so finalize is intentionally narrow here.
+        let (tmp, dir) = fresh();
+        append_pcm_chunk_inner(&dir, "fin-keep", &[1, 2, 3, 4], 16_000, 1).unwrap();
+        append_transcript_segment_inner(
+            &dir,
+            "fin-keep",
+            &sample_segment("survived", "I should still be on disk"),
+        )
+        .unwrap();
+        let final_path = tmp.path().join("out.wav");
+        finalize_recording_inner(&dir, "fin-keep", &final_path).unwrap();
+        assert!(
+            transcript_path(&dir, "fin-keep").exists(),
+            "finalize is narrow: only PCM + meta cleared, transcript JSONL stays for explicit discard"
+        );
+    }
+
+    #[test]
+    fn append_transcript_rejects_lecture_id_with_path_traversal() {
+        let (_tmp, dir) = fresh();
+        let r = append_transcript_segment_inner(&dir, "../escape", &sample_segment("x", "y"));
+        assert!(r.is_err(), "transcript append must reject path-traversal id");
+    }
+
+    #[test]
+    fn discard_transcript_rejects_lecture_id_with_path_traversal() {
+        let (_tmp, dir) = fresh();
+        assert!(discard_transcript_segments_inner(&dir, "../escape").is_err());
     }
 }

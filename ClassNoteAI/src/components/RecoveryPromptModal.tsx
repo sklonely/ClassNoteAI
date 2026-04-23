@@ -211,7 +211,7 @@ export default function RecoveryPromptModal({
                                     <div className="font-medium text-gray-900 dark:text-gray-100 truncate">
                                         {session.lecture.title || '（未命名課堂）'}
                                     </div>
-                                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-3">
+                                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-3 flex-wrap">
                                         <span>約 {formatDuration(session.durationSeconds)}</span>
                                         <span>·</span>
                                         <span>{formatStarted(session.startedAt)}</span>
@@ -219,6 +219,18 @@ export default function RecoveryPromptModal({
                                         <span className="font-mono text-[10px]">
                                             {(session.bytes / 1_000_000).toFixed(1)} MB
                                         </span>
+                                        {/* Phase 1 of speech-pipeline-v0.6.5 (#52). Show
+                                            "+N 段已轉錄" if the JSONL sidecar captured live
+                                            captions before the crash; users now know their
+                                            text isn't lost, only the audio is being re-wrapped. */}
+                                        {session.transcriptSegments > 0 && (
+                                            <>
+                                                <span>·</span>
+                                                <span className="text-emerald-600 dark:text-emerald-400">
+                                                    含 {session.transcriptSegments} 段已轉錄字幕
+                                                </span>
+                                            </>
+                                        )}
                                     </div>
                                     {state.error && (
                                         <div className="text-xs text-red-500 mt-2 flex items-center gap-2 flex-wrap">
