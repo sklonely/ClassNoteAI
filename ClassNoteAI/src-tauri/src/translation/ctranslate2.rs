@@ -188,8 +188,13 @@ impl CT2Translator {
             patience: 1.0,
             length_penalty: 1.0,
             coverage_penalty: 0.0,
-            repetition_penalty: 1.0,
-            no_repeat_ngram_size: 0,
+            // Phase 0 of speech-pipeline-v0.6.5: M2M100 with no repetition
+            // controls runs into greedy-loop pathology on disfluent input
+            // (filler words, hesitations) — observed `我认为` × 26 in #67.
+            // 1.3 / 4 are conservative defaults; full streaming context window
+            // arrives in Phase 5. See docs/design/speech-pipeline-v0.6.5.md.
+            repetition_penalty: 1.3,
+            no_repeat_ngram_size: 4,
             disable_unk: false,
             suppress_sequences: Vec::new(),
             prefix_bias_beta: 0.0,
@@ -306,7 +311,51 @@ fn clean_translation(raw: &str, target_lang: &str) -> String {
             s = s[i..].trim().to_string();
         }
     }
-    s
+
+    // Step 3: defense-in-depth against M2M100 repetition loops. Even with
+    // decoder-time repetition_penalty + no_repeat_ngram_size set, edge
+    // cases (very short patterns under beam_size=4) can still leak through.
+    // See #67 example 2: `我认为，我认为，... × 26`.
+    collapse_repetitions(&s)
+}
+
+/// If the same short substring (1–4 characters) repeats consecutively
+/// 4+ times, collapse the run to a single occurrence. Conservative on
+/// purpose — only catches the regression-loop pathology, not legitimate
+/// repetition (e.g. "ha ha ha" or "very, very").
+fn collapse_repetitions(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 8 {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let mut collapsed = false;
+        for n in 1..=4usize {
+            if i + n * 4 > chars.len() {
+                continue;
+            }
+            let pat = &chars[i..i + n];
+            let mut k = 1;
+            while i + n * (k + 1) <= chars.len()
+                && &chars[i + n * k..i + n * (k + 1)] == pat
+            {
+                k += 1;
+            }
+            if k >= 4 {
+                out.extend(pat.iter());
+                i += n * k;
+                collapsed = true;
+                break;
+            }
+        }
+        if !collapsed {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Map ISO-ish language codes to the M2M100 language token used by
@@ -409,5 +458,33 @@ mod tests {
     fn test_translator_creation() {
         let translator = CT2Translator::new();
         assert!(!translator.is_loaded());
+    }
+
+    #[test]
+    fn collapse_repetitions_handles_observed_67_pathology() {
+        // Real failure mode from #67 example 2: 26× `我认为，` collapse to one.
+        let raw: String = "我认为，".repeat(26);
+        let collapsed = collapse_repetitions(&raw);
+        assert_eq!(collapsed, "我认为，");
+    }
+
+    #[test]
+    fn collapse_repetitions_preserves_normal_text() {
+        let normal = "今天天气真好，我们去散步吧。";
+        assert_eq!(collapse_repetitions(normal), normal);
+    }
+
+    #[test]
+    fn collapse_repetitions_below_threshold_untouched() {
+        // 3 repeats — below the 4× threshold, should NOT collapse.
+        let three = "abcabcabc";
+        assert_eq!(collapse_repetitions(three), three);
+    }
+
+    #[test]
+    fn collapse_repetitions_collapses_mid_string_run() {
+        let mixed = format!("hello {} world", "x".repeat(10));
+        let out = collapse_repetitions(&mixed);
+        assert_eq!(out, "hello x world");
     }
 }

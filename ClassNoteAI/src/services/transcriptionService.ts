@@ -38,6 +38,21 @@ export function normalizeCommittedText(text: string): string {
   return text.trim().replace(/\s+/g, ' ');
 }
 
+// Phase 0 of speech-pipeline-v0.6.5 (#71): Whisper occasionally inserts a
+// period after disfluency tokens like "um.", "uh.", "you know.", "I mean."
+// — the punctuation regex alone treats those as sentence ends and triggers
+// a smart-split mid-thought, fragmenting downstream translation context.
+// Conservative list — only obvious fillers; "like." is NOT included
+// because in lectures it can legitimately end a clause.
+const STRONG_PUNCT_END = /[.?!。？！]$/;
+const FILLER_END = /(?:^|[\s,])(?:um+|uh+|you know|i mean|so+|well)[.?!]\s*$/i;
+
+export function isCommittableSentenceEnd(segText: string): boolean {
+  if (!STRONG_PUNCT_END.test(segText)) return false;
+  if (FILLER_END.test(segText)) return false;
+  return true;
+}
+
 export function shouldSkipDuplicateCommit(
   normalizedText: string,
   lastCommitSnapshot: LastCommitSnapshot | null,
@@ -315,14 +330,14 @@ export class TranscriptionService {
 
       if (!hasSpeech) {
         this.silenceCounter++;
-        // v0.5.2: bumped the silence commit threshold from 2 → 3 ticks
-        // (≈ 1.6s → 2.4s) so a speaker taking a natural mid-sentence
-        // breath no longer causes us to cut and commit a half-clause.
-        // User feedback: the rough M2M100 translation quality tracks
-        // segmentation quality; fragmented inputs produce garbage
-        // translations. Letting slightly-longer pauses accumulate
-        // yields complete sentences and much better translations.
-        if (this.silenceCounter > 3 && this.lastPartialText) {
+        // Phase 0 of speech-pipeline-v0.6.5: bumped silence commit
+        // threshold 3 → 4 ticks (≈ +800ms) — #71 reports lecturers
+        // pausing to think mid-sentence still get cut at 2.4s. Phase 4
+        // (smart segmentation) replaces this counter with a multi-signal
+        // decision; this is the bandaid until then.
+        // History: v0.5.2 bumped 2 → 3 for the same reason.
+        // See docs/design/speech-pipeline-v0.6.5.md.
+        if (this.silenceCounter > 4 && this.lastPartialText) {
           this.commitStableText(this.lastPartialText);
           this.lastPartialText = '';
           // 清空緩衝區，準備下一句話
@@ -403,8 +418,8 @@ export class TranscriptionService {
         for (let i = result.segments.length - 1; i >= 0; i--) {
           const seg = result.segments[i];
           const segText = seg.text?.trim() || '';
-          // 如果這個 segment 以句子結束符號結尾
-          if (/[.?!。？！]$/.test(segText)) {
+          // 如果這個 segment 以句子結束符號結尾且不是 filler 收尾
+          if (isCommittableSentenceEnd(segText)) {
             splitIndex = i;
             splitEndMs = seg.end_ms;
             break;
