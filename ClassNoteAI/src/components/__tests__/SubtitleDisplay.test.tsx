@@ -26,7 +26,9 @@ let currentState: SubtitleState = {
     segments: [],
     currentText: '',
     currentTranslation: '',
-    isProcessing: false,
+    isRecording: false,
+    isTranscribing: false,
+    lastUpdateTime: 0,
 };
 
 vi.mock('../../services/subtitleService', () => ({
@@ -69,7 +71,9 @@ beforeEach(() => {
         segments: [],
         currentText: '',
         currentTranslation: '',
-        isProcessing: false,
+        isRecording: false,
+    isTranscribing: false,
+    lastUpdateTime: 0,
     };
     subscribers.length = 0;
 });
