@@ -93,9 +93,6 @@ jobs:
           restore-keys: |
             pr-check-vite-macos-
 
-      - name: Type-check frontend
-        run: npx tsc --noEmit
-
       - name: Frontend tests
         run: npx vitest run
 
@@ -103,6 +100,9 @@ jobs:
       # regressions that tsc + vitest can't see (e.g. the alpha.10
       # tailwindcss 3↔4 mismatch that broke `npm run dev` boot).
       # `vite build` exercises the same plugin chain a release uses.
+      # The `build` script is `tsc && vite build`, so this also serves
+      # as the type-check step (no separate `tsc --noEmit` needed —
+      # would just re-run the same compile).
       - name: Build smoke
         run: npm run build
 
@@ -198,12 +198,11 @@ jobs:
           restore-keys: |
             pr-check-vite-windows-
 
-      - name: Type-check frontend
-        run: npx tsc --noEmit
-
       - name: Frontend tests
         run: npx vitest run
 
+      # `build` is `tsc && vite build`, so this also covers type-check
+      # (separate `tsc --noEmit` would just duplicate the compile).
       - name: Build smoke
         run: npm run build
 

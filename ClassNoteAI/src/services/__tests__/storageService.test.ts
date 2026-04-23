@@ -410,11 +410,9 @@ describe('StorageService', () => {
                 (saveCall![1] as { value: string }).value,
             );
             expect(payload.ollama).toBeUndefined();
-            // sync isn't in the AppSettings type any more, but if any caller
-            // smuggles it in via casting, the shim should leave it alone
-            // (sync removal was about UI/pipeline; the shim explicitly only
-            // drops ollama). Document current behaviour:
-            // No assertion here — see TODO comment.
+            // Storage-layer defence: even if a caller casts past the type
+            // and smuggles a `sync` field in, the shim must scrub it.
+            expect(payload.sync).toBeUndefined();
             // ocr.mode normalization fired.
             expect(payload.ocr.mode).toBe('off');
         });

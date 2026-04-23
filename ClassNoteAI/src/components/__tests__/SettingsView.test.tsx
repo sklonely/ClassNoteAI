@@ -80,8 +80,22 @@ vi.mock('../settings/SettingsAboutUpdates', () => ({
 
 import SettingsView from '../SettingsView';
 import { storageService } from '../../services/storageService';
+import type { AppSettings } from '../../types';
 
 const mockedStorage = vi.mocked(storageService);
+
+const baseAppSettings: AppSettings = {
+    server: { url: 'http://localhost', port: 8080, enabled: false },
+    audio: { sample_rate: 16000, chunk_duration: 2 },
+    subtitle: {
+        font_size: 18,
+        font_color: '#FFFFFF',
+        background_opacity: 0.8,
+        position: 'bottom',
+        display_mode: 'both',
+    },
+    theme: 'light',
+};
 
 beforeEach(() => {
     subscribers.length = 0;
@@ -121,17 +135,20 @@ describe('SettingsView (post-sync removal)', () => {
     });
 
     // The handleSave path is debounced + auto-fires on settings changes.
-    // We can trigger it by mutating settings via the audio-device snapshot
-    // path: deliver a snapshot with a non-empty preferredDeviceId, which
-    // gets merged into AppSettings.audio.device_id and triggers the auto-save
-    // useEffect after the 300ms debounce.
-    //
-    // Easier path for the regression guard: just confirm that whenever
-    // saveAppSettings IS called, the payload does NOT include a `sync`
-    // field. We invoke the save indirectly via the device subscription.
+    // To exercise it deterministically:
+    //   1. Mock getAppSettings → concrete settings, so the load useEffect
+    //      calls setSettings (settings ref diverges from DEFAULT_SETTINGS).
+    //   2. That first divergence flips `didHydrate.current` to true on the
+    //      auto-save effect's next pass (then early-returns).
+    //   3. Push a device snapshot — selectedDeviceId changes, the auto-
+    //      save effect re-runs past the guard and schedules a 300ms save.
+    //   4. Wait past the debounce; assert at least one save fired AND
+    //      that no payload carries a `sync` field.
     it('regression: any save payload via SettingsView NEVER carries a sync field', async () => {
+        mockedStorage.getAppSettings.mockResolvedValue(baseAppSettings);
+
         render(<SettingsView />);
-        // Wait for initial settings load.
+        // Wait for initial settings load to land + flush state update.
         await waitFor(() =>
             expect(mockedStorage.getAppSettings).toHaveBeenCalled(),
         );
@@ -156,13 +173,16 @@ describe('SettingsView (post-sync removal)', () => {
             );
         });
 
-        // Wait past the 300ms debounce.
-        await new Promise((res) => setTimeout(res, 350));
+        // Wait past the 300ms debounce, then for the save to actually land.
+        await waitFor(
+            () => expect(mockedStorage.saveAppSettings).toHaveBeenCalled(),
+            { timeout: 1000 },
+        );
 
-        // saveAppSettings may not fire if the auto-save guard didn't trip
-        // (depends on `didHydrate` ref). Both outcomes are OK — assert
-        // ONLY that IF a save occurred, the payload had no `sync` field.
         const calls = mockedStorage.saveAppSettings.mock.calls;
+        // Guard against the test silently passing if the save never fires
+        // (was the original failure mode of this regression test).
+        expect(calls.length).toBeGreaterThan(0);
         for (const [payload] of calls) {
             // payload typed as AppSettings; cast to inspect arbitrary keys.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

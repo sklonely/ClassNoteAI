@@ -53,6 +53,7 @@ function normalizeAppSettings(settings: AppSettings | (AppSettings & Record<stri
   }
 
   delete normalized.ollama;
+  delete normalized.sync;
   return normalized;
 }
 
