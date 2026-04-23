@@ -2199,6 +2199,10 @@ pub fn run() {
             recording::finalize_recording,
             recording::find_orphaned_recordings,
             recording::discard_orphaned_recording,
+            // Phase 1 of speech-pipeline-v0.6.5 (#52): transcript JSONL sidecar
+            recording::append_transcript_segment,
+            recording::read_orphaned_transcript,
+            recording::discard_orphaned_transcript,
             recording::video_import::import_video_for_lecture,
             recording::video_import::extract_pcm_from_video,
             recording::video_import::transcribe_video_file,

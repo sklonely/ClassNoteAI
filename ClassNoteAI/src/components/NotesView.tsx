@@ -47,6 +47,7 @@ import ImportModal, { PasteSubmission, VideoImportOptions } from "./ImportModal"
 import { Lecture, Note, RecordingStatus } from "../types";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
+import { BatteryMonitor } from "../services/batteryMonitorService";
 import SubtitleDisplay from "./SubtitleDisplay";
 import AudioPlayer from "./AudioPlayer";
 import { transcriptionService } from "../services/transcriptionService";
@@ -161,6 +162,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   const deviceMonitorCleanupRef = useRef<(() => void) | null>(null);
   const recordingDeviceSnapshotRef = useRef<RecordingInputSnapshot | null>(null);
   const lastDeviceWarningKeyRef = useRef<string | null>(null);
+  // Phase 1 of speech-pipeline-v0.6.5 (#52): battery monitor instance
+  // is reused across recordings — start() / stop() per session — so
+  // navigator.getBattery() is only resolved once per app lifetime.
+  const batteryMonitorRef = useRef<BatteryMonitor | null>(null);
 
   // Sync modelLoaded state to ref
   useEffect(() => {
@@ -1249,6 +1254,22 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
       await audioRecorderRef.current.start();
 
+      // Phase 1 of speech-pipeline-v0.6.5 (#52): battery guard. Warns at
+      // 10% and force-stops at 5% to flush the JSONL + finalize the WAV
+      // before the OS yanks the process. Created lazily so platforms
+      // without a battery API never pay the navigator.getBattery cost.
+      if (!batteryMonitorRef.current) {
+        batteryMonitorRef.current = new BatteryMonitor({
+          onCritical: () => {
+            console.warn('[NotesView] Battery critical, auto-stopping recording');
+            void handleStopRecording();
+          },
+        });
+      }
+      void batteryMonitorRef.current.start().catch((err) => {
+        console.warn('[NotesView] battery monitor start failed:', err);
+      });
+
       const resolvedInputDeviceId = audioRecorderRef.current.getDeviceId();
       if (resolvedInputDeviceId && resolvedInputDeviceId !== preferredInputDeviceId) {
         await audioDeviceService.setPreferredDevice(resolvedInputDeviceId);
@@ -1311,6 +1332,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       }
 
       await audioRecorderRef.current.stop();
+      // Phase 1 of speech-pipeline-v0.6.5 (#52): release battery
+      // listeners now that this session is done. start() is idempotent
+      // so the next recording reattaches.
+      batteryMonitorRef.current?.stop();
       stopRecordingDeviceMonitor();
       setRecordingStatus("stopped");
       setVolume(0);
