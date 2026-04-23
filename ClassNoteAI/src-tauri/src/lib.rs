@@ -9,7 +9,7 @@ pub mod translation; // 公開以便測試使用
                      // 數據存儲模塊
 pub mod storage; // 公開以便測試使用
                  // VAD 模塊
-mod vad;
+pub mod vad; // pub so eval harnesses (examples/phase2_vad_eval.rs) can A/B it
 // Embedding 模塊
 mod embedding;
 // 首次運行設置模塊
