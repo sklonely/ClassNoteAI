@@ -50,7 +50,37 @@ npm run eval:asr          # WER against audio fixtures
 npm run eval:rag          # MRR@10 against rag fixtures
 npm run eval:summary      # LLM-as-judge against summary fixtures
 npm run eval:all          # all three + produces the report
+npm run smoke:ocr -- --provider all --pdf /abs/path/lecture.pdf --page 1 --expect "Database Management Systems"
 ```
+
+## OCR smoke test
+
+`npm run smoke:ocr` is the quick "does remote OCR still work right now?"
+check for the two shipped providers:
+
+- `github-models`
+- `chatgpt-oauth`
+
+Example:
+
+```bash
+npm run smoke:ocr -- \
+  --provider all \
+  --pdf "/Users/me/Documents/lecture.pdf" \
+  --page 1 \
+  --expect "Database Management Systems"
+```
+
+Auth resolution:
+
+- `github-models`: `GITHUB_MODELS_PAT`, otherwise `gh auth token`
+- `chatgpt-oauth`: `CHATGPT_ACCESS_TOKEN` / `CHATGPT_REFRESH_TOKEN`, otherwise `~/.codex/auth.json`
+
+Notes:
+
+- Requires `pdftoppm` on `PATH` (Poppler) to render the PDF page image.
+- The script exits non-zero if OCR output is empty or any `--expect` string is missing.
+- Use `--json` for machine-readable output, or `--keep-artifacts` to keep the rendered page image for debugging.
 
 ## Adding a fixture
 
