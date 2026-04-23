@@ -44,6 +44,12 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
+  # CI-only: skip debuginfo for cargo check. dev profile defaults to
+  # `debug = 2` (full debuginfo) which CI doesn't need — we only need
+  # compile success. Saves ~25–30% off cargo check + smaller cache
+  # uploads on the post-step. Local dev is unaffected because this
+  # env is workflow-scoped, not in Cargo.toml. See #116.
+  RUSTFLAGS: -C debuginfo=0
 
 defaults:
   run:
