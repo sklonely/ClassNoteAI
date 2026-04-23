@@ -188,3 +188,20 @@ tauri-plugin-single-instance = "2"
 [patch.crates-io]
 ct2rs = { path = "vendor/ct2rs" }
 esaxx-rs = { path = "vendor/esaxx-rs" }
+
+# CI-only profile for `cargo check` in pr-check.yml. Inherits dev but
+# strips ALL debug info — both rustc-side (debug = 0) AND C/C++ build
+# scripts via cc-rs (cargo sets DEBUG=false in build-script env when the
+# profile's `debug` is 0). This is the only way to skip debuginfo on
+# Windows MSVC C++ builds (whisper-rs-sys / ct2rs / sentencepiece-sys),
+# which dominate Windows pr-check time and don't honor RUSTFLAGS.
+#
+# Local dev still uses `dev` profile with full debuginfo (breakpoints,
+# panic backtraces). Closes #119; #116's RUSTFLAGS env is now redundant
+# but kept for belt-and-suspenders + visibility.
+[profile.ci-check]
+inherits = "dev"
+debug = 0
+incremental = false  # CARGO_INCREMENTAL=0 already set in workflow env;
+                     # being explicit here avoids profile/env mismatch
+                     # warnings if the env is ever dropped.

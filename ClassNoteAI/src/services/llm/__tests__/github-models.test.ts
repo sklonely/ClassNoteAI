@@ -149,4 +149,84 @@ describe('GitHubModelsProvider', () => {
         expect(models.find((m) => m.id === 'openai/gpt-4.1-nano')?.capabilities?.vision).toBeUndefined();
         expect(models.find((m) => m.id === 'meta/llama-3.3-70b-instruct')?.capabilities?.vision).toBeUndefined();
     });
+
+    // Catalog parser drift guards (regression-test-checklist Phase 2
+    // §github-models). The April 2026 catalog dropped vision flags from
+    // a number of models; the parser must tolerate other future drift
+    // without crashing or returning an empty list.
+    describe('catalog parser drift guards (#32 + #110 maintenance)', () => {
+        it('catalog HTTP failure → returns hardcoded FALLBACK list, not empty', async () => {
+            mockedFetch.mockRejectedValueOnce(new Error('network down'));
+            const models = await provider.listModels();
+            // Must not be empty — the provider falls back to a curated list
+            // so the user never sees a blank model picker.
+            expect(models.length).toBeGreaterThan(0);
+            // The fallback contains the openai flagship at minimum.
+            expect(models.find((m) => m.id === 'openai/gpt-4.1')).toBeTruthy();
+        });
+
+        it('catalog row missing capabilities array → defaults streaming to true, no crash', async () => {
+            mockedFetch.mockResolvedValueOnce(
+                jsonResponse([
+                    {
+                        id: 'unknown-vendor/some-future-model',
+                        name: 'Mystery Model',
+                        publisher: 'Unknown',
+                        // capabilities key missing entirely
+                    },
+                ]) as never,
+            );
+            const models = await provider.listModels();
+            const m = models.find((x) => x.id === 'unknown-vendor/some-future-model');
+            expect(m).toBeTruthy();
+            expect(m!.capabilities?.streaming).toBe(true);
+            // jsonMode should be undefined (not falsely true) when not advertised.
+            expect(m!.capabilities?.jsonMode).toBeUndefined();
+            // vision should also be undefined for unknown-vendor models.
+            expect(m!.capabilities?.vision).toBeUndefined();
+        });
+
+        it('completely unknown row shape → loaded with safe defaults', async () => {
+            mockedFetch.mockResolvedValueOnce(
+                jsonResponse([
+                    {
+                        id: 'totally/new-model',
+                        // No name, no publisher, no capabilities, no limits.
+                    },
+                ]) as never,
+            );
+            const models = await provider.listModels();
+            const m = models.find((x) => x.id === 'totally/new-model');
+            expect(m).toBeTruthy();
+            // displayName falls back to the id when name is missing.
+            expect(m!.displayName).toBe('totally/new-model');
+            // No crash, capabilities object exists with at least streaming.
+            expect(m!.capabilities).toBeTruthy();
+        });
+
+        it('catalog returns empty array → returns FALLBACK list (don\'t serve a blank picker)', async () => {
+            mockedFetch.mockResolvedValueOnce(jsonResponse([]) as never);
+            const models = await provider.listModels();
+            // Even though the catalog said "no models", we should serve
+            // the curated fallback so the user can still pick something.
+            // (This protects against silent catalog outages.)
+            expect(models.length).toBeGreaterThan(0);
+        });
+
+        it('explicit "vision" capability tag → vision=true', async () => {
+            mockedFetch.mockResolvedValueOnce(
+                jsonResponse([
+                    {
+                        id: 'someone/multimodal-v1',
+                        name: 'Multimodal v1',
+                        publisher: 'Someone',
+                        capabilities: ['streaming', 'vision'],
+                    },
+                ]) as never,
+            );
+            const models = await provider.listModels();
+            const m = models.find((x) => x.id === 'someone/multimodal-v1');
+            expect(m?.capabilities?.vision).toBe(true);
+        });
+    });
 });
