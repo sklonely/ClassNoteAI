@@ -49,9 +49,11 @@ const mockedReadPDFFile = vi.mocked(readPDFFile);
 beforeEach(() => {
     vi.spyOn(window, 'alert').mockImplementation(() => { });
     // Toast warnings are observed via toastService spy below; silence the
-    // actual console/UI side-effect.
-    vi.spyOn(toastService, 'warning').mockImplementation(() => { });
-    vi.spyOn(toastService, 'error').mockImplementation(() => { });
+    // actual console/UI side-effect. The real methods return a number
+    // (toast id), so the impl stubs must return one too — bare `() => {}`
+    // would return void and fail tsc under strict typings.
+    vi.spyOn(toastService, 'warning').mockImplementation(() => 0);
+    vi.spyOn(toastService, 'error').mockImplementation(() => 0);
 });
 
 function renderDialog(props: Partial<React.ComponentProps<typeof CourseCreationDialog>> = {}) {

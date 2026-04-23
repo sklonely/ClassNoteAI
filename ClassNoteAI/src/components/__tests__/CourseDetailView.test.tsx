@@ -108,8 +108,9 @@ async function renderDetail(course: Course, lectures: Lecture[] = []) {
 }
 
 beforeEach(() => {
-    vi.spyOn(toastService, 'error').mockImplementation(() => { });
-    vi.spyOn(toastService, 'success').mockImplementation(() => { });
+    // Real toast methods return number (toast id); mock impls must too.
+    vi.spyOn(toastService, 'error').mockImplementation(() => 0);
+    vi.spyOn(toastService, 'success').mockImplementation(() => 0);
 });
 
 afterEach(() => {
