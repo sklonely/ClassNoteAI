@@ -102,6 +102,15 @@ jobs:
       - name: Frontend tests
         run: npx vitest run
 
+      # Phase 3 build smoke: catches PostCSS / Tailwind / vite-plugin
+      # regressions that tsc + vitest can't see (e.g. the alpha.10
+      # tailwindcss 3↔4 mismatch that broke `npm run dev` boot).
+      # `vite build` exercises the same plugin chain a release build
+      # uses, so anything that breaks the bundle pipeline fails here
+      # before merge instead of silently shipping.
+      - name: Build smoke
+        run: npm run build
+
       - name: cargo check
         working-directory: ClassNoteAI/src-tauri
         run: cargo check --message-format=short
@@ -170,6 +179,10 @@ jobs:
 
       - name: Frontend tests
         run: npx vitest run
+
+      # Phase 3 build smoke — see macos job above for rationale.
+      - name: Build smoke
+        run: npm run build
 
       - name: cargo check
         shell: cmd

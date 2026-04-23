@@ -396,11 +396,32 @@ Catches startup-class bugs that unit tests can't see (PostCSS misconfig, vite pl
 
 | Phase | Test count | Done | TODO |
 |---|---|---|---|
-| 1 — Component | ~100 cases across 13 components | 0 | 100 |
-| 2 — Workflow / Service | ~75 cases across 14 services | 0 | 75 |
-| 3 — Build smoke | 3 | 0 | 3 |
+| 1 — Component | ~100 cases across 13 components | 60 (10 components) | 40 (3 components: SetupWizard, AIChatPanel, NotesView — deferred to follow-up PRs due to size) |
+| 2 — Workflow / Service | ~75 cases across 14 services | 80+ across 9 services | refinementService (#70), oauth (#30 — Rust), httpClient/sentence-boundary/hallucination (features not landed) |
+| 3 — Build smoke | 3 | 1 (npm run build added to pr-check) | 2 (vite preview boot, manual dev smoke) |
 
-Update these counts as items get ticked.
+Total tests in PR #114: 141 cases across 14 files. Suite 40/40 files green, 324/324 tests pass.
+
+PR #114 baseline ships these regression guards (closed-issue → test mapping):
+- #93 jsonMode 400 → chatgpt-oauth.test.ts
+- #94 mic permission text → mediaPermissionService.test.ts + audioRecorder.fallback.test.ts
+- #97 Tailwind PostCSS boot → Phase 3 build smoke job
+- #98 syllabus pipeline → CourseDetailView.test.tsx + storageService.syllabusPipeline.test.ts
+- #99 deviceId fallback → audioRecorder.fallback.test.ts + audioDeviceService.test.ts
+- #100 dead pipeline + null-trim crash → CourseListView.test.tsx + CourseCreationDialog.test.tsx
+- #31 transcript dedup → transcriptionService.test.ts
+- #34 vendor checksum → covered indirectly by Phase 3 build smoke
+- #72 audio path recovery → audioPathService.test.ts (existing, in alpha.10)
+- #73 PII redaction → logDiagnostics.test.ts
+- #110 catalog parser drift → github-models.test.ts
+- PR #111 fixup (zh-Hant Windows device labels) → audioDeviceService.test.ts
+
+What still has gaps (deferred to follow-up PRs, not blocking this baseline):
+- SetupWizard / AIChatPanel / NotesView — large surfaces, need their own focused PRs
+- LectureView (PDFViewer auto-follow #69 lives here, not in PDFViewer)
+- recordingDeviceMonitor (#61 AirPods steal-mic detection)
+- Rust oauth port-fallback (#30) — needs cargo test, not vitest
+- Features not yet in code: httpClient (#50), sentence-boundary (#71), Whisper hallucination (#53)
 
 ### Issue → coverage rollup
 
