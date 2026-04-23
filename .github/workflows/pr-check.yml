@@ -159,9 +159,12 @@ jobs:
       - name: Hydrate vendor/
         run: bash src-tauri/scripts/bootstrap-vendor.sh
 
+      # Uses ci-check profile (inherits dev, debug=0). Strips debuginfo
+      # from both rustc AND the C/C++ build scripts via cc-rs (which
+      # reads cargo's DEBUG env, set by the profile). Closes #119.
       - name: cargo check
         working-directory: ClassNoteAI/src-tauri
-        run: cargo check --message-format=short
+        run: cargo check --profile=ci-check --message-format=short
 
   pr-check-windows:
     name: pr-check-windows
@@ -264,4 +267,10 @@ jobs:
           # under that feature. So the "speedup" was actually breaking every
           # PR check on Windows. sccache alone keeps most of the win.
           # Follow-up: feature-gate those call sites, then re-add --no-default-features.
-          cargo check --message-format=short
+          #
+          # ci-check profile (inherits dev, debug=0) strips debuginfo from
+          # BOTH rustc and the C/C++ build scripts via cc-rs's DEBUG env
+          # plumbing. This is the only path to skip MSVC's /Z7 PDB
+          # generation on Windows whisper-rs-sys/ct2rs/sentencepiece-sys
+          # builds. Closes #119.
+          cargo check --profile=ci-check --message-format=short
