@@ -19,6 +19,8 @@ import {
   audioDeviceService,
   AudioDevice,
 } from "../services/audioDeviceService";
+import type { MicrophonePermissionState } from "../services/mediaPermissionService";
+import { toastService } from "../services/toastService";
 
 import SettingsLocalTranscription from "./settings/SettingsLocalTranscription";
 import SettingsTranslation from "./settings/SettingsTranslation";
@@ -122,34 +124,43 @@ export default function SettingsView({}: Props) {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
+  const [hasMicrophonePermissionDetails, setHasMicrophonePermissionDetails] =
+    useState(false);
+  const [microphonePermissionState, setMicrophonePermissionState] =
+    useState<MicrophonePermissionState>("unknown");
 
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion("unknown"));
   }, []);
 
   useEffect(() => {
-    let cleanup: (() => void) | undefined;
-    (async () => {
-      setIsLoadingDevices(true);
-      try {
-        const devices = await audioDeviceService.getAudioInputDevices();
-        setAudioDevices(devices);
-        const def = audioDeviceService.getDefaultDeviceId();
-        if (def) setSelectedDeviceId(def);
-      } catch (error) {
-        console.error("加載音頻設備失敗:", error);
-        setAudioDevices([]);
-      } finally {
-        setIsLoadingDevices(false);
-      }
-      try {
-        cleanup = audioDeviceService.onDeviceChange(setAudioDevices);
-      } catch (error) {
-        console.warn("無法監聽設備變化:", error);
-      }
-    })();
+    let mounted = true;
+    const cleanup = audioDeviceService.subscribe((snapshot) => {
+      if (!mounted) return;
+      setAudioDevices(snapshot.devices);
+      setSelectedDeviceId(
+        snapshot.preferredDeviceId || snapshot.defaultDeviceId || "",
+      );
+      setHasMicrophonePermissionDetails(snapshot.hasPermissionDetails);
+      setMicrophonePermissionState(snapshot.permissionState);
+    });
+
+    setIsLoadingDevices(true);
+    void audioDeviceService
+      .initialize()
+      .catch((error) => {
+        if (mounted) {
+          console.error("加載音頻設備失敗:", error);
+          setAudioDevices([]);
+        }
+      })
+      .finally(() => {
+        if (mounted) setIsLoadingDevices(false);
+      });
+
     return () => {
-      cleanup?.();
+      mounted = false;
+      cleanup();
     };
   }, []);
 
@@ -192,9 +203,6 @@ export default function SettingsView({}: Props) {
             recording: saved.recording,
             translation: saved.translation,
           });
-          if (saved.audio?.device_id) {
-            setSelectedDeviceId(saved.audio.device_id);
-          }
         }
       } catch (error) {
         console.error("加載設置失敗:", error);
@@ -205,12 +213,41 @@ export default function SettingsView({}: Props) {
   const handleRefreshDevices = async () => {
     setIsLoadingDevices(true);
     try {
-      setAudioDevices(await audioDeviceService.getAudioInputDevices());
+      await audioDeviceService.getAudioInputDevices();
     } catch (error) {
       console.error("刷新設備列表失敗:", error);
-      setAudioDevices([]);
+      toastService.error("刷新設備列表失敗", error instanceof Error ? error.message : String(error));
     } finally {
       setIsLoadingDevices(false);
+    }
+  };
+
+  const handleRequestMicrophonePermission = async () => {
+    setIsLoadingDevices(true);
+    try {
+      await audioDeviceService.requestMicrophonePermission();
+      toastService.success("麥克風權限已更新");
+    } catch (error) {
+      console.error("請求麥克風權限失敗:", error);
+      toastService.error(
+        "無法取得麥克風權限",
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setIsLoadingDevices(false);
+    }
+  };
+
+  const handleDeviceSelectionChange = async (deviceId: string) => {
+    setSelectedDeviceId(deviceId);
+    try {
+      await audioDeviceService.setPreferredDevice(deviceId || undefined);
+    } catch (error) {
+      console.error("保存音訊裝置選擇失敗:", error);
+      toastService.error(
+        "保存音訊裝置失敗",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
 
@@ -226,10 +263,6 @@ export default function SettingsView({}: Props) {
       };
       await storageService.saveAppSettings(next);
       document.documentElement.classList.toggle("dark", next.theme === "dark");
-
-      if (selectedDeviceId) {
-        audioDeviceService.setDefaultDevice(selectedDeviceId);
-      }
 
       setSaveStatus("success");
       window.dispatchEvent(new CustomEvent("classnote-settings-changed"));
@@ -279,9 +312,12 @@ export default function SettingsView({}: Props) {
             setSettings={setSettings}
             audioDevices={audioDevices}
             selectedDeviceId={selectedDeviceId}
-            setSelectedDeviceId={setSelectedDeviceId}
+            setSelectedDeviceId={handleDeviceSelectionChange}
             isLoadingDevices={isLoadingDevices}
             onRefreshDevices={handleRefreshDevices}
+            onRequestMicrophonePermission={handleRequestMicrophonePermission}
+            hasMicrophonePermissionDetails={hasMicrophonePermissionDetails}
+            microphonePermissionState={microphonePermissionState}
           />
         );
       case "data-management":
