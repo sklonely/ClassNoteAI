@@ -82,10 +82,34 @@ interface CatalogRow {
   limits?: { max_input_tokens?: number; max_output_tokens?: number };
 }
 
+function inferVisionCapability(row: CatalogRow): boolean | undefined {
+  const caps = row.capabilities ?? [];
+  const loweredCaps = caps.map((c) => c.toLowerCase());
+  if (loweredCaps.some((c) => c.includes('vision') || c.includes('image'))) {
+    return true;
+  }
+
+  // GitHub Models' April 2026 catalog stopped advertising image input
+  // explicitly for several OpenAI multimodal families even though the
+  // inference endpoint still accepts `image_url` payloads. Keep this
+  // allowlist tight so we don't accidentally send OCR pages to text-only
+  // models and get a 400 at runtime.
+  if (
+    row.id === 'openai/gpt-4o' ||
+    row.id === 'openai/gpt-4o-mini' ||
+    row.id === 'openai/gpt-4.1' ||
+    row.id === 'openai/gpt-4.1-mini'
+  ) {
+    return true;
+  }
+
+  return undefined;
+}
+
 function mapCatalogRow(row: CatalogRow): LLMModelInfo {
   const streaming = row.capabilities?.includes('streaming') ?? true;
   const jsonMode = row.capabilities?.includes('structured-outputs') ?? undefined;
-  const vision = row.capabilities?.some((c) => c.toLowerCase().includes('vision')) ?? undefined;
+  const vision = inferVisionCapability(row);
   const contextWindow = row.limits?.max_input_tokens;
   const displayName =
     row.name ? `${row.name}${row.publisher ? ` (${row.publisher})` : ''}` : row.id;

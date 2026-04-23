@@ -1,5 +1,7 @@
 // Whisper 模塊
 mod whisper;
+pub use whisper::model::WhisperModel;
+pub use whisper::transcribe;
 // 工具模塊
 mod utils;
 // 翻譯模塊
@@ -15,8 +17,8 @@ mod setup;
 // 統一路徑管理模塊
 pub mod paths;
 // 統一下載管理模塊
-pub mod downloads;
 pub mod diagnostics;
+pub mod downloads;
 // 同步模塊
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
 mod oauth;
@@ -558,10 +560,7 @@ async fn load_translation_model_by_name(model_name: String) -> Result<String, St
                     let _ = std::fs::remove_dir(&nested_dir);
                 }
                 Err(e) => {
-                    return Err(format!(
-                        "讀取巢狀目錄失敗 {:?}: {}",
-                        nested_dir, e
-                    ));
+                    return Err(format!("讀取巢狀目錄失敗 {:?}: {}", nested_dir, e));
                 }
             }
         }
@@ -649,7 +648,10 @@ async fn delete_course(id: String) -> Result<(), String> {
 
 /// 列出特定科目的所有課堂
 #[tauri::command]
-async fn list_lectures_by_course(course_id: String, user_id: String) -> Result<Vec<storage::Lecture>, String> {
+async fn list_lectures_by_course(
+    course_id: String,
+    user_id: String,
+) -> Result<Vec<storage::Lecture>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1034,7 +1036,9 @@ async fn replace_embeddings_for_lecture(
 }
 
 #[tauri::command]
-async fn get_embeddings_by_lecture(lecture_id: String) -> Result<Vec<storage::EmbeddingRow>, String> {
+async fn get_embeddings_by_lecture(
+    lecture_id: String,
+) -> Result<Vec<storage::EmbeddingRow>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
@@ -1098,7 +1102,8 @@ async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
     }
 
     let mut file = File::create(&path).map_err(|e| format!("創建文件失敗: {}", e))?;
-    file.write_all(&data).map_err(|e| format!("寫入文件失敗: {}", e))?;
+    file.write_all(&data)
+        .map_err(|e| format!("寫入文件失敗: {}", e))?;
     Ok(())
 }
 
@@ -2308,6 +2313,37 @@ async fn try_recover_pdf_path(lecture_id: String) -> Result<Option<String>, Stri
     Ok(None)
 }
 
+fn resolve_stored_audio_path(
+    audio_dir: &std::path::Path,
+    stored_path: &str,
+) -> Option<std::path::PathBuf> {
+    let trimmed = stored_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let path = std::path::Path::new(trimmed);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        audio_dir.join(path)
+    })
+}
+
+fn stored_audio_path_is_usable(audio_dir: &std::path::Path, stored_path: &str) -> bool {
+    resolve_stored_audio_path(audio_dir, stored_path)
+        .map(|path| path.is_file())
+        .unwrap_or(false)
+}
+
+fn to_stored_audio_path(audio_dir: &std::path::Path, absolute_path: &std::path::Path) -> String {
+    if let Ok(relative) = absolute_path.strip_prefix(audio_dir) {
+        return relative.to_string_lossy().to_string();
+    }
+
+    absolute_path.to_string_lossy().to_string()
+}
+
 /// 嘗試恢復丟失的 audio_path.
 ///
 /// v0.5.2: extended to also recover from orphaned `.pcm` files in the
@@ -2345,17 +2381,23 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
         .get_lecture(&lecture_id)
         .map_err(|e| format!("Get Lecture Error: {}", e))?;
 
+    let audio_dir = paths::get_audio_dir().map_err(|e| format!("Path Error: {}", e))?;
+
     if let Some(ref lecture) = lecture_opt {
         if let Some(ref path) = lecture.audio_path {
-            if !path.is_empty() {
+            if stored_audio_path_is_usable(&audio_dir, path) {
                 return Ok(Some(path.clone()));
+            }
+            if !path.trim().is_empty() {
+                println!(
+                    "[Recovery] Stored audio_path is stale for lecture {}: {}",
+                    lecture_id, path
+                );
             }
         }
     } else {
         return Ok(None);
     }
-
-    let audio_dir = paths::get_audio_dir().map_err(|e| format!("Path Error: {}", e))?;
 
     // Step 2: scan audio_dir for matching .wav files, pick the newest.
     let mut recovered_path: Option<std::path::PathBuf> = None;
@@ -2395,8 +2437,8 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
     // (or a mid-session crash that never hit the crash-recovery modal)
     // can leave a .pcm with the actual audio data sitting here.
     if recovered_path.is_none() {
-        let in_progress_dir = paths::get_in_progress_audio_dir()
-            .map_err(|e| format!("Path Error: {}", e))?;
+        let in_progress_dir =
+            paths::get_in_progress_audio_dir().map_err(|e| format!("Path Error: {}", e))?;
         let pcm_path = in_progress_dir.join(format!("{}.pcm", lecture_id));
         if pcm_path.exists() {
             // Synthesise a new timestamped WAV target under audio_dir.
@@ -2425,11 +2467,11 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
     // Step 4: persist the recovered path into the DB so subsequent loads
     // don't have to re-scan.
     if let Some(path) = recovered_path {
-        let path_str = path.to_string_lossy().to_string();
-        println!("[Recovery] 找到丟失的音頻文件: {}", path_str);
+        let stored_path = to_stored_audio_path(&audio_dir, &path);
+        println!("[Recovery] 找到丟失的音頻文件: {}", stored_path);
 
         if let Some(mut lecture) = db.get_lecture(&lecture_id).unwrap_or(None) {
-            lecture.audio_path = Some(path_str.clone());
+            lecture.audio_path = Some(stored_path.clone());
             if lecture.status == "recording" {
                 lecture.status = "completed".to_string();
             }
@@ -2440,7 +2482,7 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
             };
             db.save_lecture(&lecture, &user_id)
                 .map_err(|e| format!("Update DB Error: {}", e))?;
-            return Ok(Some(path_str));
+            return Ok(Some(stored_path));
         }
     }
 
@@ -2450,11 +2492,17 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
 // ========== Offline Queue Commands ==========
 
 #[tauri::command]
-async fn add_pending_action(id: String, action_type: String, payload: String) -> Result<(), String> {
+async fn add_pending_action(
+    id: String,
+    action_type: String,
+    payload: String,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.add_pending_action(&id, &action_type, &payload)
         .map_err(|e| format!("新增待處理動作失敗: {}", e))?;
     Ok(())
@@ -2465,7 +2513,9 @@ async fn list_pending_actions() -> Result<Vec<(String, String, String, String, i
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.list_pending_actions()
         .map_err(|e| format!("列出待處理動作失敗: {}", e))
 }
@@ -2475,7 +2525,9 @@ async fn update_pending_action(id: String, status: String, retry_count: i32) -> 
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.update_pending_action(&id, &status, retry_count)
         .map_err(|e| format!("更新待處理動作失敗: {}", e))?;
     Ok(())
@@ -2486,7 +2538,9 @@ async fn remove_pending_action(id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.remove_pending_action(&id)
         .map_err(|e| format!("移除待處理動作失敗: {}", e))?;
     Ok(())
@@ -2499,7 +2553,9 @@ async fn list_deleted_courses(user_id: String) -> Result<Vec<storage::models::Co
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.list_deleted_courses(&user_id)
         .map_err(|e| format!("列出已刪除課程失敗: {}", e))
 }
@@ -2509,7 +2565,9 @@ async fn list_deleted_lectures(user_id: String) -> Result<Vec<storage::models::L
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.list_deleted_lectures(&user_id)
         .map_err(|e| format!("列出已刪除課堂失敗: {}", e))
 }
@@ -2519,7 +2577,9 @@ async fn restore_course(id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.restore_course(&id)
         .map_err(|e| format!("還原課程失敗: {}", e))?;
     Ok(())
@@ -2530,7 +2590,9 @@ async fn restore_lecture(id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.restore_lecture(&id)
         .map_err(|e| format!("還原課堂失敗: {}", e))?;
     Ok(())
@@ -2541,7 +2603,9 @@ async fn purge_course(id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.purge_course(&id)
         .map_err(|e| format!("永久刪除課程失敗: {}", e))?;
     Ok(())
@@ -2552,7 +2616,9 @@ async fn purge_lecture(id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.purge_lecture(&id)
         .map_err(|e| format!("永久刪除課堂失敗: {}", e))?;
     Ok(())
@@ -2565,17 +2631,35 @@ async fn delete_subtitles_by_lecture(lecture_id: String) -> Result<usize, String
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.delete_subtitles_by_lecture(&lecture_id)
         .map_err(|e| format!("刪除字幕失敗: {}", e))
 }
 
 #[tauri::command]
-async fn get_all_chat_sessions(user_id: String) -> Result<Vec<(String, Option<String>, String, String, Option<String>, String, String, bool)>, String> {
+async fn get_all_chat_sessions(
+    user_id: String,
+) -> Result<
+    Vec<(
+        String,
+        Option<String>,
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        bool,
+    )>,
+    String,
+> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.get_all_chat_sessions(&user_id)
         .map_err(|e| format!("獲取聊天會話失敗: {}", e))
 }
@@ -2594,7 +2678,9 @@ async fn save_chat_session(
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.save_chat_session(
         &id,
         lecture_id.as_deref(),
@@ -2609,11 +2695,15 @@ async fn save_chat_session(
 }
 
 #[tauri::command]
-async fn get_all_chat_messages(user_id: String) -> Result<Vec<(String, String, String, String, Option<String>, String)>, String> {
+async fn get_all_chat_messages(
+    user_id: String,
+) -> Result<Vec<(String, String, String, String, Option<String>, String)>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.get_all_chat_messages(&user_id)
         .map_err(|e| format!("獲取聊天訊息失敗: {}", e))
 }
@@ -2630,7 +2720,9 @@ async fn save_chat_message(
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.save_chat_message(
         &id,
         &session_id,
@@ -2647,7 +2739,60 @@ async fn delete_chat_messages_by_session(session_id: String) -> Result<usize, St
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
-    let db = manager.get_db().map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.delete_chat_messages_by_session(&session_id)
         .map_err(|e| format!("刪除聊天訊息失敗: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_stored_audio_path, stored_audio_path_is_usable, to_stored_audio_path};
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn stored_audio_path_is_usable_accepts_relative_paths_under_audio_dir() {
+        let temp = TempDir::new().unwrap();
+        let audio_dir = temp.path().join("audio");
+        fs::create_dir_all(&audio_dir).unwrap();
+        fs::write(audio_dir.join("lecture_demo.wav"), b"wav").unwrap();
+
+        assert!(stored_audio_path_is_usable(&audio_dir, "lecture_demo.wav"));
+    }
+
+    #[test]
+    fn stored_audio_path_is_usable_rejects_stale_absolute_paths() {
+        let temp = TempDir::new().unwrap();
+        let audio_dir = temp.path().join("audio");
+        fs::create_dir_all(&audio_dir).unwrap();
+
+        assert!(!stored_audio_path_is_usable(
+            &audio_dir,
+            "/Users/old-home/Library/Application Support/com.classnoteai/audio/lecture_demo.wav",
+        ));
+    }
+
+    #[test]
+    fn to_stored_audio_path_relativizes_files_inside_audio_dir() {
+        let temp = TempDir::new().unwrap();
+        let audio_dir = temp.path().join("audio");
+        let audio_path = audio_dir.join("lecture_demo.wav");
+
+        assert_eq!(
+            to_stored_audio_path(&audio_dir, &audio_path),
+            "lecture_demo.wav"
+        );
+    }
+
+    #[test]
+    fn resolve_stored_audio_path_preserves_absolute_paths() {
+        let temp = TempDir::new().unwrap();
+        let audio_dir = temp.path().join("audio");
+        let absolute = audio_dir.join("lecture_demo.wav");
+
+        let resolved = resolve_stored_audio_path(&audio_dir, absolute.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, absolute);
+    }
 }

@@ -33,6 +33,29 @@ type CourseSyllabusLifecycle = 'idle' | 'generating' | 'failed' | 'ready';
 type CourseSyllabusSource = 'pdf' | 'description' | 'pdf+description';
 type CourseSyllabusRecord = Record<string, unknown>;
 
+function normalizeAppSettings(settings: AppSettings | (AppSettings & Record<string, unknown>)): AppSettings {
+  const normalized = { ...settings } as AppSettings & Record<string, unknown>;
+  const rawOcrMode = normalized.ocr?.mode as string | undefined;
+  const rawRefineProvider = normalized.experimental?.refineProvider as string | undefined;
+
+  if (rawOcrMode === 'local') {
+    normalized.ocr = {
+      ...normalized.ocr,
+      mode: 'off',
+    };
+  }
+
+  if (rawRefineProvider === 'ollama') {
+    normalized.experimental = {
+      ...normalized.experimental,
+      refineProvider: 'auto',
+    };
+  }
+
+  delete normalized.ollama;
+  return normalized;
+}
+
 function joinAppPath(baseDir: string, ...parts: string[]): string {
   const separator = baseDir.includes('\\') ? '\\' : '/';
   const normalizedBase = baseDir.replace(/[\\/]+$/, '');
@@ -490,7 +513,7 @@ class StorageService {
    * 保存應用設置（將整個設置對象序列化保存）
    */
   async saveAppSettings(settings: AppSettings): Promise<void> {
-    const settingsJson = JSON.stringify(settings);
+    const settingsJson = JSON.stringify(normalizeAppSettings(settings));
     await this.saveSetting('app_settings', settingsJson);
   }
 
@@ -503,7 +526,7 @@ class StorageService {
       return null;
     }
     try {
-      return JSON.parse(settingsJson) as AppSettings;
+      return normalizeAppSettings(JSON.parse(settingsJson) as AppSettings & Record<string, unknown>);
     } catch (error) {
       if (error instanceof SyntaxError) {
         console.warn('[StorageService] Failed to parse JSON for app_settings; returning null');
@@ -919,4 +942,3 @@ class StorageService {
 }
 
 export const storageService = new StorageService();
-

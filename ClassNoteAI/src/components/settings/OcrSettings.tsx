@@ -1,22 +1,21 @@
 import { useEffect, useState } from 'react';
-import { ScanText, Cloud, Server, X, Zap } from 'lucide-react';
+import { ScanText, Cloud, X, Zap } from 'lucide-react';
 import { storageService } from '../../services/storageService';
 
-type OcrMode = 'auto' | 'remote' | 'local' | 'off';
+type OcrMode = 'auto' | 'remote' | 'off';
 
 /**
  * v0.5.2 OCR-mode picker.
  *
  * Four modes; the decision tree lives in ragService.indexLectureWithOCR:
- *   - auto   → prefer remote (cloud LLM vision), fall back to local Ollama,
- *             then pdfjs text layer
+ *   - auto   → prefer remote (cloud LLM vision), then pdfjs text layer
  *   - remote → cloud LLM vision only; pdfjs if no provider configured
- *   - local  → Ollama deepseek-ocr only; pdfjs if Ollama not running
  *   - off    → skip OCR entirely, always use pdfjs
  *
  * Default is `auto` so users who have an LLM provider configured
  * (which v0.5.2 onboarding encourages) get real OCR on the first
- * indexed lecture. Users who care about privacy can switch here.
+ * indexed lecture. Historical `local` selections from the retired
+ * local-OCR path are normalized to `off` to preserve privacy.
  */
 
 const MODES: {
@@ -29,7 +28,7 @@ const MODES: {
         {
             value: 'auto',
             title: '自動（推薦）',
-            caption: '優先使用雲端 LLM vision；沒配置就用本機 Ollama；都沒有就用 PDF 文字層',
+            caption: '優先使用雲端 LLM vision；沒配置或不可用就用 PDF 文字層',
             icon: <Zap className="w-4 h-4" />,
             privacyNote: 'PDF 頁面圖片會發送給所設定的雲端 LLM',
         },
@@ -39,12 +38,6 @@ const MODES: {
             caption: '僅使用 GitHub Models / ChatGPT OAuth 的 vision 模型；沒配置就 fallback 到 PDF 文字層',
             icon: <Cloud className="w-4 h-4" />,
             privacyNote: 'PDF 頁面圖片會發送給所設定的雲端 LLM',
-        },
-        {
-            value: 'local',
-            title: '只使用本機',
-            caption: '僅使用 Ollama deepseek-ocr（需自行部署）；沒啟動就 fallback 到 PDF 文字層',
-            icon: <Server className="w-4 h-4" />,
         },
         {
             value: 'off',
@@ -63,7 +56,15 @@ export default function OcrSettings() {
         (async () => {
             try {
                 const settings = await storageService.getAppSettings();
-                setMode((settings?.ocr?.mode as OcrMode) ?? 'auto');
+                const rawMode = settings?.ocr?.mode as string | undefined;
+                const normalizedMode = rawMode === 'local' ? 'off' : ((rawMode as OcrMode | undefined) ?? 'auto');
+                setMode(normalizedMode);
+                if (rawMode === 'local' && settings) {
+                    await storageService.saveAppSettings({
+                        ...settings,
+                        ocr: { mode: 'off' },
+                    });
+                }
             } finally {
                 setLoaded(true);
             }
@@ -103,7 +104,7 @@ export default function OcrSettings() {
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
                 影響 AI 助教對 PDF 內容的檢索。預設「自動」模式會優先走雲端 vision —
-                比本機 Ollama 準、不用裝 docker、但會傳送頁面圖片到雲端。
+                不用額外安裝本地服務，但會傳送頁面圖片到雲端。
             </p>
             <div className="space-y-2">
                 {MODES.map((m) => (

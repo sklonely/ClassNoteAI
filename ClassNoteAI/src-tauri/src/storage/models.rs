@@ -11,7 +11,7 @@ pub struct Course {
     pub description: Option<String>,
     pub keywords: Option<String>,                 // 全域關鍵詞
     pub syllabus_info: Option<serde_json::Value>, // 結構化課程大綱
-    pub is_deleted: bool, // Soft Delete
+    pub is_deleted: bool,                         // Soft Delete
     pub created_at: String,
     pub updated_at: String,
 }
@@ -44,12 +44,12 @@ impl TryFrom<&Row<'_>> for Course {
 
     fn try_from(row: &Row<'_>) -> Result<Self, Self::Error> {
         let syllabus_str: Option<String> = row.get(5)?; // Shifted index if needed, check query order!
-        // Wait, I will ensure the query in database.rs matches this order.
-        // Let's adopt a standard order: standard fields, then is_deleted, then timestamps?
-        // Or append is_deleted at the end?
-        // Current database.rs query: id, user_id, title, description, keywords, syllabus_info, created_at, updated_at
-        // I will append is_deleted at the end of the query in database.rs.
-        
+                                                        // Wait, I will ensure the query in database.rs matches this order.
+                                                        // Let's adopt a standard order: standard fields, then is_deleted, then timestamps?
+                                                        // Or append is_deleted at the end?
+                                                        // Current database.rs query: id, user_id, title, description, keywords, syllabus_info, created_at, updated_at
+                                                        // I will append is_deleted at the end of the query in database.rs.
+
         let syllabus_info = syllabus_str.and_then(|s| serde_json::from_str(&s).ok());
 
         Ok(Course {
@@ -64,8 +64,8 @@ impl TryFrom<&Row<'_>> for Course {
             // New: ..., created_at(6), updated_at(7), is_deleted(8)
             created_at: row.get(6)?,
             updated_at: row.get(7)?,
-            is_deleted: row.get(8).unwrap_or(false), // Handle case where it might be missing during migration? No, query will fail if column count mismatch. 
-            // But strict index is safer.
+            is_deleted: row.get(8).unwrap_or(false), // Handle case where it might be missing during migration? No, query will fail if column count mismatch.
+                                                     // But strict index is safer.
         })
     }
 }

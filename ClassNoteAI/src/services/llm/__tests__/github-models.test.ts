@@ -89,4 +89,64 @@ describe('GitHubModelsProvider', () => {
         expect(models[0]).toHaveProperty('id');
         expect(models[0]).toHaveProperty('displayName');
     });
+
+    it('infers vision support for GitHub catalog rows that omit explicit vision capability', async () => {
+        mockedFetch.mockResolvedValueOnce(
+            jsonResponse([
+                {
+                    id: 'openai/gpt-4o-mini',
+                    name: 'GPT-4o mini',
+                    publisher: 'OpenAI',
+                    capabilities: ['agents', 'assistants', 'streaming', 'tool-calling', 'agentsV2'],
+                    limits: { max_input_tokens: 131072, max_output_tokens: 4096 },
+                },
+                {
+                    id: 'openai/gpt-4.1-mini',
+                    name: 'GPT-4.1 mini',
+                    publisher: 'OpenAI',
+                    capabilities: ['agents', 'streaming', 'tool-calling', 'agentsV2'],
+                    limits: { max_input_tokens: 1048576, max_output_tokens: 32768 },
+                },
+                {
+                    id: 'openai/gpt-4.1',
+                    name: 'GPT-4.1',
+                    publisher: 'OpenAI',
+                    capabilities: ['agents', 'streaming', 'tool-calling', 'agentsV2'],
+                    limits: { max_input_tokens: 1048576, max_output_tokens: 32768 },
+                },
+            ]) as never
+        );
+
+        const models = await provider.listModels();
+
+        expect(models.find((m) => m.id === 'openai/gpt-4o-mini')?.capabilities?.vision).toBe(true);
+        expect(models.find((m) => m.id === 'openai/gpt-4.1-mini')?.capabilities?.vision).toBe(true);
+        expect(models.find((m) => m.id === 'openai/gpt-4.1')?.capabilities?.vision).toBe(true);
+    });
+
+    it('does not mark unrelated catalog rows as vision-capable', async () => {
+        mockedFetch.mockResolvedValueOnce(
+            jsonResponse([
+                {
+                    id: 'openai/gpt-4.1-nano',
+                    name: 'GPT-4.1 nano',
+                    publisher: 'OpenAI',
+                    capabilities: ['agents', 'streaming', 'tool-calling', 'agentsV2'],
+                    limits: { max_input_tokens: 1048576, max_output_tokens: 32768 },
+                },
+                {
+                    id: 'meta/llama-3.3-70b-instruct',
+                    name: 'Llama 3.3 70B Instruct',
+                    publisher: 'Meta',
+                    capabilities: ['streaming', 'tool-calling'],
+                    limits: { max_input_tokens: 131072, max_output_tokens: 4096 },
+                },
+            ]) as never
+        );
+
+        const models = await provider.listModels();
+
+        expect(models.find((m) => m.id === 'openai/gpt-4.1-nano')?.capabilities?.vision).toBeUndefined();
+        expect(models.find((m) => m.id === 'meta/llama-3.3-70b-instruct')?.capabilities?.vision).toBeUndefined();
+    });
 });

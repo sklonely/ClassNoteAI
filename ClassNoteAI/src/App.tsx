@@ -67,6 +67,37 @@ function App() {
       .catch((err) => console.warn('[App] 課程大綱狀態回收失敗：', err));
   }, [appState]);
 
+  // Background audio-link audit for completed lectures. This fixes the
+  // "DB points at a stale absolute path from an older install/home dir"
+  // class of bug even before the user re-opens the affected lecture.
+  useEffect(() => {
+    if (appState !== 'ready' || !user) return;
+    const t = setTimeout(async () => {
+      try {
+        const [lectures, { auditCompletedLectureAudioLinks }] = await Promise.all([
+          storageService.listLectures(),
+          import('./services/audioPathService'),
+        ]);
+        const result = await auditCompletedLectureAudioLinks(lectures);
+        if (result.recoveredLectureIds.length > 0) {
+          console.log(
+            `[App] Recovered broken audio links for ${result.recoveredLectureIds.length} lecture(s):`,
+            result.recoveredLectureIds,
+          );
+        }
+        if (result.unresolvedLectureIds.length > 0) {
+          console.warn(
+            '[App] Some lecture audio links are still broken after recovery:',
+            result.unresolvedLectureIds,
+          );
+        }
+      } catch (err) {
+        console.warn('[App] Audio link audit failed (non-fatal):', err);
+      }
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [appState, user]);
+
   // 初始化主題
   useEffect(() => {
     const initTheme = async () => {

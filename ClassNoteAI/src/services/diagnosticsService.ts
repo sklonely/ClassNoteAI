@@ -2,8 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { storageService } from "./storageService";
 import { redactLogContent } from "./logDiagnostics";
-
-const ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
+import { resolveAudioPath } from "./audioPathService";
 
 interface DiagnosticPackageInput {
   lecture_meta_json: string;
@@ -18,12 +17,6 @@ export interface DiagnosticExportOptions {
   includeAudio: boolean;
   appVersion: string;
   buildVariant: string;
-}
-
-function joinPath(baseDir: string, childPath: string, separator: string): string {
-  const normalizedBase = baseDir.replace(/[\\/]+$/, "");
-  const normalizedChild = childPath.replace(/^[\\/]+/, "").replace(/[\\/]+/g, separator);
-  return `${normalizedBase}${separator}${normalizedChild}`;
 }
 
 export async function exportDiagnosticPackage(
@@ -63,36 +56,6 @@ export async function exportDiagnosticPackage(
     includeAudio: opts.includeAudio,
   });
 }
-
-export async function resolveAudioPath(
-  stored: string | null | undefined,
-): Promise<string | null> {
-  if (!stored) {
-    return null;
-  }
-
-  const trimmed = stored.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const [{ readFile }, { sep }] = await Promise.all([
-    import("@tauri-apps/plugin-fs"),
-    import("@tauri-apps/api/path"),
-  ]);
-  const audioDir = await invoke<string>("get_audio_dir");
-  const candidate = ABSOLUTE_PATH_PATTERN.test(trimmed)
-    ? trimmed
-    : joinPath(audioDir, trimmed, sep());
-
-  try {
-    await readFile(candidate);
-    return candidate;
-  } catch {
-    return null;
-  }
-}
-
 export async function revealZipInFileManager(zipPath: string): Promise<void> {
   const lastSeparator = Math.max(zipPath.lastIndexOf("/"), zipPath.lastIndexOf("\\"));
   const parent = lastSeparator > 0 ? zipPath.slice(0, lastSeparator) : zipPath;

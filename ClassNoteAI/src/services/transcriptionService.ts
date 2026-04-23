@@ -29,6 +29,30 @@ interface PendingSubtitle {
   type: 'rough' | 'fine';
 }
 
+interface LastCommitSnapshot {
+  normalizedText: string;
+  sampleCountAtCommit: number;
+}
+
+export function normalizeCommittedText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+export function shouldSkipDuplicateCommit(
+  normalizedText: string,
+  lastCommitSnapshot: LastCommitSnapshot | null,
+  totalSamplesReceived: number,
+): boolean {
+  if (!normalizedText || !lastCommitSnapshot) {
+    return false;
+  }
+
+  return (
+    lastCommitSnapshot.normalizedText === normalizedText &&
+    lastCommitSnapshot.sampleCountAtCommit === totalSamplesReceived
+  );
+}
+
 export class TranscriptionService {
   // 滾動緩衝區：存儲最近 N 秒的音頻數據
   private rollingBuffer: Int16Array = new Int16Array(0);
@@ -47,6 +71,8 @@ export class TranscriptionService {
   private lastValidPartialText: string = ''; // 上一次有效的臨時結果 (用於救援)
   private silenceCounter: number = 0; // 靜音計數器
   private stabilityCounter: number = 0; // 穩定性計數器
+  private totalSamplesReceived: number = 0;
+  private lastCommitSnapshot: LastCommitSnapshot | null = null;
 
   private saveInterval: ReturnType<typeof setInterval> | null = null;
   private pendingSubtitles: PendingSubtitle[] = [];
@@ -202,6 +228,8 @@ export class TranscriptionService {
     this.stableText = '';
     this.lastPartialText = '';
     this.lastValidPartialText = '';
+    this.totalSamplesReceived = 0;
+    this.lastCommitSnapshot = null;
 
     // 啟動定時轉錄循環
     if (this.transcriptionInterval) clearInterval(this.transcriptionInterval);
@@ -254,6 +282,7 @@ export class TranscriptionService {
     newBuffer.set(this.rollingBuffer);
     newBuffer.set(chunk.data, this.rollingBuffer.length);
     this.rollingBuffer = newBuffer;
+    this.totalSamplesReceived += chunk.data.length;
 
     // 2. 安全限制：防止內存溢出，但給予足夠大的空間 (例如 60秒)
     // 只有在極端情況下才強制丟棄舊數據
@@ -551,25 +580,22 @@ export class TranscriptionService {
   }
 
   private commitStableText(text: string): string {
-    // v0.5.1 dedup: guard against the "same sentence committed twice"
-    // bug that showed up on Windows (see bug report 00:00 / 00:03 in
-    // the release notes). Root cause is Whisper re-transcribing the
-    // same audio when rollingBuffer clearing after commit is incomplete,
-    // plus processRemainingBuffer firing on stop and committing the
-    // re-transcribed partial text. Even with the buffer fix below, a
-    // cheap tail-match is the most robust safety net.
-    const normalized = text.trim();
-    const tail = this.stableText.trim();
-    if (normalized && tail.endsWith(normalized)) {
+    // Dedup only when we're re-committing the exact same text from the
+    // exact same audio snapshot (e.g. stop/replay of an uncleared tail).
+    // This preserves legitimate repeated speech such as "對 對 對" once
+    // new audio chunks have actually arrived.
+    const normalized = normalizeCommittedText(text);
+    if (shouldSkipDuplicateCommit(normalized, this.lastCommitSnapshot, this.totalSamplesReceived)) {
       console.log('[TranscriptionService] 重複文本，跳過提交:', normalized.slice(0, 40));
-      // Return an empty id so the caller can decide what to do. The
-      // buffer-cleanup branch uses this id only to enqueue refinement,
-      // and refinement is fine to skip on dupes.
       return '';
     }
 
     console.log('[TranscriptionService] 提交穩定文本:', text);
     this.stableText += (this.stableText ? ' ' : '') + text;
+    this.lastCommitSnapshot = {
+      normalizedText: normalized,
+      sampleCountAtCommit: this.totalSamplesReceived,
+    };
 
     // 1. 保存到字幕服務（作為一條確定的記錄）
     const now = Date.now();
@@ -807,6 +833,8 @@ export class TranscriptionService {
     this.stableText = '';
     this.lastPartialText = '';
     this.lastValidPartialText = '';
+    this.totalSamplesReceived = 0;
+    this.lastCommitSnapshot = null;
     this.keywords = undefined;
     subtitleService.clear();
     refinementService.clear(); // 清空精修隊列
@@ -814,4 +842,3 @@ export class TranscriptionService {
 }
 
 export const transcriptionService = new TranscriptionService();
-

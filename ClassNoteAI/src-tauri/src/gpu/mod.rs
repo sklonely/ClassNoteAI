@@ -147,10 +147,7 @@ fn detect_cuda() -> Option<CudaInfo> {
     // R460. If it's missing, either no NVIDIA driver or the PATH isn't
     // propagated (rare — system installer adds it).
     let output = no_window("nvidia-smi")
-        .args([
-            "--query-gpu=name,driver_version",
-            "--format=csv,noheader",
-        ])
+        .args(["--query-gpu=name,driver_version", "--format=csv,noheader"])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -191,12 +188,7 @@ fn detect_vulkan() -> bool {
     }
 }
 
-fn resolve_effective(
-    preference: Option<&str>,
-    cuda: bool,
-    metal: bool,
-    vulkan: bool,
-) -> String {
+fn resolve_effective(preference: Option<&str>, cuda: bool, metal: bool, vulkan: bool) -> String {
     let pref = preference.unwrap_or("auto").to_lowercase();
     match pref.as_str() {
         "cuda" if cuda => "cuda".into(),

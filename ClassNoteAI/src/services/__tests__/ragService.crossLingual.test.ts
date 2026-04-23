@@ -63,10 +63,6 @@ vi.mock('../chunkingService', () => ({
     chunkingService: { chunkText: vi.fn() },
 }));
 
-vi.mock('../ocrService', () => ({
-    ocrService: { isAvailable: vi.fn(), ocrPage: vi.fn() },
-}));
-
 vi.mock('../pdfToImageService', () => ({
     pdfToImageService: { convertAll: vi.fn() },
 }));

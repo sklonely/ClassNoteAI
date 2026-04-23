@@ -406,7 +406,10 @@ mod tests {
 
         assert!(final_path.exists(), "finalized WAV must be on disk");
         assert_eq!(bytes, 52); // 44-byte header + 8 bytes PCM
-        assert!(!pcm_path(&dir, "lec-42").exists(), "scratch must be removed");
+        assert!(
+            !pcm_path(&dir, "lec-42").exists(),
+            "scratch must be removed"
+        );
         assert!(
             !meta_path(&dir, "lec-42").exists(),
             "meta sidecar must be removed"

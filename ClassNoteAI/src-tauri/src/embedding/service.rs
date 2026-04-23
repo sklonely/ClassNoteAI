@@ -2,9 +2,9 @@
 // Uses Candle ML framework instead of ONNX to avoid protobuf conflict with ct2rs
 
 use anyhow::{anyhow, Result};
+use serde::Deserialize;
 use std::path::Path;
 use tokenizers::Tokenizer;
-use serde::Deserialize;
 
 #[cfg(feature = "candle-embed")]
 use candle_core::{DType, Device, Tensor};
@@ -38,11 +38,15 @@ impl NomicConfig {
         let num_hidden_layers = self.num_hidden_layers.or(self.n_layer).unwrap_or(12);
         let num_attention_heads = self.num_attention_heads.or(self.n_head).unwrap_or(12);
         let intermediate_size = self.intermediate_size.or(self.n_inner).unwrap_or(3072);
-        let max_position_embeddings = self.max_position_embeddings.or(self.n_positions).unwrap_or(512);
+        let max_position_embeddings = self
+            .max_position_embeddings
+            .or(self.n_positions)
+            .unwrap_or(512);
         let vocab_size = self.vocab_size.unwrap_or(30522);
         let layer_norm_eps = self.layer_norm_epsilon.unwrap_or(1e-12);
 
-        format!(r#"{{
+        format!(
+            r#"{{
             "hidden_size": {},
             "num_hidden_layers": {},
             "num_attention_heads": {},
@@ -57,8 +61,15 @@ impl NomicConfig {
             "vocab_size": {},
             "pad_token_id": 0,
             "model_type": "bert"
-        }}"#, hidden_size, num_hidden_layers, num_attention_heads, 
-            intermediate_size, max_position_embeddings, layer_norm_eps, vocab_size)
+        }}"#,
+            hidden_size,
+            num_hidden_layers,
+            num_attention_heads,
+            intermediate_size,
+            max_position_embeddings,
+            layer_norm_eps,
+            vocab_size
+        )
     }
 }
 
@@ -304,7 +315,11 @@ impl EmbeddingService {
             .map_err(|e| anyhow!("Batch tokenization failed: {}", e))?;
 
         let batch_size = encodings.len();
-        let mut max_len = encodings.iter().map(|e| e.get_ids().len()).max().unwrap_or(0);
+        let mut max_len = encodings
+            .iter()
+            .map(|e| e.get_ids().len())
+            .max()
+            .unwrap_or(0);
         // Clamp to model's max position embeddings. BGE-small-en-v1.5 is
         // 512. Anything longer gets truncated below per-row.
         const HARD_CAP: usize = 512;
@@ -350,9 +365,10 @@ impl EmbeddingService {
 
         // Mean pooling per row, masked by attention.
         let mask_f = attn.to_dtype(DType::F32)?;
-        let mask_expanded = mask_f
-            .unsqueeze(2)?
-            .broadcast_as((batch_size, max_len, hidden_size))?;
+        let mask_expanded =
+            mask_f
+                .unsqueeze(2)?
+                .broadcast_as((batch_size, max_len, hidden_size))?;
         let masked = hidden.mul(&mask_expanded)?; // (B, L, H)
         let summed = masked.sum(1)?; // (B, H)
         let summed_vec: Vec<Vec<f32>> = summed.to_vec2::<f32>()?;
@@ -409,11 +425,7 @@ impl EmbeddingService {
     /// Dot product of unit vectors == cosine, so we skip the denominator
     /// work the CPU-side `cosine_similarity` has to do.
     #[cfg(feature = "candle-embed")]
-    pub fn batch_cosine_similarity(
-        &self,
-        query: &[f32],
-        chunks: &[Vec<f32>],
-    ) -> Result<Vec<f32>> {
+    pub fn batch_cosine_similarity(&self, query: &[f32], chunks: &[Vec<f32>]) -> Result<Vec<f32>> {
         if chunks.is_empty() {
             return Ok(Vec::new());
         }
@@ -460,11 +472,7 @@ impl EmbeddingService {
     /// per-pair CPU cosine so the command still works, just without
     /// batched GPU acceleration.
     #[cfg(not(feature = "candle-embed"))]
-    pub fn batch_cosine_similarity(
-        &self,
-        query: &[f32],
-        chunks: &[Vec<f32>],
-    ) -> Result<Vec<f32>> {
+    pub fn batch_cosine_similarity(&self, query: &[f32], chunks: &[Vec<f32>]) -> Result<Vec<f32>> {
         Ok(chunks
             .iter()
             .map(|c| Self::cosine_similarity(query, c))
