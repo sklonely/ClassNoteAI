@@ -251,25 +251,30 @@ class AudioDeviceService {
 
       try {
         const allDevices = await navigator.mediaDevices.enumerateDevices();
+        const rawAudioInputs = allDevices.filter(
+          (device) => device.kind === 'audioinput',
+        );
+        // Capture "did this device have a real label" BEFORE we mint any
+        // synthetic fallback. zh-Hant Windows ships real device names like
+        // "麥克風 (Realtek Audio)", which would collide with a
+        // `label.startsWith('麥克風 ')` heuristic against the fallback.
+        const hasAnyRealLabel = rawAudioInputs.some(
+          (device) => !!device.label && device.label.trim() !== '',
+        );
 
-        const audioInputDevices = allDevices
-          .filter((device) => device.kind === 'audioinput')
-          .map((device) => ({
-            deviceId: device.deviceId,
-            label: device.label || `麥克風 ${device.deviceId.substring(0, 8)}`,
-            kind: device.kind as MediaDeviceKind,
-            groupId: device.groupId,
-          }));
+        const audioInputDevices = rawAudioInputs.map((device) => ({
+          deviceId: device.deviceId,
+          label: device.label || `麥克風 ${device.deviceId.substring(0, 8)}`,
+          kind: device.kind as MediaDeviceKind,
+          groupId: device.groupId,
+        }));
 
         this.devices = audioInputDevices;
         this.defaultDeviceId =
           audioInputDevices.find((device) => device.deviceId === 'default')?.deviceId ??
           audioInputDevices[0]?.deviceId ??
           null;
-        this.hasPermissionDetails = audioInputDevices.some(
-          (device) =>
-            Boolean(device.label) && !device.label.startsWith('麥克風 '),
-        );
+        this.hasPermissionDetails = hasAnyRealLabel;
 
         if (!this.preferredDeviceId && this.defaultDeviceId) {
           this.preferredDeviceId = this.defaultDeviceId;

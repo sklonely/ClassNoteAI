@@ -117,47 +117,43 @@ export class AudioRecorder {
    * 請求麥克風權限並獲取音頻流
    */
   private async getMediaStream(): Promise<MediaStream> {
+    console.log('[AudioRecorder] 請求麥克風權限...');
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('瀏覽器不支持音頻錄製 API (navigator.mediaDevices.getUserMedia)');
+    }
+
     try {
-      console.log('[AudioRecorder] 請求麥克風權限...');
+      return await this.requestMediaStream(this.config.deviceId || undefined);
+    } catch (error) {
+      console.error('[AudioRecorder] 麥克風權限獲取失敗:', error);
 
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('瀏覽器不支持音頻錄製 API (navigator.mediaDevices.getUserMedia)');
-      }
+      if (
+        this.config.deviceId &&
+        mediaPermissionService.isRecoverableDeviceSelectionError(error)
+      ) {
+        console.warn(
+          `[AudioRecorder] Saved device ${this.config.deviceId} is unavailable, retrying with system default microphone.`,
+        );
+        this.config.deviceId = undefined;
 
-      try {
-        return await this.requestMediaStream(this.config.deviceId || undefined);
-      } catch (error) {
-        console.error('[AudioRecorder] 麥克風權限獲取失敗:', error);
-
-        if (
-          this.config.deviceId &&
-          mediaPermissionService.isRecoverableDeviceSelectionError(error)
-        ) {
-          console.warn(
-            `[AudioRecorder] Saved device ${this.config.deviceId} is unavailable, retrying with system default microphone.`,
-          );
-          this.config.deviceId = undefined;
-
-          if (!this._deviceFallbackWarned) {
-            this._deviceFallbackWarned = true;
-            toastService.warning('原本選擇的麥克風已不可用，已自動切換到系統預設麥克風。');
-          }
-
-          try {
-            return await this.requestMediaStream(undefined);
-          } catch (fallbackError) {
-            console.error(
-              '[AudioRecorder] 系統預設麥克風回退失敗:',
-              fallbackError,
-            );
-            throw mediaPermissionService.normalizeMicrophoneError(fallbackError);
-          }
+        if (!this._deviceFallbackWarned) {
+          this._deviceFallbackWarned = true;
+          toastService.warning('原本選擇的麥克風已不可用，已自動切換到系統預設麥克風。');
         }
 
-        throw mediaPermissionService.normalizeMicrophoneError(error);
+        try {
+          return await this.requestMediaStream(undefined);
+        } catch (fallbackError) {
+          console.error(
+            '[AudioRecorder] 系統預設麥克風回退失敗:',
+            fallbackError,
+          );
+          throw mediaPermissionService.normalizeMicrophoneError(fallbackError);
+        }
       }
-    } catch (error) {
-      throw error;
+
+      throw mediaPermissionService.normalizeMicrophoneError(error);
     }
   }
 

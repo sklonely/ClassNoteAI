@@ -82,7 +82,12 @@ class MediaPermissionService {
     switch (error.name) {
       case 'NotAllowedError':
       case 'SecurityError':
-        return new Error('麥克風權限被拒絕，請在系統設定允許 ClassNote AI 使用麥克風');
+        // Keep the OS-specific breadcrumbs — this is a native Tauri app,
+        // not a browser tab, and users who hit this often don't know
+        // where the permission lives. Restored from v0.6.0-alpha.9 #94.
+        return new Error(
+          '麥克風權限被拒絕，請到系統設定（macOS：系統偏好設定 → 安全性與隱私權 → 麥克風；Windows：設定 → 隱私權 → 麥克風）允許 ClassNote AI 使用麥克風',
+        );
       case 'NotFoundError':
         return new Error('未找到可用的麥克風設備，請檢查設備連接');
       case 'NotReadableError':
