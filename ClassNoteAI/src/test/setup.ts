@@ -41,6 +41,23 @@ vi.mock('@tauri-apps/api/event', () => ({
     once: vi.fn(() => Promise.resolve(() => { })),
 }));
 
+// Mock @tauri-apps/api/webview + window — components that use
+// useTauriFileDrop (DragDropZone) reach for getCurrentWebview() at mount,
+// which crashes in jsdom because Tauri's runtime metadata isn't there.
+vi.mock('@tauri-apps/api/webview', () => ({
+    getCurrentWebview: vi.fn(() => ({
+        onDragDropEvent: vi.fn(() => Promise.resolve(() => { })),
+    })),
+}));
+vi.mock('@tauri-apps/api/window', () => ({
+    getCurrentWindow: vi.fn(() => ({
+        label: 'main',
+        onCloseRequested: vi.fn(() => Promise.resolve(() => { })),
+        onResized: vi.fn(() => Promise.resolve(() => { })),
+        onFocusChanged: vi.fn(() => Promise.resolve(() => { })),
+    })),
+}));
+
 // Mock @tauri-apps/plugin-dialog
 vi.mock('@tauri-apps/plugin-dialog', () => ({
     open: vi.fn(() => Promise.resolve(null)),
