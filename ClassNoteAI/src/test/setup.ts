@@ -104,6 +104,14 @@ vi.mock('@tauri-apps/plugin-http', () => ({
     })),
 }));
 
+// jsdom doesn't implement Element.scrollIntoView (it's not in DOM Core).
+// Components that auto-scroll on state change (chat panels, subtitle list,
+// notes view) call it inside useEffect at mount time and crash without a
+// stub. No-op is fine — actual scroll behaviour isn't testable in jsdom.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = vi.fn();
+}
+
 // Mock localStorage
 const localStorageMock = (() => {
     let store: Record<string, string> = {};
