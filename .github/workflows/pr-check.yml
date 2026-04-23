@@ -144,14 +144,17 @@ jobs:
         run: |
           echo "value=$(bash scripts/native-build-cache-key.sh)" >> "$GITHUB_OUTPUT"
 
+      # NOTE: path tracks the ci-check profile's build/ subdir (we
+      # switched off the dev profile in #119). Cache key includes
+      # `ci-check` so old debug-profile caches don't collide.
       - name: Cache native C++ builds
         uses: actions/cache@v4
         with:
           path: |
-            ClassNoteAI/src-tauri/target/debug/build/ct2rs-*
-            ClassNoteAI/src-tauri/target/debug/build/whisper-rs-sys-*
-            ClassNoteAI/src-tauri/target/debug/build/sentencepiece-sys-*
-          key: pr-check-native-macos-${{ steps.native-cache-key.outputs.value }}
+            ClassNoteAI/src-tauri/target/ci-check/build/ct2rs-*
+            ClassNoteAI/src-tauri/target/ci-check/build/whisper-rs-sys-*
+            ClassNoteAI/src-tauri/target/ci-check/build/sentencepiece-sys-*
+          key: pr-check-native-macos-ci-check-${{ steps.native-cache-key.outputs.value }}
 
       # Needed because Cargo.toml's [patch.crates-io] points at vendored
       # crates that are gitignored — the path must exist for cargo to
@@ -239,14 +242,17 @@ jobs:
         run: |
           echo "value=$(bash scripts/native-build-cache-key.sh)" >> "$GITHUB_OUTPUT"
 
+      # NOTE: path tracks the ci-check profile's build/ subdir (#119).
+      # Cache key includes `ci-check` so old debug-profile caches don't
+      # collide with the post-#119 cache lineage.
       - name: Cache native C++ builds
         uses: actions/cache@v4
         with:
           path: |
-            ClassNoteAI/src-tauri/target/debug/build/ct2rs-*
-            ClassNoteAI/src-tauri/target/debug/build/whisper-rs-sys-*
-            ClassNoteAI/src-tauri/target/debug/build/sentencepiece-sys-*
-          key: pr-check-native-windows-${{ steps.native-cache-key.outputs.value }}
+            ClassNoteAI/src-tauri/target/ci-check/build/ct2rs-*
+            ClassNoteAI/src-tauri/target/ci-check/build/whisper-rs-sys-*
+            ClassNoteAI/src-tauri/target/ci-check/build/sentencepiece-sys-*
+          key: pr-check-native-windows-ci-check-${{ steps.native-cache-key.outputs.value }}
 
       - name: Hydrate vendor/
         shell: bash
