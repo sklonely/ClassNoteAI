@@ -96,22 +96,56 @@ When it works you'll see in the app's stderr:
 
 ## If it still fails
 
+### Known error: `nvcc fatal: Unsupported gpu architecture 'compute_53'`
+
+CUDA 13 dropped support for Maxwell (`compute_5x`). CTranslate2's
+default `CUDA_ARCH_LIST=Common` includes compute_53, so nvcc bails on
+the first `.cu` compile. The helper script sets
+`CUDA_ARCH_LIST=7.5;8.0;8.6;8.9` as a sensible default covering
+Turing → Ampere → Ada, which ct2rs's build.rs honors via its
+`CUDA_ARCH_LIST` / `CT2_CUDA_ARCH_LIST` env hooks.
+
+If your GPU is something else, override before invoking:
+
+```bat
+set CUDA_ARCH_LIST=8.9   :: single arch for fastest compile (RTX 40 only)
+```
+
+Values are compute capability in `major.minor` form (e.g. `8.9` for
+Ada Lovelace = compute_89 = `sm_89`). `nvidia-smi --query-gpu=
+compute_cap --format=csv` on your card tells you what to use.
+
+### Other opaque ct2rs compile failures
+
 The underlying ct2rs + CUDA 13 + VS 2026 combination has surfaced
-opaque compile errors in `target/debug/build/ct2rs-*/out/build/`.
-Typical symptoms:
+other opaque errors in `target/debug/build/ct2rs-*/out/build/`:
 
-- `FAILED: ...` buried in the 700+ line ninja parallel output
-- `nvcc fatal` on a specific kernel source
-- unresolved `<type_traits>` or C++20 feature mismatches between
-  MSVC 14.50 and CUDA 13.x host-compiler expectations
+- `FAILED:` buried in the 700+ line ninja parallel output —
+  re-run the failing step serially to surface the real error:
 
-We don't currently have fixes for those — they're either:
-- upstream `ct2rs` / `CTranslate2` compatibility gaps (waiting on a
-  new CTranslate2 release that officially supports CUDA 13)
-- or an MSVC version skew (would need VS 2022 17.x installed as a
-  side-by-side toolchain)
+  ```bat
+  cd target\debug\build\ct2rs-<hash>\out\build
+  ninja -j1 -v
+  ```
 
-**In those cases, switch to the release CI path** (see below).
+- `nvcc fatal` on a specific kernel source — usually a CUDA-arch or
+  `-Xcompiler` flag incompatibility. Check the failing `.cu.obj.
+  Release.cmake` invocation for the exact nvcc args.
+- Unresolved `<type_traits>` or C++20 feature mismatches — MSVC
+  14.50+ (VS 2026) with CUDA 13's host-compiler whitelist is a
+  known minefield. The workaround is **install VS 2022 Build Tools
+  side-by-side** (~3 GB) so vcvars64.bat routes through MSVC 14.4x
+  instead. The helper script automatically prefers the 2022 install
+  when present.
+
+Long-term upstream fix is ct2rs adopting `find_package(CUDAToolkit)`
+and shipping a CUDA-13-tested kernel archive. No release yet.
+
+### Last resort: release CI path
+
+Switch to the release CI `cuda` variant (see below). GitHub Actions'
+`windows-latest` has VS 17 2022 + CUDA 12.x + CMake 3.31 preinstalled
+— the proven-working combination.
 
 ## Alternative: the release CI `cuda` variant
 
