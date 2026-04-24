@@ -162,6 +162,20 @@ jobs:
       - name: Hydrate vendor/
         run: bash src-tauri/scripts/bootstrap-vendor.sh
 
+      # Phase 2 of speech-pipeline-v0.6.5 (#55): the Silero VAD path
+      # depends on onnxruntime.dll/.dylib being bundled via the
+      # `resources/ort/*` glob in tauri.conf.json. If we don't stage
+      # anything into that dir, tauri-build fails at validation time
+      # with "glob pattern ... didn't match any files". Release builds
+      # fetch the real binary; pr-check runs `cargo check` which
+      # doesn't actually bundle, but tauri-build still walks the glob
+      # on every compile. Staging an empty file is the cheapest way to
+      # make the glob happy without downloading ~14 MB on every PR.
+      - name: Stub ONNX Runtime bundle placeholder
+        run: |
+          mkdir -p ClassNoteAI/src-tauri/resources/ort
+          echo "placeholder for pr-check; real onnxruntime.dll fetched by release workflows" > ClassNoteAI/src-tauri/resources/ort/PLACEHOLDER.txt
+
       # Uses ci-check profile (inherits dev, debug=0). Strips debuginfo
       # from both rustc AND the C/C++ build scripts via cc-rs (which
       # reads cargo's DEBUG env, set by the profile). Closes #119.
@@ -256,6 +270,15 @@ jobs:
       - name: Hydrate vendor/
         shell: bash
         run: bash src-tauri/scripts/bootstrap-vendor.sh
+
+      # See macOS job for rationale. tauri-build's glob validation
+      # fails on an empty `resources/ort/` — real binary is fetched
+      # in release workflows.
+      - name: Stub ONNX Runtime bundle placeholder
+        shell: bash
+        run: |
+          mkdir -p ClassNoteAI/src-tauri/resources/ort
+          echo "placeholder for pr-check; real onnxruntime.dll fetched by release workflows" > ClassNoteAI/src-tauri/resources/ort/PLACEHOLDER.txt
 
       - name: cargo check
         shell: cmd
