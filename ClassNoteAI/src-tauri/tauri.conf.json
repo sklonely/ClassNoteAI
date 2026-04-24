@@ -52,7 +52,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/cuda/*": "./"
+      "resources/cuda/*": "./",
+      "resources/silero/*": "./resources/silero/"
     },
     "macOS": {
       "entitlements": null,

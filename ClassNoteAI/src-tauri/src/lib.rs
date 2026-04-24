@@ -9,7 +9,7 @@ pub mod translation; // 公開以便測試使用
                      // 數據存儲模塊
 pub mod storage; // 公開以便測試使用
                  // VAD 模塊
-mod vad;
+pub mod vad; // pub so eval harnesses (examples/phase2_vad_eval.rs) can A/B it
 // Embedding 模塊
 mod embedding;
 // 首次運行設置模塊
@@ -67,7 +67,12 @@ async fn load_whisper_model(model_path: String) -> Result<String, String> {
     Ok("模型加載成功".to_string())
 }
 
-/// 使用 VAD 檢測語音段落
+/// Detect speech segments. Phase 2 of the v0.6.5 speech-pipeline plan
+/// routes this through [`vad::detect_speech_segments_adaptive`], which
+/// prefers Silero VAD v5 when it's initialised and falls back to the
+/// legacy energy VAD otherwise. The `energy_*` params remain effective
+/// for the fallback path; the Silero path uses its own thresholds
+/// (`vad::silero::DEFAULT_*`).
 #[tauri::command]
 async fn detect_speech_segments(
     audio_data: Vec<i16>,
@@ -91,16 +96,19 @@ async fn detect_speech_segments(
         config.max_speech_duration_ms = max_duration;
     }
 
-    let detector = VadDetector::new(config);
-
-    // 檢測語音段落
-    let mut segments = detector.detect_speech_segments(&audio_data);
-
-    // 強制在最大時長處切片
-    segments = detector.enforce_max_duration(segments);
-
-    // 過濾太短的片段
-    segments = detector.filter_short_segments(segments);
+    // Route through the adaptive dispatcher. When Silero is up, `backend`
+    // reports `Silero`; otherwise `Energy`. We log the tag so users
+    // reporting odd chunking in diagnostics bundles can see which path
+    // their recording went through.
+    let (mut segments, backend) = vad::detect_speech_segments_adaptive(&audio_data, Some(config.clone()));
+    if matches!(backend, vad::VadBackend::Energy) {
+        // Legacy post-processing — Silero already enforces min duration
+        // and doesn't need a hard max-duration chop (captured segments
+        // stay under the Whisper 30 s window via MIN_SILENCE_MS merging).
+        let detector = VadDetector::new(config);
+        segments = detector.enforce_max_duration(segments);
+        segments = detector.filter_short_segments(segments);
+    }
 
     Ok(segments)
 }
@@ -2068,6 +2076,24 @@ pub fn run() {
 
             // Initialize ONNX Runtime
             utils::onnx::init_onnx();
+
+            // Phase 2 of speech-pipeline-v0.6.5: try to initialise Silero
+            // VAD v5 from the bundled resource. A failure is non-fatal —
+            // the dispatcher (`vad::detect_speech_segments_adaptive`)
+            // falls back to the energy VAD, so recording still works.
+            // This keeps the "user can record their lecture" invariant
+            // even if the ONNX Runtime DLL is missing / incompatible.
+            if let Ok(resource_dir) = app.handle().path().resource_dir() {
+                let model_path = resource_dir.join("resources").join("silero").join("silero_vad.onnx");
+                if model_path.exists() {
+                    match vad::silero::init(&model_path) {
+                        Ok(()) => println!("[VAD] Silero v5 initialised from bundle"),
+                        Err(e) => eprintln!("[VAD] Silero init failed ({}); falling back to energy VAD", e),
+                    }
+                } else {
+                    eprintln!("[VAD] Silero model not bundled at {:?}; using energy VAD", model_path);
+                }
+            }
 
             // Initialization of database
             let app_handle = app.handle().clone();

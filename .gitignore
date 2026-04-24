@@ -54,6 +54,9 @@ desktop.ini
 models/
 model_packages/
 *.wav
+*.mp4
+*.m4a
+*.mp3
 *.zip
 
 # Test files
