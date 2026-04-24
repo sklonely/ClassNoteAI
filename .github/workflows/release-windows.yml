@@ -155,6 +155,16 @@ jobs:
         shell: bash
         run: bash src-tauri/scripts/bootstrap-vendor.sh
 
+      # Phase 2 of speech-pipeline-v0.6.5 (#55) follow-up: fetch the
+      # pinned onnxruntime.dll (1.23.0) that Silero VAD v5 needs. The
+      # Rust crate `ort = "2.0.0-rc.9"` is built with `load-dynamic`,
+      # and the setup() hook in lib.rs points `ORT_DYLIB_PATH` at this
+      # bundled copy at runtime — bypassing the older system DLLs that
+      # Office / Edge / Copilot tend to leave on end-user PATH.
+      - name: Fetch bundled ONNX Runtime (Silero VAD dep)
+        shell: bash
+        run: bash src-tauri/scripts/fetch-onnxruntime.sh
+
       - name: Install dependencies
         run: npm ci --prefer-offline
 
