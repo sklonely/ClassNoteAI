@@ -173,8 +173,8 @@ jobs:
       # make the glob happy without downloading ~14 MB on every PR.
       - name: Stub ONNX Runtime bundle placeholder
         run: |
-          mkdir -p ClassNoteAI/src-tauri/resources/ort
-          echo "placeholder for pr-check; real onnxruntime.dll fetched by release workflows" > ClassNoteAI/src-tauri/resources/ort/PLACEHOLDER.txt
+          mkdir -p src-tauri/resources/ort
+          echo "placeholder for pr-check; real onnxruntime.dll fetched by release workflows" > src-tauri/resources/ort/PLACEHOLDER.txt
 
       # Uses ci-check profile (inherits dev, debug=0). Strips debuginfo
       # from both rustc AND the C/C++ build scripts via cc-rs (which
@@ -277,8 +277,8 @@ jobs:
       - name: Stub ONNX Runtime bundle placeholder
         shell: bash
         run: |
-          mkdir -p ClassNoteAI/src-tauri/resources/ort
-          echo "placeholder for pr-check; real onnxruntime.dll fetched by release workflows" > ClassNoteAI/src-tauri/resources/ort/PLACEHOLDER.txt
+          mkdir -p src-tauri/resources/ort
+          echo "placeholder for pr-check; real onnxruntime.dll fetched by release workflows" > src-tauri/resources/ort/PLACEHOLDER.txt
 
       - name: cargo check
         shell: cmd
