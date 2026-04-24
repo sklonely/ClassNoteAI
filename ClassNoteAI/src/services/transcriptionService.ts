@@ -54,6 +54,75 @@ export function isCommittableSentenceEnd(segText: string): boolean {
   return true;
 }
 
+// Phase 4 of speech-pipeline-v0.6.5 (#71): multi-signal commit
+// decision. The Phase 0 `isCommittableSentenceEnd` gate is a necessary
+// condition but not sufficient — Whisper sometimes emits a short 2–3
+// word segment with clean punctuation (e.g. "Yes.", "Okay?") that is
+// a real sentence end in a Q&A turn but is too brief to make a useful
+// translation input on its own. Committing on those alone fragments
+// the M2M100 context window and produces the #67-style context-
+// collapse failures at lecture scale.
+//
+// We add two signals that work in AND with the Phase 0 gate:
+//
+//   1. **Word count floor** (≥ 5 words by default). Rejects tiny
+//      fragments without throwing away Q&A turns entirely — Phase 8's
+//      diarization will route those via a separate track.
+//   2. **Duration floor** (≥ 1000 ms by default). A Whisper segment
+//      whose audio lasted less than 1 s is almost always either noise
+//      misheard as text or a disfluent cough/"um" — even when it ends
+//      in a period.
+//
+// Both floors are bypassable by the existing "crisis" path in
+// `handleTranscriptionResult` (buffer > 90% full) so latency is
+// bounded regardless of input characteristics.
+
+// Count whitespace-separated tokens with at least one non-punctuation
+// character. Handles Chinese where words may be single characters by
+// falling back to a CJK character count when whitespace splits yield
+// fewer than 3 tokens.
+export function countSpokenWords(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  const wsTokens = trimmed
+    .split(/\s+/)
+    .filter((t) => /\p{L}|\p{N}/u.test(t));
+  if (wsTokens.length >= 3) return wsTokens.length;
+  // For CJK-heavy text, split into characters and count CJK codepoints
+  // as individual words. Each character ~= a lexical unit for chunking.
+  const cjkCount = (trimmed.match(/[㐀-鿿]/g) ?? []).length;
+  return Math.max(wsTokens.length, cjkCount);
+}
+
+export interface CommitBoundaryContext {
+  /** Segment duration in milliseconds (Whisper seg.end_ms - seg.start_ms) */
+  durationMs: number;
+  /** Minimum word count for a commit to be allowed. Defaults to 5. */
+  minWords?: number;
+  /** Minimum segment duration in ms. Defaults to 1000. */
+  minDurationMs?: number;
+}
+
+/**
+ * Phase 4 decision: is this Whisper segment a GOOD place to commit?
+ * Combines the Phase 0 punctuation/filler check with word-count and
+ * duration floors. Returns `true` only if every signal passes.
+ *
+ * Exposed for unit tests; the live pipeline calls it from the
+ * buffer-near-full smart-split loop.
+ */
+export function isGoodCommitBoundary(
+  segText: string,
+  ctx: CommitBoundaryContext,
+): boolean {
+  if (!isCommittableSentenceEnd(segText)) return false;
+  const minWords = ctx.minWords ?? 5;
+  const minDurationMs = ctx.minDurationMs ?? 1000;
+  if (countSpokenWords(segText) < minWords) return false;
+  if (ctx.durationMs < minDurationMs) return false;
+  return true;
+}
+
 export function shouldSkipDuplicateCommit(
   normalizedText: string,
   lastCommitSnapshot: LastCommitSnapshot | null,
@@ -449,8 +518,17 @@ export class TranscriptionService {
         for (let i = result.segments.length - 1; i >= 0; i--) {
           const seg = result.segments[i];
           const segText = seg.text?.trim() || '';
-          // 如果這個 segment 以句子結束符號結尾且不是 filler 收尾
-          if (isCommittableSentenceEnd(segText)) {
+          // Phase 4 of speech-pipeline-v0.6.5 (#71): multi-signal
+          // commit gate. Replaces the Phase 0 single-signal check with
+          // a compound decision that also requires adequate word count
+          // and duration. Short 2-3 word fragments that end in a period
+          // are no longer treated as commit boundaries — they stay in
+          // the rolling buffer for the next tick to accumulate context.
+          const durationMs = Math.max(
+            0,
+            (seg.end_ms ?? 0) - (seg.start_ms ?? 0),
+          );
+          if (isGoodCommitBoundary(segText, { durationMs })) {
             splitIndex = i;
             splitEndMs = seg.end_ms;
             break;

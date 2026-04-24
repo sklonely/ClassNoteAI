@@ -3,6 +3,8 @@ import {
   normalizeCommittedText,
   shouldSkipDuplicateCommit,
   isCommittableSentenceEnd,
+  isGoodCommitBoundary,
+  countSpokenWords,
 } from '../transcriptionService';
 
 describe('transcriptionService commit dedup', () => {
@@ -100,5 +102,98 @@ describe('isCommittableSentenceEnd — filler-aware sentence end (#71)', () => {
   it('still accepts substantive content that contains a filler word earlier', () => {
     // "you know" appearing mid-sentence is fine — only trailing fillers block.
     expect(isCommittableSentenceEnd('you know what I mean by that.')).toBe(true);
+  });
+});
+
+// Phase 4 of speech-pipeline-v0.6.5 (#71). The multi-signal commit
+// gate. Word count AND duration are floors in addition to the Phase 0
+// punctuation-and-not-filler check — so tiny "Yes." / "Okay?" fragments
+// are no longer committed alone (they stay in the buffer to accumulate
+// enough context for the M2M100 translation path).
+
+describe('countSpokenWords', () => {
+  it('counts whitespace-separated tokens with letters/numbers', () => {
+    expect(countSpokenWords('the quick brown fox')).toBe(4);
+    expect(countSpokenWords('one two three four five six')).toBe(6);
+  });
+
+  it('returns 0 for empty and whitespace-only', () => {
+    expect(countSpokenWords('')).toBe(0);
+    expect(countSpokenWords('   ')).toBe(0);
+    expect(countSpokenWords('\n\t')).toBe(0);
+  });
+
+  it('ignores pure-punctuation tokens', () => {
+    expect(countSpokenWords('hello , world .')).toBe(2);
+  });
+
+  it('falls back to CJK character count on Chinese text', () => {
+    // "我們 今天 要講 梯度下降" — whitespace tokens < 3 because the string
+    // might arrive as 我們今天要講梯度下降 without spaces. CJK fallback
+    // should catch it.
+    expect(countSpokenWords('我們今天要講梯度下降')).toBe(10);
+  });
+});
+
+describe('isGoodCommitBoundary — Phase 4 multi-signal gate (#71)', () => {
+  it('passes on a full sentence with adequate words and duration', () => {
+    expect(
+      isGoodCommitBoundary('We will use gradient descent to optimise.', {
+        durationMs: 2500,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects short clean segments even with punctuation', () => {
+    // "Yes." ends cleanly but is a single-word fragment; committing it
+    // alone fragments the translation context. Phase 4 holds.
+    expect(isGoodCommitBoundary('Yes.', { durationMs: 1500 })).toBe(false);
+    expect(isGoodCommitBoundary('Okay?', { durationMs: 1500 })).toBe(false);
+    expect(isGoodCommitBoundary('看看.', { durationMs: 1500 })).toBe(false);
+  });
+
+  it('rejects long-text segments that are too brief in duration', () => {
+    // Might look like 6 words, but Whisper's timing says <1 s audio —
+    // almost certainly a misheard burst or cough. Hold.
+    expect(
+      isGoodCommitBoundary('one two three four five six.', { durationMs: 400 }),
+    ).toBe(false);
+  });
+
+  it('rejects filler endings regardless of length / duration', () => {
+    // Phase 0 gate must still fire — `um.` at the end is a filler.
+    expect(
+      isGoodCommitBoundary('I think the main point was, um.', {
+        durationMs: 3000,
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects non-terminated text', () => {
+    expect(
+      isGoodCommitBoundary('this sentence has no end', {
+        durationMs: 2500,
+      }),
+    ).toBe(false);
+  });
+
+  it('honours per-call threshold overrides', () => {
+    // Lower min-words to 2 for a Q&A chunk path — "Yes absolutely."
+    // then passes while the default would still reject.
+    expect(
+      isGoodCommitBoundary('Yes absolutely.', {
+        durationMs: 1500,
+        minWords: 2,
+      }),
+    ).toBe(true);
+  });
+
+  it('accepts substantive Chinese text at default thresholds', () => {
+    // 10 CJK chars, enough duration, ends in 。
+    expect(
+      isGoodCommitBoundary('我們今天要講梯度下降演算法。', {
+        durationMs: 2500,
+      }),
+    ).toBe(true);
   });
 });
