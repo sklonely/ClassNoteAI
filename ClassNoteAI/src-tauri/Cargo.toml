@@ -148,6 +148,11 @@ tauri-plugin-http = "2"
 tauri-plugin-process = "2"
 ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }
 ndarray = "0.15"
+# Phase 3 of speech-pipeline-v0.6.5 (#53): compression-ratio guard
+# against Whisper repetition-loop hallucinations. Already transitive
+# via reqwest/tokio/etc.; declaring direct so the version constraint
+# is ours and future transitive bumps can't silently break the guard.
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3.8"

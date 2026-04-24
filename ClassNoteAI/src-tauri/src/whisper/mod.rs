@@ -1,4 +1,5 @@
 pub mod download;
+pub mod guards; // Phase 3 of speech-pipeline-v0.6.5 (#53) — hallucination filters
 /**
  * Whisper ASR 服務模塊
  * 提供語音轉文字功能
