@@ -128,6 +128,15 @@ pub async fn transcribe_audio(
                                      // whisper-rs 0.16 renamed `set_suppress_non_speech_tokens` → `set_suppress_nst`.
     params.set_suppress_nst(true); // 抑制非語音標記
 
+    // Phase 3 of speech-pipeline-v0.6.5 (#53): let whisper.cpp's own
+    // filter drop low-confidence segments before they reach us. These
+    // are the default thresholds recommended by the whisper reference
+    // implementation — -1.0 for avg logprob, 0.6 for no-speech prob.
+    // Segments that exceed them get re-decoded internally; if they
+    // still fail, they're dropped from `full_n_segments()`.
+    params.set_logprob_thold(-1.0);
+    params.set_no_speech_thold(0.6);
+
     // 設置初始提示（如果提供）
     if let Some(prompt) = initial_prompt {
         println!("[Whisper] 使用初始提示: {}", prompt);
@@ -201,6 +210,13 @@ pub async fn transcribe_audio(
     let mut segments = Vec::new();
     let mut full_text = String::new();
 
+    // Phase 3 of speech-pipeline-v0.6.5 (#53): per-segment hallucination
+    // guards. Configured once per call; cheap to evaluate per segment.
+    // Settings override will land with the user-tunable quality panel
+    // in a later phase — today everyone gets the conservative defaults.
+    let guard_cfg = super::guards::GuardConfig::default();
+    let mut dropped_count = 0usize;
+
     for i in 0..num_segments {
         let seg = state
             .get_segment(i)
@@ -216,9 +232,24 @@ pub async fn transcribe_audio(
         // divided by sample_rate; see commit 05d000b.
         let start_ms = (seg.start_timestamp() * 10) as i64;
         let end_ms = (seg.end_timestamp() * 10) as i64;
+        let trimmed = segment_text.trim();
+        let no_speech_prob = seg.no_speech_probability();
+
+        // Run the guards. A drop verdict is logged at warn level so
+        // users reporting "my transcript is missing lines" can see in
+        // diagnostics bundles what the filter removed and why.
+        let verdict = super::guards::evaluate(trimmed, no_speech_prob, &guard_cfg);
+        if verdict.should_drop() {
+            dropped_count += 1;
+            eprintln!(
+                "[Whisper] dropped hallucinated segment [{}ms-{}ms]: {:?} | text={:?}",
+                start_ms, end_ms, verdict, trimmed
+            );
+            continue;
+        }
 
         segments.push(TranscriptionSegment {
-            text: segment_text.trim().to_string(),
+            text: trimmed.to_string(),
             start_ms: start_ms as u64,
             end_ms: end_ms as u64,
         });
@@ -226,7 +257,14 @@ pub async fn transcribe_audio(
         if !full_text.is_empty() {
             full_text.push(' ');
         }
-        full_text.push_str(segment_text.trim());
+        full_text.push_str(trimmed);
+    }
+
+    if dropped_count > 0 {
+        println!(
+            "[Whisper] guards dropped {}/{} segments as likely hallucinations",
+            dropped_count, num_segments
+        );
     }
 
     // 使用設置的語言
