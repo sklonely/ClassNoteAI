@@ -146,6 +146,17 @@ dirs = "5"
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tauri-plugin-http = "2"
 tauri-plugin-process = "2"
+# `load-dynamic` is mandatory here: ort-sys with `download-binaries`
+# statically links its own protobuf, which collides with the protobuf
+# already statically linked by sentencepiece-sys (a transitive dep of
+# ct2rs). Linker error on Windows is LNK2005 on every `WireFormatLite`
+# / `FieldSkipper` symbol followed by LNK1169. The only way both
+# crates can coexist in this binary is with `load-dynamic` on the ort
+# side so it finds onnxruntime's protobuf copy at runtime, not link
+# time. See docs/design/speech-pipeline-v0.6.5.md — the DLL-version
+# mismatch on end-user Windows machines has to be solved via release-
+# workflow bundling (ship a pinned onnxruntime.dll next to the exe
+# and point `ORT_DYLIB_PATH` at it) rather than via `download-binaries`.
 ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }
 ndarray = "0.15"
 # Phase 3 of speech-pipeline-v0.6.5 (#53): compression-ratio guard

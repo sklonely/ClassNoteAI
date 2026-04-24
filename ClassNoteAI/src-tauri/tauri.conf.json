@@ -53,7 +53,8 @@
     ],
     "resources": {
       "resources/cuda/*": "./",
-      "resources/silero/*": "./resources/silero/"
+      "resources/silero/*": "./resources/silero/",
+      "resources/ort/*": "./resources/ort/"
     },
     "macOS": {
       "entitlements": null,

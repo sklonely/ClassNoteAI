@@ -59,6 +59,14 @@ model_packages/
 *.mp3
 *.zip
 
+# Native ONNX Runtime — fetched by scripts/fetch-onnxruntime.sh at
+# build time (or by the release CI workflow). ~14 MB .dll / ~25 MB
+# .dylib; too large to version in git.
+ClassNoteAI/src-tauri/resources/ort/onnxruntime.dll
+ClassNoteAI/src-tauri/resources/ort/onnxruntime.dylib
+ClassNoteAI/src-tauri/resources/ort/libonnxruntime*.so*
+ClassNoteAI/src-tauri/resources/ort/libonnxruntime*.dylib
+
 # Test files
 test_translation*.py
 test_translation*.ts

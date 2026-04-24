@@ -104,6 +104,14 @@ jobs:
       - name: Hydrate vendor/ (no-op patches on macOS)
         run: bash src-tauri/scripts/bootstrap-vendor.sh
 
+      # Phase 2 of speech-pipeline-v0.6.5 (#55) follow-up: fetch the
+      # pinned libonnxruntime for Silero VAD v5. See release-windows.yml
+      # for the rationale — on macOS the same mechanism just ships a
+      # .dylib next to the bundled app so `ORT_DYLIB_PATH` points at
+      # a known-good 1.23.0 instead of whatever else might be on path.
+      - name: Fetch bundled ONNX Runtime (Silero VAD dep)
+        run: bash src-tauri/scripts/fetch-onnxruntime.sh
+
       # ===== 安裝 npm 依賴 =====
       - name: Install dependencies
         run: npm ci --prefer-offline

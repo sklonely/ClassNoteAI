@@ -2074,6 +2074,41 @@ pub fn run() {
             // 前端可透過 invoke 呼叫開啟
             // 不再自動開啟
 
+            // Phase 2 follow-up: point ORT at the bundled onnxruntime
+            // binary BEFORE init_onnx(). Without this override the
+            // `ort` crate's `load-dynamic` walks PATH and typically
+            // picks up whatever older onnxruntime.dll Office / Edge /
+            // Copilot left on a Windows box (1.17.x), which fails
+            // ort-rc.9's ≥1.23.x version check and silently disables
+            // Silero VAD. Setting ORT_DYLIB_PATH to our pinned 1.23.0
+            // copy makes this deterministic — `ort::init()` checks
+            // that env var first, before any PATH lookup.
+            //
+            // Bundled file is fetched into `resources/ort/` by
+            // `scripts/fetch-onnxruntime.sh` at release build time.
+            // Missing file on local dev is fine — we just fall
+            // through to the normal PATH search.
+            if let Ok(resource_dir) = app.handle().path().resource_dir() {
+                let ort_dir = resource_dir.join("resources").join("ort");
+                let dll_name = if cfg!(target_os = "windows") {
+                    "onnxruntime.dll"
+                } else if cfg!(target_os = "macos") {
+                    "libonnxruntime.1.23.0.dylib"
+                } else {
+                    "libonnxruntime.so.1.23.0"
+                };
+                let bundled = ort_dir.join(dll_name);
+                if bundled.exists() {
+                    std::env::set_var("ORT_DYLIB_PATH", &bundled);
+                    println!("[ORT] ORT_DYLIB_PATH set to bundled {:?}", bundled);
+                } else {
+                    eprintln!(
+                        "[ORT] Bundled onnxruntime not found at {:?} — falling back to system PATH search",
+                        bundled
+                    );
+                }
+            }
+
             // Initialize ONNX Runtime
             utils::onnx::init_onnx();
 
