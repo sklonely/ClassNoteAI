@@ -1,13 +1,21 @@
-/**
- * 語音活動檢測（VAD）模塊
- * 實現基於能量的語音活動檢測
- *
- * 方案 A：VAD + 固定時間上限
- * 1. 使用 VAD 檢測語音活動
- * 2. 在語音段落邊界進行切片
- * 3. 設置最大時長限制（8-10秒）防止過長
- * 4. 設置最小時長限制（2-3秒）確保有足夠上下文
- */
+//! Voice activity detection.
+//!
+//! Two backends live here:
+//!
+//! - [`VadDetector`] — 100 ms RMS energy threshold. Zero dependencies,
+//!   tiny, was the v0.5 production implementation.
+//! - [`silero`] — neural Silero VAD v5 via ONNX. Shipped in v0.6.5
+//!   (Phase 2 of the speech-pipeline plan). Recovers short utterances
+//!   and produces cleaner sentence-end boundaries, at the cost of a
+//!   2.3 MB bundled model and a runtime ONNX dependency.
+//!
+//! Prefer [`detect_speech_segments_adaptive`] at call sites — it tries
+//! Silero first and falls back to the energy VAD if Silero can't
+//! initialise. That way a broken ONNX Runtime install doesn't prevent
+//! the lecturer from recording, and the migration is end-user invisible.
+
+pub mod silero;
+
 use serde::{Deserialize, Serialize};
 
 /// 語音活動檢測結果
@@ -321,9 +329,74 @@ impl VadDetector {
     }
 }
 
+/// Tagged source of a `Vec<SpeechSegment>` returned by the dispatcher.
+/// UI / logs can surface which backend actually produced the output
+/// (useful for diagnostics when users report odd chunking behaviour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VadBackend {
+    /// Silero VAD v5 via ONNX — preferred path (Phase 2 of v0.6.5).
+    Silero,
+    /// 100 ms RMS energy threshold — fallback when Silero isn't
+    /// available or fails to initialise.
+    Energy,
+}
+
+/// Dispatch to Silero VAD v5 when it's initialised, fall back to the
+/// energy VAD otherwise. Returns both the segments and the tag so
+/// callers can log which path fired.
+///
+/// This is the entry point production code (Tauri commands) should
+/// use. Direct `VadDetector::new` calls are kept for tests and
+/// in-process replays that need deterministic energy-only behaviour.
+pub fn detect_speech_segments_adaptive(
+    audio_16k: &[i16],
+    energy_config: Option<VadConfig>,
+) -> (Vec<SpeechSegment>, VadBackend) {
+    if silero::is_initialised() {
+        match silero::try_detect_speech_segments(audio_16k) {
+            Ok(segs) => return (segs, VadBackend::Silero),
+            Err(e) => {
+                eprintln!("[VAD] Silero inference failed ({}), falling back to energy VAD", e);
+            }
+        }
+    }
+    let cfg = energy_config.unwrap_or_else(VadConfig::default);
+    let segs = VadDetector::new(cfg).detect_speech_segments(audio_16k);
+    (segs, VadBackend::Energy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dispatcher fallback: when Silero isn't initialised, the
+    /// adaptive path must still produce segments from the energy VAD
+    /// and correctly tag the backend as `Energy`. A regression where
+    /// silero returned an empty `Ok(vec![])` instead of `Err(...)`
+    /// would silently mean every recording loses its speech detection.
+    #[test]
+    fn dispatcher_falls_back_to_energy_when_silero_uninitialised() {
+        if silero::is_initialised() {
+            // Another test initialised Silero in this process. Dispatcher
+            // correctness in that state is tested separately via an
+            // audio fixture; this test only covers the fallback path.
+            return;
+        }
+        let mut audio = vec![0i16; 8_000]; // 0.5 s silence
+        let speech: Vec<i16> = (0..16_000)
+            .map(|i| ((i as f32 * 0.1).sin() * 15_000.0) as i16)
+            .collect();
+        audio.extend(speech); // 1 s speech
+        audio.extend(vec![0i16; 8_000]); // 0.5 s silence
+
+        let mut cfg = VadConfig::default();
+        cfg.energy_threshold = 0.005;
+        cfg.min_speech_duration_ms = 100;
+
+        let (segments, backend) = detect_speech_segments_adaptive(&audio, Some(cfg));
+        assert_eq!(backend, VadBackend::Energy);
+        assert!(!segments.is_empty(), "energy VAD should find the 1s speech burst");
+    }
 
     #[test]
     fn test_energy_calculation() {
