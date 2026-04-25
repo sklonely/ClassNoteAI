@@ -814,6 +814,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hf-hub",
+ "hound",
  "log",
  "ndarray 0.15.6",
  "num_cpus",

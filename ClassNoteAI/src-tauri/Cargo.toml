@@ -18,9 +18,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = ["candle-embed"]
+default = ["candle-embed", "speaker-diarization"]
 # Candle embedding - 使用 Candle 框架進行文本 Embedding（預設啟用）
 candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
+nmt-local = []
+speaker-diarization = ["parakeet-rs/sortformer"]
+gpu-directml = ["ort/directml", "parakeet-rs/directml"]
+gpu-coreml = ["ort/coreml", "parakeet-rs/coreml"]
 
 # Whisper GPU backends. All three are opt-in and OFF by default — the
 # CPU build stays the baseline, so any regression from a broken
@@ -66,7 +70,7 @@ candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 # (TranslateGemma runs as a sidecar), so the only Rust-side accelerator
 # need is BGE embedding. Currently CUDA is disabled in CI for the same
 # reason as before — candle-kernels OOM in nvcc on 16 GB GitHub runners.
-gpu-cuda = []
+gpu-cuda = ["ort/cuda", "parakeet-rs/cuda"]
 gpu-vulkan = []
 gpu-metal = [
     "candle-core/metal",
@@ -165,6 +169,7 @@ parakeet-rs = { version = "0.3.5", default-features = false, features = ["cpu"] 
 
 [dev-dependencies]
 tempfile = "3.8"
+hound = "3.5"
 
 # macOS-only auto-enable of the Metal backends for every crate that
 # supports it. This keeps the default-feature story simple on
