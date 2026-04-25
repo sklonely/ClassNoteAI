@@ -146,12 +146,31 @@ export class AsrPipeline {
    * End the session. Flushes any tail text from the engine, closes
    * event subscriptions, and tells the engine to release session
    * state (the model stays loaded for the next session).
+   *
+   * **Order matters here.** `asr_end_session` on the Rust side pads the
+   * sub-chunk tail and runs three zero-flushes through the decoder,
+   * each of which can emit further `asr-text` events for words the
+   * model held back waiting for trailing context. We keep the listeners
+   * attached *across* that call so those tail events still feed the
+   * accumulator and reach `subtitleStream`. Tearing the listeners down
+   * first (the v0.6.0-alpha.10 behaviour) silently dropped the last
+   * 1-3 words of every recording — they survived in the returned
+   * `transcript` but never became subtitle events.
    */
   async stop(): Promise<void> {
     if (!this.sessionId) return;
     const id = this.sessionId;
-    this.sessionId = null;
+    // Keep `this.sessionId` set so `onText` (still attached) accepts
+    // the tail events the engine is about to emit.
 
+    try {
+      const transcript = await invoke<string>('asr_end_session', { sessionId: id });
+      console.log(`[asrPipeline] session ${id} final transcript: ${transcript.length} chars`);
+    } catch (e) {
+      console.warn('[asrPipeline] end_session failed (non-fatal):', e);
+    }
+
+    // Engine has finished emitting; safe to detach now.
     if (this.unlistenText) {
       this.unlistenText();
       this.unlistenText = null;
@@ -161,23 +180,14 @@ export class AsrPipeline {
       this.unlistenEnded = null;
     }
 
-    try {
-      // Engine emits any tail-end deltas via "asr-text" before
-      // returning, but our listener is already torn down by the time
-      // those fire — so we drain via the function return value
-      // instead. The cumulative transcript is logged for diagnostics
-      // but the streaming events are the source of truth for
-      // subtitleStream consumers.
-      const transcript = await invoke<string>('asr_end_session', { sessionId: id });
-      console.log(`[asrPipeline] session ${id} final transcript: ${transcript.length} chars`);
-    } catch (e) {
-      console.warn('[asrPipeline] end_session failed (non-fatal):', e);
-    }
-
-    // Force-flush whatever the SentenceAccumulator still buffers.
+    // Force-flush whatever the SentenceAccumulator still buffers (e.g.
+    // a final clause without a terminator) BEFORE clearing sessionId,
+    // since `commitSentence` reads `this.sessionId`.
     for (const sent of this.accumulator.flush()) {
       this.commitSentence(sent.text, sent.startSec, sent.endSec);
     }
+
+    this.sessionId = null;
 
     subtitleStream.emit({
       kind: 'session_ended',

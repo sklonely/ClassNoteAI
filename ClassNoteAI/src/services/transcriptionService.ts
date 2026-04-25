@@ -51,6 +51,10 @@ class TranscriptionService {
   private unsubscribe: (() => void) | null = null;
   /** True between start() and stop(). */
   private active = false;
+  /** True between pause() and resume(). Independent of `active` so
+   *  pausing doesn't fool `addAudioChunk` into starting a fresh session
+   *  on the next chunk while the engine still holds the previous one. */
+  private paused = false;
   /** Track committed segments so translation_ready can find them. */
   private startTimeWall = 0;
 
@@ -95,6 +99,7 @@ class TranscriptionService {
   async start(): Promise<void> {
     if (this.active) return;
     this.active = true;
+    this.paused = false;
     this.startTimeWall = Date.now();
 
     // Bridge subtitleStream events into the existing subtitleService
@@ -157,24 +162,29 @@ class TranscriptionService {
   }
 
   /**
-   * Pause/resume the audio stream. v2 doesn't expose true pause to
-   * the sidecar (Parakeet idles on no input), so we toggle the active
-   * flag — recorder pushes are dropped while paused.
+   * Pause/resume the audio stream. Parakeet idles on no input, so
+   * "pause" just means "drop incoming chunks until resume()". Crucially
+   * we keep the engine session alive — the previous implementation
+   * cleared `active`, which made the next `addAudioChunk` after pause
+   * trigger a fresh `start()` while the backend session was still open,
+   * losing both the in-flight session and the chunk that triggered it.
    */
   pause(): void {
-    this.active = false;
+    this.paused = true;
   }
 
   resume(): void {
-    this.active = true;
+    this.paused = false;
   }
 
   /**
    * Forward a chunk from the mic recorder to the ASR sidecar. The
    * pipeline auto-starts on first chunk if the caller didn't explicitly
    * `start()` - historical UI flow relied on this implicit start.
+   * Chunks arriving while paused are dropped silently.
    */
   addAudioChunk(chunk: AudioChunk): void {
+    if (this.paused) return;
     if (!this.active) {
       void this.start();
     }
