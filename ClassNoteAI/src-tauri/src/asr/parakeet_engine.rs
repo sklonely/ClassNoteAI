@@ -158,7 +158,9 @@ impl EngineState {
     }
 
     /// Push int16 PCM. Drains the buffer in 8960-sample chunks and
-    /// invokes `emit(delta, audio_end_sec)` once per non-empty delta.
+    /// invokes `emit(delta, transcript, audio_end_sec)` once per
+    /// non-empty delta. `transcript` is the model's cumulative text
+    /// after applying Nemotron's own stabilization/cleanup.
     /// Sub-chunk leftovers stay in the buffer until the next push.
     pub fn push_pcm_i16<F>(
         &mut self,
@@ -167,7 +169,7 @@ impl EngineState {
         mut emit: F,
     ) -> Result<(), String>
     where
-        F: FnMut(&str, f32),
+        F: FnMut(&str, &str, f32),
     {
         let model = self
             .model
@@ -201,7 +203,8 @@ impl EngineState {
             session.samples_processed += CHUNK_SAMPLES;
             if !delta.is_empty() {
                 let audio_end = session.samples_processed as f32 / SAMPLE_RATE as f32;
-                emit(&delta, audio_end);
+                let transcript = model.get_transcript();
+                emit(&delta, &transcript, audio_end);
             }
         }
         Ok(())
@@ -216,7 +219,7 @@ impl EngineState {
         mut emit: F,
     ) -> Result<String, String>
     where
-        F: FnMut(&str, f32),
+        F: FnMut(&str, &str, f32),
     {
         let model = self
             .model
@@ -243,7 +246,8 @@ impl EngineState {
             session.samples_processed += CHUNK_SAMPLES;
             if !delta.is_empty() {
                 let audio_end = session.samples_processed as f32 / SAMPLE_RATE as f32;
-                emit(&delta, audio_end);
+                let transcript = model.get_transcript();
+                emit(&delta, &transcript, audio_end);
             }
         }
 
@@ -256,7 +260,8 @@ impl EngineState {
                 .map_err(|e| format!("flush zero-chunk failed: {e}"))?;
             if !delta.is_empty() {
                 let audio_end = session.samples_processed as f32 / SAMPLE_RATE as f32;
-                emit(&delta, audio_end);
+                let transcript = model.get_transcript();
+                emit(&delta, &transcript, audio_end);
             }
         }
 
@@ -294,14 +299,14 @@ pub fn start_session(id: String) -> Result<(), String> {
 
 pub fn push_pcm_i16<F>(session_id: &str, pcm: &[i16], emit: F) -> Result<(), String>
 where
-    F: FnMut(&str, f32),
+    F: FnMut(&str, &str, f32),
 {
     engine_lock().push_pcm_i16(session_id, pcm, emit)
 }
 
 pub fn end_session<F>(session_id: &str, emit: F) -> Result<String, String>
 where
-    F: FnMut(&str, f32),
+    F: FnMut(&str, &str, f32),
 {
     engine_lock().end_session(session_id, emit)
 }

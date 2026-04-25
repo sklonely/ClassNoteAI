@@ -332,7 +332,7 @@ export default function LectureView() {
       transcriptionService.setLectureId(currentLecture.id);
 
       // 啟動轉錄服務
-      transcriptionService.start();
+      await transcriptionService.start();
 
       await audioRecorderRef.current.start();
       setRecordingStatus("recording");
@@ -355,6 +355,7 @@ export default function LectureView() {
       }
 
       audioRecorderRef.current.pause();
+      transcriptionService.pause();
       setRecordingStatus("paused");
     } catch (error) {
       console.error('[LectureView] 暫停錄製失敗:', error);
@@ -369,6 +370,7 @@ export default function LectureView() {
       }
 
       await audioRecorderRef.current.resume();
+      transcriptionService.resume();
       setRecordingStatus("recording");
     } catch (error) {
       console.error('[LectureView] 恢復錄製失敗:', error);
@@ -445,7 +447,7 @@ export default function LectureView() {
       }
 
       // 停止轉錄服務
-      transcriptionService.stop();
+      await transcriptionService.stop();
 
       await audioRecorderRef.current.stop();
       setRecordingStatus("stopped");

@@ -51,6 +51,8 @@ class TranscriptionService {
   private unsubscribe: (() => void) | null = null;
   /** True between start() and stop(). */
   private active = false;
+  /** Coalesces concurrent explicit/implicit starts while ASR warms up. */
+  private startPromise: Promise<void> | null = null;
   /** True between pause() and resume(). Independent of `active` so
    *  pausing doesn't fool `addAudioChunk` into starting a fresh session
    *  on the next chunk while the engine still holds the previous one. */
@@ -98,57 +100,87 @@ class TranscriptionService {
    */
   async start(): Promise<void> {
     if (this.active) return;
-    this.active = true;
-    this.paused = false;
-    this.startTimeWall = Date.now();
+    if (this.startPromise) return this.startPromise;
 
-    // Bridge subtitleStream events into the existing subtitleService
-    // API. Lets the UI keep working without rewriting SubtitleDisplay
-    // in this PR. UI components that want finer-grained signals
-    // (sub-second partial updates, provider tags, latency) can
-    // subscribe to subtitleStream directly.
-    this.unsubscribe = subtitleStream.subscribe((event) => {
-      switch (event.kind) {
-        case 'sentence_committed': {
-          subtitleService.addSegment({
-            id: event.id,
-            roughText: event.textEn,
-            roughTranslation: undefined,
-            displayText: event.textEn,
-            displayTranslation: undefined,
-            startTime: this.startTimeWall + event.audioStartSec * 1000,
-            endTime: this.startTimeWall + event.audioEndSec * 1000,
-            source: 'rough',
-            translationSource: undefined,
-            text: event.textEn,
-          });
-          break;
-        }
-        case 'translation_ready': {
-          subtitleService.updateSegment(event.id, {
-            displayTranslation: event.textZh,
-            translationSource: 'rough',
-          });
-          break;
-        }
-        case 'partial_text': {
-          subtitleService.updateCurrentText(event.text, undefined);
-          break;
-        }
-        case 'session_ended':
-        case 'translation_failed':
-        case 'session_started':
-          // No UI side-effect needed here; consumers that care
-          // subscribe to subtitleStream directly.
-          break;
+    this.startPromise = (async () => {
+      this.paused = false;
+      this.startTimeWall = Date.now();
+
+      // Bridge subtitleStream events into the existing subtitleService
+      // API. Lets the UI keep working without rewriting SubtitleDisplay
+      // in this PR. UI components that want finer-grained signals
+      // (sub-second partial updates, provider tags, latency) can
+      // subscribe to subtitleStream directly.
+      if (this.unsubscribe) {
+        this.unsubscribe();
       }
-    });
+      this.unsubscribe = subtitleStream.subscribe((event) => {
+        switch (event.kind) {
+          case 'sentence_committed': {
+            subtitleService.addSegment({
+              id: event.id,
+              roughText: event.textEn,
+              roughTranslation: undefined,
+              displayText: event.textEn,
+              displayTranslation: undefined,
+              startTime: this.startTimeWall + event.audioStartSec * 1000,
+              endTime: this.startTimeWall + event.audioEndSec * 1000,
+              source: 'rough',
+              translationSource: undefined,
+              text: event.textEn,
+            });
+            break;
+          }
+          case 'translation_ready': {
+            subtitleService.updateSegment(event.id, {
+              displayTranslation: event.textZh,
+              translationSource: 'rough',
+            });
+            break;
+          }
+          case 'partial_text': {
+            subtitleService.updateCurrentText(event.text, undefined);
+            break;
+          }
+          case 'session_ended':
+          case 'translation_failed':
+          case 'session_started':
+            // No UI side-effect needed here; consumers that care
+            // subscribe to subtitleStream directly.
+            break;
+        }
+      });
 
-    const language = this.sourceLang === 'auto' ? undefined : this.sourceLang;
-    await asrPipeline.start(language);
+      try {
+        const language = this.sourceLang === 'auto' ? undefined : this.sourceLang;
+        await asrPipeline.start(language);
+        this.active = true;
+      } catch (error) {
+        if (this.unsubscribe) {
+          this.unsubscribe();
+          this.unsubscribe = null;
+        }
+        this.active = false;
+        this.paused = false;
+        throw error;
+      }
+    })();
+
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.startPromise) {
+      try {
+        await this.startPromise;
+      } catch {
+        // A failed start has already cleaned up its subscription.
+      }
+    }
     if (!this.active) return;
     this.active = false;
     try {
@@ -185,10 +217,18 @@ class TranscriptionService {
    */
   addAudioChunk(chunk: AudioChunk): void {
     if (this.paused) return;
+    void this.pushWhenReady(chunk);
+  }
+
+  private async pushWhenReady(chunk: AudioChunk): Promise<void> {
     if (!this.active) {
-      void this.start();
+      await this.start();
+    } else if (this.startPromise) {
+      await this.startPromise;
     }
-    void asrPipeline.pushAudio(chunk.data);
+    if (!this.paused && this.active) {
+      await asrPipeline.pushAudio(chunk.data);
+    }
   }
 
   /**

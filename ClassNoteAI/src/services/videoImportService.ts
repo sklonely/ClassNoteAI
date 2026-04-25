@@ -1,33 +1,8 @@
-/**
- * Video import service — TEMPORARILY STUBBED in the v2 streaming refactor.
- *
- * The v1 implementation drove a Whisper-based bulk transcription path
- * via Tauri commands `transcribe_pcm_file_slice`, `transcribe_video_file`,
- * `resolve_whisper_model_path`, `release_import_whisper`. All of those
- * commands were removed when the Whisper backend was deleted from the
- * Rust crate.
- *
- * The v2 replacement is straightforward but non-trivial:
- *
- *   1. Extract PCM via the kept ffmpeg commands
- *      (`extract_video_pcm_to_temp` + `read_pcm_slice`).
- *   2. Open a Parakeet ASR session via `asrPipeline.start()`.
- *   3. Stream PCM chunks into `asrPipeline.pushAudio()` — same flow as
- *      live mic capture, just with audio coming from a file instead of
- *      the recorder.
- *   4. Subscribe to `subtitleStream` to collect committed sentences +
- *      translations and persist them via `storageService.saveSubtitles`.
- *   5. End the session, release PCM temp file.
- *
- * That's a focused ~150 LOC rewrite that wasn't safe to complete in the
- * same PR cycle as the architecture switch — landing a partial would be
- * worse than a clear "not yet" because the renderer's progress UI gets
- * stuck. The stub below preserves the public surface so type-checking
- * passes; calling `importVideo` raises a clear error the import modal
- * already knows how to display.
- *
- * Tracking: a follow-up PR `feat/video-import-parakeet` does steps 1-5.
- */
+import { invoke } from '@tauri-apps/api/core';
+import { asrPipeline } from './streaming/asrPipeline';
+import { subtitleStream, type SubtitleEvent } from './streaming/subtitleStream';
+import { storageService } from './storageService';
+import type { Lecture, Subtitle } from '../types';
 
 export type ImportStage =
     | 'staging'
@@ -48,19 +23,59 @@ export interface ImportProgress {
     transcribed?: number;
     translated?: number;
     total?: number;
-    /** Set when a chunk's subtitles were just persisted — lets the
-     *  consumer (NotesView) re-fetch the subtitle list incrementally
-     *  instead of waiting for the full import to finish. */
+    /** Set when a chunk's subtitles were just persisted so the
+     *  consumer can re-fetch incrementally. */
     subtitlesChanged?: boolean;
 }
 
 export type TranscribeQuality = 'fast' | 'standard';
 
+interface PcmExtractResult {
+    pcm_path: string;
+    sample_count: number;
+    duration_sec: number;
+}
+
+const ASR_CHUNK_SAMPLES = 8_960;
+const IMPORT_SLICE_SAMPLES = ASR_CHUNK_SAMPLES * 10; // 5.6 s of audio
+const AUDIO_EXT = /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i;
+
+function isAudioOnly(path: string): boolean {
+    return AUDIO_EXT.test(path);
+}
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatProgress(done: number, total: number): string {
+    if (total <= 0) return '0%';
+    return `${Math.min(100, Math.round((done / total) * 100))}%`;
+}
+
+function subtitleFromEvent(
+    lecture: Lecture,
+    event: Extract<SubtitleEvent, { kind: 'sentence_committed' }>,
+): Subtitle {
+    const baseSec = lecture.created_at
+        ? new Date(lecture.created_at).getTime() / 1000
+        : Date.now() / 1000;
+    return {
+        id: event.id,
+        lecture_id: lecture.id,
+        timestamp: baseSec + event.audioStartSec,
+        text_en: event.textEn,
+        type: 'rough',
+        confidence: undefined,
+        created_at: new Date().toISOString(),
+    };
+}
+
 export const videoImportService = {
     async importVideo(
-        _lectureId: string,
-        _sourcePath: string,
-        _options: {
+        lectureId: string,
+        sourcePath: string,
+        options: {
             language?: string;
             initialPrompt?: string;
             quality?: TranscribeQuality;
@@ -68,10 +83,225 @@ export const videoImportService = {
             onProgress?: (p: ImportProgress) => void;
         } = {},
     ): Promise<{ videoPath: string; segmentCount: number; durationMs: number }> {
-        throw new Error(
-            '影片匯入功能正在重構為 Parakeet 串流管線（v2）。下一個 PR ' +
-                '會接回。目前請使用即時錄音（同樣走 Parakeet sidecar + ' +
-                'TranslateGemma），效果更好。',
-        );
+        let unsubscribe: (() => void) | null = null;
+        let pcmPath: string | null = null;
+        let persistTimer: ReturnType<typeof setTimeout> | null = null;
+        let dirty = false;
+        let persistChain = Promise.resolve();
+
+        const lecture = await storageService.getLecture(lectureId);
+        if (!lecture) {
+            throw new Error(`Lecture not found: ${lectureId}`);
+        }
+
+        const audioOnly = isAudioOnly(sourcePath);
+        const subtitles = new Map<string, Subtitle>();
+        const pendingTranslations = new Set<string>();
+        let sessionId: string | null = null;
+        let translated = 0;
+
+        const report = (progress: ImportProgress) => {
+            options.onProgress?.(progress);
+        };
+
+        const persistNow = async (
+            stage: ImportStage = 'saving',
+            message = '保存字幕...',
+            subtitlesChanged = false,
+        ): Promise<void> => {
+            if (!dirty) return persistChain;
+            dirty = false;
+            const rows = [...subtitles.values()];
+            if (rows.length === 0) return persistChain;
+            persistChain = persistChain.then(async () => {
+                await storageService.saveSubtitles(rows);
+                report({
+                    stage,
+                    message,
+                    transcribed: rows.length,
+                    translated,
+                    total: rows.length,
+                    subtitlesChanged,
+                });
+            });
+            return persistChain;
+        };
+
+        const schedulePersist = () => {
+            dirty = true;
+            if (persistTimer) return;
+            persistTimer = setTimeout(() => {
+                persistTimer = null;
+                void persistNow(
+                    'transcribing',
+                    `已產生 ${subtitles.size} 段字幕，翻譯 ${translated} 段...`,
+                    true,
+                );
+            }, 500);
+        };
+
+        try {
+            report({ stage: 'staging', message: audioOnly ? '匯入錄音檔...' : '匯入影片...' });
+            const mediaPath = await invoke<string>('import_video_for_lecture', {
+                srcPath: sourcePath,
+                lectureId,
+            });
+
+            const updatedLecture: Lecture = {
+                ...lecture,
+                status: 'completed',
+                updated_at: new Date().toISOString(),
+                video_path: audioOnly ? lecture.video_path : mediaPath,
+                audio_path: audioOnly ? mediaPath : lecture.audio_path,
+            };
+            await storageService.saveLecture(updatedLecture);
+
+            report({
+                stage: 'video_ready',
+                message: audioOnly ? '錄音檔已就緒，開始抽取音訊...' : '影片已就緒，開始抽取音訊...',
+                videoPath: mediaPath,
+            });
+
+            report({ stage: 'extracting', message: '使用 ffmpeg 轉成 16 kHz PCM...' });
+            const pcm = await invoke<PcmExtractResult>('extract_video_pcm_to_temp', {
+                videoPath: mediaPath,
+            });
+            pcmPath = pcm.pcm_path;
+
+            unsubscribe = subtitleStream.subscribe((event) => {
+                if (event.kind === 'session_started') {
+                    sessionId = event.sessionId;
+                    return;
+                }
+                if (!sessionId || !('sessionId' in event) || event.sessionId !== sessionId) {
+                    return;
+                }
+
+                if (event.kind === 'sentence_committed') {
+                    subtitles.set(event.id, subtitleFromEvent(updatedLecture, event));
+                    pendingTranslations.add(event.id);
+                    schedulePersist();
+                    report({
+                        stage: 'transcribing',
+                        message: `已產生 ${subtitles.size} 段字幕...`,
+                        transcribed: subtitles.size,
+                        translated,
+                        total: subtitles.size,
+                    });
+                    return;
+                }
+
+                if (event.kind === 'translation_ready') {
+                    const row = subtitles.get(event.id);
+                    if (row) {
+                        row.text_zh = event.textZh;
+                        subtitles.set(event.id, row);
+                    }
+                    pendingTranslations.delete(event.id);
+                    translated += 1;
+                    schedulePersist();
+                    return;
+                }
+
+                if (event.kind === 'translation_failed') {
+                    pendingTranslations.delete(event.id);
+                    schedulePersist();
+                }
+            });
+
+            report({ stage: 'transcribing', message: '開始轉錄媒體音訊...' });
+            await asrPipeline.start(options.language === 'auto' ? undefined : options.language);
+
+            let processed = 0;
+            while (processed < pcm.sample_count) {
+                const count = Math.min(IMPORT_SLICE_SAMPLES, pcm.sample_count - processed);
+                const samples = await invoke<number[]>('read_pcm_slice', {
+                    pcmPath,
+                    startSample: processed,
+                    count,
+                });
+                if (samples.length === 0) break;
+                await asrPipeline.pushAudio(Int16Array.from(samples));
+                processed += samples.length;
+                report({
+                    stage: 'transcribing',
+                    message: `轉錄中 ${formatProgress(processed, pcm.sample_count)}...`,
+                    transcribed: subtitles.size,
+                    translated,
+                    total: subtitles.size,
+                });
+            }
+
+            await asrPipeline.stop();
+
+            report({
+                stage: 'translating',
+                message: `等待翻譯完成... ${translated}/${subtitles.size}`,
+                transcribed: subtitles.size,
+                translated,
+                total: subtitles.size,
+            });
+
+            const translationDeadline = Date.now() + 15 * 60_000;
+            while (pendingTranslations.size > 0 && Date.now() < translationDeadline) {
+                await delay(250);
+                report({
+                    stage: 'translating',
+                    message: `等待翻譯完成... ${translated}/${subtitles.size}`,
+                    transcribed: subtitles.size,
+                    translated,
+                    total: subtitles.size,
+                });
+            }
+
+            if (persistTimer) {
+                clearTimeout(persistTimer);
+                persistTimer = null;
+            }
+            dirty = true;
+            await persistNow('saving', '保存字幕...', true);
+            await persistChain;
+
+            report({
+                stage: 'done',
+                message: audioOnly ? '錄音檔匯入完成' : '影片匯入完成',
+                videoPath: mediaPath,
+                transcribed: subtitles.size,
+                translated,
+                total: subtitles.size,
+                subtitlesChanged: true,
+            });
+
+            return {
+                videoPath: mediaPath,
+                segmentCount: subtitles.size,
+                durationMs: Math.round(pcm.duration_sec * 1000),
+            };
+        } catch (error) {
+            report({
+                stage: 'error',
+                message: error instanceof Error ? error.message : String(error),
+            });
+            throw error;
+        } finally {
+            if (persistTimer) {
+                clearTimeout(persistTimer);
+            }
+            if (unsubscribe) {
+                unsubscribe();
+            }
+            try {
+                await asrPipeline.stop();
+            } catch {
+                // Best effort cleanup; import may have failed before start.
+            }
+            if (pcmPath) {
+                try {
+                    await invoke('delete_temp_pcm', { pcmPath });
+                } catch {
+                    // Best effort cleanup of temp files.
+                }
+            }
+        }
     },
 };

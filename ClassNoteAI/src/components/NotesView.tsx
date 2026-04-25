@@ -402,7 +402,14 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           return;
         }
 
-        const blob = new Blob([data], { type: 'audio/wav' });
+        const lower = resolvedAudioPath.toLowerCase();
+        const mime =
+          lower.endsWith('.mp3') ? 'audio/mpeg' :
+            lower.endsWith('.m4a') || lower.endsWith('.aac') ? 'audio/mp4' :
+              lower.endsWith('.flac') ? 'audio/flac' :
+                lower.endsWith('.ogg') || lower.endsWith('.opus') ? 'audio/ogg' :
+                  'audio/wav';
+        const blob = new Blob([data], { type: mime });
         objectUrl = URL.createObjectURL(blob);
 
         if (audioRef.current) {
@@ -1239,7 +1246,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       }
       await transcriptionService.refreshFineRefinementAvailability();
 
-      transcriptionService.start();
+      await transcriptionService.start();
 
       // v0.5.2 crash-safe persistence: enable BEFORE start() so the first
       // audio chunk is already being captured to disk. If the app dies
@@ -1791,7 +1798,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     const path = paths[0];
     const lower = path.toLowerCase();
 
-    const isVideo = /\.(mp4|m4v|mkv|webm|mov|avi)$/.test(lower);
+    const isMedia = /\.(mp4|m4v|mkv|webm|mov|avi|wav|mp3|m4a|aac|flac|ogg|opus)$/.test(lower);
     const isPdf = lower.endsWith('.pdf');
     const isConvertible =
       lower.endsWith('.ppt') ||
@@ -1799,7 +1806,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       lower.endsWith('.doc') ||
       lower.endsWith('.docx');
 
-    if (isVideo) {
+    if (isMedia) {
       // Dragging a video onto the lecture area uses auto-detect and
       // fast mode by default — the user hasn't been through the modal
       // where they could tweak. If detection fails or they want AI

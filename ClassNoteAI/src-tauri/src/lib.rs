@@ -598,6 +598,7 @@ async fn asr_start_session(session_id: String) -> Result<(), String> {
 struct AsrTextEvent {
     session_id: String,
     delta: String,
+    transcript: String,
     audio_end_sec: f32,
 }
 
@@ -614,20 +615,21 @@ async fn asr_push_audio(
         // Buffer deltas inside the engine call so we don't hold the
         // engine Mutex across `app.emit` (which can do non-trivial
         // work serializing JSON for every webview window).
-        let mut deltas: Vec<(String, f32)> = Vec::new();
+        let mut deltas: Vec<(String, String, f32)> = Vec::new();
         let res = asr::parakeet_engine::push_pcm_i16(
             &sid_for_engine,
             &pcm,
-            |delta, audio_end_sec| {
-                deltas.push((delta.to_string(), audio_end_sec));
+            |delta, transcript, audio_end_sec| {
+                deltas.push((delta.to_string(), transcript.to_string(), audio_end_sec));
             },
         );
-        for (delta, audio_end_sec) in deltas {
+        for (delta, transcript, audio_end_sec) in deltas {
             let _ = app.emit(
                 "asr-text",
                 AsrTextEvent {
                     session_id: sid_for_event.clone(),
                     delta,
+                    transcript,
                     audio_end_sec,
                 },
             );
@@ -659,19 +661,20 @@ async fn asr_end_session(
     let sid_for_event = session_id.clone();
     let app_clone = app.clone();
     tokio::task::spawn_blocking(move || {
-        let mut deltas: Vec<(String, f32)> = Vec::new();
+        let mut deltas: Vec<(String, String, f32)> = Vec::new();
         let transcript = asr::parakeet_engine::end_session(
             &sid_for_engine,
-            |delta, audio_end_sec| {
-                deltas.push((delta.to_string(), audio_end_sec));
+            |delta, transcript, audio_end_sec| {
+                deltas.push((delta.to_string(), transcript.to_string(), audio_end_sec));
             },
         )?;
-        for (delta, audio_end_sec) in deltas {
+        for (delta, transcript, audio_end_sec) in deltas {
             let _ = app_clone.emit(
                 "asr-text",
                 AsrTextEvent {
                     session_id: sid_for_event.clone(),
                     delta,
+                    transcript,
                     audio_end_sec,
                 },
             );

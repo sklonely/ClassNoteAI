@@ -76,6 +76,27 @@ describe('transcriptionService.addAudioChunk — implicit start', () => {
     transcriptionService.addAudioChunk(chunk);
     expect(pushAudioMock).toHaveBeenCalledWith(chunk.data);
   });
+
+  it('waits for the ASR session to finish starting before pushing the first chunk', async () => {
+    let resolveStart!: () => void;
+    startMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      }),
+    );
+
+    const chunk = fakeChunk([10, 11, 12]);
+    transcriptionService.addAudioChunk(chunk);
+    await Promise.resolve();
+
+    expect(startMock).toHaveBeenCalledTimes(1);
+    expect(pushAudioMock).not.toHaveBeenCalled();
+
+    resolveStart();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pushAudioMock).toHaveBeenCalledWith(chunk.data);
+  });
 });
 
 describe('transcriptionService.pause / resume — regression #R3', () => {

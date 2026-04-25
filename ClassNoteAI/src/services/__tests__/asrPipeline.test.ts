@@ -54,7 +54,12 @@ afterEach(async () => {
   unsubscribe();
 });
 
-function fireAsrText(payload: { session_id: string; delta: string; audio_end_sec: number }): void {
+function fireAsrText(payload: {
+  session_id: string;
+  delta: string;
+  audio_end_sec: number;
+  transcript?: string;
+}): void {
   const handler = handlers.get('asr-text');
   if (!handler) {
     throw new Error("listener for 'asr-text' is not attached — start() must run first");
@@ -85,6 +90,79 @@ describe('asrPipeline.start → onText → subtitleStream', () => {
     const committed = captured.filter((e) => e.kind === 'sentence_committed');
     expect(committed.length).toBe(1);
     expect((committed[0] as { textEn: string }).textEn).toContain('gradient descent.');
+  });
+
+  it('emits partial_text for buffered ASR text before a sentence boundary commits', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_parakeet_status') {
+        return { model_present: true, model_loaded: true, session_active: false };
+      }
+      return null;
+    });
+
+    await asrPipeline.start();
+    const sessionId = (asrPipeline as unknown as { sessionId: string }).sessionId;
+
+    fireAsrText({ session_id: sessionId, delta: 'this is still buffering', audio_end_sec: 1.2 });
+    await Promise.resolve();
+
+    const partial = [...captured].reverse().find((e) => e.kind === 'partial_text');
+    expect(partial).toBeDefined();
+    expect((partial as { text: string }).text).toBe('this is still buffering');
+    expect(captured.filter((e) => e.kind === 'sentence_committed')).toHaveLength(0);
+  });
+
+  it('commits stabilized transcript text instead of raw split deltas', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_parakeet_status') {
+        return { model_present: true, model_loaded: true, session_active: false };
+      }
+      return null;
+    });
+
+    await asrPipeline.start();
+    const sessionId = (asrPipeline as unknown as { sessionId: string }).sessionId;
+
+    fireAsrText({
+      session_id: sessionId,
+      delta: 'It is actually doubly link',
+      transcript: 'It is actually doubly link',
+      audio_end_sec: 0.9,
+    });
+    fireAsrText({
+      session_id: sessionId,
+      delta: 'ed list.',
+      transcript: 'It is actually doubly linked list.',
+      audio_end_sec: 1.8,
+    });
+
+    await Promise.resolve();
+
+    const committed = captured.filter((e) => e.kind === 'sentence_committed');
+    expect(committed).toHaveLength(1);
+    expect((committed[0] as { textEn: string }).textEn).toBe('It is actually doubly linked list.');
+  });
+
+  it('accepts the current per-variant Parakeet status shape', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'get_parakeet_status') {
+        return {
+          variants: [
+            { variant: 'int8', present: true },
+            { variant: 'fp32', present: false },
+          ],
+          loaded_variant: null,
+          model_loaded: false,
+          session_active: false,
+        };
+      }
+      return null;
+    });
+
+    await expect(asrPipeline.start()).resolves.toBeUndefined();
+    expect(invoke).toHaveBeenCalledWith('asr_start_session', expect.objectContaining({
+      sessionId: expect.any(String),
+    }));
   });
 
   it('ignores asr-text events from a different session id', async () => {

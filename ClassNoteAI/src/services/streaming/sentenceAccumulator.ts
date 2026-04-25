@@ -209,6 +209,15 @@ export class SentenceAccumulator {
   }
 
   /**
+   * Text currently buffered but not committed yet. Used for live
+   * captions so the user sees ASR activity before a sentence boundary
+   * is strong enough to translate.
+   */
+  get bufferedText(): string {
+    return this.confirmed.map((w) => w.text).join(' ');
+  }
+
+  /**
    * Reset state — used when the user starts a new recording session.
    */
   reset(): void {

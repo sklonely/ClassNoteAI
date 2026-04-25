@@ -246,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         total_samples += pcm.len() as u64;
         let t0 = Instant::now();
-        parakeet_engine::push_pcm_i16(session_id, &pcm, |delta, audio_end| {
+        parakeet_engine::push_pcm_i16(session_id, &pcm, |delta, _transcript, audio_end| {
             deltas.push(DeltaEvent {
                 audio_end_sec: audio_end,
                 text: delta.to_string(),
@@ -271,7 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
     }
-    let _final_text = parakeet_engine::end_session(session_id, |delta, audio_end| {
+    let _final_text = parakeet_engine::end_session(session_id, |delta, _transcript, audio_end| {
         deltas.push(DeltaEvent {
             audio_end_sec: audio_end,
             text: delta.to_string(),

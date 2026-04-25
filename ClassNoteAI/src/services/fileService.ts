@@ -34,7 +34,7 @@ export async function selectPDFFile(): Promise<{ path: string; data: ArrayBuffer
 }
 
 /**
- * Pick a video file to import into the current lecture. We only need
+ * Pick a media file to import into the current lecture. We only need
  * the path -- import_video_for_lecture on the Rust side copies the
  * bytes itself. Keeping the large file off the JS heap matters for
  * 500 MB+ lecture recordings.
@@ -45,8 +45,8 @@ export async function selectVideoFile(): Promise<string | null> {
       multiple: false,
       filters: [
         {
-          name: 'Video',
-          extensions: ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi'],
+          name: 'Video or Audio',
+          extensions: ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi', 'wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus'],
         },
       ],
       title: '選擇影片檔案',

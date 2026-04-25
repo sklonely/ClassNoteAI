@@ -123,8 +123,9 @@ Object.defineProperty(globalThis, 'localStorage', {
 // scroll on update (chat panels, log viewers) crash on mount under test
 // without this stub. Cheap to install once globally; per-test overrides
 // can still spy on it via `vi.spyOn(Element.prototype, 'scrollIntoView')`.
-if (typeof Element !== 'undefined' && !('scrollIntoView' in Element.prototype)) {
-    Element.prototype.scrollIntoView = vi.fn();
+const elementPrototype = globalThis.Element?.prototype;
+if (elementPrototype && typeof elementPrototype.scrollIntoView !== 'function') {
+    elementPrototype.scrollIntoView = vi.fn();
 }
 
 // Reset mocks before each test

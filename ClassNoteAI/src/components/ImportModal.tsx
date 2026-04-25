@@ -55,7 +55,7 @@ interface Props {
     onSubmitPaste: (submission: PasteSubmission) => void;
 }
 
-const VIDEO_EXT = /\.(mp4|m4v|mkv|webm|mov|avi)$/i;
+const MEDIA_EXT = /\.(mp4|m4v|mkv|webm|mov|avi|wav|mp3|m4a|aac|flac|ogg|opus)$/i;
 
 export default function ImportModal({
     open,
@@ -101,7 +101,7 @@ export default function ImportModal({
         zoneRef: modalRef,
         enabled: open && !isBusy,
         onDrop: (paths) => {
-            const video = paths.find((p) => VIDEO_EXT.test(p));
+            const video = paths.find((p) => MEDIA_EXT.test(p));
             if (video) {
                 onDropVideo(video, {
                     language: videoLang,

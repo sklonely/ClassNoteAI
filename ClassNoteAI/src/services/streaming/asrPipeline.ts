@@ -1,56 +1,38 @@
 /**
- * Streaming ASR pipeline orchestrator (v2.1: in-process Nemotron).
+ * Streaming ASR pipeline orchestrator for the in-process Nemotron engine.
  *
- * Owns the full lifecycle:
- *   1. Make sure the Nemotron model is loaded into RAM (auto-load on
- *      first start; download required separately via Settings).
- *   2. Open an ASR session (the renderer picks the id).
- *   3. Listen for `asr-text` Tauri events (delta text + audio time).
- *   4. Forward audio chunks pushed by the mic recorder.
- *   5. Convert each delta into per-word events for SentenceAccumulator.
- *   6. Hand confirmed sentences to the TranslationPipeline.
- *   7. Emit subtitle events to subtitleStream.
- *
- * v2.0 → v2.1 protocol changes:
- *   * No more EventSource / SSE / port number — events come from
- *     `@tauri-apps/api/event` instead of `http://127.0.0.1:8090`.
- *   * `transcribe_chunk` returns delta text, not word events with
- *     timestamps. We synthesise per-word timestamps by distributing
- *     `audio_end_sec - lastAudioEndSec` evenly across the words in
- *     the delta. Good enough for SentenceAccumulator's boundary
- *     rules (which only care about coarse word duration); not a
- *     substitute for true ASR word timing if a future feature needs it.
- *   * Nemotron is cache-aware streaming — committed text doesn't get
- *     retracted. So every word is `is_final=true`; the speculative
- *     `partial_text` channel is mostly dead weight now (kept emitting
- *     empty for compatibility with subtitleStream subscribers).
+ * Raw deltas are useful for live UX feedback, but the final/cumulative
+ * transcript is the stable source for subtitles and translation.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { SentenceAccumulator } from './sentenceAccumulator';
+import { findTranscriptBoundary } from './transcriptSegmenter';
 import { translationPipeline } from './translationPipeline';
 import { subtitleStream } from './subtitleStream';
 
 export interface WordEvent {
   text: string;
-  start: number; // seconds since session start
+  start: number;
   end: number;
   is_final: boolean;
 }
 
 interface ParakeetStatus {
-  model_present: boolean;
+  variants?: Array<{
+    variant: 'int8' | 'fp32';
+    present: boolean;
+  }>;
+  model_present?: boolean;
   model_loaded: boolean;
   session_active: boolean;
-  total_model_size: number;
-  bytes_on_disk: number;
-  model_dir: string | null;
 }
 
 interface AsrTextEvent {
   session_id: string;
   delta: string;
+  transcript?: string;
   audio_end_sec: number;
 }
 
@@ -61,31 +43,32 @@ interface AsrSessionEndedEvent {
 
 const SAMPLE_RATE = 16000;
 
+function hasUsableParakeetModel(status: ParakeetStatus): boolean {
+  if (status.model_loaded || status.model_present) return true;
+  return status.variants?.some((variant) => variant.present) ?? false;
+}
+
 export class AsrPipeline {
   private sessionId: string | null = null;
-  private accumulator = new SentenceAccumulator();
+  private fallbackAccumulator = new SentenceAccumulator();
   private startedAt = 0;
   private lastAudioEndSec = 0;
+  private committedTranscript = '';
+  private finalTailStartSec = 0;
+  private previewText = '';
   private unlistenText: UnlistenFn | null = null;
   private unlistenEnded: UnlistenFn | null = null;
 
-  /**
-   * Open a session. Auto-loads the Nemotron model on first call (the
-   * first session pays the ~3-5 s ort session creation cost, later
-   * ones are instant).
-   */
   async start(_language?: string): Promise<void> {
     if (this.sessionId) {
       console.warn('[asrPipeline] start() called twice; ending previous session first');
       await this.stop();
     }
 
-    // Sanity-check the model is on disk; the engine will produce a
-    // clearer error than `transcribe_chunk` deep in the stack would.
     const status = await invoke<ParakeetStatus>('get_parakeet_status');
-    if (!status.model_present) {
+    if (!hasUsableParakeetModel(status)) {
       throw new Error(
-        'Nemotron 模型尚未下載。請至 設定 → 本地轉錄 下載模型（約 2.5 GB）。',
+        'Nemotron model is not available. Please install or load the bundled INT8 model in Settings > Local Transcription.',
       );
     }
 
@@ -94,26 +77,23 @@ export class AsrPipeline {
     this.sessionId = sessionId;
     this.startedAt = Date.now();
     this.lastAudioEndSec = 0;
-    this.accumulator.reset();
+    this.committedTranscript = '';
+    this.finalTailStartSec = 0;
+    this.previewText = '';
+    this.fallbackAccumulator.reset();
     translationPipeline.reset();
 
     subtitleStream.emit({
       kind: 'session_started',
-      sessionId: this.sessionId,
+      sessionId,
       sampleRate: SAMPLE_RATE,
       language: 'en',
     });
 
-    // Subscribe to engine events. We listen on the global topic and
-    // filter by session_id inside the handler — Tauri's listen API
-    // doesn't support per-payload filters directly.
     this.unlistenText = await listen<AsrTextEvent>('asr-text', (event) => {
       this.onText(event.payload);
     });
     this.unlistenEnded = await listen<AsrSessionEndedEvent>('asr-session-ended', (event) => {
-      // Engine fired its own end signal (e.g. from a background
-      // shutdown). The renderer's stop() also fires this through the
-      // engine, so this listener mostly serves as a safety net.
       if (event.payload.session_id !== this.sessionId) return;
       console.log('[asrPipeline] engine reported session ended:', event.payload.session_id);
     });
@@ -121,12 +101,6 @@ export class AsrPipeline {
     console.log(`[asrPipeline] session ${this.sessionId} ready (in-process Nemotron)`);
   }
 
-  /**
-   * Push int16 PCM audio. Called by audioRecorder for each captured
-   * chunk; the engine accumulates internally until it has a 560 ms
-   * worth of samples (8960), then runs one cache-aware transcribe
-   * step.
-   */
   async pushAudio(pcm: Int16Array): Promise<void> {
     if (!this.sessionId) {
       console.warn('[asrPipeline] pushAudio before start()');
@@ -142,35 +116,18 @@ export class AsrPipeline {
     }
   }
 
-  /**
-   * End the session. Flushes any tail text from the engine, closes
-   * event subscriptions, and tells the engine to release session
-   * state (the model stays loaded for the next session).
-   *
-   * **Order matters here.** `asr_end_session` on the Rust side pads the
-   * sub-chunk tail and runs three zero-flushes through the decoder,
-   * each of which can emit further `asr-text` events for words the
-   * model held back waiting for trailing context. We keep the listeners
-   * attached *across* that call so those tail events still feed the
-   * accumulator and reach `subtitleStream`. Tearing the listeners down
-   * first (the v0.6.0-alpha.10 behaviour) silently dropped the last
-   * 1-3 words of every recording — they survived in the returned
-   * `transcript` but never became subtitle events.
-   */
   async stop(): Promise<void> {
     if (!this.sessionId) return;
     const id = this.sessionId;
-    // Keep `this.sessionId` set so `onText` (still attached) accepts
-    // the tail events the engine is about to emit.
 
+    let transcript = '';
     try {
-      const transcript = await invoke<string>('asr_end_session', { sessionId: id });
+      transcript = await invoke<string>('asr_end_session', { sessionId: id });
       console.log(`[asrPipeline] session ${id} final transcript: ${transcript.length} chars`);
     } catch (e) {
       console.warn('[asrPipeline] end_session failed (non-fatal):', e);
     }
 
-    // Engine has finished emitting; safe to detach now.
     if (this.unlistenText) {
       this.unlistenText();
       this.unlistenText = null;
@@ -180,11 +137,12 @@ export class AsrPipeline {
       this.unlistenEnded = null;
     }
 
-    // Force-flush whatever the SentenceAccumulator still buffers (e.g.
-    // a final clause without a terminator) BEFORE clearing sessionId,
-    // since `commitSentence` reads `this.sessionId`.
-    for (const sent of this.accumulator.flush()) {
-      this.commitSentence(sent.text, sent.startSec, sent.endSec);
+    if (typeof transcript === 'string' && transcript.trim().length > 0) {
+      this.consumeTranscriptSnapshot(transcript, this.lastAudioEndSec, true);
+    } else {
+      for (const sent of this.fallbackAccumulator.flush()) {
+        this.commitSentence(sent.text, sent.startSec, sent.endSec);
+      }
     }
 
     this.sessionId = null;
@@ -198,19 +156,36 @@ export class AsrPipeline {
 
   private onText(payload: AsrTextEvent): void {
     if (!this.sessionId || payload.session_id !== this.sessionId) return;
+    const sessionId = this.sessionId;
 
-    // Split delta into word tokens. Nemotron emits punctuation
-    // attached to words ("Hello," is one token), which is exactly
-    // what SentenceAccumulator's boundary rules expect.
+    this.appendPreviewDelta(payload.delta);
+    if (payload.transcript && payload.transcript.trim().length > 0) {
+      this.consumeTranscriptSnapshot(payload.transcript, payload.audio_end_sec, false);
+    } else {
+      this.consumeLegacyDelta(payload);
+    }
+    this.lastAudioEndSec = payload.audio_end_sec;
+
+    subtitleStream.emit({
+      kind: 'partial_text',
+      sessionId,
+      text: this.previewText,
+      audioEndSec: payload.audio_end_sec,
+    });
+  }
+
+  private appendPreviewDelta(delta: string): void {
+    const text = delta.trim();
+    if (!text) return;
+    this.previewText = [this.previewText, text].filter(Boolean).join(' ');
+  }
+
+  private consumeLegacyDelta(payload: AsrTextEvent): void {
     const tokens = payload.delta.split(/\s+/).filter((t) => t.length > 0);
     if (tokens.length === 0) return;
 
-    // Distribute audio time evenly across the new tokens. Coarse —
-    // the engine processed one 560 ms cache-aware chunk and committed
-    // however many words landed in it, so the per-word duration we
-    // synthesise here is closer to "average", not actual.
     const span = Math.max(0, payload.audio_end_sec - this.lastAudioEndSec);
-    const perToken = tokens.length > 0 ? span / tokens.length : 0;
+    const perToken = span / tokens.length;
 
     let cursor = this.lastAudioEndSec;
     for (const text of tokens) {
@@ -221,22 +196,52 @@ export class AsrPipeline {
         is_final: true,
       };
       cursor += perToken;
-      const sentences = this.accumulator.push(word);
+      const sentences = this.fallbackAccumulator.push(word);
       for (const s of sentences) {
         this.commitSentence(s.text, s.startSec, s.endSec);
+        this.previewText = this.fallbackAccumulator.bufferedText;
       }
     }
-    this.lastAudioEndSec = payload.audio_end_sec;
+  }
 
-    // Clear the partial-text channel — Nemotron is cache-aware so
-    // there's no speculative tail to display. Existing UI subscribers
-    // expect occasional empty payloads to clear their draft buffer.
-    subtitleStream.emit({
-      kind: 'partial_text',
-      sessionId: this.sessionId,
-      text: '',
-      audioEndSec: payload.audio_end_sec,
-    });
+  private consumeTranscriptSnapshot(
+    transcript: string,
+    audioEndSec: number,
+    forceFlush: boolean,
+  ): void {
+    if (!this.sessionId) return;
+
+    if (this.committedTranscript && !transcript.startsWith(this.committedTranscript)) {
+      const prefix = commonPrefixLength(this.committedTranscript, transcript);
+      this.committedTranscript = this.committedTranscript.slice(0, prefix);
+    }
+
+    while (true) {
+      const tailStart = this.committedTranscript.length;
+      const rawTail = transcript.slice(tailStart);
+      const leadingWhitespace = rawTail.match(/^\s*/)?.[0].length ?? 0;
+      const tail = rawTail.slice(leadingWhitespace);
+
+      if (!tail.trim()) {
+        this.previewText = '';
+        return;
+      }
+
+      const boundary = findTranscriptBoundary(tail, this.finalTailStartSec, audioEndSec, forceFlush);
+      if (!boundary) {
+        this.previewText = tail.trim();
+        return;
+      }
+
+      const text = tail.slice(0, boundary.endIndex).trim();
+      if (!text) return;
+
+      const absoluteEnd = tailStart + leadingWhitespace + boundary.endIndex;
+      this.commitSentence(text, this.finalTailStartSec, boundary.endSec);
+      this.committedTranscript = transcript.slice(0, absoluteEnd);
+      this.finalTailStartSec = boundary.endSec;
+      this.previewText = transcript.slice(absoluteEnd).trim();
+    }
   }
 
   private commitSentence(text: string, startSec: number, endSec: number): void {
@@ -261,3 +266,10 @@ export class AsrPipeline {
 }
 
 export const asrPipeline = new AsrPipeline();
+
+function commonPrefixLength(a: string, b: string): number {
+  const limit = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < limit && a[i] === b[i]) i += 1;
+  return i;
+}
