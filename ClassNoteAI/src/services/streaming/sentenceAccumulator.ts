@@ -25,7 +25,7 @@
 
 import type { WordEvent } from './asrPipeline';
 
-const TERMINATORS = /[.?!。？！]$/;
+const TERMINATORS = /[.?!。？！]\s*$/;
 const ABBREVIATIONS = new Set([
   'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.',
   'e.g.', 'i.e.', 'etc.', 'vs.', 'cf.', 'al.',
@@ -33,10 +33,72 @@ const ABBREVIATIONS = new Set([
   // ASR-emitted disfluencies that often pick up a period from Whisper / Parakeet
   'um.', 'uh.', 'er.', 'ah.', 'oh.',
 ]);
-const FILLER_TAIL = /(?:^|[\s,])(?:um+|uh+|you know|i mean|so+|well)[.?!]\s*$/i;
+const FILLER_TAIL = /(?:^|[\s,])(?:um+|uh+|er+|ah+|oh+|you know|i mean|so+|well)[.?!]\s*$/i;
+const PUNCT_ONLY = /^[\p{P}\p{S}]+$/u;
 
 const DEFAULT_MIN_WORDS = 3;
 const DEFAULT_MIN_DURATION_MS = 800;
+
+export interface BoundaryOptions {
+  /** Minimum spoken words to qualify as a substantive sentence. */
+  minWords?: number;
+  /** Minimum span duration in milliseconds. */
+  minDurationMs?: number;
+}
+
+/**
+ * Count *spoken* tokens in `text` — ignores tokens that are pure
+ * punctuation (so `"hello , world ."` is 2, not 4). Falls back to
+ * counting CJK characters when the whitespace tokenisation undershoots
+ * 3 (Chinese is often emitted without word boundaries).
+ */
+export function countSpokenWords(text: string): number {
+  const t = text.trim();
+  if (!t) return 0;
+  const tokens = t.split(/\s+/).filter((tok) => tok.length > 0 && !PUNCT_ONLY.test(tok));
+  if (tokens.length >= 3) return tokens.length;
+  const cjk = (t.match(/[一-龥]/g) || []).length;
+  return cjk > 0 ? cjk : tokens.length;
+}
+
+/**
+ * Pure-function form of `SentenceAccumulator.isBoundary`. Used both by
+ * the accumulator itself (after joining its WordEvent buffer) and by
+ * unit tests that want to assert boundary policy without constructing
+ * WordEvent fixtures.
+ *
+ * Returns `true` when:
+ *   1. `text` ends in `.` `?` `!` `。` `？` `！`
+ *   2. The terminating word isn't a known abbreviation (`Mr.`, `e.g.`, `vs.`)
+ *   3. The text doesn't end with a filler word + terminator
+ *      (`I think, um.`, `well.`)
+ *   4. There are at least `minWords` spoken words (default 3)
+ *   5. Span duration is at least `minDurationMs` (default 800)
+ *
+ * The "no end" case (no terminator) returns false. The "too short"
+ * cases return false. The "filler-only" case returns false.
+ */
+export function isSentenceBoundary(
+  text: string,
+  durationMs: number,
+  opts: BoundaryOptions = {},
+): boolean {
+  const minWords = opts.minWords ?? DEFAULT_MIN_WORDS;
+  const minDurationMs = opts.minDurationMs ?? DEFAULT_MIN_DURATION_MS;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (!TERMINATORS.test(trimmed)) return false;
+  // Last whitespace-separated token, lower-cased, for the abbreviation
+  // check. Conservative — only suppresses if the EXACT token (with its
+  // dot) is in the abbreviation set, so "Inc." blocks but "Incinerate."
+  // doesn't.
+  const lastToken = trimmed.split(/\s+/).pop()?.toLowerCase() ?? '';
+  if (ABBREVIATIONS.has(lastToken)) return false;
+  if (FILLER_TAIL.test(trimmed)) return false;
+  if (countSpokenWords(trimmed) < minWords) return false;
+  if (durationMs < minDurationMs) return false;
+  return true;
+}
 
 export interface AccumulatorOptions {
   /** Minimum words to count a buffered span as a "real" sentence. */
@@ -124,16 +186,10 @@ export class SentenceAccumulator {
   }
 
   private isBoundary(span: WordEvent[]): boolean {
-    if (span.length < this.opts.minWords) return false;
-    const last = span[span.length - 1];
-    if (!TERMINATORS.test(last.text)) return false;
-    const lower = last.text.toLowerCase();
-    if (ABBREVIATIONS.has(lower)) return false;
+    if (span.length === 0) return false;
     const text = span.map((w) => w.text).join(' ');
-    if (FILLER_TAIL.test(text)) return false;
-    const durationMs = (last.end - span[0].start) * 1000;
-    if (durationMs < this.opts.minDurationMs) return false;
-    return true;
+    const durationMs = (span[span.length - 1].end - span[0].start) * 1000;
+    return isSentenceBoundary(text, durationMs, this.opts);
   }
 
   private makeSentence(words: WordEvent[]): CompleteSentence | null {
