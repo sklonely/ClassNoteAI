@@ -50,6 +50,11 @@ jobs:
       fail-fast: false
       matrix:
         variant:
+          # v2 streaming refactor removed in-process Whisper + ct2rs;
+          # both ASR and translation now run as sidecars. The cpu/cuda
+          # split here only affects the Candle BGE embedding model
+          # (used for PDF↔transcript alignment). Sidecar binaries are
+          # bundled separately by the post-build packaging step.
           - { id: cpu,  features: "",         suffix: "",      label: "CPU" }
           - { id: cuda, features: "gpu-cuda", suffix: "-cuda", label: "CUDA" }
     name: build-windows-${{ matrix.variant.id }}

@@ -63,6 +63,7 @@ model_packages/
 # build time (or by the release CI workflow). ~14 MB .dll / ~25 MB
 # .dylib; too large to version in git.
 ClassNoteAI/src-tauri/resources/ort/onnxruntime.dll
+ClassNoteAI/src-tauri/resources/ort/onnxruntime_providers_shared.dll
 ClassNoteAI/src-tauri/resources/ort/onnxruntime.dylib
 ClassNoteAI/src-tauri/resources/ort/libonnxruntime*.so*
 ClassNoteAI/src-tauri/resources/ort/libonnxruntime*.dylib

@@ -1,73 +1,13 @@
+//! Legacy `whisper` module — only the resume-friendly model downloader
+//! survives in v2. The Whisper-rs ASR backend (transcribe / model /
+//! guards / WhisperService) was deleted alongside the rolling-buffer
+//! transcription pipeline; ASR now lives in `crate::asr` (Parakeet
+//! sidecar).
+//!
+//! `download.rs` stays because it's a generic resume-friendly downloader
+//! with progress callbacks — `crate::translation::gemma_model` reuses
+//! it for the TranslateGemma GGUF lazy-download flow. A future PR may
+//! lift it into `crate::downloads` and rename this module out of
+//! existence; for now keeping the import path preserves churn.
+
 pub mod download;
-pub mod guards; // Phase 3 of speech-pipeline-v0.6.5 (#53) — hallucination filters
-/**
- * Whisper ASR 服務模塊
- * 提供語音轉文字功能
- */
-pub mod model;
-#[cfg(test)]
-pub mod test_utils;
-pub mod transcribe;
-
-use anyhow::Result;
-pub use model::WhisperModel;
-
-/// Whisper 服務
-pub struct WhisperService {
-    model: Option<WhisperModel>,
-}
-
-impl WhisperService {
-    /// 創建新的 Whisper 服務實例
-    pub fn new() -> Self {
-        Self { model: None }
-    }
-
-    /// 加載 Whisper 模型
-    pub async fn load_model(&mut self, model_path: &str) -> Result<()> {
-        let model = WhisperModel::load(model_path).await?;
-        self.model = Some(model);
-        Ok(())
-    }
-
-    /// 轉錄音頻數據
-    ///
-    /// `language` accepts BCP-47-ish tags ("en", "zh-TW", "auto") or
-    /// None; see `transcribe::normalize_language` for the mapping into
-    /// whisper.cpp's two-letter codes.
-    pub async fn transcribe(
-        &self,
-        audio_data: &[i16],
-        sample_rate: u32,
-        initial_prompt: Option<&str>,
-        language: Option<&str>,
-        options: Option<transcribe::TranscriptionOptions>,
-    ) -> Result<transcribe::TranscriptionResult> {
-        let model = self
-            .model
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("模型未加載"))?;
-
-        transcribe::transcribe_audio(
-            model,
-            audio_data,
-            sample_rate,
-            initial_prompt,
-            language,
-            options,
-        )
-        .await
-    }
-
-    /// 檢查模型是否已加載
-    #[allow(dead_code)] // Available for future use
-    pub fn is_model_loaded(&self) -> bool {
-        self.model.is_some()
-    }
-}
-
-impl Default for WhisperService {
-    fn default() -> Self {
-        Self::new()
-    }
-}

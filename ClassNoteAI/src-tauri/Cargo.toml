@@ -18,9 +18,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = ["candle-embed"]
+default = ["candle-embed", "speaker-diarization"]
 # Candle embedding - 使用 Candle 框架進行文本 Embedding（預設啟用）
 candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
+nmt-local = []
+speaker-diarization = ["parakeet-rs/sortformer"]
+gpu-directml = ["ort/directml", "parakeet-rs/directml"]
+gpu-coreml = ["ort/coreml", "parakeet-rs/coreml"]
 
 # Whisper GPU backends. All three are opt-in and OFF by default — the
 # CPU build stays the baseline, so any regression from a broken
@@ -61,32 +65,14 @@ candle-embed = ["candle-core", "candle-nn", "candle-transformers", "hf-hub"]
 #                             NVIDIA drivers.
 # Vulkan/Metal aren't supported by ct2rs (CUDA-only GPU backend). Metal
 # covers whisper + candle; Vulkan covers only whisper.
-gpu-cuda = [
-    "whisper-rs/cuda",
-    # candle-core/cuda disabled in the Windows CI build. candle-kernels
-    # 0.9.2 compiles src/moe/moe_wmma.cu through bindgen_cuda 0.1.6's
-    # rayon-parallel nvcc invocation. On a 4-core windows-latest runner
-    # (16GB RAM) the parallel PTXAS processes OOM silently — nvcc
-    # returns exit 1 with empty stdout + stderr. candle 0.10.2 has the
-    # same breakage. Ampere (sm_80+) users would also lose native SASS
-    # if we bumped CUDA_COMPUTE_CAP to paper over the OOM.
-    #
-    # Net effect: BGE embedding stays on CPU in shipped Windows builds.
-    # For a 70-min lecture that's ~3 min of CPU embedding vs. ~10 s on
-    # GPU — noticeable but not blocking. Whisper + CT2 retain full GPU
-    # acceleration (each on a separate crate's CUDA path, neither hits
-    # the moe_wmma.cu compile step).
-    #
-    # When candle 0.11 / bindgen_cuda 0.2 land upstream fixes, or when
-    # we move CI to a larger runner, fold these back in.
-    # "candle-core/cuda",
-    # "candle-nn/cuda",
-    # "candle-transformers/cuda",
-    "ct2rs/cuda-dynamic-loading",
-]
-gpu-vulkan = ["whisper-rs/vulkan"]
+# GPU features for the Candle BGE embedding model. v2 has no in-process
+# ASR (Parakeet runs as a sidecar) and no in-process translation
+# (TranslateGemma runs as a sidecar), so the only Rust-side accelerator
+# need is BGE embedding. Currently CUDA is disabled in CI for the same
+# reason as before — candle-kernels OOM in nvcc on 16 GB GitHub runners.
+gpu-cuda = ["ort/cuda", "parakeet-rs/cuda"]
+gpu-vulkan = []
 gpu-metal = [
-    "whisper-rs/metal",
     "candle-core/metal",
     "candle-nn/metal",
     "candle-transformers/metal",
@@ -101,9 +87,12 @@ tauri-plugin-log = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
-whisper-rs = { version = "0.16", default-features = false }
+# whisper-rs removed in the v2 streaming refactor. ASR is now the
+# in-process Nemotron streaming model via parakeet-rs (see
+# `crate::asr::parakeet_engine`).
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+async-trait = "0.1"
 num_cpus = "1.0"
 reqwest = { version = "0.12", features = ["stream", "json", "multipart"] }
 futures-util = "0.3"
@@ -134,10 +123,8 @@ zip = "0.6"
 regex = "1.10"
 # URL encoding for Google Translate unofficial API
 urlencoding = "2.1"
-# CTranslate2 for efficient neural machine translation
-# ct2rs provides Rust bindings to CTranslate2
-# Note: Requires CMake and C++ compiler for first-time build
-ct2rs = { version = "0.9", features = ["default"] }
+# ct2rs removed in the v2 streaming refactor. Translation moved to the
+# TranslateGemma sidecar (llama-server, see `crate::translation::gemma`).
 # File system utilities
 walkdir = "2"
 dirs = "5"
@@ -146,27 +133,43 @@ dirs = "5"
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
 tauri-plugin-http = "2"
 tauri-plugin-process = "2"
-# `load-dynamic` is mandatory here: ort-sys with `download-binaries`
-# statically links its own protobuf, which collides with the protobuf
-# already statically linked by sentencepiece-sys (a transitive dep of
-# ct2rs). Linker error on Windows is LNK2005 on every `WireFormatLite`
-# / `FieldSkipper` symbol followed by LNK1169. The only way both
-# crates can coexist in this binary is with `load-dynamic` on the ort
-# side so it finds onnxruntime's protobuf copy at runtime, not link
-# time. See docs/design/speech-pipeline-v0.6.5.md — the DLL-version
-# mismatch on end-user Windows machines has to be solved via release-
-# workflow bundling (ship a pinned onnxruntime.dll next to the exe
-# and point `ORT_DYLIB_PATH` at it) rather than via `download-binaries`.
-ort = { version = "2.0.0-rc.9", features = ["load-dynamic"] }
+# Stay on `load-dynamic`: tried `download-binaries` on 2026-04-25
+# (now that ct2rs / sentencepiece-sys are gone) but tokenizers'
+# transitive `esaxx-rs` is built with /MT (static CRT) while ort's
+# prebuilt onnxruntime is /MD (dynamic CRT) since rc.5 — LNK2038
+# `RuntimeLibrary` mismatch on hundreds of symbols, no clean way to
+# unify without rebuilding esaxx-rs from source.
+#
+# The downside of load-dynamic is the rc.12 hang on Windows
+# (https://github.com/pykeio/ort/issues/559 — Mac M4 reporter, same
+# symptom on Windows). Workaround: standalone example binaries
+# can't easily call `Session::builder()` directly. The Tauri app
+# itself is unaffected because the path through the Tauri runtime
+# initialises ort differently.
+#
+# Pinned to rc.12 to unify with parakeet-rs's ort dep (it requires
+# exactly 2.0.0-rc.12 and pre-release semver doesn't allow rc.9 →
+# rc.12 promotion automatically).
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 ndarray = "0.15"
 # Phase 3 of speech-pipeline-v0.6.5 (#53): compression-ratio guard
 # against Whisper repetition-loop hallucinations. Already transitive
 # via reqwest/tokio/etc.; declaring direct so the version constraint
 # is ours and future transitive bumps can't silently break the guard.
 flate2 = "1"
+# In-process Nemotron streaming ASR (cache-aware RNNT, 0.6B EN). Pure
+# Rust + ort, no Python sidecar. We pin `default-features = false` to
+# strip the crate's `ort-defaults` feature, which would activate
+# `ort/default` and pull in `download-binaries` — that fights with our
+# `load-dynamic` strategy and the bundled onnxruntime.dll story (see
+# the ort comment above). `cpu` is an empty marker feature kept for
+# documentation; ort backend selection happens via our top-level ort
+# features (cuda/directml are future work).
+parakeet-rs = { version = "0.3.5", default-features = false, features = ["cpu"] }
 
 [dev-dependencies]
 tempfile = "3.8"
+hound = "3.5"
 
 # macOS-only auto-enable of the Metal backends for every crate that
 # supports it. This keeps the default-feature story simple on
@@ -181,14 +184,27 @@ tempfile = "3.8"
 # above as `optional = true`) gets its `metal` feature union'd in
 # when building for macOS.
 #
-# ct2rs has no Metal backend (CUDA-only for GPU), so local translation
-# stays on CPU on macOS. Apple Silicon's NEON + Accelerate framework
-# make CPU CT2 competitive enough that this isn't a priority gap.
+# macOS-only Metal feature wiring for Candle (BGE embedding). Whisper +
+# CT2 are gone in v2 so the only thing here is the embedding model.
 [target.'cfg(target_os = "macos")'.dependencies]
-whisper-rs = { version = "0.16", default-features = false, features = ["metal"] }
 candle-core = { version = "0.9", optional = true, features = ["metal"] }
 candle-nn = { version = "0.9", optional = true, features = ["metal"] }
 candle-transformers = { version = "0.9", optional = true, features = ["metal"] }
+
+[target.'cfg(windows)'.dependencies]
+# Win32 LibraryLoader APIs (`AddDllDirectory`, `SetDefaultDllDirectories`).
+# Used by `utils::onnx::init_onnx` to make Windows' transitive-dep search
+# look in the bundled-DLL directory FIRST, before the legacy
+# current-directory / PATH / System32 sequence. PATH-prepend alone wasn't
+# enough to keep Windows from picking up `C:\Windows\System32\onnxruntime.dll`
+# (WinML 1.17) and hanging `ort::init_from`. See
+# `docs/follow-ups/parakeet-rs-windows-ort-hang-handoff.md`.
+windows-sys = { version = "0.61", features = [
+    "Win32_System_LibraryLoader",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
@@ -199,11 +215,9 @@ tauri-plugin-updater = "2"
 # pulls the already-running window to the front instead.
 tauri-plugin-single-instance = "2"
 
-# Windows-only build fix: remove ct2rs's forced /MT static CRT so it matches
-# the rest of the build (default /MD). No-op on macOS (inside `if os == Os::Win` block).
-[patch.crates-io]
-ct2rs = { path = "vendor/ct2rs" }
-esaxx-rs = { path = "vendor/esaxx-rs" }
+# [patch.crates-io] for ct2rs is gone with the ct2rs dep removal.
+# vendor/ct2rs and vendor/esaxx-rs directories are now dead and can be
+# git-removed in a follow-up cleanup commit.
 
 # CI-only profile for `cargo check` in pr-check.yml. Inherits dev but
 # strips ALL debug info — both rustc-side (debug = 0) AND C/C++ build

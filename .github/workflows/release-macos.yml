@@ -179,6 +179,9 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # v2 streaming refactor: in-process Whisper/CT2 are gone.
+        # macOS Metal backend in Cargo.toml's [target.macos] now only
+        # accelerates the Candle BGE embedding model.
         run: npm run tauri build -- --target aarch64-apple-darwin
 
       # Intel x86_64 暫時禁用 - GitHub Actions macOS runner 不支持 AVX-512

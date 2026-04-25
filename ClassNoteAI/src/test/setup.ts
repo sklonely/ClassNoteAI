@@ -119,6 +119,15 @@ Object.defineProperty(globalThis, 'localStorage', {
     value: localStorageMock,
 });
 
+// jsdom doesn't implement Element.scrollIntoView. Components that auto-
+// scroll on update (chat panels, log viewers) crash on mount under test
+// without this stub. Cheap to install once globally; per-test overrides
+// can still spy on it via `vi.spyOn(Element.prototype, 'scrollIntoView')`.
+const elementPrototype = globalThis.Element?.prototype;
+if (elementPrototype && typeof elementPrototype.scrollIntoView !== 'function') {
+    elementPrototype.scrollIntoView = vi.fn();
+}
+
 // Reset mocks before each test
 beforeEach(() => {
     vi.clearAllMocks();

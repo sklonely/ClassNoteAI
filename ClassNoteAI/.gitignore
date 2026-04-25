@@ -61,6 +61,7 @@ src-tauri/target/
 *.tmp
 *.temp
 .cache/
+evals/reports/
 
 # ===================
 # Windows build vendor (hydrated by scripts/bootstrap-vendor.sh)

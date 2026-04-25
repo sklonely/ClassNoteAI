@@ -73,6 +73,18 @@ pub fn get_embedding_models_dir() -> Result<PathBuf, String> {
     Ok(get_models_dir()?.join("embedding"))
 }
 
+/// Get the LLM (gguf) models directory used by the TranslateGemma sidecar.
+///
+/// Returns: {app_data_dir}/models/llm/
+///
+/// Sub-directory split from `translation/` because the file format
+/// (single-file gguf) and the runtime (llama-server sidecar via HTTP) are
+/// fundamentally different from the CT2 model layout in `translation/`.
+/// Keeping them apart avoids the model-discovery scanner getting confused.
+pub fn get_llm_models_dir() -> Result<PathBuf, String> {
+    Ok(get_models_dir()?.join("llm"))
+}
+
 /// Get the documents directory
 ///
 /// Returns: {app_data_dir}/documents/

@@ -179,6 +179,11 @@ jobs:
       # Uses ci-check profile (inherits dev, debug=0). Strips debuginfo
       # from both rustc AND the C/C++ build scripts via cc-rs (which
       # reads cargo's DEBUG env, set by the profile). Closes #119.
+      #
+      # `--features nmt-local` matches the release-macos build matrix —
+      # opts in M2M100 (ct2rs + sentencepiece-sys) so PR check covers
+      # the same code path that ships. The dev default skips nmt-local
+      # for fast local iteration; CI must explicitly verify it builds.
       - name: cargo check
         working-directory: ClassNoteAI/src-tauri
         run: cargo check --profile=ci-check --message-format=short
@@ -301,4 +306,9 @@ jobs:
           # plumbing. This is the only path to skip MSVC's /Z7 PDB
           # generation on Windows whisper-rs-sys/ct2rs/sentencepiece-sys
           # builds. Closes #119.
+          #
+          # `--features nmt-local` matches both release-windows variants
+          # (cpu uses nmt-local directly, cuda gets it transitively via
+          # gpu-cuda). PR check must compile the same code path; the
+          # dev default skips it for fast local iteration only.
           cargo check --profile=ci-check --message-format=short
