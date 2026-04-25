@@ -1,23 +1,32 @@
 /**
- * Sentence → translation pipeline with rolling context window.
+ * Sentence → translation pipeline.
  *
  * Replaces the v1 inline translation call inside `commitStableText` with
  * a queue-based async pipeline that:
  *
- *  1. Maintains a rolling context of the last N translated sentences
- *     and prepends them to the LLM prompt — fixes the v1 problem where
- *     pronouns and term continuity were lost across sentence boundaries.
- *  2. Runs translation off the hot path (the audio thread doesn't block
+ *  1. Runs translation off the hot path (the audio thread doesn't block
  *     waiting for the LLM).
- *  3. Caches per-sentence so duplicate utterances don't re-translate.
+ *  2. Caches per-sentence (via `translateRough`'s built-in cache) so
+ *     duplicate utterances don't re-translate.
+ *  3. Retries once on transient HTTP errors before giving up — a single
+ *     dropped sentence in a 70-min lecture is jarring; mid-stream
+ *     llama-server hiccups are common enough to be worth a single
+ *     retry.
  *  4. Surfaces translations via the subtitle stream rather than direct
  *     subtitleService writes — UI subscribes once, gets everything.
+ *
+ * Rolling-context-window prompting is **not** implemented yet — see
+ * the `context` field's comment. The v1-style "prepend prior sentences"
+ * trick interacts badly with TranslateGemma's chat template (the model
+ * starts translating the prefix as part of the answer). The proper
+ * structured-history wiring is deferred until we either switch to
+ * Gemma's chat-completions endpoint or add a context-aware system
+ * prompt. Callers that need cross-sentence pronoun resolution today
+ * should use the fine-translation pass.
  */
 
 import { translateRough } from '../translationService';
 import { subtitleStream } from './subtitleStream';
-
-const CONTEXT_WINDOW = 2; // previous N sentences fed as context to LLM
 
 interface TranslationJob {
   id: string;
@@ -26,11 +35,32 @@ interface TranslationJob {
   enqueuedAt: number;
 }
 
+/** Wait `ms` milliseconds. Small helper to keep the retry path readable. */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Detect retryable errors from `translateRough`. Connection refused,
+ * timeouts, and 5xx-ish messages are retryable; "model not loaded" or
+ * "invalid input" are not. Heuristic — `translateRough` only surfaces
+ * the message string from the Rust backend.
+ */
+function isRetryable(error: unknown): boolean {
+  const msg = String((error as { message?: string })?.message ?? error).toLowerCase();
+  return (
+    msg.includes('未啟動') ||      // gemma_sidecar's friendly Chinese connect-error
+    msg.includes('connect') ||     // generic connect refused
+    msg.includes('timeout') ||
+    msg.includes('逾時') ||
+    msg.includes('http error') ||  // gemma::translate's catch-all
+    msg.includes('5')              // 5xx status (loose; translation is idempotent so over-retrying is cheap)
+  );
+}
+
 class TranslationPipeline {
   private queue: TranslationJob[] = [];
   private processing = false;
-  /** Last N (en, zh) pairs — used as LLM context for the next translation. */
-  private context: Array<{ en: string; zh: string }> = [];
 
   /** Push a sentence for async translation. Non-blocking. */
   enqueue(job: TranslationJob): void {
@@ -38,9 +68,13 @@ class TranslationPipeline {
     void this.drain();
   }
 
-  /** Reset rolling context — call between recording sessions. */
+  /**
+   * Reset between recording sessions. No durable state to clear today
+   * (no rolling context yet) — kept for forward compatibility so callers
+   * don't have to start tracking a new lifecycle when context lands.
+   */
   reset(): void {
-    this.context = [];
+    // intentionally empty
   }
 
   private async drain(): Promise<void> {
@@ -58,58 +92,57 @@ class TranslationPipeline {
 
   private async translateOne(job: TranslationJob): Promise<void> {
     const start = performance.now();
-    // Build context-augmented input. translateRough's backend currently
-    // doesn't have a structured "history" parameter — we encode context
-    // as an English prefix the model will translate as one block then we
-    // strip back out. For now (v2 scaffold) we just pass the bare
-    // sentence; the structured-context wiring lives in the next
-    // iteration once we settle on a prompt format that survives the
-    // translateRough → llama-server → Gemma chain end-to-end.
-    void this.context;
+    const RETRY_DELAY_MS = 500;
+    let lastError: unknown = null;
 
-    try {
-      const result = await translateRough(
-        job.textEn,
-        'en',
-        'zh',
-        /* useCache */ true,
-      );
-      const latencyMs = performance.now() - start;
-      const zh = (result.translated_text || '').trim();
-      if (!zh) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await translateRough(
+          job.textEn,
+          'en',
+          'zh',
+          /* useCache */ true,
+        );
+        const latencyMs = performance.now() - start;
+        const zh = (result.translated_text || '').trim();
+        if (!zh) {
+          subtitleStream.emit({
+            kind: 'translation_failed',
+            id: job.id,
+            sessionId: job.sessionId,
+            error: 'translator returned empty',
+          });
+          return;
+        }
+        // The TranslationResult.source field ('Rough' | 'Fine') doesn't
+        // distinguish between local CT2 / Gemma / Google. Until backend
+        // returns provider tag, mark as 'gemma' (current default) — the UI
+        // only uses this for telemetry/badges, not for correctness.
         subtitleStream.emit({
-          kind: 'translation_failed',
+          kind: 'translation_ready',
           id: job.id,
           sessionId: job.sessionId,
-          error: 'translator returned empty',
+          textZh: zh,
+          provider: 'gemma',
+          latencyMs,
         });
         return;
+      } catch (e) {
+        lastError = e;
+        if (attempt === 0 && isRetryable(e)) {
+          await delay(RETRY_DELAY_MS);
+          continue;
+        }
+        break;
       }
-      // Update rolling context — bounded so prompts don't grow unbounded.
-      this.context.push({ en: job.textEn, zh });
-      if (this.context.length > CONTEXT_WINDOW) {
-        this.context.shift();
-      }
-      // The TranslationResult.source field ('Rough' | 'Fine') doesn't
-      // distinguish between local CT2 / Gemma / Google. Until backend
-      // returns provider tag, mark as 'gemma' (current default) — the UI
-      // only uses this for telemetry/badges, not for correctness.
-      subtitleStream.emit({
-        kind: 'translation_ready',
-        id: job.id,
-        sessionId: job.sessionId,
-        textZh: zh,
-        provider: 'gemma',
-        latencyMs,
-      });
-    } catch (e) {
-      subtitleStream.emit({
-        kind: 'translation_failed',
-        id: job.id,
-        sessionId: job.sessionId,
-        error: String((e as { message?: string })?.message ?? e),
-      });
     }
+
+    subtitleStream.emit({
+      kind: 'translation_failed',
+      id: job.id,
+      sessionId: job.sessionId,
+      error: String((lastError as { message?: string })?.message ?? lastError),
+    });
   }
 }
 
