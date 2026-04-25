@@ -93,6 +93,28 @@ beforeEach(() => {
 });
 
 describe('videoImportService.importVideo', () => {
+  it('imports a video file through the streaming pipeline and stores video_path', async () => {
+    const result = await videoImportService.importVideo('lecture-1', 'D:/input/lecture.mp4');
+
+    expect(result.segmentCount).toBe(1);
+    expect(asrStartMock).toHaveBeenCalledTimes(1);
+    expect(asrPushAudioMock).toHaveBeenCalledTimes(1);
+    expect(saveLectureMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        video_path: 'D:/ClassNoteAI/AppData/videos/lecture-1.mp3',
+        audio_path: undefined,
+        status: 'completed',
+      }),
+    );
+    expect(saveSubtitlesMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        id: 'seg-1',
+        lecture_id: 'lecture-1',
+        text_en: 'Hello class.',
+      }),
+    ]);
+  });
+
   it('imports an audio-only file through the streaming pipeline and stores audio_path', async () => {
     const result = await videoImportService.importVideo('lecture-1', 'D:/input/lecture.mp3');
 
