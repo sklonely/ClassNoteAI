@@ -7,6 +7,21 @@ static INIT: Once = Once::new();
 ///
 /// Internally calls [`init_onnx_from`] with the path stored in
 /// `ORT_DYLIB_PATH`.
+///
+/// **Windows**: if `ORT_DYLIB_PATH` is unset, this is a hard error.
+/// The fallback to `ort::init().commit()` deadlocks under the
+/// rc.12 + bundled-DLL combo (silent infinite hang inside
+/// `setup_api`'s panic path — see handoff doc), and a hung app at
+/// startup is the worst possible failure mode. Better to fail loudly
+/// at first session creation with a clear "DLL path not configured"
+/// error than to leave the process spinning forever.
+///
+/// **Non-Windows**: with no `ORT_DYLIB_PATH` we do still fall back to
+/// the lazy `ort::init().commit()` path because the rc.12 hang has
+/// only been observed on Windows; macOS and Linux either find a
+/// system-installed onnxruntime via the standard dynamic loader or
+/// surface a clear "library not found" error from libloading. If the
+/// hang ever reproduces on those platforms, tighten this same way.
 pub fn init_onnx() {
     INIT.call_once(|| {
         let dylib = std::env::var_os("ORT_DYLIB_PATH").map(std::path::PathBuf::from);
@@ -17,14 +32,39 @@ pub fn init_onnx() {
                 }
                 Err(e) => {
                     eprintln!("[ORT] init_onnx_from({}) failed: {e}", path.display());
+                    // Don't silently fall through to ort::init() on Windows
+                    // — that path hangs. On non-Windows fall through is OK.
+                    #[cfg(not(windows))]
+                    {
+                        let _ = ort::init().commit();
+                    }
                 }
             },
             None => {
-                eprintln!(
-                    "[ORT] ORT_DYLIB_PATH not set; cannot init via the safe path. \
-                     Falling back to ort::init() — may hit the rc.12 Windows hang."
-                );
-                let _ = ort::init().commit();
+                #[cfg(windows)]
+                {
+                    eprintln!(
+                        "[ORT] FATAL: ORT_DYLIB_PATH is not set on Windows. \
+                         The Tauri setup hook in lib.rs is supposed to point \
+                         it at the bundled onnxruntime.dll *before* calling \
+                         init_onnx(). Falling back to ort::init() is unsafe \
+                         here — rc.12 hangs forever in that path. Skipping init; \
+                         every Session::builder() call will panic until the env \
+                         is set and the process restarts."
+                    );
+                    // Intentionally skip ort::init(). Letting later callers
+                    // hit `ort::api()` via `Session::builder()` produces a
+                    // clear panic with a stack trace, which is more
+                    // diagnosable than this function silently hanging.
+                }
+                #[cfg(not(windows))]
+                {
+                    eprintln!(
+                        "[ORT] ORT_DYLIB_PATH not set; falling back to ort::init() \
+                         (system library search). Bundling fix recommended."
+                    );
+                    let _ = ort::init().commit();
+                }
             }
         }
     });

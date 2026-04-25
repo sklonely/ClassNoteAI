@@ -26,11 +26,13 @@
 //! - Crash recovery: the next `ensure_running` call detects the dead
 //!   child via `try_wait` and replaces it.
 
+use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::paths;
 use crate::utils::command::no_window;
 
 /// Default localhost port. Picked to match the dev-time manual command
@@ -176,6 +178,18 @@ async fn wait_for_health(port: u16) -> bool {
 
 /// Build the llama-server argv. Matches the manual command our docs
 /// give users for dev testing — keep them in sync.
+///
+/// **Context window** is set to 4096 tokens. The renderer's
+/// `SentenceAccumulator` hard-caps committed sentences at 60 words
+/// (≈ 80–120 tokens English, ~200 tokens English+ZH+chat scaffold),
+/// well under 1024. The 4× headroom is for: (a) the rare 60-word
+/// English sentence with dense morphology that token-explodes,
+/// (b) future rolling-context wiring in `translationPipeline.ts`
+/// that prepends prior pairs, and (c) the c=1024 incident from the
+/// 2026-04-25 eval where a pre-existing sidecar started with the
+/// llama-server default rejected a 9721-token request from a
+/// pre-fix unbounded sentence. KV-cache cost at c=4096 is well under
+/// 1 GB on Q4_K_M, fits any 4GB+ VRAM card.
 fn server_args(model_path: &str, port: u16) -> Vec<String> {
     vec![
         "-m".into(),
@@ -183,7 +197,7 @@ fn server_args(model_path: &str, port: u16) -> Vec<String> {
         "-ngl".into(),
         "99".into(),
         "-c".into(),
-        "2048".into(),
+        "4096".into(),
         "--port".into(),
         port.to_string(),
         "--host".into(),
@@ -243,19 +257,43 @@ pub async fn ensure_running(
         }
     };
 
-    // 4. Spawn
+    // 4. Spawn. Capture llama-server's stderr to a file under the app
+    //    data dir so the FIRST thing we look at on a `BringUpResult::
+    //    Timeout` ticket is the actual sidecar log instead of "well it
+    //    didn't say anything". Prior behaviour was `Stdio::null()` —
+    //    every llama-server failure mode (CUDA OOM, GGUF mismatch,
+    //    port already bound, model file missing) was invisible.
     println!(
         "[gemma_sidecar] spawning {} on :{port} with model {}",
         bin.display(),
         model_path
     );
+    let log_path = sidecar_log_path();
+    let stderr_target = match log_path.as_ref().and_then(|p| {
+        OpenOptions::new().create(true).append(true).open(p).ok()
+    }) {
+        Some(f) => {
+            if let Some(p) = log_path.as_ref() {
+                println!("[gemma_sidecar] llama-server stderr → {}", p.display());
+            }
+            Stdio::from(f)
+        }
+        None => {
+            eprintln!(
+                "[gemma_sidecar] could not open log file (would have been {:?}); \
+                 falling back to inheriting parent stderr",
+                log_path
+            );
+            Stdio::inherit()
+        }
+    };
     let mut cmd = no_window(&bin);
     cmd.args(server_args(model_path, port))
-        // Pipe stdout/stderr to avoid filling the kernel pipe buffer (which
-        // would eventually block the child). We don't read the streams in
-        // this build; future work can pipe stderr into our log file.
+        // stdout still discarded — llama-server's progress chatter is
+        // verbose and not actionable. stderr is what carries the
+        // failure-mode messages worth keeping.
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr_target)
         .stdin(Stdio::null());
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -279,6 +317,18 @@ pub async fn ensure_running(
         shutdown();
         BringUpResult::Timeout
     }
+}
+
+/// Resolve the path llama-server's stderr is appended to. Returns
+/// `None` when we can't determine an app-data dir — caller then falls
+/// back to inheriting the parent's stderr (visible in dev terminals).
+pub fn sidecar_log_path() -> Option<PathBuf> {
+    let dir = paths::get_app_data_dir().ok()?.join("logs");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("[gemma_sidecar] mkdir {} failed: {e}", dir.display());
+        return None;
+    }
+    Some(dir.join("llama-server.log"))
 }
 
 /// Kill the supervised sidecar. Idempotent — does nothing if we never
