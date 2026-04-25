@@ -102,8 +102,9 @@ export async function translateRough(
   sourceLang: string = 'en',
   targetLang: string = 'zh',
   useCache: boolean = true,
-  provider?: 'local' | 'google',
-  googleApiKey?: string
+  provider?: 'local' | 'gemma' | 'google',
+  googleApiKey?: string,
+  gemmaEndpoint?: string
 ): Promise<TranslationResult> {
   // 檢查緩存
   if (useCache) {
@@ -149,8 +150,9 @@ export async function translateRough(
       }
     }
 
-    // 默認使用本地翻譯（只有在 provider 完全未指定時）
-    actualProvider = actualProvider || 'local';
+    // 預設使用 gemma（如果 sidecar 沒跑，translateRough 會自動 fallback）。
+    // 早期預設 'local' 造成大量 dev build 失敗（沒 nmt-local feature）。
+    actualProvider = actualProvider || 'gemma';
 
     console.log('[TranslationService] 翻譯配置:', {
       provider: actualProvider,
@@ -160,40 +162,64 @@ export async function translateRough(
       textPreview: text.substring(0, 50),
     });
 
-    let result = await invoke<TranslationResult>('translate_rough', {
-      text,
-      sourceLang,
-      targetLang,
-      provider: actualProvider,
-      googleApiKey: actualApiKey,
-    });
-
-    console.log('[TranslationService] 翻譯結果:', {
-      translatedText: result.translated_text,
-      translatedTextLength: result.translated_text?.length || 0,
-      source: result.source,
-      confidence: result.confidence,
-      hasChinese: /[\u4e00-\u9fa5]/.test(result.translated_text || ''),
-    });
-
-    // 如果本地翻譯返回空結果，自動 fallback 到 Google 翻譯
-    if (actualProvider === 'local' && (!result.translated_text || result.translated_text.trim() === '')) {
-      console.warn('[TranslationService] 本地翻譯返回空結果，自動 fallback 到 Google 翻譯...');
+    // For Gemma provider, also resolve endpoint from settings if caller
+    // didn't pass one explicitly. Empty string → backend uses its default.
+    let actualGemmaEndpoint = gemmaEndpoint;
+    if (actualProvider === 'gemma' && actualGemmaEndpoint === undefined) {
       try {
-        result = await invoke<TranslationResult>('translate_rough', {
+        const { storageService } = await import('./storageService');
+        const settings = await storageService.getAppSettings();
+        actualGemmaEndpoint = settings?.translation?.gemma_endpoint || undefined;
+      } catch {
+        // best-effort; backend will fall back to DEFAULT_ENDPOINT
+      }
+    }
+
+    // Generic fallback chain: try the user's choice first, then the
+    // remaining backends in priority order. Stops at the first one that
+    // returns non-empty text. Replaces the old "localâgoogle empty-string
+    // only" path; that one never triggered when the backend threw (e.g.
+    // "nmt-local not compiled" in dev builds), so subtitles silently
+    // dropped to English-only with no Chinese rendered.
+    const tried = new Set<string>();
+    const order: Array<'local' | 'gemma' | 'google'> = [];
+    for (const p of [actualProvider, 'gemma' as const, 'google' as const]) {
+      if (!tried.has(p)) {
+        tried.add(p);
+        order.push(p as 'local' | 'gemma' | 'google');
+      }
+    }
+
+    let result: TranslationResult | null = null;
+    let firstError: unknown = null;
+    for (const tryProvider of order) {
+      try {
+        const r = await invoke<TranslationResult>('translate_rough', {
           text,
           sourceLang,
           targetLang,
-          provider: 'google',
-          googleApiKey: actualApiKey, // 如果沒有 key，會使用非官方接口
+          provider: tryProvider,
+          googleApiKey: actualApiKey,
+          gemmaEndpoint: actualGemmaEndpoint,
         });
-        console.log('[TranslationService] Google fallback 結果:', {
-          translatedText: result.translated_text,
-          translatedTextLength: result.translated_text?.length || 0,
-        });
-      } catch (fallbackError) {
-        console.error('[TranslationService] Google fallback 也失敗:', fallbackError);
+        if (r.translated_text && r.translated_text.trim() !== '') {
+          if (tryProvider !== actualProvider) {
+            console.log(
+              `[TranslationService] èªåå¾ ${actualProvider} fallback å° ${tryProvider}`,
+            );
+          }
+          result = r;
+          break;
+        }
+        console.warn(`[TranslationService] ${tryProvider} åå³ç©ºçµæï¼åè©¦ä¸å backend`);
+      } catch (e) {
+        if (firstError === null) firstError = e;
+        const msg = String((e as { message?: string })?.message ?? e ?? '');
+        console.warn(`[TranslationService] ${tryProvider} å¤±æ: ${msg.slice(0, 120)}`);
       }
+    }
+    if (!result) {
+      throw firstError ?? new Error('ææç¿»è­¯å¾ç«¯åä¸å¯ç¨');
     }
 
     // 保存到緩存

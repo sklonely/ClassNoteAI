@@ -1,9 +1,14 @@
-// Whisper 模塊
+// ASR (v2.1 in-process Nemotron streaming via parakeet-rs) + legacy
+// whisper module (downloader only — Whisper-rs ASR was deleted in v2).
+// `pub` on `asr` so eval harnesses (examples/nemotron_eval.rs) can
+// reach `parakeet_model::Variant` for the INT8/FP32 bake-off.
+pub mod asr;
 mod whisper;
-pub use whisper::model::WhisperModel;
-pub use whisper::transcribe;
 // 工具模塊
-mod utils;
+// `pub` so example binaries (e.g. `examples/ort_minimal.rs`) can call
+// `utils::onnx::init_onnx` and exercise the same Windows DLL-search
+// fix the main app uses, instead of duplicating the wiring.
+pub mod utils;
 // 翻譯模塊
 pub mod translation; // 公開以便測試使用
                      // 數據存儲模塊
@@ -36,13 +41,6 @@ use log::LevelFilter;
 use tauri::{Emitter, Manager};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 use tokio::sync::Mutex;
-use whisper::WhisperService; // For window.emit()
-
-// 全局 Whisper 服務實例. `pub(crate)` so sibling modules (e.g.
-// recording::video_import's combined extract+transcribe path) can
-// reuse the loaded model without routing through Tauri command IPC
-// and without serialising 100+ MB of PCM back and forth.
-pub(crate) static WHISPER_SERVICE: Mutex<Option<WhisperService>> = Mutex::const_new(None);
 // 全局 Embedding 服務實例
 static EMBEDDING_SERVICE: Mutex<Option<EmbeddingService>> = Mutex::const_new(None);
 
@@ -52,19 +50,13 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-/// 加載 Whisper 模型
+/// Stub kept for renderer compatibility — v2 does not use a persistent
+/// Whisper model slot. The Parakeet engine manages its own model load
+/// lazily on first session. Returns success so any UI that still gates
+/// on this in legacy code paths doesn't error.
 #[tauri::command]
-async fn load_whisper_model(model_path: String) -> Result<String, String> {
-    let mut service_guard = WHISPER_SERVICE.lock().await;
-
-    let mut service = WhisperService::new();
-    service
-        .load_model(&model_path)
-        .await
-        .map_err(|e| format!("模型加載失敗: {}", e))?;
-
-    *service_guard = Some(service);
-    Ok("模型加載成功".to_string())
+async fn load_whisper_model(_model_path: String) -> Result<String, String> {
+    Ok("Whisper backend removed in v2 streaming refactor; ASR is now in-process Nemotron".to_string())
 }
 
 /// Detect speech segments. Phase 2 of the v0.6.5 speech-pipeline plan
@@ -113,31 +105,24 @@ async fn detect_speech_segments(
     Ok(segments)
 }
 
-/// 轉錄音頻數據
+/// Stub kept for renderer compatibility — `transcribe_audio` was the
+/// in-process Whisper batch entry point; v2.1 routes all ASR through
+/// the in-process Nemotron engine (see `crate::asr::parakeet_engine`).
+/// Renderer code that called this directly should be migrated to push
+/// audio chunks via `asr_push_audio` and listen for `asr-text` events.
 #[tauri::command]
 async fn transcribe_audio(
-    audio_data: Vec<i16>,
-    sample_rate: u32,
-    initial_prompt: Option<String>,
-    language: Option<String>,
-    options: Option<whisper::transcribe::TranscriptionOptions>,
-) -> Result<whisper::transcribe::TranscriptionResult, String> {
-    let service_guard = WHISPER_SERVICE.lock().await;
-
-    let service = service_guard
-        .as_ref()
-        .ok_or_else(|| "模型未加載".to_string())?;
-
-    service
-        .transcribe(
-            &audio_data,
-            sample_rate,
-            initial_prompt.as_deref(),
-            language.as_deref(),
-            options,
-        )
-        .await
-        .map_err(|e| format!("轉錄失敗: {}", e))
+    _audio_data: Vec<i16>,
+    _sample_rate: u32,
+    _initial_prompt: Option<String>,
+    _language: Option<String>,
+) -> Result<serde_json::Value, String> {
+    Err(
+        "transcribe_audio (Whisper) was removed in the v2 streaming \
+         refactor. Use the in-process Nemotron engine via \
+         asr_start_session / asr_push_audio / asr_end_session instead."
+            .to_string(),
+    )
 }
 
 /// 下載 Whisper 模型（支持進度事件和斷點續傳）
@@ -292,34 +277,539 @@ async fn check_whisper_model(model_path: String) -> Result<bool, String> {
         .map_err(|e| format!("檢查失敗: {}", e))
 }
 
-/// 粗翻譯（本地或 Google API）
+/// 粗翻譯（本地 CT2 / TranslateGemma LLM / Google API）
 #[tauri::command]
 async fn translate_rough(
     text: String,
     source_lang: String,
     target_lang: String,
-    provider: Option<String>,       // "local" 或 "google"
-    google_api_key: Option<String>, // Google API 密鑰（可選，如果為空則使用非官方接口）
+    provider: Option<String>,       // "local" / "gemma" / "google"
+    google_api_key: Option<String>, // Google API 密鑰（可選，僅 google provider 使用）
+    gemma_endpoint: Option<String>, // llama-server URL（可選，僅 gemma provider 使用）
 ) -> Result<translation::TranslationResult, String> {
-    // 根據 provider 選擇翻譯方式
-    let provider = provider.as_deref().unwrap_or("local");
+    // Default fallback differs by build: if `nmt-local` is compiled in we
+    // honor the historical `local` default; otherwise default to `gemma`
+    // (the only on-device backend available without the CT2 feature).
+    #[cfg(feature = "nmt-local")]
+    let default_provider = "local";
+    #[cfg(not(feature = "nmt-local"))]
+    let default_provider = "gemma";
+    let provider = provider.as_deref().unwrap_or(default_provider);
 
     match provider {
-        "google" => {
-            // 如果提供了 API 密鑰，使用官方 API；否則使用非官方接口
-            translation::google::translate_with_google(
-                &text,
-                &source_lang,
-                &target_lang,
-                google_api_key.as_deref(),
-            )
-            .await
-            .map_err(|e| e.to_string())
+        "google" => translation::google::translate_with_google(
+            &text,
+            &source_lang,
+            &target_lang,
+            google_api_key.as_deref(),
+        )
+        .await
+        .map_err(|e| e.to_string()),
+        "gemma" => {
+            // gemma_endpoint == None → translate() falls back to DEFAULT_ENDPOINT
+            translation::gemma::translate(&text, gemma_endpoint.as_deref())
+                .await
+                .map_err(|e| e.to_string())
         }
-        "local" | _ => translation::rough::translate_rough(&text, &source_lang, &target_lang)
+        #[cfg(feature = "nmt-local")]
+        "local" => translation::rough::translate_rough(&text, &source_lang, &target_lang)
             .await
             .map_err(|e| e.to_string()),
+        // When `nmt-local` is off and the user picked the local backend
+        // anyway (e.g. legacy settings), surface a clear error rather than
+        // silently falling back to a different language model.
+        #[cfg(not(feature = "nmt-local"))]
+        "local" => Err(
+            "Local CTranslate2 backend not available in this build. \
+             Switch to TranslateGemma (gemma) or Google in 設定 → 翻譯，\
+             or rebuild with `--features nmt-local`."
+                .to_string(),
+        ),
+        other => Err(format!("Unknown translation provider: {other}")),
     }
+}
+
+/// Build-time feature flags exposed to the renderer. Used by the UI to
+/// hide unavailable provider options (e.g. don't show "本地 ONNX" in a
+/// dev build that compiled without `nmt-local`) and to migrate stale
+/// settings on first launch (e.g. provider="local" → "gemma" when local
+/// CT2 isn't compiled in).
+#[tauri::command]
+fn get_build_features() -> serde_json::Value {
+    serde_json::json!({
+        "nmt_local": cfg!(feature = "nmt-local"),
+        "gpu_cuda": cfg!(feature = "gpu-cuda"),
+        "gpu_metal": cfg!(feature = "gpu-metal"),
+        "gpu_vulkan": cfg!(feature = "gpu-vulkan"),
+    })
+}
+
+/// Probe the TranslateGemma sidecar's `/health` endpoint so the UI can
+/// show a green/red indicator without trying a full translation request.
+#[tauri::command]
+async fn check_gemma_server(endpoint: Option<String>) -> Result<bool, String> {
+    let base = endpoint
+        .as_deref()
+        .unwrap_or(translation::gemma::DEFAULT_ENDPOINT);
+    let url = format!("{}/health", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.get(&url).send().await {
+        Ok(resp) => Ok(resp.status().is_success()),
+        Err(_) => Ok(false),
+    }
+}
+
+/// Bring up the TranslateGemma sidecar — spawn `llama-server.exe` if it's
+/// not already serving `model_path` on `port`. Returns the bring-up
+/// outcome so the UI can distinguish "spawned" vs "already there" vs the
+/// failure modes (binary missing / spawn failed / health timeout).
+///
+/// `port` defaults to [`translation::gemma_sidecar::DEFAULT_PORT`].
+#[tauri::command]
+async fn start_gemma_sidecar(
+    model_path: String,
+    port: Option<u16>,
+    app: tauri::AppHandle,
+) -> Result<translation::gemma_sidecar::BringUpResult, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let port = port.unwrap_or(translation::gemma_sidecar::DEFAULT_PORT);
+    Ok(translation::gemma_sidecar::ensure_running(&model_path, port, resource_dir).await)
+}
+
+/// Stop the supervised sidecar (no-op if we never spawned one). Used when
+/// the user switches away from gemma in settings, or when the renderer
+/// wants to free the GPU for another task.
+#[tauri::command]
+fn stop_gemma_sidecar() -> Result<(), String> {
+    translation::gemma_sidecar::shutdown();
+    Ok(())
+}
+
+/// Locate the llama-server binary that would be used by `start_gemma_sidecar`,
+/// without spawning. Lets the Settings UI show "binary missing — please
+/// install / wait for download" before the user tries to start it.
+#[tauri::command]
+fn locate_gemma_binary(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    Ok(translation::gemma_sidecar::locate_binary(resource_dir.as_ref())
+        .map(|p| p.to_string_lossy().to_string()))
+}
+
+// ========== Parakeet (Nemotron) ASR Engine Commands ==========
+//
+// In-process Nemotron streaming via parakeet-rs (v2.1). Replaces the
+// HTTP/SSE Python sidecar. The engine lives in `crate::asr::parakeet_engine`
+// — a single global model with one active session at a time. Two
+// quantization variants ship side-by-side (INT8 ~852 MB default,
+// FP32 ~2.5 GB power-user). Each variant lives in its own subdir
+// under `{app_data}/models/parakeet-nemotron-{int8|fp32}/`.
+
+use crate::asr::parakeet_model::Variant;
+
+/// Per-variant download / presence snapshot.
+#[derive(serde::Serialize)]
+struct VariantStatus {
+    variant: Variant,
+    /// Are all required files present at the right size?
+    present: bool,
+    /// Bytes already on disk (resume-aware — partial files count up
+    /// to their target size, never more).
+    bytes_on_disk: u64,
+    /// Bytes a fully downloaded variant occupies.
+    total_size: u64,
+    /// Resolved model directory (display only).
+    model_dir: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct ParakeetStatus {
+    /// Per-variant download state.
+    variants: Vec<VariantStatus>,
+    /// Which variant (if any) is currently loaded into RAM.
+    loaded_variant: Option<Variant>,
+    /// Convenience: same as `loaded_variant.is_some()`.
+    model_loaded: bool,
+    /// Is there an active session right now?
+    session_active: bool,
+}
+
+fn variant_from_str(s: &str) -> Result<Variant, String> {
+    match s.to_lowercase().as_str() {
+        "int8" => Ok(Variant::Int8),
+        "fp32" => Ok(Variant::Fp32),
+        other => Err(format!("unknown variant: {other} (expected int8|fp32)")),
+    }
+}
+
+#[tauri::command]
+fn get_parakeet_status() -> Result<ParakeetStatus, String> {
+    let variants = Variant::all()
+        .iter()
+        .map(|&v| VariantStatus {
+            variant: v,
+            present: asr::parakeet_model::is_present(v),
+            bytes_on_disk: asr::parakeet_model::bytes_on_disk(v),
+            total_size: asr::parakeet_model::total_size(v),
+            model_dir: asr::parakeet_model::model_dir(v)
+                .map(|p| p.to_string_lossy().to_string())
+                .ok(),
+        })
+        .collect();
+    Ok(ParakeetStatus {
+        variants,
+        loaded_variant: asr::parakeet_engine::loaded_variant(),
+        model_loaded: asr::parakeet_engine::is_loaded(),
+        session_active: asr::parakeet_engine::has_session(),
+    })
+}
+
+/// Per-file download progress emitted on `parakeet-download-progress`.
+#[derive(Clone, serde::Serialize)]
+struct ParakeetDownloadProgress {
+    variant: Variant,
+    file_index: usize,
+    file_name: String,
+    file_size: u64,
+    file_downloaded: u64,
+    total_size: u64,
+    completed: bool,
+}
+
+/// Download one variant's files in sequence (sequential beats parallel
+/// here — same HF host, single rate limit, and the per-file progress
+/// bar is easier to read). Resume-friendly: complete files are
+/// skipped, partial files continue via HTTP Range.
+#[tauri::command]
+async fn parakeet_download_model(
+    app: tauri::AppHandle,
+    variant: String,
+) -> Result<String, String> {
+    use tauri::Emitter as _;
+
+    let variant = variant_from_str(&variant)?;
+    let configs = asr::parakeet_model::all_download_configs(variant)?;
+    let total = asr::parakeet_model::total_size(variant);
+
+    let _ = app.emit("parakeet-download-started", (variant, total));
+
+    for (idx, config) in configs.iter().enumerate() {
+        let file_name = config
+            .output_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let file_size = config.expected_size.unwrap_or(0);
+
+        let app_for_callback = app.clone();
+        let file_name_for_cb = file_name.clone();
+
+        let cb: Box<dyn Fn(u64, u64) + Send + Sync> = Box::new(move |downloaded, _file_total| {
+            let _ = app_for_callback.emit(
+                "parakeet-download-progress",
+                ParakeetDownloadProgress {
+                    variant,
+                    file_index: idx,
+                    file_name: file_name_for_cb.clone(),
+                    file_size,
+                    file_downloaded: downloaded,
+                    total_size: total,
+                    completed: false,
+                },
+            );
+        });
+
+        whisper::download::download_model(config, Some(cb))
+            .await
+            .map_err(|e| format!("download {} ({}) failed: {}", file_name, variant.label(), e))?;
+
+        let _ = app.emit(
+            "parakeet-download-progress",
+            ParakeetDownloadProgress {
+                variant,
+                file_index: idx,
+                file_name: file_name.clone(),
+                file_size,
+                file_downloaded: file_size,
+                total_size: total,
+                completed: true,
+            },
+        );
+    }
+
+    let _ = app.emit("parakeet-download-completed", (variant, total));
+    Ok(format!(
+        "downloaded {} files for {} ({:.2} GB)",
+        configs.len(),
+        variant.label(),
+        total as f64 / 1e9
+    ))
+}
+
+/// Load (or swap) the Nemotron model. Different variant than what's
+/// currently loaded → drops the existing one first.
+#[tauri::command]
+async fn parakeet_load_model(variant: String) -> Result<(), String> {
+    let variant = variant_from_str(&variant)?;
+    if !asr::parakeet_model::is_present(variant) {
+        return Err(format!(
+            "Nemotron {} model files not on disk. Download first.",
+            variant.label()
+        ));
+    }
+    let dir = asr::parakeet_model::model_dir(variant)?;
+    tokio::task::spawn_blocking(move || asr::parakeet_engine::ensure_loaded(variant, &dir))
+        .await
+        .map_err(|e| format!("load_model task join error: {e}"))?
+}
+
+#[tauri::command]
+async fn parakeet_unload_model() -> Result<(), String> {
+    tokio::task::spawn_blocking(asr::parakeet_engine::unload)
+        .await
+        .map_err(|e| format!("unload_model task join error: {e}"))
+}
+
+/// Begin an ASR session. Auto-loads the first available variant
+/// (INT8 wins over FP32 if both are present) if nothing is in RAM yet.
+#[tauri::command]
+async fn asr_start_session(session_id: String) -> Result<(), String> {
+    if !asr::parakeet_engine::is_loaded() {
+        let variant = asr::parakeet_model::first_present().ok_or_else(|| {
+            "No Nemotron model downloaded — open 設定 → 本地轉錄 to download.".to_string()
+        })?;
+        let dir = asr::parakeet_model::model_dir(variant)?;
+        tokio::task::spawn_blocking(move || asr::parakeet_engine::ensure_loaded(variant, &dir))
+            .await
+            .map_err(|e| format!("auto-load task join error: {e}"))??;
+    }
+    let id = session_id.clone();
+    tokio::task::spawn_blocking(move || asr::parakeet_engine::start_session(id))
+        .await
+        .map_err(|e| format!("start_session task join error: {e}"))?
+}
+
+/// Push int16 PCM. Drains pending chunks through the model and emits
+/// one `asr-text` Tauri event per non-empty delta. The renderer turns
+/// each delta into word events for `SentenceAccumulator`.
+#[derive(Clone, serde::Serialize)]
+struct AsrTextEvent {
+    session_id: String,
+    delta: String,
+    audio_end_sec: f32,
+}
+
+#[tauri::command]
+async fn asr_push_audio(
+    app: tauri::AppHandle,
+    session_id: String,
+    pcm: Vec<i16>,
+) -> Result<(), String> {
+    use tauri::Emitter as _;
+    let sid_for_engine = session_id.clone();
+    let sid_for_event = session_id.clone();
+    tokio::task::spawn_blocking(move || {
+        // Buffer deltas inside the engine call so we don't hold the
+        // engine Mutex across `app.emit` (which can do non-trivial
+        // work serializing JSON for every webview window).
+        let mut deltas: Vec<(String, f32)> = Vec::new();
+        let res = asr::parakeet_engine::push_pcm_i16(
+            &sid_for_engine,
+            &pcm,
+            |delta, audio_end_sec| {
+                deltas.push((delta.to_string(), audio_end_sec));
+            },
+        );
+        for (delta, audio_end_sec) in deltas {
+            let _ = app.emit(
+                "asr-text",
+                AsrTextEvent {
+                    session_id: sid_for_event.clone(),
+                    delta,
+                    audio_end_sec,
+                },
+            );
+        }
+        res
+    })
+    .await
+    .map_err(|e| format!("push_audio task join error: {e}"))?
+}
+
+/// End the session. Pads + flushes the decoder, returns the cumulative
+/// transcript, emits one final `asr-text` for any tail-end delta, and
+/// emits an `asr-session-ended` event with the final transcript so the
+/// renderer can show the complete text without re-accumulating from
+/// the streaming events.
+#[derive(Clone, serde::Serialize)]
+struct AsrSessionEndedEvent {
+    session_id: String,
+    transcript: String,
+}
+
+#[tauri::command]
+async fn asr_end_session(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<String, String> {
+    use tauri::Emitter as _;
+    let sid_for_engine = session_id.clone();
+    let sid_for_event = session_id.clone();
+    let app_clone = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut deltas: Vec<(String, f32)> = Vec::new();
+        let transcript = asr::parakeet_engine::end_session(
+            &sid_for_engine,
+            |delta, audio_end_sec| {
+                deltas.push((delta.to_string(), audio_end_sec));
+            },
+        )?;
+        for (delta, audio_end_sec) in deltas {
+            let _ = app_clone.emit(
+                "asr-text",
+                AsrTextEvent {
+                    session_id: sid_for_event.clone(),
+                    delta,
+                    audio_end_sec,
+                },
+            );
+        }
+        let _ = app_clone.emit(
+            "asr-session-ended",
+            AsrSessionEndedEvent {
+                session_id: sid_for_event.clone(),
+                transcript: transcript.clone(),
+            },
+        );
+        Ok::<String, String>(transcript)
+    })
+    .await
+    .map_err(|e| format!("end_session task join error: {e}"))?
+}
+
+/// Combined status snapshot for the TranslateGemma backend. Single round
+/// trip for the Settings UI's "is everything wired up?" indicator.
+#[derive(serde::Serialize)]
+struct GemmaStatus {
+    /// llama-server binary discovered (bundled / dev / PATH).
+    binary_path: Option<String>,
+    /// Absolute path the GGUF model would live at on this machine.
+    model_path: String,
+    /// `true` when the model file exists at the expected size.
+    model_present: bool,
+    /// Approximate full size in bytes — frontend uses this to render the
+    /// download dialog "you'll download X.X GB".
+    model_size_bytes: u64,
+    /// HuggingFace URL we'd download from. Surfaced for transparency
+    /// (some users/networks block HF; they need to know).
+    model_url: String,
+    /// `true` when our supervised sidecar is currently running. Doesn't
+    /// HTTP-probe — for that, call `check_gemma_server`.
+    sidecar_running: bool,
+}
+
+#[tauri::command]
+fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    Ok(GemmaStatus {
+        binary_path: translation::gemma_sidecar::locate_binary(resource_dir.as_ref())
+            .map(|p| p.to_string_lossy().to_string()),
+        model_path: translation::gemma_model::target_path()?
+            .to_string_lossy()
+            .to_string(),
+        model_present: translation::gemma_model::is_present(),
+        model_size_bytes: translation::gemma_model::EXPECTED_SIZE,
+        model_url: translation::gemma_model::MODEL_URL.to_string(),
+        sidecar_running: translation::gemma_sidecar::is_running(),
+    })
+}
+
+/// Download the TranslateGemma 4B Q4_K_M GGUF model file (≈ 2.5 GB).
+///
+/// Resume-friendly: a partial file from a previous interrupted download
+/// is detected and continued (driven by `whisper::download::download_model`).
+/// Emits `gemma-download-progress` events with `{downloaded, total, percent,
+/// speed_mbps, eta_seconds}` for the renderer's progress bar.
+///
+/// Returns the absolute path to the downloaded file on success.
+#[tauri::command]
+async fn download_gemma_model(app: tauri::AppHandle) -> Result<String, String> {
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use tauri::Emitter;
+
+    use whisper::download;
+
+    let config = translation::gemma_model::download_config()?;
+
+    // Fast path: already complete.
+    if translation::gemma_model::is_present() {
+        return Ok(config.output_path.to_string_lossy().to_string());
+    }
+
+    // Mirror the Whisper progress callback shape so the front-end can reuse
+    // the same DownloadProgress type. Emits at most ~2x/s based on the
+    // 500 ms speed-window throttle in the closure below.
+    let app_clone = app.clone();
+    let last_time = Arc::new(Mutex::new(Instant::now()));
+    let last_downloaded = Arc::new(Mutex::new(0u64));
+
+    let progress_callback: Option<Box<dyn Fn(u64, u64) + Send + Sync>> = Some(Box::new({
+        let app_clone = app_clone.clone();
+        let last_time = last_time.clone();
+        let last_downloaded = last_downloaded.clone();
+        move |downloaded, total| {
+            let now = Instant::now();
+            let mut lt = last_time.lock().unwrap();
+            let mut ld = last_downloaded.lock().unwrap();
+            let elapsed = now.duration_since(*lt);
+            let bytes = downloaded.saturating_sub(*ld);
+
+            let speed_mbps = if elapsed.as_millis() >= 500 && elapsed.as_millis() > 0 {
+                let bps = bytes as f64 / elapsed.as_millis() as f64 * 1000.0;
+                bps / 1_000_000.0
+            } else {
+                0.0
+            };
+            let remaining = total.saturating_sub(downloaded);
+            let eta_seconds = if speed_mbps > 0.0 && remaining > 0 {
+                Some((remaining as f64 / (speed_mbps * 1_000_000.0)) as u64)
+            } else {
+                None
+            };
+            let percent = if total > 0 {
+                (downloaded as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let progress = download::DownloadProgress {
+                downloaded,
+                total,
+                percent,
+                speed_mbps,
+                eta_seconds,
+            };
+            let _ = app_clone.emit("gemma-download-progress", &progress);
+
+            // Only refresh the throttle baseline when we actually emitted
+            // a "speed" reading — otherwise short bursts get averaged out
+            // to ~0 every event.
+            if elapsed.as_millis() >= 500 {
+                *lt = now;
+                *ld = downloaded;
+            }
+        }
+    }));
+
+    let path = download::download_model(&config, progress_callback)
+        .await
+        .map_err(|e| format!("Gemma 模型下載失敗: {e}"))?;
+
+    Ok(path.to_string_lossy().to_string())
 }
 
 // Fine translation + remote service check were removed in v0.5.0.
@@ -328,29 +818,67 @@ async fn translate_rough(
 // is archived at tag server-archive-v0.4.0.
 
 // ========== CTranslate2 翻譯相關 Commands ==========
+// Bodies are gated by the `nmt-local` feature. When off, the commands
+// still exist (so `generate_handler!` compiles unchanged) but return
+// an explanatory error — the front-end handles this via provider check.
+
+const NMT_LOCAL_DISABLED: &str =
+    "Local CT2 translation backend not compiled into this build. \
+     Switch to the gemma provider, or rebuild with `--features nmt-local`.";
 
 /// 載入 CTranslate2 翻譯模型
 #[tauri::command]
 async fn load_ct2_model(model_path: String) -> Result<(), String> {
-    translation::ctranslate2::load_ct2_model(&model_path).await
+    #[cfg(feature = "nmt-local")]
+    {
+        translation::ctranslate2::load_ct2_model(&model_path).await
+    }
+    #[cfg(not(feature = "nmt-local"))]
+    {
+        let _ = model_path;
+        Err(NMT_LOCAL_DISABLED.to_string())
+    }
 }
 
 /// 檢查 CTranslate2 模型是否已載入
 #[tauri::command]
 async fn is_ct2_loaded() -> bool {
-    translation::ctranslate2::is_ct2_loaded().await
+    #[cfg(feature = "nmt-local")]
+    {
+        translation::ctranslate2::is_ct2_loaded().await
+    }
+    #[cfg(not(feature = "nmt-local"))]
+    {
+        false
+    }
 }
 
 /// 使用 CTranslate2 進行翻譯
 #[tauri::command]
 async fn translate_ct2(text: String) -> Result<String, String> {
-    translation::ctranslate2::translate_ct2(&text).await
+    #[cfg(feature = "nmt-local")]
+    {
+        translation::ctranslate2::translate_ct2(&text).await
+    }
+    #[cfg(not(feature = "nmt-local"))]
+    {
+        let _ = text;
+        Err(NMT_LOCAL_DISABLED.to_string())
+    }
 }
 
 /// 使用 CTranslate2 進行批量翻譯
 #[tauri::command]
 async fn translate_ct2_batch(texts: Vec<String>) -> Result<Vec<String>, String> {
-    translation::ctranslate2::translate_ct2_batch(&texts).await
+    #[cfg(feature = "nmt-local")]
+    {
+        translation::ctranslate2::translate_ct2_batch(&texts).await
+    }
+    #[cfg(not(feature = "nmt-local"))]
+    {
+        let _ = texts;
+        Err(NMT_LOCAL_DISABLED.to_string())
+    }
 }
 
 /// 下載翻譯模型
@@ -430,20 +958,22 @@ async fn load_translation_model(
     model_dir: String,
     _tokenizer_path: Option<String>,
 ) -> Result<String, String> {
-    use std::path::Path;
-
-    let path = Path::new(&model_dir);
-
-    // 檢查 CT2 模型文件
-    let model_bin_path = path.join("model.bin");
-    if !model_bin_path.exists() {
-        return Err(format!("CT2 模型文件不存在: {:?}", model_bin_path));
+    #[cfg(not(feature = "nmt-local"))]
+    {
+        let _ = model_dir;
+        return Err(NMT_LOCAL_DISABLED.to_string());
     }
-
-    // 使用 CTranslate2 加載模型
-    translation::ctranslate2::load_ct2_model(&model_dir).await?;
-
-    Ok("CTranslate2 翻譯模型加載成功".to_string())
+    #[cfg(feature = "nmt-local")]
+    {
+        use std::path::Path;
+        let path = Path::new(&model_dir);
+        let model_bin_path = path.join("model.bin");
+        if !model_bin_path.exists() {
+            return Err(format!("CT2 模型文件不存在: {:?}", model_bin_path));
+        }
+        translation::ctranslate2::load_ct2_model(&model_dir).await?;
+        Ok("CTranslate2 翻譯模型加載成功".to_string())
+    }
 }
 
 /// 掃描可用的翻譯模型
@@ -515,8 +1045,8 @@ async fn list_available_translation_models() -> Result<Vec<String>, String> {
 ///
 /// model_name: 模型名稱（例如 "m2m100-418M-ct2-int8"）
 /// 使用統一路徑查找並加載模型
-#[tauri::command]
-async fn load_translation_model_by_name(model_name: String) -> Result<String, String> {
+#[cfg(feature = "nmt-local")]
+async fn load_translation_model_by_name_impl(model_name: String) -> Result<String, String> {
     // 使用統一路徑: {app_data}/models/translation/{model_name}/
     let translation_dir = paths::get_translation_models_dir()?;
     let model_dir = translation_dir.join(&model_name);
@@ -583,6 +1113,23 @@ async fn load_translation_model_by_name(model_name: String) -> Result<String, St
 
     let message = format!("CTranslate2 翻譯模型 '{}' 加載成功", model_name);
     Ok(message)
+}
+
+/// Wrapper that exposes `load_translation_model_by_name` regardless of
+/// whether the `nmt-local` feature is enabled. With the feature off it
+/// returns a descriptive error so the renderer can guide the user to a
+/// supported provider rather than seeing a generic "command not found".
+#[tauri::command]
+async fn load_translation_model_by_name(model_name: String) -> Result<String, String> {
+    #[cfg(feature = "nmt-local")]
+    {
+        load_translation_model_by_name_impl(model_name).await
+    }
+    #[cfg(not(feature = "nmt-local"))]
+    {
+        let _ = model_name;
+        Err(NMT_LOCAL_DISABLED.to_string())
+    }
 }
 
 // ========== 數據存儲相關 Commands ==========
@@ -2139,6 +2686,83 @@ pub fn run() {
                     println!("數據庫初始化成功");
                 }
             });
+
+            // Auto-load the Nemotron model in the background if any
+            // variant is already on disk. INT8 wins over FP32 if both
+            // are present (faster, similar accuracy). We never trigger
+            // a download implicitly at startup — that's a deliberate
+            // user action via the Settings UI. But if the model is
+            // already downloaded, eagerly loading the ort session
+            // saves the user from a ~3-5 s cold start the first time
+            // they hit Record.
+            tauri::async_runtime::spawn(async move {
+                let variant = match asr::parakeet_model::first_present() {
+                    Some(v) => v,
+                    None => {
+                        println!(
+                            "[startup] No Nemotron variant downloaded — \
+                             skipping auto-load (visit 設定 → 本地轉錄)"
+                        );
+                        return;
+                    }
+                };
+                let dir = match asr::parakeet_model::model_dir(variant) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("[startup] Nemotron model_dir error: {e}");
+                        return;
+                    }
+                };
+                // ort session creation is sync + heavyweight; push it
+                // off the tokio runtime so other startup tasks (DB
+                // init, gemma autoload) keep progressing.
+                let load_result = tokio::task::spawn_blocking(move || {
+                    asr::parakeet_engine::ensure_loaded(variant, &dir)
+                })
+                .await;
+                match load_result {
+                    Ok(Ok(())) => {
+                        println!("[startup] Nemotron {} loaded into memory", variant.label())
+                    }
+                    Ok(Err(e)) => eprintln!("[startup] Nemotron {} load failed: {e}", variant.label()),
+                    Err(e) => eprintln!("[startup] Nemotron load join error: {e}"),
+                }
+            });
+
+            // Auto-spawn the TranslateGemma sidecar if its model file is
+            // already on disk. We don't trigger a 2.5 GB model download
+            // implicitly at startup — that has to be a deliberate user
+            // action via the Settings UI. But if the model is present
+            // (already downloaded), starting the sidecar is free and
+            // matches the user's expectation that "translation works
+            // when I start the app".
+            let app_for_gemma = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Manager as _;
+                if !translation::gemma_model::is_present() {
+                    println!(
+                        "[startup] TranslateGemma model not yet downloaded — \
+                         skipping sidecar auto-start (visit 設定 → 翻譯 to download)"
+                    );
+                    return;
+                }
+                let model_path = match translation::gemma_model::target_path() {
+                    Ok(p) => p.to_string_lossy().to_string(),
+                    Err(e) => {
+                        eprintln!("[startup] gemma model_path error: {e}");
+                        return;
+                    }
+                };
+                let resource_dir = app_for_gemma.path().resource_dir().ok();
+                let result = translation::gemma_sidecar::ensure_running(
+                    &model_path,
+                    translation::gemma_sidecar::DEFAULT_PORT,
+                    resource_dir,
+                )
+                .await;
+                println!("[startup] TranslateGemma sidecar bring-up: {result:?}");
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -2154,6 +2778,20 @@ pub fn run() {
             download_whisper_model,
             check_whisper_model,
             translate_rough,
+            check_gemma_server,
+            start_gemma_sidecar,
+            stop_gemma_sidecar,
+            locate_gemma_binary,
+            get_gemma_status,
+            download_gemma_model,
+            get_parakeet_status,
+            parakeet_load_model,
+            parakeet_unload_model,
+            parakeet_download_model,
+            asr_start_session,
+            asr_push_audio,
+            asr_end_session,
+            get_build_features,
             download_translation_model,
             check_translation_model,
             load_translation_model,
@@ -2266,20 +2904,35 @@ pub fn run() {
             recording::discard_orphaned_transcript,
             recording::video_import::import_video_for_lecture,
             recording::video_import::extract_pcm_from_video,
-            recording::video_import::transcribe_video_file,
             recording::video_import::extract_video_pcm_to_temp,
-            recording::video_import::transcribe_pcm_file_slice,
+            recording::video_import::read_pcm_slice,
             recording::video_import::delete_temp_pcm,
-            recording::video_import::release_import_whisper,
-            recording::video_import::resolve_whisper_model_path,
             gpu::detect_gpu_backends,
             gpu::get_build_variant,
             crate::updater::check_update_for_channel,
             crate::updater::download_and_install_update,
             list_orphaned_recording_lectures,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Reap the TranslateGemma sidecar on every exit pathway so we
+            // don't leave a 2 GB llama-server process orphaned in the
+            // background after the app closes (taskmgr would still see it).
+            // `Exit` fires on graceful quit, `ExitRequested` is the
+            // pre-flight callback if a handler wants to veto — for our
+            // sidecar shutting down twice is a no-op so we don't bother.
+            //
+            // The in-process Nemotron engine doesn't have a separate
+            // process to reap, but we still drop the model so the OS
+            // sees the RAM (~600 MB) released cleanly before the
+            // process exits. Useful for crash diagnostics where ort's
+            // memory accounting matters.
+            if matches!(event, tauri::RunEvent::Exit) {
+                translation::gemma_sidecar::shutdown();
+                asr::parakeet_engine::unload();
+            }
+        });
 }
 
 /// Returns + clears any migration notices the DB init queued up.

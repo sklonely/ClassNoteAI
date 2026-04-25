@@ -51,7 +51,6 @@ import { BatteryMonitor } from "../services/batteryMonitorService";
 import SubtitleDisplay from "./SubtitleDisplay";
 import AudioPlayer from "./AudioPlayer";
 import { transcriptionService } from "../services/transcriptionService";
-import { loadModel, checkModelFile } from "../services/whisperService";
 import * as translationModelService from "../services/translationModelService";
 import { subtitleService } from "../services/subtitleService";
 import PDFViewer, { PDFViewerHandle } from "./PDFViewer";
@@ -296,15 +295,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       modelsLoadingRef.current = true;
       try {
         const settings = await storageService.getAppSettings();
-        const whisperModel = (settings?.models?.whisper || 'base') as 'tiny' | 'base' | 'small' | 'medium' | 'large';
-
-        const whisperExists = await checkModelFile(whisperModel);
-        if (whisperExists && !modelLoaded) {
-          console.log('[NotesView] Loading Whisper model...', whisperModel);
-          await loadModel(whisperModel);
-          setModelLoaded(true);
-          console.log('[NotesView] Whisper model loaded');
-        }
+        // v2: ASR is Parakeet sidecar; the sidecar handles its own model
+        // load lazily on first /session/start. The modelLoaded flag stays
+        // for compatibility with downstream UI gating but no longer
+        // gates an actual model file check.
+        if (!modelLoaded) setModelLoaded(true);
 
         // Embedding Model: local Candle bge-small-en-v1.5 (shipped
         // via the embedding-model download flow in Settings).

@@ -124,8 +124,21 @@ export interface AppSettings {
     translation?: string; // 翻譯模型名稱，例如 'opus-mt-en-zh-onnx'
   };
   translation?: {
-    provider?: 'local' | 'google'; // 翻譯提供商：本地 ONNX 或 Google API
-    google_api_key?: string; // Google Cloud Translation API 密鑰
+    /**
+     * 翻譯後端：
+     *   - `local`  — 本地 CTranslate2 (M2M100-418M)，CPU 即可，技術詞較弱
+     *   - `gemma`  — TranslateGemma 4B Q4_K_M LLM via llama-server sidecar，
+     *                需要 GPU 與 llama-server 在 8080 port 執行；繁體中文品質
+     *                顯著優於 M2M100，CS 技術詞無誤譯（"stack" → 「堆疊」）
+     *   - `google` — Google API (官方/非官方)
+     */
+    provider?: 'local' | 'gemma' | 'google';
+    google_api_key?: string; // Google Cloud Translation API 密鑰（僅 google）
+    /**
+     * llama-server URL（僅 gemma 使用）。預設 `http://127.0.0.1:8080`。
+     * 留空使用預設值。
+     */
+    gemma_endpoint?: string;
     // Spoken language of the lecture. `auto` lets Whisper detect per
     // session; once detected we pass it to M2M100. Introduced in v0.5.1.
     source_language?: 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';

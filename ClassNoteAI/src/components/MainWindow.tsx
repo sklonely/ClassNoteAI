@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { BookOpen, Settings, Moon, Sun, User } from "lucide-react";
 import { applyTheme, getSystemTheme } from "../utils/theme";
-import * as whisperService from "../services/whisperService";
 import * as translationModelService from "../services/translationModelService";
 import { storageService } from "../services/storageService";
 
@@ -37,7 +36,7 @@ export default function MainWindow() {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [whisperModel, setWhisperModel] = useState<string | null>(null);
   const [translationState, setTranslationState] = useState<{
-    provider: 'local' | 'google';
+    provider: 'local' | 'gemma' | 'google';
     model: string | null;
   }>({ provider: 'local', model: null });
 
@@ -70,16 +69,45 @@ export default function MainWindow() {
   }, []);
 
   useEffect(() => {
-    setWhisperModel(whisperService.getCurrentModel());
+    // v2: ASR is Parakeet, model name is fixed. The whisperModel state
+    // remains for badge/UI purposes; we just label it with the active
+    // engine instead of querying a stateful service.
+    setWhisperModel('parakeet-tdt-0.6b-v2');
 
     const checkTranslationState = async () => {
       const settings = await storageService.getAppSettings();
-      const provider = settings?.translation?.provider || 'local';
-      const localModel = translationModelService.getCurrentModel();
+      let provider = settings?.translation?.provider || 'gemma';
 
+      // Stale-settings migration: if the saved provider is `local` but
+      // this binary was built without `nmt-local` (no CT2 backend), the
+      // user would otherwise hit "翻譯失敗" on every translation. Auto-
+      // migrate to gemma (the new default) and persist so the next
+      // launch is clean. Only attempts persistence when settings exist
+      // (otherwise there's nothing to migrate yet).
+      try {
+        const { getBuildFeatures } = await import('../services/buildFeaturesService');
+        const features = await getBuildFeatures();
+        if (provider === 'local' && !features.nmt_local && settings) {
+          console.warn(
+            '[MainWindow] saved provider=local but this build has no nmt-local; migrating to gemma',
+          );
+          provider = 'gemma';
+          await storageService.saveAppSettings({
+            ...settings,
+            translation: {
+              ...(settings.translation || {}),
+              provider: 'gemma',
+            },
+          });
+        }
+      } catch (e) {
+        console.warn('[MainWindow] build features query failed during migration:', e);
+      }
+
+      const localModel = translationModelService.getCurrentModel();
       setTranslationState({
         provider,
-        model: localModel
+        model: localModel,
       });
     };
     checkTranslationState();

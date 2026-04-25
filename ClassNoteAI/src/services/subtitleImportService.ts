@@ -1,6 +1,6 @@
-import { invoke } from '@tauri-apps/api/core';
 import { storageService } from './storageService';
 import { ragService } from './ragService';
+import { translateRough } from './translationService';
 import type { Subtitle } from '../types';
 
 /**
@@ -151,27 +151,35 @@ export const subtitleImportService = {
         }
 
         // Translate only when source is English AND user asked for it.
-        // Chinese source skips translation entirely (the existing
-        // translate_ct2_batch is English→Chinese only).
+        // Chinese source skips translation entirely.
+        //
+        // Routes through `translateRough` so we honor the user's chosen
+        // provider (gemma / local CT2 / google) and get the multi-backend
+        // fallback chain. The old `translate_ct2_batch` invoke hardcoded
+        // the CT2 path and silently dropped every result on builds without
+        // the `nmt-local` feature — that's why imported subtitles showed
+        // up English-only on dev/Gemma builds.
         let translations: string[] = new Array(cues.length).fill('');
         if (options.language === 'en' && options.translateToChinese) {
             emit({
                 stage: 'translating',
                 message: `翻譯 ${cues.length} 段字幕…`,
             });
-            const texts = cues.map((c) => c.text);
-            const BATCH = 64;
-            for (let i = 0; i < texts.length; i += BATCH) {
-                const slice = texts.slice(i, i + BATCH);
+            for (let i = 0; i < cues.length; i++) {
+                const text = cues[i].text;
+                if (!text) continue;
                 try {
-                    const translated = await invoke<string[]>('translate_ct2_batch', { texts: slice });
-                    for (let j = 0; j < slice.length; j++) {
-                        translations[i + j] = translated[j] ?? '';
-                    }
+                    const tr = await translateRough(text, 'en', 'zh', /* useCache */ true);
+                    translations[i] = tr.translated_text || '';
                 } catch (err) {
-                    // Same graceful degradation as videoImportService.
-                    console.warn('[subtitleImport] batch translate failed:', err);
-                    for (let j = 0; j < slice.length; j++) translations[i + j] = '';
+                    console.warn(`[subtitleImport] segment translate failed (${i}):`, err);
+                    // Leave translations[i] as '' — same graceful degradation.
+                }
+                if ((i + 1) % 20 === 0) {
+                    emit({
+                        stage: 'translating',
+                        message: `翻譯 ${i + 1}/${cues.length} 段字幕…`,
+                    });
                 }
             }
         }

@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClassNote AI - 設置 (Variant A)</title>
+  <style>
+    :root {
+      /* Colors - Light Mode */
+      --bg-canvas: #fafafa;
+      --bg-card: #ffffff;
+      --bg-sidebar: #f1f5f9;
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --border-color: #e2e8f0;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.05);
+      --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
+      
+      --accent-gradient: linear-gradient(135deg, #3b82f6, #8b5cf6);
+      --accent-color: #6d28d9;
+      --accent-bg-subtle: rgba(139, 92, 246, 0.1);
+      
+      --font-stack: "Inter", -apple-system, BlinkMacSystemFont, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        /* Colors - Dark Mode */
+        --bg-canvas: #0f172a;
+        --bg-card: #1e293b;
+        --bg-sidebar: #0b1120;
+        --text-primary: #f8fafc;
+        --text-secondary: #94a3b8;
+        --border-color: #334155;
+        --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+        
+        --accent-color: #a78bfa;
+        --accent-bg-subtle: rgba(167, 139, 250, 0.15);
+      }
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-stack);
+      background-color: var(--bg-canvas);
+      color: var(--text-primary);
+      line-height: 1.5;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Floating Badge */
+    .variant-badge {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: var(--text-primary);
+      color: var(--bg-canvas);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      z-index: 9999;
+      box-shadow: var(--shadow-md);
+      pointer-events: none;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 260px;
+      background-color: var(--bg-sidebar);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      transition: all 0.3s ease;
+    }
+
+    .sidebar-header {
+      padding: 24px 20px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: var(--accent-gradient);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .nav-group {
+      padding: 12px 0;
+    }
+
+    .nav-group-title {
+      padding: 0 20px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 20px;
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s ease;
+    }
+
+    .nav-item:hover {
+      background-color: rgba(148, 163, 184, 0.1);
+      color: var(--text-primary);
+    }
+
+    .nav-item.active {
+      background-color: var(--accent-bg-subtle);
+      color: var(--accent-color);
+    }
+
+    .nav-item.active::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: var(--accent-gradient);
+      border-top-right-radius: 3px;
+      border-bottom-right-radius: 3px;
+    }
+
+    .nav-icon {
+      width: 18px;
+      height: 18px;
+      stroke-width: 2;
+    }
+
+    /* Main Area */
+    .main-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 40px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .content-container {
+      width: 100%;
+      max-width: 720px;
+    }
+
+    .page-header {
+      margin-bottom: 32px;
+    }
+
+    .page-title {
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .page-desc {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Cards */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 24px;
+      overflow: hidden;
+    }
+
+    .card-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background-color: rgba(0,0,0,0.01);
+    }
+
+    .card-icon {
+      width: 18px;
+      height: 18px;
+      color: var(--accent-color);
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    /* Form Rows */
+    .form-row {
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-color);
+      gap: 24px;
+    }
+
+    .form-row:last-child {
+      border-bottom: none;
+    }
+
+    .form-label {
+      flex: 1;
+    }
+
+    .form-label-text {
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .form-label-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+
+    .form-control {
+      flex-shrink: 0;
+      min-width: 200px;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Inputs */
+    select, input[type="text"], input[type="number"] {
+      width: 100%;
+      padding: 8px 12px;
+      background-color: var(--bg-canvas);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.2s;
+      appearance: none;
+    }
+
+    select {
+      background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>');
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+      padding-right: 32px;
+      cursor: pointer;
+    }
+
+    select:focus, input:focus {
+      border-color: var(--accent-color);
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent-color);
+    }
+
+    /* Switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--border-color);
+      transition: .3s;
+      border-radius: 22px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+    input:checked + .slider {
+      background: var(--accent-gradient);
+    }
+    input:checked + .slider:before {
+      transform: translateX(18px);
+    }
+
+    /* Buttons */
+    .btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    .btn-primary {
+      background: var(--accent-gradient);
+      color: white;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .btn-primary:hover {
+      opacity: 0.9;
+    }
+
+    .btn-secondary {
+      background-color: var(--bg-canvas);
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+      background-color: var(--border-color);
+    }
+    
+    .btn-danger {
+      background-color: transparent;
+      border-color: #ef4444;
+      color: #ef4444;
+    }
+    
+    .btn-danger:hover {
+      background-color: rgba(239, 68, 68, 0.1);
+    }
+
+    /* Readonly text */
+    .text-readonly {
+      font-size: 14px;
+      color: var(--text-secondary);
+      user-select: all;
+    }
+    
+    .color-preview {
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    /* Mobile Header */
+    .mobile-header {
+      display: none;
+      align-items: center;
+      padding: 16px 20px;
+      background-color: var(--bg-sidebar);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .mobile-menu-btn {
+      background: none;
+      border: none;
+      color: var(--text-primary);
+      cursor: pointer;
+      padding: 4px;
+      margin-right: 12px;
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      body {
+        flex-direction: column;
+      }
+      .sidebar {
+        width: 100%;
+        flex-direction: row;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        padding: 0 16px;
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+      .sidebar::-webkit-scrollbar {
+        display: none;
+      }
+      .sidebar-header {
+        padding: 16px 8px 16px 0;
+        border-bottom: none;
+      }
+      .brand-title {
+        display: none;
+      }
+      .nav-group-title {
+        display: none;
+      }
+      .nav-group {
+        display: flex;
+        padding: 0;
+      }
+      .nav-item {
+        padding: 16px 12px;
+        white-space: nowrap;
+      }
+      .nav-item.active::before {
+        width: 100%;
+        height: 3px;
+        left: 0;
+        top: auto;
+        bottom: 0;
+        border-radius: 3px 3px 0 0;
+      }
+      .nav-item span {
+        display: none;
+      }
+      .main-area {
+        padding: 24px 20px;
+      }
+      .form-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .form-control {
+        width: 100%;
+        min-width: 0;
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 500px) {
+      .sidebar {
+        display: none; /* Hide standard sidebar on mobile */
+      }
+      .mobile-header {
+        display: flex; /* Show hamburger header */
+      }
+      /* Drawer would be implemented via JS class toggling, simulating simple top nav for now */
+    }
+  </style>
+</head>
+<body>
+
+  <div class="variant-badge">VARIANT A — Sidebar Consolidated</div>
+
+  <!-- Mobile Header (Visible only on very small screens) -->
+  <div class="mobile-header">
+    <button class="mobile-menu-btn">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+    </button>
+    <div class="brand-mark" style="width: 24px; height: 24px; border-radius: 6px;">
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+    </div>
+    <span style="font-weight: 600; margin-left: 10px;">設置</span>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-mark">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+      </div>
+      <div class="brand-title">設置</div>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-title">主要</div>
+      <a class="nav-item" data-tab="tab-record">
+        <svg class="nav-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+        <span>錄音</span>
+      </a>
+      <a class="nav-item active" data-tab="tab-transcribe">
+        <svg class="nav-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path><path d="M2 5h12"></path><path d="M7 2h1"></path><path d="m22 22-5-10-5 10"></path><path d="M14 18h6"></path></svg>
+        <span>轉錄與翻譯</span>
+      </a>
+      <a class="nav-item" data-tab="tab-ai">
+        <svg class="nav-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.98-3A2.5 2.5 0 0 1 9.5 2Z"></path><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.98-3A2.5 2.5 0 0 0 14.5 2Z"></path></svg>
+        <span>AI 助教</span>
+      </a>
+    </div>
+
+    <div class="nav-group">
+      <div class="nav-group-title">其他</div>
+      <a class="nav-item" data-tab="tab-appearance">
+        <svg class="nav-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="3" rx="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+        <span>外觀</span>
+      </a>
+      <a class="nav-item" data-tab="tab-data">
+        <svg class="nav-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>
+        <span>資料</span>
+      </a>
+      <a class="nav-item" data-tab="tab-about">
+        <svg class="nav-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+        <span>關於與更新</span>
+      </a>
+    </div>
+  </aside>
+
+  <!-- Main Area -->
+  <main class="main-area">
+    
+    <!-- Tab: Recording -->
+    <div id="tab-record" class="content-container tab-content">
+      <div class="page-header">
+        <h1 class="page-title">錄音</h1>
+        <div class="page-desc">設定音訊輸入裝置與取樣品質</div>
+      </div>
+      
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path></svg>
+          <span class="card-title">輸入設定</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">麥克風輸入裝置</div>
+            <div class="form-label-desc">選擇要用於錄製語音的麥克風</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>MacBook Pro Microphone</option>
+              <option>外部 USB 麥克風</option>
+              <option>系統預設</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">取樣率</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>16000 Hz</option>
+              <option>44100 Hz</option>
+              <option selected>48000 Hz</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">Chunk duration</div>
+            <div class="form-label-desc">音訊切片長度 (1.5 秒)</div>
+          </div>
+          <div class="form-control">
+            <input type="range" min="0.5" max="5" step="0.1" value="1.5">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+          <span class="card-title">隱私與進階</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">錄音同意已確認</div>
+            <div class="form-label-desc">上次同意紀錄的日期</div>
+          </div>
+          <div class="form-control">
+            <span class="text-readonly">2026-04-20</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">AirPods / 裝置變更警告</div>
+            <div class="form-label-desc">當藍牙耳機連接或斷開時顯示警告</div>
+          </div>
+          <div class="form-control">
+            <label class="switch">
+              <input type="checkbox" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Transcription & Translation (Default Active) -->
+    <div id="tab-transcribe" class="content-container tab-content active">
+      <div class="page-header">
+        <h1 class="page-title">轉錄與翻譯</h1>
+        <div class="page-desc">設定語音辨識模型、翻譯引擎與 AI 精修參數</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path><path d="M2 5h12"></path><path d="M7 2h1"></path></svg>
+          <span class="card-title">語音辨識 (ASR)</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">Whisper 模型</div>
+            <div class="form-label-desc">較大的模型提供更好的準確度，但需要更多資源</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>Tiny (75MB)</option>
+              <option>Base (142MB)</option>
+              <option>Small (466MB)</option>
+              <option>Medium (1.5GB)</option>
+              <option selected>Large-v3 Turbo (574MB)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">ASR Backend</div>
+            <div class="form-label-desc">運算後端，建議設為自動</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>auto</option>
+              <option>cuda</option>
+              <option>metal</option>
+              <option>vulkan</option>
+              <option>cpu</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+          <span class="card-title">即時翻譯</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">翻譯來源語言</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>auto</option>
+              <option>en</option>
+              <option>ja</option>
+              <option>ko</option>
+              <option>fr</option>
+              <option>de</option>
+              <option>es</option>
+              <option>zh-TW</option>
+              <option>zh-CN</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">翻譯目標語言</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>zh-TW</option>
+              <option>en</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">本地翻譯模型</div>
+            <div class="form-label-desc">用於離線翻譯的核心模型</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>Opus-MT (zh→en)</option>
+              <option>M2M-100</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+          <span class="card-title">AI 精修與潤飾</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">AI 精修強度</div>
+            <div class="form-label-desc">處理轉錄文字時的修正幅度</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>off</option>
+              <option selected>light</option>
+              <option>deep</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">精修 LLM 提供者</div>
+            <div class="form-label-desc">選擇要用來精修的雲端或本地模型</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>auto</option>
+              <option selected>chatgpt-oauth</option>
+              <option>github-models</option>
+              <option>ollama</option>
+              <option>gemini</option>
+              <option>groq</option>
+              <option>mistral</option>
+              <option>openrouter</option>
+              <option>user-key</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: AI Tutor -->
+    <div id="tab-ai" class="content-container tab-content">
+      <div class="page-header">
+        <h1 class="page-title">AI 助教</h1>
+        <div class="page-desc">設定 AI 助手行為與模型連接</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+          <span class="card-title">介面與行為</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">助教視窗模式</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>floating</option>
+              <option selected>sidebar</option>
+              <option>detached</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">OCR 模式</div>
+            <div class="form-label-desc">用於截圖文字辨識的引擎</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>auto</option>
+              <option>remote</option>
+              <option>local</option>
+              <option>off</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">預設 Provider</div>
+            <div class="form-label-desc">發問時預設使用的服務</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>ChatGPT Plus OAuth</option>
+              <option>GitHub Copilot Pro</option>
+              <option>Anthropic</option>
+              <option>Gemini</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path></svg>
+          <span class="card-title">雲端 AI 提供者連線</span>
+        </div>
+        <div class="form-row" style="flex-direction: column; align-items: stretch; gap: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px;">
+            <div>
+              <div style="font-weight: 500; font-size: 14px;">ChatGPT Plus OAuth</div>
+              <div style="font-size: 12px; color: #10b981; margin-top: 4px;">已連線</div>
+            </div>
+            <button class="btn btn-secondary">設定</button>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px;">
+            <div>
+              <div style="font-weight: 500; font-size: 14px;">GitHub Copilot Pro</div>
+              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">未設定</div>
+            </div>
+            <button class="btn btn-secondary">連線</button>
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px;">
+            <div>
+              <div style="font-weight: 500; font-size: 14px;">Anthropic / OpenAI / Gemini (API Key)</div>
+              <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">未設定</div>
+            </div>
+            <button class="btn btn-secondary">設定</button>
+          </div>
+          <button class="btn btn-secondary" style="margin-top: 8px;">測試所有連線</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Appearance -->
+    <div id="tab-appearance" class="content-container tab-content">
+      <div class="page-header">
+        <h1 class="page-title">外觀</h1>
+        <div class="page-desc">自訂介面風格與字幕呈現方式</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="19.36" x2="19.78" y2="20.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+          <span class="card-title">介面</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">主題</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>light</option>
+              <option>dark</option>
+              <option selected>跟隨系統</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">視訊-PDF Layout</div>
+            <div class="form-label-desc">在課堂模式中的排列方式</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>split</option>
+              <option>pip</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"></polyline><line x1="9" y1="20" x2="15" y2="20"></line><line x1="12" y1="4" x2="12" y2="20"></line></svg>
+          <span class="card-title">字幕顯示</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">字幕字體大小</div>
+            <div class="form-label-desc">當前大小: 20px</div>
+          </div>
+          <div class="form-control">
+            <input type="range" min="12" max="32" value="20">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">字幕顏色</div>
+          </div>
+          <div class="form-control">
+            <span class="color-preview" style="background-color: #FFFFFF;"></span>
+            <span style="font-size: 13px; font-variant-numeric: tabular-nums;">#FFFFFF</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">字幕背景透明度</div>
+            <div class="form-label-desc">當前透明度: 60%</div>
+          </div>
+          <div class="form-control">
+            <input type="range" min="0" max="100" value="60">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">字幕位置</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option selected>bottom</option>
+              <option>top</option>
+              <option>floating</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">字幕顯示模式</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>en</option>
+              <option>zh</option>
+              <option selected>both (雙語)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: Data -->
+    <div id="tab-data" class="content-container tab-content">
+      <div class="page-header">
+        <h1 class="page-title">資料</h1>
+        <div class="page-desc">管理您的本地筆記與應用程式資料</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+          <span class="card-title">備份與匯出</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">匯出全部資料</div>
+            <div class="form-label-desc">包含所有筆記、錄音與設定 (匯出為 JSON.zip)</div>
+          </div>
+          <div class="form-control">
+            <button class="btn btn-secondary">匯出</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">匯入備份</div>
+            <div class="form-label-desc">從先前的備份檔案還原資料</div>
+          </div>
+          <div class="form-control">
+            <button class="btn btn-secondary">匯入</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          <span class="card-title">儲存管理</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">回收桶</div>
+            <div class="form-label-desc">目前有 12 筆已刪除項目</div>
+          </div>
+          <div class="form-control">
+            <button class="btn btn-secondary">還原</button>
+            <button class="btn btn-danger">永久刪除</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">APPDATA 路徑</div>
+            <div class="form-label-desc">資料庫與檔案存放位置</div>
+          </div>
+          <div class="form-control" style="justify-content: flex-start; max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            <span class="text-readonly">~/Library/Application Support/com.classnote.ai</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          <span class="card-title">危險區域</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text" style="color: #ef4444;">重置 Setup Wizard</div>
+            <div class="form-label-desc">清除所有設定並在下次啟動時重新執行初始設定精靈</div>
+          </div>
+          <div class="form-control">
+            <button class="btn btn-danger">重置</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: About -->
+    <div id="tab-about" class="content-container tab-content">
+      <div class="page-header">
+        <h1 class="page-title">關於與更新</h1>
+        <div class="page-desc">應用程式資訊、更新與診斷工具</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
+          <span class="card-title">系統資訊</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">當前版本</div>
+          </div>
+          <div class="form-control">
+            <span class="text-readonly">0.6.0-alpha.6</span>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">更新通道</div>
+            <div class="form-label-desc">接收新版本的頻率</div>
+          </div>
+          <div class="form-control">
+            <select>
+              <option>Stable</option>
+              <option>Beta</option>
+              <option selected>Alpha</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">檢查更新</div>
+            <div class="form-label-desc">目前已是最新版本</div>
+          </div>
+          <div class="form-control">
+            <button class="btn btn-secondary">立即檢查</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"></path></svg>
+          <span class="card-title">診斷與支援</span>
+        </div>
+        <div class="form-row" style="flex-direction: column; align-items: stretch; gap: 12px;">
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <button class="btn btn-secondary">預覽並複製 Log</button>
+            <button class="btn btn-secondary">開啟 Log 資料夾</button>
+            <button class="btn btn-secondary">以 GitHub Issue 回報</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">匯出診斷套件</div>
+            <div class="form-label-desc">包含應用狀態以協助除錯</div>
+          </div>
+          <div class="form-control" style="flex-direction: column; align-items: flex-end;">
+            <div style="display: flex; gap: 8px; margin-bottom: 8px; width: 100%;">
+              <select style="flex: 1;">
+                <option>Lecture: CS101 (2026-04-20)</option>
+                <option>Lecture: Math (2026-04-19)</option>
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+                <input type="checkbox"> 包含音訊檔案
+              </label>
+              <button class="btn btn-primary">產生套件</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <svg class="card-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
+          <span class="card-title">開發者選項</span>
+        </div>
+        <div class="form-row">
+          <div class="form-label">
+            <div class="form-label-text">開啟 DevTools</div>
+          </div>
+          <div class="form-control">
+            <button class="btn btn-secondary">開啟</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    // Simple tab switching logic for the mockup
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', function() {
+        // Remove active class from all nav items
+        document.querySelectorAll('.nav-item').forEach(nav => {
+          nav.classList.remove('active');
+        });
+        
+        // Add active class to clicked nav item
+        this.classList.add('active');
+        
+        // Hide all tab contents
+        document.querySelectorAll('.tab-content').forEach(content => {
+          content.classList.remove('active');
+        });
+        
+        // Show corresponding tab content
+        const tabId = this.getAttribute('data-tab');
+        document.getElementById(tabId).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>

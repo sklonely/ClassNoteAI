@@ -1,11 +1,21 @@
+/// 翻譯模塊
+///
+/// - `ctranslate2` / `rough`: CTranslate2 本地翻譯（M2M100），需要 `nmt-local`
+///   feature。沒啟用時不編，避免拉 ct2rs + sentencepiece-sys 的 CMake/C++
+///   build pipeline。
+/// - `gemma`: TranslateGemma 4B LLM 翻譯（HTTP 到 llama-server sidecar）。
+///   永遠可用，零 native dep。
+/// - `google`: Google Translate API（官方 / 非官方）。永遠可用。
+///
+/// Fine translation 將在 v0.5.0+ 透過 LLMProvider（GitHub Models / OpenAI /
+/// Anthropic）實作。
+#[cfg(feature = "nmt-local")]
 pub mod ctranslate2;
+pub mod gemma;
+pub mod gemma_model;
+pub mod gemma_sidecar;
 pub mod google;
-/**
- * 翻譯模塊
- *
- * rough: CTranslate2 本地翻譯（Opus-MT）
- * Fine translation 將在 v0.5.0+ 透過 LLMProvider（GitHub Models / OpenAI / Anthropic）實作
- */
+#[cfg(feature = "nmt-local")]
 pub mod rough;
 
 use serde::{Deserialize, Serialize};

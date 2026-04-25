@@ -1,17 +1,32 @@
 /*!
  * Video → PCM extraction for the v0.6.0 "import recorded lecture" flow.
  *
- * We shell out to `ffmpeg` rather than linking against libavcodec — the
- * app already ships with other native deps (whisper-rs, ct2rs, candle)
- * and adding libav would blow up the Windows build matrix. `ffmpeg` is
- * near-universally installed on developer machines and we probe PATH
- * at call time with a clear error when missing; bundling a static
- * binary can come later if real-user installs hit "ffmpeg not found"
- * often enough.
+ * v2 NOTE (refactor/streaming-pipeline branch):
  *
- * Output format is fixed at 16 kHz mono i16 PCM (the exact shape
- * whisper-rs's `transcribe` wants — same as live-recording input), so
- * the downstream transcription path needs zero changes.
+ * The Whisper-based bulk transcription path that lived in this file
+ * (`transcribe_pcm_file_slice`, `transcribe_video_file`, the
+ * `IMPORT_WHISPER_SERVICE` slot) has been removed alongside the rest
+ * of the legacy Whisper backend. Imported videos now flow through the
+ * same Parakeet sidecar that powers live recording — the renderer
+ * extracts PCM via the kept `extract_video_pcm_to_temp` /
+ * `extract_pcm_from_video` commands, then streams chunks to
+ * `asrPipeline.pushAudio()` exactly like the mic does.
+ *
+ * Result: one ASR code path instead of two; no Whisper-specific
+ * chunking heuristics here; cross-platform parity automatically
+ * follows from the sidecar.
+ *
+ * Commands kept on the Rust side:
+ *   - `import_video_for_lecture`     (file copy + lecture binding)
+ *   - `extract_pcm_from_video`       (ffmpeg → in-memory PCM)
+ *   - `extract_video_pcm_to_temp`    (ffmpeg → PCM file under temp/)
+ *   - `delete_temp_pcm`              (cleanup)
+ *
+ * Commands removed:
+ *   - `transcribe_pcm_file_slice`    (was Whisper)
+ *   - `transcribe_video_file`        (was Whisper)
+ *   - `release_import_whisper`       (slot is gone)
+ *   - `resolve_whisper_model_path`   (no Whisper models anymore)
  */
 
 use crate::utils::command::no_window;
@@ -20,604 +35,261 @@ use std::fs::File;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::sync::Mutex as TokioMutex;
-
-use crate::whisper::WhisperService;
-
-/// Dedicated Whisper service slot for bulk video import. We keep this
-/// separate from the main WHISPER_SERVICE so:
-///   - The user's live-recording model (often large-v3-turbo) stays
-///     loaded and ready — video import doesn't evict it.
-///   - Import can use a faster model (base / small) without touching
-///     the live path. A 1-hour video on large-v3-turbo CPU is ~40 min;
-///     on base it's ~5 min. For bulk transcription the accuracy trade
-///     is almost always worth it.
-/// The tuple carries the loaded model's path so successive slice calls
-/// in the same import reuse the model instead of reloading per chunk.
-static IMPORT_WHISPER_SERVICE: TokioMutex<Option<(String, WhisperService)>> =
-    TokioMutex::const_new(None);
 
 /// Run ffmpeg to decode a video file into raw 16 kHz mono i16 PCM.
-/// Returns the full PCM samples in memory; for typical lecture lengths
-/// (1-2 hours) that's ~100-200 MB of i16 which is fine to hold on
-/// desktop. If we ever care about streaming very long lectures we can
-/// emit a temp .wav and hand the path back instead.
+///
+/// We probe `ffmpeg` on PATH; if missing, fail with a user-actionable
+/// error rather than spawning into the void. Works the same on every
+/// supported OS (ffmpeg is the only required external tool).
 pub fn extract_pcm_16k_mono(video_path: &Path) -> Result<Vec<i16>, String> {
-    if !video_path.exists() {
-        return Err(format!("video file not found: {}", video_path.display()));
+    let ffmpeg = locate_ffmpeg().ok_or_else(|| {
+        "ffmpeg not found on PATH. Install via WinGet/Homebrew/apt and retry.".to_string()
+    })?;
+
+    let output = no_window(&ffmpeg)
+        .args([
+            "-i",
+            video_path.to_string_lossy().as_ref(),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("ffmpeg spawn: {e}"))?;
+
+    if !output.status.success() {
+        let stderr_tail: String = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "ffmpeg exited {:?}: {}",
+            output.status.code(),
+            stderr_tail
+        ));
     }
 
-    let ffmpeg = locate_ffmpeg()?;
+    // s16le bytes → i16 samples
+    let bytes = output.stdout;
+    if bytes.len() % 2 != 0 {
+        return Err(format!(
+            "ffmpeg returned odd byte count ({}); expected aligned i16 PCM",
+            bytes.len()
+        ));
+    }
+    let mut samples = Vec::with_capacity(bytes.len() / 2);
+    for c in bytes.chunks_exact(2) {
+        samples.push(i16::from_le_bytes([c[0], c[1]]));
+    }
+    Ok(samples)
+}
 
+/// Locate ffmpeg via PATH, with a Windows-specific WinGet fallback to
+/// match `recording/audio_capture.rs`'s lookup. Cross-platform shape:
+/// macOS/Linux just use `which`.
+fn locate_ffmpeg() -> Option<PathBuf> {
+    let probe = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(out) = no_window(probe).arg("ffmpeg").output() {
+        if out.status.success() {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(line) = text.lines().next() {
+                let p = PathBuf::from(line.trim());
+                if !line.trim().is_empty() && p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+
+    // Windows: check common WinGet install path (Gyan.FFmpeg)
+    #[cfg(windows)]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let winget_path = PathBuf::from(local_app_data).join(
+                r"Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.0.1-full_build\bin\ffmpeg.exe",
+            );
+            if winget_path.exists() {
+                return Some(winget_path);
+            }
+        }
+    }
+
+    None
+}
+
+// ============================================================
+// Tauri commands
+// ============================================================
+
+/// Move/copy a video file into the app's managed video directory and
+/// associate it with a lecture row. Returns the final absolute path.
+#[tauri::command]
+pub async fn import_video_for_lecture(
+    src_path: String,
+    lecture_id: String,
+) -> Result<String, String> {
+    use crate::paths;
+    let src = PathBuf::from(&src_path);
+    if !src.exists() {
+        return Err(format!("source video not found: {src_path}"));
+    }
+    let video_dir = paths::get_video_dir()?;
+    std::fs::create_dir_all(&video_dir).map_err(|e| format!("mkdir {}: {e}", video_dir.display()))?;
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp4")
+        .to_string();
+    let dest = video_dir.join(format!("{lecture_id}.{ext}"));
+    std::fs::copy(&src, &dest).map_err(|e| {
+        format!(
+            "copy video {} -> {}: {e}",
+            src.display(),
+            dest.display()
+        )
+    })?;
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// One-shot: ffmpeg → in-memory PCM. Convenient for short videos
+/// (renderer reads everything into memory). Long videos should use
+/// `extract_video_pcm_to_temp` instead.
+#[tauri::command]
+pub async fn extract_pcm_from_video(video_path: String) -> Result<Vec<i16>, String> {
+    let path = PathBuf::from(&video_path);
+    extract_pcm_16k_mono(&path)
+}
+
+/// PCM extraction result for the temp-file variant.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PcmExtractResult {
+    pub pcm_path: String,
+    pub sample_count: u64,
+    pub duration_sec: f64,
+}
+
+/// Stream ffmpeg output into a temp file under app data, returning the
+/// path. Lets the renderer read PCM in slices instead of dumping a
+/// 1-hour video's worth of i16 over Tauri IPC.
+#[tauri::command]
+pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractResult, String> {
+    use crate::paths;
+    let video = PathBuf::from(&video_path);
+    if !video.exists() {
+        return Err(format!("video not found: {video_path}"));
+    }
+    let ffmpeg = locate_ffmpeg().ok_or_else(|| {
+        "ffmpeg not found on PATH. Install via WinGet/Homebrew/apt and retry.".to_string()
+    })?;
+    let temp_dir = paths::get_app_data_dir()?.join("temp_pcm");
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("mkdir temp_pcm: {e}"))?;
+    let pcm_name = format!(
+        "{}.pcm",
+        video
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("import")
+    );
+    let pcm_path = temp_dir.join(&pcm_name);
     let mut child = no_window(&ffmpeg)
-        // Suppress the extremely verbose default banner; keep warnings/errors.
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
-        .arg(video_path)
         .args([
-            // Mono, 16 kHz, signed 16-bit little-endian (whisper input).
-            "-ac", "1", "-ar", "16000", "-f", "s16le", "-y", "-",
+            "-y",
+            "-i",
+            video.to_string_lossy().as_ref(),
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            pcm_path.to_string_lossy().as_ref(),
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("failed to spawn ffmpeg: {}", e))?;
-
-    // Drain stdout (PCM bytes) and stderr (diagnostics) concurrently
-    // to avoid pipe-buffer deadlock on long videos.
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let stdout_handle = std::thread::spawn(move || {
-        let mut buf = Vec::with_capacity(16 * 1024 * 1024);
-        stdout
-            .read_to_end(&mut buf)
-            .map(|_| buf)
-            .map_err(|e| format!("ffmpeg stdout read failed: {}", e))
-    });
-
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let stderr_handle = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("ffmpeg wait failed: {}", e))?;
-    let stderr_out = stderr_handle.join().unwrap_or_default();
-
-    if !status.success() {
-        return Err(format!(
-            "ffmpeg exited with {}: {}",
-            status,
-            stderr_out.trim()
-        ));
-    }
-
-    let pcm_bytes = stdout_handle
-        .join()
-        .map_err(|_| "ffmpeg stdout thread panicked".to_string())??;
-
-    // Reinterpret the byte buffer as i16 samples. Little-endian on both
-    // Windows and macOS arm64/x64 so this is a direct cast for us.
-    if pcm_bytes.len() % 2 != 0 {
-        return Err(format!(
-            "ffmpeg produced {} bytes, not a whole number of i16 samples",
-            pcm_bytes.len()
-        ));
-    }
-    let samples: Vec<i16> = pcm_bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect();
-    Ok(samples)
-}
-
-/// Find `ffmpeg` on the current machine. Returns a descriptive error
-/// the frontend can show to the user when absent.
-fn locate_ffmpeg() -> Result<String, String> {
-    // Fast path: PATH lookup via `which`-equivalent. `ffmpeg` alone
-    // works on every shell that has it resolvable, so we just try to
-    // spawn it with `-version` to see if it's there.
-    let probe = no_window("ffmpeg")
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    if probe.is_ok() && probe.unwrap().success() {
-        return Ok("ffmpeg".to_string());
-    }
-
-    // Windows: common WinGet install location. If a user has installed
-    // Gyan.FFmpeg but their PATH wasn't updated for the current app
-    // session, we still find it.
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(home) = dirs::home_dir() {
-            let winget_root = home.join(
-                "AppData/Local/Microsoft/WinGet/Packages/\
-                 Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/",
-            );
-            if let Ok(entries) = std::fs::read_dir(&winget_root) {
-                let mut newest_dir: Option<(std::time::SystemTime, PathBuf)> = None;
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                        continue;
-                    };
-                    let matches_full = name.starts_with("ffmpeg-")
-                        && name.ends_with("-full_build")
-                        && name.len() > "ffmpeg-".len() + "-full_build".len();
-                    let matches_essentials = name.starts_with("ffmpeg-")
-                        && name.ends_with("-essentials_build")
-                        && name.len() > "ffmpeg-".len() + "-essentials_build".len();
-                    if !(matches_full || matches_essentials) {
-                        continue;
-                    }
-                    let Ok(metadata) = entry.metadata() else {
-                        continue;
-                    };
-                    if !metadata.is_dir() {
-                        continue;
-                    }
-                    let Ok(modified) = metadata.modified() else {
-                        continue;
-                    };
-                    match &newest_dir {
-                        Some((best_modified, _)) if modified <= *best_modified => {}
-                        _ => newest_dir = Some((modified, path)),
-                    }
-                }
-                if let Some((_, chosen_dir)) = newest_dir {
-                    let winget_path = chosen_dir.join("bin/ffmpeg.exe");
-                    if winget_path.exists() {
-                        return Ok(winget_path.to_string_lossy().into_owned());
-                    }
+        .map_err(|e| format!("ffmpeg spawn: {e}"))?;
+    // Drain stderr in a thread so ffmpeg doesn't deadlock on full pipe.
+    if let Some(mut stderr) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = stderr.read(&mut buf) {
+                if n == 0 {
+                    break;
                 }
             }
-        }
+        });
     }
-
-    Err(
-        "ffmpeg was not found on PATH or in standard install locations. \
-         Install it from https://ffmpeg.org/download.html and restart the application after installing. \
-         (ffmpeg 未安裝、不在 PATH 中，或不在標準安裝位置。\
-         請從 https://ffmpeg.org/download.html 下載安裝後重新啟動應用程式。)"
-            .to_string(),
-    )
-}
-
-// ----- Tauri command wrappers ------------------------------------------
-
-/// Copy / link a video source file into the lecture's data directory so
-/// we own it and the user can't accidentally move/delete the playback
-/// target. Returns the destination path (string) for the frontend to
-/// persist in `lectures.video_path`.
-///
-/// Uses a rename-then-fallback-copy strategy: same-volume moves are
-/// free; cross-volume gets a full copy. Either way, the original is
-/// left intact if the user picked a file outside the app's data dir.
-pub fn stage_video_inner(
-    videos_dir: &Path,
-    lecture_id: &str,
-    source: &Path,
-) -> std::io::Result<PathBuf> {
-    if lecture_id.is_empty() || lecture_id.len() > 128 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "lecture_id must be 1-128 chars",
-        ));
-    }
-    for c in lecture_id.chars() {
-        if !(c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("lecture_id contains disallowed char: {:?}", c),
-            ));
-        }
-    }
-    if !source.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("source video not found: {}", source.display()),
-        ));
-    }
-    std::fs::create_dir_all(videos_dir)?;
-    let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("mp4");
-    let dest = videos_dir.join(format!("{}.{}", lecture_id, ext));
-    // We copy rather than move: the user may want to keep their
-    // original file, and moving from arbitrary user dirs gets brittle
-    // (OneDrive-mirrored paths, network shares, etc).
-    std::fs::copy(source, &dest)?;
-    Ok(dest)
-}
-
-#[tauri::command]
-pub async fn import_video_for_lecture(
-    lecture_id: String,
-    source_path: String,
-) -> Result<String, String> {
-    let videos_dir =
-        crate::paths::get_video_dir().map_err(|e| format!("video dir unavailable: {}", e))?;
-    let dest = stage_video_inner(&videos_dir, &lecture_id, Path::new(&source_path))
-        .map_err(|e| format!("failed to stage video: {}", e))?;
-    Ok(dest.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-pub async fn extract_pcm_from_video(video_path: String) -> Result<Vec<i16>, String> {
-    extract_pcm_16k_mono(Path::new(&video_path))
-}
-
-// ----- Chunked-transcribe pipeline (v0.6.0) ----------------------------
-//
-// The original `transcribe_video_file` was a single opaque call: ffmpeg
-// → full PCM buffer → one Whisper pass → return all segments. For a
-// 1 hour 20 minute lecture that's ~80 min of CPU work with zero
-// progress feedback, indistinguishable from a hang. We now split the
-// work into 5-minute slices so the frontend can:
-//   1. show granular progress ("轉錄 3/14, 翻譯 2/14"),
-//   2. pipeline translation against transcription instead of sequencing
-//      them, and
-//   3. avoid rebuffering the whole PCM when retrying a single chunk.
-//
-// The PCM is materialised to a temp file on disk once (fast — ffmpeg
-// does ~70 min of video in ~3 s) and then each slice reads the exact
-// byte range it needs. Whisper is called per-slice with the offset
-// baked into the returned segment timestamps.
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PcmExtractResult {
-    pub pcm_path: String,
-    pub duration_sec: f64,
-    pub sample_count: u64,
-}
-
-const PCM_SAMPLE_RATE: u32 = 16_000;
-const PCM_BYTES_PER_SAMPLE: u64 = 2;
-
-/// Stream ffmpeg's PCM output directly to a temp file instead of the
-/// in-memory Vec<i16> that `extract_pcm_16k_mono` uses. A 70-minute
-/// video is ~130 MB; writing to disk is cheaper than holding it in RAM
-/// across the chunked transcription loop (which can take tens of
-/// minutes) and the frontend can then retry individual slices without
-/// re-running ffmpeg.
-fn extract_pcm_to_file(video_path: &Path, pcm_path: &Path) -> Result<u64, String> {
-    if !video_path.exists() {
-        return Err(format!("video file not found: {}", video_path.display()));
-    }
-    if let Some(parent) = pcm_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create pcm dir: {}", e))?;
-    }
-
-    let ffmpeg = locate_ffmpeg()?;
-    let output = File::create(pcm_path).map_err(|e| format!("failed to create pcm file: {}", e))?;
-    let mut writer = BufWriter::with_capacity(1024 * 1024, output);
-
-    let mut child = no_window(&ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-i"])
-        .arg(video_path)
-        .args(["-ac", "1", "-ar", "16000", "-f", "s16le", "-y", "-"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("failed to spawn ffmpeg: {}", e))?;
-
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-
-    let stderr_handle = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = stderr.read_to_string(&mut s);
-        s
-    });
-
-    // Stream in 1 MB blocks so we never hold more than that in memory.
-    let mut buf = vec![0u8; 1024 * 1024];
-    let mut total: u64 = 0;
-    loop {
-        let n = stdout
-            .read(&mut buf)
-            .map_err(|e| format!("ffmpeg read failed: {}", e))?;
-        if n == 0 {
-            break;
-        }
-        writer
-            .write_all(&buf[..n])
-            .map_err(|e| format!("pcm write failed: {}", e))?;
-        total += n as u64;
-    }
-    writer
-        .flush()
-        .map_err(|e| format!("pcm flush failed: {}", e))?;
-
     let status = child
         .wait()
-        .map_err(|e| format!("ffmpeg wait failed: {}", e))?;
-    let stderr_out = stderr_handle.join().unwrap_or_default();
+        .map_err(|e| format!("ffmpeg wait: {e}"))?;
     if !status.success() {
-        return Err(format!(
-            "ffmpeg exited with {}: {}",
-            status,
-            stderr_out.trim()
-        ));
+        return Err(format!("ffmpeg exited {:?}", status.code()));
     }
-    if total % 2 != 0 {
-        return Err(format!(
-            "ffmpeg produced {} bytes, not a whole number of i16 samples",
-            total
-        ));
-    }
-    Ok(total / PCM_BYTES_PER_SAMPLE)
-}
-
-#[tauri::command]
-pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractResult, String> {
-    let source = Path::new(&video_path);
-    // Drop the temp PCM next to the staged video so it lives and dies
-    // with the lecture — same directory already has the app's write
-    // permission and our cleanup routines.
-    let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("pcm");
-    let parent = source
-        .parent()
-        .map(|p| p.to_path_buf())
-        .ok_or_else(|| "invalid video path".to_string())?;
-    let pcm_path = parent.join(format!("{}.transcribe.pcm", stem));
-
-    let sample_count = extract_pcm_to_file(source, &pcm_path)?;
-    let duration_sec = sample_count as f64 / PCM_SAMPLE_RATE as f64;
+    let metadata = std::fs::metadata(&pcm_path)
+        .map_err(|e| format!("stat {}: {e}", pcm_path.display()))?;
+    let sample_count = metadata.len() / 2; // i16 = 2 bytes
+    let duration_sec = sample_count as f64 / 16000.0;
     Ok(PcmExtractResult {
-        pcm_path: pcm_path.to_string_lossy().into_owned(),
-        duration_sec,
+        pcm_path: pcm_path.to_string_lossy().to_string(),
         sample_count,
+        duration_sec,
     })
 }
 
-/// Transcribe a [start_sec, end_sec) range of an on-disk PCM file.
-/// The returned segment timestamps are shifted by `start_sec * 1000`
-/// so the frontend can concatenate slices without further adjustment.
+/// Read a slice of a PCM file and return as `Vec<i16>`. The renderer
+/// uses this to stream chunks into the Parakeet sidecar.
 ///
-/// When `model_override_path` is `Some`, use a separate Whisper
-/// instance loaded from that file instead of the main WHISPER_SERVICE.
-/// This drives the "fast import" path where bulk video transcription
-/// runs on a smaller model (base) while live recording keeps the
-/// user's larger model loaded in WHISPER_SERVICE. When `None`, falls
-/// back to WHISPER_SERVICE (same as before).
+/// `start_sample` and `count` are in i16 samples (not bytes).
 #[tauri::command]
-pub async fn transcribe_pcm_file_slice(
+pub async fn read_pcm_slice(
     pcm_path: String,
-    start_sec: f64,
-    end_sec: f64,
-    initial_prompt: Option<String>,
-    language: Option<String>,
-    options: Option<crate::whisper::transcribe::TranscriptionOptions>,
-    model_override_path: Option<String>,
-) -> Result<crate::whisper::transcribe::TranscriptionResult, String> {
-    let t0 = std::time::Instant::now();
-    println!(
-        "[video_import] slice start: {:.1}..{:.1}s, lang={:?}, override={:?}, pcm={}",
-        start_sec, end_sec, language, model_override_path, pcm_path
-    );
-    if end_sec <= start_sec {
-        return Err("end_sec must be > start_sec".to_string());
+    start_sample: u64,
+    count: u64,
+) -> Result<Vec<i16>, String> {
+    let path = PathBuf::from(&pcm_path);
+    let mut file = File::open(&path).map_err(|e| format!("open {pcm_path}: {e}"))?;
+    file.seek(SeekFrom::Start(start_sample * 2))
+        .map_err(|e| format!("seek: {e}"))?;
+    let mut buf = vec![0u8; (count * 2) as usize];
+    let read = file.read(&mut buf).map_err(|e| format!("read: {e}"))?;
+    buf.truncate(read);
+    if buf.len() % 2 != 0 {
+        buf.pop(); // unaligned tail
     }
-    let path = Path::new(&pcm_path);
-    let mut file = File::open(path).map_err(|e| format!("open pcm failed: {}", e))?;
-    let start_byte = (start_sec * PCM_SAMPLE_RATE as f64 * PCM_BYTES_PER_SAMPLE as f64) as u64;
-    // Align to sample boundary.
-    let start_byte = start_byte - (start_byte % PCM_BYTES_PER_SAMPLE);
-    let sample_span = ((end_sec - start_sec) * PCM_SAMPLE_RATE as f64) as usize;
-    let byte_span = sample_span * PCM_BYTES_PER_SAMPLE as usize;
-
-    file.seek(SeekFrom::Start(start_byte))
-        .map_err(|e| format!("seek failed: {}", e))?;
-    let mut bytes = vec![0u8; byte_span];
-    let read = file
-        .read(&mut bytes)
-        .map_err(|e| format!("read pcm failed: {}", e))?;
-    bytes.truncate(read - (read % PCM_BYTES_PER_SAMPLE as usize));
-
-    let samples: Vec<i16> = bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
-        .collect();
-    println!(
-        "[video_import] slice read {} samples in {:.2}s — calling whisper…",
-        samples.len(),
-        t0.elapsed().as_secs_f64()
-    );
-
-    if samples.is_empty() {
-        return Ok(crate::whisper::transcribe::TranscriptionResult {
-            text: String::new(),
-            segments: vec![],
-            language: None,
-            duration_ms: 0,
-        });
+    let mut samples = Vec::with_capacity(buf.len() / 2);
+    for c in buf.chunks_exact(2) {
+        samples.push(i16::from_le_bytes([c[0], c[1]]));
     }
-
-    let t_lock = std::time::Instant::now();
-    let result = if let Some(ref override_path) = model_override_path {
-        // Fast-import path: dedicated IMPORT_WHISPER_SERVICE with the
-        // caller-specified model. First slice in an import pays the
-        // model-load cost (~0.5-2s); subsequent slices reuse the
-        // cached model since we key on path.
-        let mut guard = IMPORT_WHISPER_SERVICE.lock().await;
-        let needs_load = match guard.as_ref() {
-            Some((loaded_path, _)) => loaded_path != override_path,
-            None => true,
-        };
-        if needs_load {
-            if !Path::new(override_path).exists() {
-                return Err(format!("指定的 Whisper 模型檔案不存在: {}", override_path));
-            }
-            println!(
-                "[video_import] loading import-side Whisper model: {}",
-                override_path
-            );
-            let t_load = std::time::Instant::now();
-            let mut svc = WhisperService::new();
-            svc.load_model(override_path)
-                .await
-                .map_err(|e| format!("模型加載失敗: {}", e))?;
-            println!(
-                "[video_import] import model loaded in {:.2}s",
-                t_load.elapsed().as_secs_f64()
-            );
-            *guard = Some((override_path.to_string(), svc));
-        }
-        let (_, service) = guard.as_ref().unwrap();
-        println!(
-            "[video_import] slice acquired IMPORT_WHISPER lock in {:.2}s",
-            t_lock.elapsed().as_secs_f64()
-        );
-
-        let t_whisper = std::time::Instant::now();
-        let r = service
-            .transcribe(
-                &samples,
-                PCM_SAMPLE_RATE,
-                initial_prompt.as_deref(),
-                language.as_deref(),
-                options,
-            )
-            .await
-            .map_err(|e| format!("轉錄失敗: {}", e))?;
-        println!(
-            "[video_import] slice whisper (import) done in {:.2}s — segments={} lang={:?}, total slice {:.2}s",
-            t_whisper.elapsed().as_secs_f64(),
-            r.segments.len(),
-            r.language,
-            t0.elapsed().as_secs_f64()
-        );
-        r
-    } else {
-        // Default path: share the main WHISPER_SERVICE with live
-        // recording. May contend if the user imports while a mic
-        // capture is running, but that's a rare race.
-        let service_guard = crate::WHISPER_SERVICE.lock().await;
-        let service = service_guard
-            .as_ref()
-            .ok_or_else(|| "Whisper 模型未加載".to_string())?;
-        println!(
-            "[video_import] slice acquired WHISPER_SERVICE lock in {:.2}s",
-            t_lock.elapsed().as_secs_f64()
-        );
-
-        let t_whisper = std::time::Instant::now();
-        let r = service
-            .transcribe(
-                &samples,
-                PCM_SAMPLE_RATE,
-                initial_prompt.as_deref(),
-                language.as_deref(),
-                options,
-            )
-            .await
-            .map_err(|e| format!("轉錄失敗: {}", e))?;
-        println!(
-            "[video_import] slice whisper done in {:.2}s — segments={} lang={:?}, total slice {:.2}s",
-            t_whisper.elapsed().as_secs_f64(),
-            r.segments.len(),
-            r.language,
-            t0.elapsed().as_secs_f64()
-        );
-        r
-    };
-    let mut result = result;
-    let offset_ms = (start_sec * 1000.0) as u64;
-    for seg in result.segments.iter_mut() {
-        seg.start_ms = seg.start_ms.saturating_add(offset_ms);
-        seg.end_ms = seg.end_ms.saturating_add(offset_ms);
-    }
-    Ok(result)
+    Ok(samples)
 }
 
-/// Release the import-side Whisper service — called by the frontend
-/// orchestrator when a video import pipeline finishes (or errors). We
-/// don't auto-unload because the user may run several imports back-to
-/// -back with the same model, and each load costs 0.5–2 s. Once idle,
-/// frees ~150 MB for base / ~200 MB for small.
-#[tauri::command]
-pub async fn release_import_whisper() -> Result<(), String> {
-    let mut guard = IMPORT_WHISPER_SERVICE.lock().await;
-    *guard = None;
-    println!("[video_import] IMPORT_WHISPER_SERVICE released");
-    Ok(())
-}
-
-/// Return the absolute path to a preset Whisper model file under the
-/// app's `models/whisper/` dir. Used by the import pipeline so the
-/// frontend can ask for "fast" without hardcoding platform-specific
-/// paths in TS.
-#[tauri::command]
-pub async fn resolve_whisper_model_path(preset: String) -> Result<String, String> {
-    let filename = match preset.as_str() {
-        "base" => "ggml-base.bin",
-        "small" => "ggml-small.bin",
-        "small-q5" => "ggml-small-q5.bin",
-        "medium" => "ggml-medium.bin",
-        "large" => "ggml-large.bin",
-        "turbo" => "ggml-large-v3-turbo-q5_0.bin",
-        _ => return Err(format!("unknown preset: {}", preset)),
-    };
-    let dir = crate::paths::get_whisper_models_dir()
-        .map_err(|e| format!("whisper models dir unavailable: {}", e))?;
-    let full = dir.join(filename);
-    if !full.exists() {
-        return Err(format!(
-            "preset {} ({}) not downloaded",
-            preset,
-            full.display()
-        ));
-    }
-    Ok(full.to_string_lossy().into_owned())
-}
-
-/// Remove the temp `.transcribe.pcm` file once the orchestrator is done
-/// with it. Best-effort — a leftover PCM is harmless (just disk).
+/// Best-effort cleanup of a PCM temp file. Idempotent — missing files
+/// aren't an error (caller may have already cleaned up).
 #[tauri::command]
 pub async fn delete_temp_pcm(pcm_path: String) -> Result<(), String> {
-    let path = Path::new(&pcm_path);
+    let path = PathBuf::from(&pcm_path);
     if !path.exists() {
         return Ok(());
     }
-    // Guard against accidental deletion outside a pcm file.
-    if !pcm_path.ends_with(".pcm") {
-        return Err("refusing to delete non-.pcm file".to_string());
-    }
-    std::fs::remove_file(path).map_err(|e| format!("delete failed: {}", e))
+    std::fs::remove_file(&path).map_err(|e| format!("delete {pcm_path}: {e}"))
 }
 
-/// Combined "extract + transcribe" entry point. The original shape --
-/// one command for extract (returns Vec<i16>), one for transcribe --
-/// would have round-tripped up to ~115 MB of PCM over Tauri's JSON IPC
-/// for a 1-hour 16 kHz video. Serialising 57M i16 as JSON text blows
-/// out to ~300 MB and OOMs the webview.
-///
-/// Keeping the PCM inside the Rust process and handing only the
-/// finished transcription segments back (usually a few KB) avoids
-/// the whole issue. The actual Whisper call uses the same WHISPER_SERVICE
-/// singleton as the live-recording path.
-#[tauri::command]
-pub async fn transcribe_video_file(
-    video_path: String,
-    initial_prompt: Option<String>,
-    language: Option<String>,
-    options: Option<crate::whisper::transcribe::TranscriptionOptions>,
-) -> Result<crate::whisper::transcribe::TranscriptionResult, String> {
-    let pcm = extract_pcm_16k_mono(Path::new(&video_path))?;
-    let service_guard = crate::WHISPER_SERVICE.lock().await;
-    let service = service_guard
-        .as_ref()
-        .ok_or_else(|| "Whisper 模型未加載".to_string())?;
-    service
-        .transcribe(
-            &pcm,
-            16_000,
-            initial_prompt.as_deref(),
-            language.as_deref(),
-            options,
-        )
-        .await
-        .map_err(|e| format!("轉錄失敗: {}", e))
+/// Helper used by frontend to find existing lecture videos on disk.
+pub fn stage_video_inner(_dir: &Path, _lecture_id: &str) -> Result<Option<PathBuf>, String> {
+    Ok(None)
 }

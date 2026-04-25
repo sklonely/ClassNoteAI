@@ -7,7 +7,6 @@ import DragDropZone from "./DragDropZone";
 import { AudioRecorder } from "../services/audioRecorder";
 import SubtitleDisplay from "./SubtitleDisplay";
 import { transcriptionService } from "../services/transcriptionService";
-import { loadModel, checkModelFile } from "../services/whisperService";
 import { loadTranslationModelByName, getAvailableTranslationModels } from "../services/translationModelService";
 import { storageService } from "../services/storageService";
 import { extractKeywordsFromPDF } from "../utils/pdfKeywordExtractor";
@@ -74,50 +73,45 @@ export default function LectureView() {
       modelsLoadingRef.current = true;
 
       try {
-        // 1. 加載 Whisper 模型
+        // v2 streaming pipeline: ASR (Parakeet sidecar) and translation
+        // (TranslateGemma sidecar) self-bootstrap on first use — no
+        // pre-load step needed here. Whisper model load + CT2 model load
+        // were the v1 dance; both are gone with the legacy backend.
+        // We still keep modelLoaded / translationModelLoaded flags so
+        // existing UI guards stay truthy. Mark both as loaded so the
+        // subsequent rendering paths that gate on them don't block.
         const settings = await storageService.getAppSettings();
-        const whisperModel = (settings?.models?.whisper || 'base') as 'tiny' | 'base' | 'small' | 'medium' | 'large'; // 默認使用 base
+        if (!modelLoaded) setModelLoaded(true);
 
-        const whisperExists = await checkModelFile(whisperModel);
-        if (whisperExists && !modelLoaded) {
-          console.log('[LectureView] Whisper 模型文件存在，開始加載...', whisperModel);
-          try {
-            await loadModel(whisperModel);
-            setModelLoaded(true);
-            console.log('[LectureView] Whisper 模型加載成功');
-          } catch (error) {
-            console.error('[LectureView] Whisper 模型加載失敗:', error);
-            modelsLoadingRef.current = false; // 失敗時重置標記，允許重試
-          }
-        } else if (!whisperExists) {
-          console.log('[LectureView] Whisper 模型文件不存在:', whisperModel);
-        }
-
-        // 2. 自動加載翻譯模型（僅在選擇本地翻譯時需要）
-        const translationProvider = settings?.translation?.provider || 'local';
+        const translationProvider = settings?.translation?.provider || 'gemma';
         const translationModel = settings?.models?.translation;
 
-        // 只有在選擇本地翻譯時才需要加載模型
-        if (translationProvider === 'local' && translationModel && !translationModelLoaded) {
-          console.log('[LectureView] 檢查翻譯模型:', translationModel);
-          try {
-            const availableModels = await getAvailableTranslationModels();
-            if (availableModels.includes(translationModel)) {
-              console.log('[LectureView] 翻譯模型文件存在，開始自動加載...', translationModel);
-              await loadTranslationModelByName(translationModel);
-              setTranslationModelLoaded(true);
-              console.log('[LectureView] 翻譯模型自動加載成功');
-            } else {
-              console.log('[LectureView] 翻譯模型文件不存在:', translationModel);
+        if (translationProvider === 'local') {
+          if (translationModel && !translationModelLoaded) {
+            console.log('[LectureView] 檢查翻譯模型:', translationModel);
+            try {
+              const availableModels = await getAvailableTranslationModels();
+              if (availableModels.includes(translationModel)) {
+                console.log('[LectureView] 翻譯模型文件存在，開始自動加載...', translationModel);
+                await loadTranslationModelByName(translationModel);
+                setTranslationModelLoaded(true);
+                console.log('[LectureView] 翻譯模型自動加載成功');
+              } else {
+                console.log('[LectureView] 翻譯模型文件不存在:', translationModel);
+              }
+            } catch (error) {
+              // build 沒包 nmt-local feature 時這裡會穩定失敗；不影響
+              // 翻譯流程（translateRough 會自動 fallback 到 gemma/google）
+              console.warn(
+                '[LectureView] 本地 CT2 模型載入失敗（dev build 可能未啟用 nmt-local）:',
+                error,
+              );
             }
-          } catch (error) {
-            console.error('[LectureView] 翻譯模型自動加載失敗:', error);
-            // 自動加載失敗不影響應用運行
+          } else if (!translationModel) {
+            console.log('[LectureView] 未找到保存的翻譯模型選擇');
           }
-        } else if (translationProvider === 'google') {
-          console.log('[LectureView] 使用 Google 翻譯，無需加載本地模型');
-        } else if (!translationModel) {
-          console.log('[LectureView] 未找到保存的翻譯模型選擇');
+        } else {
+          console.log(`[LectureView] provider=${translationProvider}，跳過本地 CT2 載入`);
         }
       } catch (error) {
         console.error('[LectureView] 模型檢查/加載失敗:', error);

@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClassNote AI Settings - Variant C</title>
+<style>
+  :root {
+    --bg-col1: #f9fafb;
+    --bg-col2: #f3f4f6;
+    --bg-col3: #ffffff;
+    --text-primary: #111827;
+    --text-secondary: #4b5563;
+    --text-tertiary: #9ca3af;
+    --border-color: #e5e7eb;
+    
+    --accent-bg: #3b82f6;
+    --accent-text: #ffffff;
+    --accent-hover: #2563eb;
+    --accent-ring: rgba(59, 130, 246, 0.3);
+    
+    --col2-active-bg: #e0e7ff;
+    --col2-active-border: #3b82f6;
+    --col2-active-text: #1d4ed8;
+    
+    --success-text: #059669;
+    --success-bg: #d1fae5;
+    
+    --control-bg: #ffffff;
+    --control-border: #d1d5db;
+    --control-hover: #f9fafb;
+    
+    --font-stack: "Inter", -apple-system, BlinkMacSystemFont, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg-col1: #18181b;
+      --bg-col2: #27272a;
+      --bg-col3: #3f3f46;
+      --text-primary: #f4f4f5;
+      --text-secondary: #a1a1aa;
+      --text-tertiary: #71717a;
+      --border-color: #52525b;
+      
+      --accent-bg: #3b82f6;
+      --accent-text: #ffffff;
+      --accent-hover: #60a5fa;
+      --accent-ring: rgba(59, 130, 246, 0.4);
+      
+      --col2-active-bg: #3f3f46;
+      --col2-active-border: #60a5fa;
+      --col2-active-text: #bfdbfe;
+      
+      --success-text: #34d399;
+      --success-bg: rgba(52, 211, 153, 0.1);
+      
+      --control-bg: #27272a;
+      --control-border: #52525b;
+      --control-hover: #3f3f46;
+    }
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    font-family: var(--font-stack);
+    background-color: var(--bg-col3);
+    color: var(--text-primary);
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+  }
+
+  .badge {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    color: white;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    z-index: 100;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    pointer-events: none;
+  }
+
+  /* Layout */
+  .layout-container {
+    display: flex;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Column 1 */
+  .col-1 {
+    width: 180px;
+    flex-shrink: 0;
+    background-color: var(--bg-col1);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    padding: 16px 8px;
+    overflow-y: auto;
+  }
+
+  .col-1-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 12px;
+    padding: 0 8px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    margin-bottom: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .nav-item:hover {
+    background-color: var(--control-hover);
+    color: var(--text-primary);
+  }
+
+  .nav-item.active {
+    background-color: var(--accent-bg);
+    color: var(--accent-text);
+  }
+
+  .nav-item svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  /* Column 2 */
+  .col-2 {
+    width: 260px;
+    flex-shrink: 0;
+    background-color: var(--bg-col2);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .col-2-header {
+    padding: 20px 16px 12px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .subnav-list {
+    padding: 12px 8px;
+  }
+
+  .subnav-item {
+    display: block;
+    padding: 8px 12px;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    margin-bottom: 2px;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.15s ease;
+  }
+
+  .subnav-item:hover {
+    background-color: var(--control-hover);
+    color: var(--text-primary);
+  }
+
+  .subnav-item.active {
+    background-color: var(--col2-active-bg);
+    color: var(--col2-active-text);
+    font-weight: 500;
+  }
+
+  .subnav-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 3px;
+    height: 16px;
+    background-color: var(--col2-active-border);
+    border-radius: 0 2px 2px 0;
+  }
+
+  /* Column 3 */
+  .col-3 {
+    flex: 1;
+    min-width: 480px;
+    background-color: var(--bg-col3);
+    overflow-y: auto;
+    padding: 40px 48px;
+  }
+
+  .col-3-container {
+    max-width: 600px;
+  }
+
+  .section-header {
+    margin-bottom: 32px;
+  }
+
+  .section-title {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+  }
+
+  .section-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+  }
+
+  /* Forms */
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 32px;
+  }
+
+  .form-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .form-help {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: -4px;
+  }
+
+  /* Radio Cards (Intensity) */
+  .radio-cards {
+    display: flex;
+    gap: 12px;
+  }
+
+  .radio-card {
+    flex: 1;
+    position: relative;
+    border: 1px solid var(--control-border);
+    border-radius: 8px;
+    padding: 12px;
+    cursor: pointer;
+    background-color: var(--control-bg);
+    text-align: center;
+    transition: all 0.2s;
+  }
+
+  .radio-card:hover {
+    border-color: var(--text-tertiary);
+    background-color: var(--control-hover);
+  }
+
+  .radio-card.active {
+    border-color: var(--accent-bg);
+    background-color: var(--accent-ring);
+    box-shadow: 0 0 0 1px var(--accent-bg);
+  }
+
+  .radio-card input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+
+  .radio-card-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+    display: block;
+    font-size: 13px;
+  }
+
+  .radio-card-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+
+  /* Select */
+  .select-wrapper {
+    position: relative;
+  }
+
+  .select-wrapper::after {
+    content: '';
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236b7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+    background-size: contain;
+    background-repeat: no-repeat;
+    pointer-events: none;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .select-wrapper::after {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23a1a1aa'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+    }
+  }
+
+  select {
+    width: 100%;
+    appearance: none;
+    background-color: var(--control-bg);
+    border: 1px solid var(--control-border);
+    color: var(--text-primary);
+    padding: 8px 32px 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  select:focus {
+    outline: none;
+    border-color: var(--accent-bg);
+    box-shadow: 0 0 0 2px var(--accent-ring);
+  }
+
+  /* Button */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+    font-family: inherit;
+  }
+
+  .btn-primary {
+    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+    color: white;
+  }
+
+  .btn-primary:hover {
+    opacity: 0.9;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }
+
+  .btn-secondary {
+    background-color: var(--control-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--control-border);
+  }
+
+  .btn-secondary:hover {
+    background-color: var(--control-hover);
+  }
+
+  .action-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 4px;
+  }
+
+  .status-text {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--success-text);
+    background-color: var(--success-bg);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+  }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .layout-container {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .col-1 {
+      width: 100%;
+      height: auto;
+      border-right: none;
+      border-bottom: 1px solid var(--border-color);
+      flex-direction: row;
+      flex-wrap: wrap;
+      padding: 12px;
+    }
+    .col-1-title {
+      display: none;
+    }
+    .nav-item {
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    .col-2 {
+      width: 100%;
+      height: auto;
+      border-right: none;
+      border-bottom: 1px solid var(--border-color);
+      padding: 12px;
+    }
+    .col-2-header {
+      display: none;
+    }
+    .subnav-list {
+      display: flex;
+      flex-wrap: wrap;
+      padding: 0;
+      gap: 8px;
+    }
+    .subnav-item {
+      margin-bottom: 0;
+      border: 1px solid var(--control-border);
+      background-color: var(--control-bg);
+      font-size: 13px;
+    }
+    .subnav-item.active {
+      border-color: var(--accent-bg);
+      background-color: var(--accent-ring);
+    }
+    .subnav-item.active::before {
+      display: none;
+    }
+    .col-3 {
+      min-width: 100%;
+      padding: 24px;
+      overflow-y: visible;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .radio-cards {
+      flex-direction: column;
+    }
+    .action-row {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+  }
+</style>
+</head>
+<body>
+
+<div class="badge">VARIANT C — Three-Pane Drill-Down</div>
+
+<div class="layout-container">
+  <!-- Column 1: Categories -->
+  <div class="col-1">
+    <div class="col-1-title">設定</div>
+    
+    <a href="#" class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="22"></line></svg>
+      錄音
+    </a>
+    <a href="#" class="nav-item active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"></path><path d="m4 14 6-6 2-3"></path><path d="M2 5h12"></path><path d="M7 2h1"></path><path d="m22 22-5-10-5 10"></path><path d="M14 18h6"></path></svg>
+      轉錄與翻譯
+    </a>
+    <a href="#" class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>
+      AI 助教
+    </a>
+    <a href="#" class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l3-9 5 18 3-9h5"></path></svg>
+      外觀
+    </a>
+    <a href="#" class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5V19A9 3 0 0 0 21 19V5"></path><path d="M3 12A9 3 0 0 0 21 12"></path></svg>
+      資料
+    </a>
+    <a href="#" class="nav-item">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path></svg>
+      關於與更新
+    </a>
+  </div>
+
+  <!-- Column 2: Subsections -->
+  <div class="col-2">
+    <div class="col-2-header">轉錄與翻譯</div>
+    <div class="subnav-list">
+      <a href="#" class="subnav-item">本地 Whisper</a>
+      <a href="#" class="subnav-item">ASR Backend</a>
+      <a href="#" class="subnav-item">翻譯語言</a>
+      <a href="#" class="subnav-item active">AI 精修</a>
+      <a href="#" class="subnav-item">本地翻譯模型</a>
+    </div>
+  </div>
+
+  <!-- Column 3: Content -->
+  <div class="col-3">
+    <div class="col-3-container">
+      <div class="section-header">
+        <h2 class="section-title">AI 精修</h2>
+        <p class="section-desc">透過雲端大型語言模型二次處理轉錄與翻譯結果，提升流暢度與專業詞彙準確度。</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">精修強度 (Refinement Intensity)</label>
+        <div class="form-help" style="margin-bottom: 4px;">選擇精修的介入程度。較高的強度會消耗更多 token 與時間。</div>
+        <div class="radio-cards">
+          <label class="radio-card">
+            <input type="radio" name="intensity" value="off">
+            <span class="radio-card-title">Off</span>
+            <span class="radio-card-desc">關閉精修功能</span>
+          </label>
+          <label class="radio-card active">
+            <input type="radio" name="intensity" value="light" checked>
+            <span class="radio-card-title">Light</span>
+            <span class="radio-card-desc">修正錯字與基礎文法</span>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="intensity" value="deep">
+            <span class="radio-card-title">Deep</span>
+            <span class="radio-card-desc">重構語句與提升專業度</span>
+          </label>
+        </div>
+        <div class="form-help" style="margin-top: 4px;">Light ≈ 15k tokens / 70min lecture</div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="provider-select">精修 LLM 提供者 (Provider)</label>
+        <div class="form-help" style="margin-bottom: 4px;">選擇用於執行 AI 精修的語言模型服務。</div>
+        <div class="select-wrapper">
+          <select id="provider-select">
+            <option value="auto">Auto (自動選擇最佳模型)</option>
+            <option value="chatgpt-oauth" selected>ChatGPT Plus OAuth</option>
+            <option value="github-models">GitHub Models</option>
+            <option value="ollama">Ollama</option>
+            <option value="gemini">Gemini</option>
+            <option value="groq">Groq</option>
+            <option value="mistral">Mistral</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="user-key">User API Key</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">連線狀態 (Connection Status)</label>
+        <div class="action-row">
+          <button class="btn btn-secondary">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"></path><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M3 22v-6h6"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path></svg>
+            測試連線
+          </button>
+          <div class="status-text">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            ✓ Connected
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
