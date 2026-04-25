@@ -20,7 +20,11 @@
 //    once the substance / duration thresholds are met.
 
 import { describe, expect, it } from 'vitest';
-import { countSpokenWords, isSentenceBoundary } from '../streaming/sentenceAccumulator';
+import {
+  SentenceAccumulator,
+  countSpokenWords,
+  isSentenceBoundary,
+} from '../streaming/sentenceAccumulator';
 
 describe('countSpokenWords', () => {
   it('counts whitespace-separated tokens with letters/numbers', () => {
@@ -124,5 +128,80 @@ describe('isSentenceBoundary — multi-signal gate (#71)', () => {
     // and falsely commit mid-sentence.
     expect(isSentenceBoundary('Discussion led by Mr.', 2500)).toBe(false);
     expect(isSentenceBoundary('see for example e.g.', 2500)).toBe(false);
+  });
+});
+
+// Hard-cap fallback. Cover the regression spotted by the 2026-04-25
+// full_pipeline_eval against 我的影片.mp4 — Parakeet on real lecture
+// speech produced one "sentence" spanning 53 minutes / 7000 words
+// because it never emitted a punctuation terminator the proper
+// boundary check accepted. The hard cap forces a break so the
+// translator gets clause-sized chunks instead of paragraph dumps.
+describe('isSentenceBoundary — hard-cap fallback (#R-eval)', () => {
+  const longUnpunctuated = Array(80).fill('lecture').join(' '); // 80 words, no terminator
+
+  it('emits when buffer exceeds 60 words even without a terminator', () => {
+    expect(isSentenceBoundary(longUnpunctuated, 5000)).toBe(true);
+  });
+
+  it('emits when span duration exceeds 30s with at least minWords', () => {
+    expect(isSentenceBoundary('we kept going on and on without stopping', 31_000)).toBe(true);
+  });
+
+  it('does not force-emit at 30s when only 1-2 words have arrived', () => {
+    // A long silence with one stray word shouldn't synthesise a
+    // boundary out of nothing.
+    expect(isSentenceBoundary('hmm', 35_000)).toBe(false);
+  });
+
+  it('respects per-call hardMaxWords override', () => {
+    const text = Array(20).fill('word').join(' ');
+    expect(isSentenceBoundary(text, 5000)).toBe(false); // under default 60
+    expect(isSentenceBoundary(text, 5000, { hardMaxWords: 15 })).toBe(true);
+  });
+
+  it('proper boundary still wins when both proper-end and hard-cap conditions apply', () => {
+    // A perfectly punctuated 80-word sentence: should fire on the
+    // proper path, not the hard-cap path. Behaviourally indistinguishable
+    // for callers — both return true — but the test pins the priority
+    // so future logging (e.g. emit type) wires up cleanly.
+    const punctuated = Array(80).fill('word').join(' ') + '.';
+    expect(isSentenceBoundary(punctuated, 5000)).toBe(true);
+  });
+});
+
+describe('SentenceAccumulator — hard-cap forces emission on long unpunctuated runs', () => {
+  it('emits a chunk every ~60 words even with no terminators', () => {
+    const acc = new SentenceAccumulator({ hardMaxDurationMs: 1_000_000 });
+    const sentences: string[] = [];
+    for (let i = 0; i < 130; i++) {
+      const word = {
+        text: `word${i}`,
+        start: i * 0.1,
+        end: i * 0.1 + 0.1,
+        is_final: true,
+      };
+      for (const s of acc.push(word)) sentences.push(s.text);
+    }
+    // 130 words / 60-word cap → at least 2 emissions during the stream.
+    expect(sentences.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('emits on the duration cap when words trickle slowly past 30s', () => {
+    const acc = new SentenceAccumulator({ hardMaxWords: 1000 });
+    const sentences: string[] = [];
+    // 5 words spread across 32 seconds (one every 8 s) — too few for
+    // proper boundary (no terminator) but enough span (last word at
+    // 32 s ≥ 30 s cap) and ≥ 3 words for the duration cap to fire.
+    for (let i = 0; i < 5; i++) {
+      const word = {
+        text: `tick${i}`,
+        start: i * 8,
+        end: i * 8 + 0.1,
+        is_final: true,
+      };
+      for (const s of acc.push(word)) sentences.push(s.text);
+    }
+    expect(sentences.length).toBeGreaterThanOrEqual(1);
   });
 });

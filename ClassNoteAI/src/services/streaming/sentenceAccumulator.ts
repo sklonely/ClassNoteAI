@@ -39,11 +39,34 @@ const PUNCT_ONLY = /^[\p{P}\p{S}]+$/u;
 const DEFAULT_MIN_WORDS = 3;
 const DEFAULT_MIN_DURATION_MS = 800;
 
+// Hard caps that fire **without** a proper sentence terminator. Real
+// lecture audio routinely produces 30+ s stretches with no punctuation
+// Parakeet picks up — observed in our 70 min eval where one "sentence"
+// spanned 53 minutes / 7000+ words and crashed TranslateGemma's
+// context window. A coarse 60-word / 30-second forced break is
+// strictly better: translation gets a clause-sized chunk it can
+// actually handle, and the user sees subtitles flowing instead of a
+// paragraph dump at the end.
+const DEFAULT_HARD_MAX_WORDS = 60;
+const DEFAULT_HARD_MAX_DURATION_MS = 30_000;
+
 export interface BoundaryOptions {
   /** Minimum spoken words to qualify as a substantive sentence. */
   minWords?: number;
   /** Minimum span duration in milliseconds. */
   minDurationMs?: number;
+  /**
+   * Hard cap on words — emit even without a terminator once the buffer
+   * exceeds this. Defaults to 60. Pass `Infinity` to disable (e.g.
+   * scripted-input tests where you trust punctuation).
+   */
+  hardMaxWords?: number;
+  /**
+   * Hard cap on span duration — emit even without a terminator once
+   * the buffer's span exceeds this many ms. Defaults to 30 000 (30 s).
+   * Pass `Infinity` to disable.
+   */
+  hardMaxDurationMs?: number;
 }
 
 /**
@@ -67,7 +90,7 @@ export function countSpokenWords(text: string): number {
  * unit tests that want to assert boundary policy without constructing
  * WordEvent fixtures.
  *
- * Returns `true` when:
+ * Returns `true` (proper sentence boundary) when:
  *   1. `text` ends in `.` `?` `!` `。` `？` `！`
  *   2. The terminating word isn't a known abbreviation (`Mr.`, `e.g.`, `vs.`)
  *   3. The text doesn't end with a filler word + terminator
@@ -75,8 +98,17 @@ export function countSpokenWords(text: string): number {
  *   4. There are at least `minWords` spoken words (default 3)
  *   5. Span duration is at least `minDurationMs` (default 800)
  *
- * The "no end" case (no terminator) returns false. The "too short"
- * cases return false. The "filler-only" case returns false.
+ * Returns `true` (forced break) when proper checks fail BUT the buffer
+ * has grown past the hard caps — `hardMaxWords` (default 60) or
+ * `hardMaxDurationMs` (default 30 000). Without this fallback, real
+ * lecture audio that goes 30+ seconds between Parakeet-emitted
+ * terminators buffers indefinitely; one mega-block then either
+ * exceeds the translator's context window or arrives at session end
+ * as a 7 000-word lump. Better to commit a 60-word chunk without a
+ * period than to lose the whole stretch.
+ *
+ * The hard cap is gated on the proper checks failing first, so
+ * legitimate punctuation is preferred whenever it appears.
  */
 export function isSentenceBoundary(
   text: string,
@@ -85,19 +117,29 @@ export function isSentenceBoundary(
 ): boolean {
   const minWords = opts.minWords ?? DEFAULT_MIN_WORDS;
   const minDurationMs = opts.minDurationMs ?? DEFAULT_MIN_DURATION_MS;
+  const hardMaxWords = opts.hardMaxWords ?? DEFAULT_HARD_MAX_WORDS;
+  const hardMaxDurationMs = opts.hardMaxDurationMs ?? DEFAULT_HARD_MAX_DURATION_MS;
   const trimmed = text.trim();
   if (!trimmed) return false;
-  if (!TERMINATORS.test(trimmed)) return false;
-  // Last whitespace-separated token, lower-cased, for the abbreviation
-  // check. Conservative — only suppresses if the EXACT token (with its
-  // dot) is in the abbreviation set, so "Inc." blocks but "Incinerate."
-  // doesn't.
-  const lastToken = trimmed.split(/\s+/).pop()?.toLowerCase() ?? '';
-  if (ABBREVIATIONS.has(lastToken)) return false;
-  if (FILLER_TAIL.test(trimmed)) return false;
-  if (countSpokenWords(trimmed) < minWords) return false;
-  if (durationMs < minDurationMs) return false;
-  return true;
+
+  // Proper boundary path: terminator + abbrev/filler/length/duration.
+  const properOk =
+    TERMINATORS.test(trimmed) &&
+    !ABBREVIATIONS.has((trimmed.split(/\s+/).pop() ?? '').toLowerCase()) &&
+    !FILLER_TAIL.test(trimmed) &&
+    countSpokenWords(trimmed) >= minWords &&
+    durationMs >= minDurationMs;
+  if (properOk) return true;
+
+  // Hard-cap fallback. Either condition alone triggers — runaway
+  // duration without enough words still indicates the speaker has
+  // moved on, and a wall of text without enough span still indicates
+  // chunked-fast utterance worth breaking.
+  const wordCount = countSpokenWords(trimmed);
+  if (wordCount >= hardMaxWords) return true;
+  if (durationMs >= hardMaxDurationMs && wordCount >= minWords) return true;
+
+  return false;
 }
 
 export interface AccumulatorOptions {
@@ -105,6 +147,10 @@ export interface AccumulatorOptions {
   minWords?: number;
   /** Minimum span duration in milliseconds. */
   minDurationMs?: number;
+  /** Hard cap — emit even without terminator when buffer exceeds this. */
+  hardMaxWords?: number;
+  /** Hard cap — emit even without terminator when buffer span exceeds this. */
+  hardMaxDurationMs?: number;
 }
 
 export interface CompleteSentence {
@@ -126,6 +172,8 @@ export class SentenceAccumulator {
     this.opts = {
       minWords: opts.minWords ?? DEFAULT_MIN_WORDS,
       minDurationMs: opts.minDurationMs ?? DEFAULT_MIN_DURATION_MS,
+      hardMaxWords: opts.hardMaxWords ?? DEFAULT_HARD_MAX_WORDS,
+      hardMaxDurationMs: opts.hardMaxDurationMs ?? DEFAULT_HARD_MAX_DURATION_MS,
     };
   }
 

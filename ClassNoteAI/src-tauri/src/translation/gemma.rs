@@ -46,6 +46,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// while still covering long lecture sentences.
 const MAX_TOKENS: u32 = 200;
 
+/// Refuse inputs longer than this character count *before* we hit the
+/// network, so a single huge sentence (e.g. an accumulator that
+/// somehow bypassed its hard cap) doesn't blow up the sidecar's context
+/// window. With `SentenceAccumulator`'s 60-word cap this is normally
+/// well under 500 chars; the limit gives ~6× headroom for edge cases
+/// (long compound words, long Chinese commits) without ever
+/// approaching `-c 4096`.
+const MAX_INPUT_CHARS: usize = 3_000;
+
 /// Gemma chat template for raw `/completion`. Built once and reused.
 fn build_prompt(eng: &str) -> String {
     format!(
@@ -89,6 +98,16 @@ pub async fn translate(
             source: TranslationSource::Rough,
             confidence: Some(1.0),
         });
+    }
+
+    if text.chars().count() > MAX_INPUT_CHARS {
+        return Err(TranslationError::LocalError(format!(
+            "input too long: {} chars (cap {}). \
+             SentenceAccumulator's hard cap should prevent this — please \
+             file a bug with the offending text.",
+            text.chars().count(),
+            MAX_INPUT_CHARS
+        )));
     }
 
     let base = endpoint.unwrap_or(DEFAULT_ENDPOINT);
@@ -178,6 +197,25 @@ mod tests {
             msg.contains("未啟動") || msg.contains("HTTP error"),
             "expected connect-error message, got: {msg}"
         );
+    }
+
+    /// Guard against the regression observed in the 2026-04-25 70-min
+    /// full-pipeline eval, where one runaway accumulator chunk reached
+    /// the sidecar at 9721 tokens and crashed it. With the renderer's
+    /// hard cap fixed, this should never happen — but defence-in-depth
+    /// ensures a buggy upstream can't take down the sidecar.
+    #[tokio::test]
+    async fn oversized_input_short_circuits_before_network() {
+        let huge = "word ".repeat(800); // 4000 chars, well over MAX_INPUT_CHARS
+        // Point at port 1 — if the size guard fails we'd get a connect
+        // error instead of LocalError, which is what the assertion catches.
+        let err = translate(&huge, Some("http://127.0.0.1:1")).await.unwrap_err();
+        match err {
+            TranslationError::LocalError(msg) => {
+                assert!(msg.contains("too long"), "msg = {msg}");
+            }
+            other => panic!("expected LocalError(too long), got: {other}"),
+        }
     }
 
     #[test]
