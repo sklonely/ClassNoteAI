@@ -859,7 +859,7 @@ export function PAppearance({
                 ))}
             </div>
 
-            {/* 錄音佈局 — 只 preview，wiring B/C 在下個 CP */}
+            {/* 錄音佈局 — preview + 切換 (real wired in CP-6.16) */}
             <PHead>錄音佈局</PHead>
             <p
                 style={{
@@ -869,35 +869,9 @@ export function PAppearance({
                     lineHeight: 1.55,
                 }}
             >
-                錄音時的主畫面切版（A / B / C）。B / C 的實作仍在路上 — 切到的話會 fallback 到 A。
+                錄音時的主畫面切版。錄音頁右上角也有快速切換 segmented control。
             </p>
-            <div className={s.layoutPreviewBox}>
-                <div key="rec-A" className={s.layoutPreviewInner}>
-                    <LayoutPreviewSVG kind="recording" variant="A" theme={effectiveTheme} />
-                </div>
-                <div className={s.layoutPreviewCaption}>
-                    <div className={s.layoutPreviewEyebrow}>預覽 · RECORDING A</div>
-                    <div className={s.layoutPreviewTitle}>{REC_LAYOUT_OPTS[0].t}</div>
-                    <div className={s.layoutPreviewDesc}>{REC_LAYOUT_OPTS[0].d}</div>
-                </div>
-            </div>
-            <div className={s.layoutCards}>
-                {REC_LAYOUT_OPTS.map((opt) => (
-                    <button
-                        key={opt.v}
-                        type="button"
-                        className={`${s.layoutCard} ${opt.v === 'A' ? s.layoutCardActive : ''}`}
-                        onClick={() => {
-                            if (opt.v !== 'A') {
-                                /* B/C 仍 stub，實作 in next CP */
-                            }
-                        }}
-                    >
-                        <span className={s.layoutCardLetter}>{opt.v}</span>
-                        <span className={s.layoutCardTitle}>{opt.t}</span>
-                    </button>
-                ))}
-            </div>
+            <RecordingLayoutSection effectiveTheme={effectiveTheme} />
 
             {/* 主題 */}
             <PHead>主題</PHead>
@@ -934,6 +908,38 @@ export function PAppearance({
                 right={<PToggle on={false} />}
             />
         </div>
+    );
+}
+
+function RecordingLayoutSection({ effectiveTheme }: { effectiveTheme: 'light' | 'dark' }) {
+    const [previewVar, setPreviewVar] = useState<Variant>('A');
+    const recOpt = REC_LAYOUT_OPTS.find((o) => o.v === previewVar) || REC_LAYOUT_OPTS[0];
+    return (
+        <>
+            <div className={s.layoutPreviewBox}>
+                <div key={previewVar} className={s.layoutPreviewInner}>
+                    <LayoutPreviewSVG kind="recording" variant={previewVar} theme={effectiveTheme} />
+                </div>
+                <div className={s.layoutPreviewCaption}>
+                    <div className={s.layoutPreviewEyebrow}>預覽 · RECORDING {previewVar}</div>
+                    <div className={s.layoutPreviewTitle}>{recOpt.t}</div>
+                    <div className={s.layoutPreviewDesc}>{recOpt.d}</div>
+                </div>
+            </div>
+            <div className={s.layoutCards}>
+                {REC_LAYOUT_OPTS.map((opt) => (
+                    <button
+                        key={opt.v}
+                        type="button"
+                        className={`${s.layoutCard} ${previewVar === opt.v ? s.layoutCardActive : ''}`}
+                        onClick={() => setPreviewVar(opt.v)}
+                    >
+                        <span className={s.layoutCardLetter}>{opt.v}</span>
+                        <span className={s.layoutCardTitle}>{opt.t}</span>
+                    </button>
+                ))}
+            </div>
+        </>
     );
 }
 

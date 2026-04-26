@@ -175,15 +175,15 @@ export default function H18RecordingPage({
                         <button
                             key={o.k}
                             type="button"
-                            onClick={() => {
-                                if (o.k === 'A') setLayout(o.k);
-                                else
-                                    toastService.info(
-                                        `Layout ${o.k}`,
-                                        '留白：B / C 變體預計 v0.7.x 後加',
-                                    );
-                            }}
+                            onClick={() => setLayout(o.k)}
                             className={`${s.layoutBtn} ${layout === o.k ? s.layoutBtnActive : ''}`}
+                            title={
+                                o.k === 'A'
+                                    ? '雙欄：投影片 + 字幕並列'
+                                    : o.k === 'B'
+                                      ? '字幕專注：字幕滿版 + 右側投影片 thumb'
+                                      : '影片：影片預覽 + 字幕邊欄 + 時間軸'
+                            }
                         >
                             {o.label}
                         </button>
@@ -218,72 +218,99 @@ export default function H18RecordingPage({
                 </button>
             </div>
 
-            {/* Body */}
-            <div className={s.body}>
-                {/* Slide strip (留白) */}
-                <div className={s.slideStrip}>
-                    <div className={s.slideStripEmpty}>
-                        投影片<br />
-                        匯入<br />
-                        留白
-                    </div>
-                </div>
-
-                {/* Main slide (留白) */}
-                <div className={s.slideMain}>
-                    <div className={s.slideEmpty}>
-                        <span className={s.slideEmptyIcon}>
-                            <BookOpen size={36} />
-                        </span>
-                        <div>還沒匯入投影片</div>
-                        <div className={s.slideEmptyHint}>
-                            錄音已就緒 · 投影片 / PDF 對齊 P6.x 後接
+            {/* Body — render variant per layout */}
+            {layout === 'A' && (
+                <div className={s.body}>
+                    {/* Slide strip (留白) */}
+                    <div className={s.slideStrip}>
+                        <div className={s.slideStripEmpty}>
+                            投影片<br />匯入<br />留白
                         </div>
-                        <button type="button" className={s.slideImportBtn} disabled>
-                            ⤓ 匯入教材（留白）
-                        </button>
                     </div>
+                    {/* Main slide */}
+                    <div className={s.slideMain}>
+                        <SlideEmpty />
+                    </div>
+                    {/* Subtitle stream */}
+                    <SubPane session={session} />
                 </div>
+            )}
 
-                {/* Subtitle stream */}
-                <div className={s.subPane}>
-                    <div className={s.subHead}>
-                        <FileText size={12} />
-                        <span className={s.subHeadEyebrow}>雙語字幕</span>
-                        <span className={s.subHeadCount}>
-                            {session.segments.length} 句
-                        </span>
-                    </div>
-                    <div className={s.subStream}>
-                        {session.segments.length === 0 && !session.currentText && (
-                            <div className={s.subEmpty}>
-                                字幕將顯示在這裡。
-                                <br />
-                                開始錄音後 Parakeet 會即時轉錄。
-                            </div>
-                        )}
-                        {session.segments.map((seg) => (
-                            <div key={seg.id} className={s.subRow}>
-                                <div className={s.subTime}>
-                                    {fmtElapsed(
-                                        Math.max(0, Math.floor((seg.startTime - (seg.startTime > 0 ? seg.startTime - seg.endTime + seg.endTime : 0)) / 1000)),
-                                    ) || '—'}
-                                </div>
-                                <div className={s.subEn}>{seg.displayText || seg.text}</div>
-                                {seg.displayTranslation && (
-                                    <div className={s.subZh}>{seg.displayTranslation}</div>
-                                )}
-                            </div>
-                        ))}
-                        {session.currentText && (
-                            <div className={s.subCurrent}>
-                                <div className={s.subCurrentEyebrow}>● 即時轉錄</div>
-                                <div className={s.subCurrentText}>{session.currentText}</div>
-                            </div>
-                        )}
+            {layout === 'B' && (
+                <div className={s.bodyB}>
+                    {/* Subtitle full width with focus styling */}
+                    <SubPane session={session} focus />
+                    {/* Slide strip thumbs vertical right */}
+                    <div className={s.slideStripWide}>
+                        <div className={s.subHead}>
+                            <BookOpen size={12} />
+                            <span className={s.subHeadEyebrow}>教材</span>
+                            <span className={s.subHeadCount}>0</span>
+                        </div>
+                        <div className={s.slideStripWideEmpty}>
+                            尚未匯入投影片<br />⤓ 匯入教材
+                        </div>
                     </div>
                 </div>
-            </div>
+            )}
+
+            {layout === 'C' && (
+                <div className={s.bodyC}>
+                    <div className={s.bodyCTop}>
+                        {/* Black video panel with REC tag */}
+                        <div className={s.videoPanel}>
+                            <div className={s.videoRecTag}>
+                                <span className={s.videoRecDot} />
+                                {session.status === 'recording' ? '● REC · LIVE' : 'PAUSED'}
+                                <span className={s.videoElapsed}>
+                                    · {fmtElapsed(session.elapsed)}
+                                </span>
+                            </div>
+                            <div className={s.videoEmpty}>
+                                <div className={s.videoEmptyIcon}>▶</div>
+                                <div className={s.videoEmptyMeta}>
+                                    1920 × 1080 · 30fps
+                                    <br />
+                                    <span style={{ opacity: 0.6 }}>影片預覽待匯入</span>
+                                </div>
+                            </div>
+                            {session.currentText && (
+                                <div className={s.videoSubOverlay}>
+                                    {session.currentText}
+                                </div>
+                            )}
+                        </div>
+                        {/* Subs sidebar */}
+                        <SubPane session={session} mini />
+                    </div>
+                    {/* Timeline scrubber */}
+                    <div className={s.timeline}>
+                        <div className={s.timelineHead}>
+                            時間軸 · {fmtElapsed(session.elapsed)} /{' '}
+                            {fmtElapsed(Math.max(session.elapsed + 60, 600))}
+                        </div>
+                        <div className={s.timelineTrack}>
+                            <div
+                                className={s.timelineFill}
+                                style={{ width: `${Math.min(100, (session.elapsed / 600) * 100)}%` }}
+                            />
+                            {session.segments.slice(0, 30).map((seg, i) => (
+                                <div
+                                    key={seg.id}
+                                    className={s.timelineMarker}
+                                    style={{
+                                        left: `${Math.min(100, (i / 30) * 100)}%`,
+                                    }}
+                                />
+                            ))}
+                            <div
+                                className={s.timelinePlayhead}
+                                style={{ left: `${Math.min(100, (session.elapsed / 600) * 100)}%` }}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Transport bar — per prototype RV2Transport */}
             <div className={s.transport}>
@@ -416,6 +443,76 @@ export default function H18RecordingPage({
                     </div>
                 </div>
             )}
+        </div>
+    );
+}
+
+/* ────────── Helper components for layout variants ────────── */
+
+function SlideEmpty() {
+    return (
+        <div className={s.slideEmpty}>
+            <span className={s.slideEmptyIcon}>
+                <BookOpen size={36} />
+            </span>
+            <div>還沒匯入投影片</div>
+            <div className={s.slideEmptyHint}>
+                錄音已就緒 · 投影片 / PDF 對齊 P6.x 後接
+            </div>
+            <button type="button" className={s.slideImportBtn} disabled>
+                ⤓ 匯入教材（留白）
+            </button>
+        </div>
+    );
+}
+
+interface SubPaneProps {
+    session: ReturnType<typeof useRecordingSession>;
+    focus?: boolean;
+    mini?: boolean;
+}
+
+function SubPane({ session, focus, mini }: SubPaneProps) {
+    return (
+        <div className={`${s.subPane} ${focus ? s.subPaneFocus : ''} ${mini ? s.subPaneMini : ''}`}>
+            <div className={s.subHead}>
+                <FileText size={12} />
+                <span className={s.subHeadEyebrow}>
+                    {focus ? '字幕專注' : mini ? '字幕' : '雙語字幕'}
+                </span>
+                <span className={s.subHeadCount}>{session.segments.length} 句</span>
+            </div>
+            <div className={s.subStream}>
+                {session.segments.length === 0 && !session.currentText && (
+                    <div className={s.subEmpty}>
+                        字幕將顯示在這裡。
+                        <br />
+                        開始錄音後 Parakeet 會即時轉錄。
+                    </div>
+                )}
+                {session.segments.map((seg) => (
+                    <div key={seg.id} className={s.subRow}>
+                        <div className={s.subTime}>
+                            {fmtElapsed(
+                                Math.max(
+                                    0,
+                                    Math.floor(seg.startTime / 1000),
+                                ),
+                            ) || '—'}
+                        </div>
+                        <div className={s.subEn}>{seg.displayText || seg.text}</div>
+                        {seg.displayTranslation && !mini && (
+                            <div className={s.subZh}>{seg.displayTranslation}</div>
+                        )}
+                    </div>
+                ))}
+                {session.currentText && (
+                    <div className={s.subCurrent}>
+                        <div className={s.subCurrentEyebrow}>● 即時轉錄</div>
+                        <div className={s.subCurrentText}>{session.currentText}</div>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
