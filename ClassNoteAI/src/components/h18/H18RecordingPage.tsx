@@ -23,9 +23,10 @@
  */
 
 import { useEffect, useState } from 'react';
-import { FileText, BookOpen, Mic, Pause, Play, Square } from 'lucide-react';
+import { FileText, BookOpen } from 'lucide-react';
 import type { Course, Lecture } from '../../types';
 import { storageService } from '../../services/storageService';
+import { toastService } from '../../services/toastService';
 import {
     useRecordingSession,
     fmtElapsed,
@@ -37,7 +38,11 @@ export interface H18RecordingPageProps {
     courseId: string;
     lectureId: string;
     onBack: () => void;
+    /** Open the H18 AIDock (⌘J) — passed from H18DeepApp. */
+    onOpenAI?: () => void;
 }
+
+type RecLayout = 'A' | 'B' | 'C';
 
 const FINISH_STEPS = [
     { key: 'transcribe', label: '轉錄收尾', hint: '把最後幾段未提交的句子寫進 DB' },
@@ -53,9 +58,13 @@ export default function H18RecordingPage({
     courseId,
     lectureId,
     onBack,
+    onOpenAI,
 }: H18RecordingPageProps) {
     const [lecture, setLecture] = useState<Lecture | null>(null);
     const [course, setCourse] = useState<Course | null>(null);
+    const [layout, setLayout] = useState<RecLayout>('A');
+    const [followMode, setFollowMode] = useState(true);
+    const [notesOpen, setNotesOpen] = useState(false);
 
     const session = useRecordingSession({ courseId, lectureId });
 
@@ -116,13 +125,24 @@ export default function H18RecordingPage({
         else if (session.status === 'paused') void session.resume();
     };
 
+    const handleAddMark = () => {
+        toastService.info(
+            '已標記考點',
+            `${fmtElapsed(session.elapsed)} · 留白：subtitle.exam flag schema 待加`,
+        );
+    };
+
+    const handleImport = () => {
+        toastService.info('教材匯入', '留白：drag-drop / file picker P6.x 後接');
+    };
+
     const isRunning = session.status === 'recording' || session.status === 'paused';
     const isPaused = session.status === 'paused';
     const accent = courseColor(courseId);
 
     return (
         <div className={s.page}>
-            {/* Hero */}
+            {/* Hero — breadcrumb + layout switcher + 筆記 + 匯入 (per prototype) */}
             <div className={s.hero}>
                 <div className={s.crumb}>
                     <button type="button" onClick={onBack} className={s.crumbBack}>
@@ -139,15 +159,66 @@ export default function H18RecordingPage({
                     <span className={s.crumbLecture}>
                         {lecture?.title || '錄音中…'}
                     </span>
+                    {isPaused && (
+                        <span className={s.pauseTag} aria-label="已暫停">
+                            PAUSED
+                        </span>
+                    )}
                 </div>
-                <span
-                    className={`${s.livePill} ${isPaused ? s.livePillPaused : ''}`}
+
+                {/* Layout switcher — only A wired (B/C 留白) */}
+                <div className={s.layoutSwitcher}>
+                    {(
+                        [
+                            { k: 'A' as RecLayout, label: '雙欄' },
+                            { k: 'B' as RecLayout, label: '字幕專注' },
+                            { k: 'C' as RecLayout, label: '影片' },
+                        ] as const
+                    ).map((o) => (
+                        <button
+                            key={o.k}
+                            type="button"
+                            onClick={() => {
+                                if (o.k === 'A') setLayout(o.k);
+                                else
+                                    toastService.info(
+                                        `Layout ${o.k}`,
+                                        '留白：B / C 變體預計 v0.7.x 後加',
+                                    );
+                            }}
+                            className={`${s.layoutBtn} ${layout === o.k ? s.layoutBtnActive : ''}`}
+                        >
+                            {o.label}
+                        </button>
+                    ))}
+                </div>
+
+                {/* 筆記 toggle (留白：floating notes window 沒做) */}
+                <button
+                    type="button"
+                    onClick={() => {
+                        setNotesOpen((v) => !v);
+                        toastService.info(
+                            notesOpen ? '關閉筆記窗' : '開啟筆記窗',
+                            '留白：浮動 markdown 筆記窗 P6.x 後接 (⌘⇧N)',
+                        );
+                    }}
+                    className={`${s.heroBtn} ${notesOpen ? s.heroBtnActive : ''}`}
+                    title="筆記 ⌘⇧N"
                 >
-                    <span className={s.liveDot} />
-                    {isPaused ? 'PAUSED' : '● REC · LIVE'}
-                </span>
-                <div className={s.heroSpacer} />
-                <span className={s.elapsed}>{fmtElapsed(session.elapsed)}</span>
+                    ✎ 筆記
+                    <span className={s.heroBtnKbd}>⌘⇧N</span>
+                </button>
+
+                {/* 匯入教材 button */}
+                <button
+                    type="button"
+                    onClick={handleImport}
+                    className={s.heroBtnDashed}
+                    title="匯入教材"
+                >
+                    ⤓ 匯入教材
+                </button>
             </div>
 
             {/* Body */}
@@ -217,50 +288,74 @@ export default function H18RecordingPage({
                 </div>
             </div>
 
-            {/* Transport bar */}
+            {/* Transport bar — per prototype RV2Transport */}
             <div className={s.transport}>
+                {/* Recording dot + elapsed (replaces the big mic circle) */}
+                <div className={s.recIndicator}>
+                    <span
+                        className={`${s.recDot} ${session.status === 'recording' ? s.recDotLive : ''}`}
+                    />
+                    <span className={s.recTime}>{fmtElapsed(session.elapsed)}</span>
+                </div>
+
+                {/* Pause / 繼續錄 (red when paused, per prototype) */}
                 <button
                     type="button"
-                    onClick={isRunning ? handleStop : () => void session.start()}
+                    onClick={
+                        isRunning
+                            ? handlePauseResume
+                            : () => void session.start()
+                    }
                     disabled={session.status === 'stopping'}
-                    className={`${s.recBtn} ${isRunning ? s.recBtnRecording : ''}`}
-                    title={isRunning ? '結束錄音' : '開始錄音'}
-                    aria-label={isRunning ? '結束錄音' : '開始錄音'}
+                    className={`${s.transportBtn} ${isPaused ? s.transportBtnRedFill : ''} ${session.status === 'recording' ? s.transportBtnInvert : ''}`}
                 >
-                    {session.status === 'recording' ? (
-                        <Square size={16} />
-                    ) : isPaused ? (
-                        <Square size={16} />
-                    ) : (
-                        <Mic size={18} />
-                    )}
+                    {session.status === 'idle' && '開始錄音'}
+                    {session.status === 'recording' && '暫停'}
+                    {isPaused && '繼續錄'}
+                    {session.status === 'stopping' && '處理中'}
+                    {session.status === 'stopped' && '已結束'}
                 </button>
 
+                {/* 跟隨模式 toggle */}
                 <button
                     type="button"
-                    onClick={handlePauseResume}
-                    disabled={!isRunning || session.status === 'stopping'}
-                    className={s.transportBtn}
+                    onClick={() => setFollowMode((v) => !v)}
+                    className={`${s.transportBtn} ${followMode ? s.transportBtnFollow : ''}`}
+                    title="自動同步投影片 / 字幕"
+                    style={
+                        followMode
+                            ? ({ '--accent': accent } as React.CSSProperties)
+                            : undefined
+                    }
                 >
-                    {isPaused ? (
-                        <>
-                            <Play size={12} /> 繼續
-                        </>
-                    ) : (
-                        <>
-                            <Pause size={12} /> 暫停
-                        </>
-                    )}
+                    <span
+                        className={s.followDot}
+                        style={{ background: followMode ? accent : 'var(--h18-text-faint)' }}
+                    />
+                    跟隨模式
                 </button>
 
-                <span className={s.transportStatus}>
-                    {session.status === 'idle' && '準備中…'}
-                    {session.status === 'recording' && `● REC · ${session.segments.length} 句`}
-                    {session.status === 'paused' && '已暫停'}
-                    {session.status === 'stopping' && '處理中…'}
-                    {session.status === 'stopped' && '已完成'}
-                    {session.status === 'error' && '錯誤'}
-                </span>
+                {/* ⚑ 標記考點 */}
+                <button
+                    type="button"
+                    onClick={handleAddMark}
+                    disabled={!isRunning}
+                    className={s.transportBtn}
+                    title="把目前句子標為考點"
+                >
+                    ⚑ 標記考點
+                </button>
+
+                {/* ✦ 問 AI */}
+                <button
+                    type="button"
+                    onClick={onOpenAI}
+                    disabled={!onOpenAI}
+                    className={s.transportBtn}
+                    title="叫出 AI 助教 dock (⌘J)"
+                >
+                    ✦ 問 AI
+                </button>
 
                 <div className={s.transportSpacer} />
 
@@ -270,13 +365,15 @@ export default function H18RecordingPage({
                     </span>
                 )}
 
+                {/* 結束 · 儲存 — red bg, primary action right */}
                 <button
                     type="button"
-                    onClick={onBack}
-                    className={`${s.transportBtn} ${s.transportBtnDanger}`}
-                    disabled={session.status === 'stopping'}
+                    onClick={handleStop}
+                    disabled={!isRunning && session.status !== 'stopping'}
+                    className={s.transportBtnFinish}
+                    title="停止錄音並儲存"
                 >
-                    關閉
+                    結束 · 儲存
                 </button>
             </div>
 

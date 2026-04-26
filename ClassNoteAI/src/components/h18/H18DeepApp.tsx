@@ -157,6 +157,13 @@ export default function H18DeepApp() {
         return () => clearInterval(id);
     }, [activeRecLecture]);
 
+    // Loose-coupled event for child components to open AI dock (e.g. recording page's ✦ 問 AI button).
+    useEffect(() => {
+        const onOpen = () => setAiDockOpen(true);
+        window.addEventListener('h18-open-ai-dock', onOpen);
+        return () => window.removeEventListener('h18-open-ai-dock', onOpen);
+    }, []);
+
     // ─── theme toggle (persist) ─────────────────────────────────────
     const toggleTheme = useCallback(async () => {
         const next: 'light' | 'dark' = theme === 'light' ? 'dark' : 'light';
@@ -315,6 +322,14 @@ export default function H18DeepApp() {
         }
     };
 
+    // True when we're currently displaying H18RecordingPage (review:cid:lid
+    // where lecture status='recording'). Hide the floating AI fab here so it
+    // doesn't overlap the transport bar's 「結束 · 儲存」red button.
+    const isOnRecordingPage =
+        parsed.kind === 'review' &&
+        activeRecLecture != null &&
+        parsed.lectureId === activeRecLecture.lectureId;
+
     // Build active recording payload for TopBar island
     const activeRecCourse = activeRecLecture
         ? courses.find((c) => c.id === activeRecLecture.courseId)
@@ -358,8 +373,9 @@ export default function H18DeepApp() {
                 <main className={s.main}>{renderMain()}</main>
             </div>
 
-            {/* AI dock fab — opens floating ⌘J dock; ai page hides it */}
-            {parsed.kind !== 'ai' && !aiDockOpen && (
+            {/* AI dock fab — opens floating ⌘J dock; ai page + 錄音頁面 hide it
+                (錄音頁面 transport bar 自己有 ✦ 問 AI button，這 fab 會撞到「結束·儲存」) */}
+            {parsed.kind !== 'ai' && !aiDockOpen && !isOnRecordingPage && (
                 <button
                     type="button"
                     className={s.fab}

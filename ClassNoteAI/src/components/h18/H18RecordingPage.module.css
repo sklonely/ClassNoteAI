@@ -77,49 +77,102 @@
     letter-spacing: -0.01em;
 }
 
-.livePill {
+.pauseTag {
     margin-left: 4px;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 9px;
+    padding: 2px 8px;
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 0.12em;
-    background: var(--h18-dot);
-    color: #fff;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-dim);
+    border: 1px solid var(--h18-border);
     border-radius: 4px;
     font-family: var(--h18-font-mono);
-}
-
-.livePillPaused {
-    background: var(--h18-text-dim);
-}
-
-.liveDot {
-    width: 6px;
-    height: 6px;
-    border-radius: 3px;
-    background: #fff;
-    animation: livepulse 1.2s var(--h18-ease-spring) infinite;
-}
-
-@keyframes livepulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
 }
 
 .heroSpacer {
     flex: 1;
 }
 
-.elapsed {
-    font-size: 13px;
+/* Layout switcher (雙欄/字幕專注/影片) */
+.layoutSwitcher {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.layoutBtn {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 120ms, color 120ms;
+}
+
+.layoutBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.layoutBtn:not(.layoutBtnActive):hover {
+    background: var(--h18-row-hover);
     color: var(--h18-text);
-    font-weight: 700;
+}
+
+/* hero 筆記 / 匯入 buttons */
+.heroBtn {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms, color 120ms;
+}
+
+.heroBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.heroBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+}
+
+.heroBtnActive:hover {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.heroBtnKbd {
+    font-size: 9px;
+    opacity: 0.7;
     font-family: var(--h18-font-mono);
-    letter-spacing: 0.04em;
-    font-variant-numeric: tabular-nums;
+    margin-left: 2px;
+}
+
+.heroBtnDashed {
+    composes: heroBtn;
+    border-style: dashed;
 }
 
 /* Body grid ─────────────────────────────────────────────────────── */
@@ -335,65 +388,67 @@
 /* Transport bar ───────────────────────────────────────────────── */
 .transport {
     flex-shrink: 0;
-    height: 60px;
+    padding: 12px 20px;
     border-top: 1px solid var(--h18-border);
-    background: var(--h18-surface);
+    background: var(--h18-surface2);
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 0 20px;
+    gap: 10px;
 }
 
-.recBtn {
-    width: 44px;
-    height: 44px;
-    border-radius: 22px;
-    background: var(--h18-dot);
-    color: #fff;
-    border: none;
-    cursor: pointer;
-    display: grid;
-    place-items: center;
-    transition: transform 100ms, filter 120ms;
-    font-family: inherit;
+/* Recording dot + elapsed (replaces big mic circle) */
+.recIndicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
 }
 
-.recBtn:hover {
-    filter: brightness(1.08);
-    transform: translateY(-1px);
-}
-
-.recBtn:disabled {
+.recDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 5px;
     background: var(--h18-text-dim);
-    cursor: not-allowed;
-    transform: none;
-    filter: none;
 }
 
-.recBtnRecording {
-    background: var(--h18-text);
-    color: var(--h18-bg);
+.recDotLive {
+    background: #ff3b30;
+    box-shadow: 0 0 0 4px rgba(255, 59, 48, 0.2);
+    animation: rv2rec 1.4s var(--h18-ease-spring) infinite;
 }
 
-.recBtnRecording:hover {
-    filter: brightness(1.1);
+@keyframes rv2rec {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.recTime {
+    font-size: 15px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
 }
 
 .transportBtn {
-    padding: 8px 16px;
-    font-size: 12px;
-    font-weight: 700;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
     background: transparent;
-    color: var(--h18-text-mid);
+    color: var(--h18-text);
     border: 1px solid var(--h18-border);
     border-radius: 6px;
     cursor: pointer;
     font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms, color 120ms, border-color 120ms;
 }
 
 .transportBtn:hover {
     background: var(--h18-row-hover);
-    color: var(--h18-text);
 }
 
 .transportBtn:disabled {
@@ -401,14 +456,79 @@
     cursor: not-allowed;
 }
 
-.transportBtnDanger {
-    color: var(--h18-hot);
-    border-color: color-mix(in srgb, var(--h18-hot) 35%, transparent);
+/* Pause-state 繼續錄 — red fill */
+.transportBtnRedFill {
+    background: #ff3b30;
+    color: #fff;
+    border-color: #ff3b30;
+    padding: 8px 16px;
+    font-weight: 700;
+    font-size: 12px;
 }
 
-.transportBtnDanger:hover {
-    background: var(--h18-hot-bg);
-    color: var(--h18-hot);
+.transportBtnRedFill:hover {
+    background: #ff3b30;
+    filter: brightness(1.08);
+}
+
+/* Recording-state 暫停 — invert (黑底白字) */
+.transportBtnInvert {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+    padding: 8px 16px;
+    font-weight: 700;
+    font-size: 12px;
+}
+
+.transportBtnInvert:hover {
+    background: var(--h18-invert);
+    filter: brightness(1.05);
+}
+
+/* 跟隨模式 active state */
+.transportBtnFollow {
+    background: var(--h18-chip-bg);
+    color: var(--h18-accent);
+    border-color: var(--h18-accent);
+}
+
+.transportBtnFollow:hover {
+    background: var(--h18-chip-bg);
+}
+
+.followDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--h18-text-faint);
+}
+
+/* 結束 · 儲存 — primary red right side */
+.transportBtnFinish {
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    background: #e8412e;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+    transition: filter 120ms, transform 100ms;
+}
+
+.transportBtnFinish:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.transportBtnFinish:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+    filter: none;
 }
 
 .transportSpacer {
@@ -422,7 +542,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 360px;
+    max-width: 320px;
 }
 
 .transportStatus {
