@@ -1,6 +1,23 @@
 # Phase 6 · H18 真重寫 (v0.7.0-alpha 重啟)
 
-**狀態**：等使用者 review + approve 整體方向後才開始 commit code。
+**狀態**：使用者 lock 三條規則，開始執行。
+
+## 操作規則 (使用者 2026-04-26 鎖定)
+
+1. **介面長得跟設計稿完全一樣** — UI = H18 prototype 1:1
+2. **需要的功能接到後端** — 既有 service 就 wire
+3. **目前沒做的後端功能就「留白」** — 頁面要做，功能不接（用 empty state UI / 唯讀示例 / 假資料明示「coming soon」）
+
+→ Q1 reminders schema 不需要決定（不建 schema、Inbox 留 empty state）
+→ Q2 calendar events schema 不需要決定（從 syllabus.time 推就推；推不到的留空格）
+→ Q5 NotesEditor 頁面要做（功能不接 backend）
+→ Q7 migration N/A（沒新 schema）
+→ Q3 Tauri decorations flip：**做**（設計稿有 traffic lights）
+→ Q4 layout 變體預設：**A / A / A**（設計稿就是用 A 展示）
+→ Q6 TrashView 併進 PData（設計稿這樣排）
+→ Q8 舊 module CSS：discard，不刻意保留
+
+**結論**：直接開始 P6.1 Chrome。P6.0 Foundation 只剩 types + 空 fixtures（合併進 P6.1 一起做）。
 
 **為什麼有這份 plan**：
 - 原 V0.7.0-PLAN.md L313 寫「**不要重寫**，只**換視覺**：把 inline className 改成 H18 token」

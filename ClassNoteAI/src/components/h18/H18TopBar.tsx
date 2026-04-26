@@ -1,0 +1,120 @@
+/**
+ * H18 TopBar · v0.7.0 Phase 6.1
+ *
+ * 對應 docs/design/h18-deep/h18-parts.jsx H18TopBar (L52-103).
+ *
+ * 取代 MainWindow 的中央 nav TopBar。新模型：
+ *   left  · WindowControls (traffic lights) + logo "C" + brand + datetime
+ *   right · ⌘K search trigger + 錄音 button + 主題切換 + TaskIndicator
+ *
+ * Inbox count 在 prototype 是 "Inbox · 14 項"，但 reminders schema
+ * 沒做 → 留白（不顯示）。
+ */
+
+import { useEffect, useState } from 'react';
+import { Moon, Sun, Mic } from 'lucide-react';
+import WindowControls from '../WindowControls';
+import TaskIndicator from '../TaskIndicator';
+import s from './H18TopBar.module.css';
+
+export interface H18TopBarProps {
+    dense?: boolean;
+    showWindowControls?: boolean;
+    onOpenSearch: () => void;
+    onStartRecording?: () => void;
+    /** When recording isn't possible (e.g. no selected course), disable. */
+    canStartRecording?: boolean;
+    effectiveTheme: 'light' | 'dark';
+    onToggleTheme: () => void;
+}
+
+function formatDateTime(d: Date): string {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    const weekday = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'][d.getDay()];
+    return `${yyyy}·${mm}·${dd} · ${weekday} ${hh}:${mi}`;
+}
+
+export default function H18TopBar({
+    dense = false,
+    showWindowControls = true,
+    onOpenSearch,
+    onStartRecording,
+    canStartRecording = true,
+    effectiveTheme,
+    onToggleTheme,
+}: H18TopBarProps) {
+    const [now, setNow] = useState(() => formatDateTime(new Date()));
+    useEffect(() => {
+        const t = setInterval(() => setNow(formatDateTime(new Date())), 30_000);
+        return () => clearInterval(t);
+    }, []);
+
+    return (
+        <div
+            className={`${s.bar} ${dense ? s.barDense : ''}`}
+            data-tauri-drag-region="true"
+        >
+            <div className={s.left} data-tauri-drag-region="true">
+                {showWindowControls && (
+                    <>
+                        <span data-tauri-drag-region="false">
+                            <WindowControls />
+                        </span>
+                        <div className={s.divider} />
+                    </>
+                )}
+                <div className={s.logoBadge} data-tauri-drag-region="false">C</div>
+                <span className={s.brand} data-tauri-drag-region="true">
+                    ClassNote
+                </span>
+                <div className={s.divider} />
+                <span className={s.meta}>{now}</span>
+            </div>
+
+            <div className={s.right} data-tauri-drag-region="false">
+                <button
+                    type="button"
+                    onClick={onOpenSearch}
+                    title="搜尋 (⌘K)"
+                    aria-label="搜尋"
+                    className={s.search}
+                >
+                    <span className={s.searchIcon}>⌕</span>
+                    <span className={s.searchPlaceholder}>
+                        搜尋筆記、課程、語音片段…
+                    </span>
+                    <span className={s.searchKbd}>⌘K</span>
+                </button>
+
+                <button
+                    type="button"
+                    onClick={onStartRecording}
+                    disabled={!canStartRecording || !onStartRecording}
+                    title={canStartRecording ? '開始錄音' : '請先選擇課程'}
+                    aria-label="開始錄音"
+                    className={s.recordBtn}
+                >
+                    <span className={s.recordDot} />
+                    <Mic size={12} />
+                    錄音
+                </button>
+
+                <button
+                    type="button"
+                    onClick={onToggleTheme}
+                    title="切換主題 (⌘\\)"
+                    aria-label="切換主題"
+                    className={s.themeBtn}
+                >
+                    {effectiveTheme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+                </button>
+
+                <TaskIndicator />
+            </div>
+        </div>
+    );
+}

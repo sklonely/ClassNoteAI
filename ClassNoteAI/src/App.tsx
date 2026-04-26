@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import MainWindow from "./components/MainWindow";
+import H18DeepApp from "./components/h18/H18DeepApp";
 import LoginScreen from "./components/LoginScreen";
 import ErrorBoundary from "./components/ErrorBoundary";
 import SetupWizard from "./components/SetupWizard";
@@ -274,7 +274,7 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <MainWindow />
+      <H18DeepApp />
       <RecoveryPromptModal
         sessions={recoverableSessions}
         onSessionResolved={(id) =>
