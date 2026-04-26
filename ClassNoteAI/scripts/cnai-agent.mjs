@@ -88,7 +88,9 @@ Usage:
   node scripts/cnai-agent.mjs logs tail [--json] [--follow] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs diag bundle [--json] [--output PATH]
   node scripts/cnai-agent.mjs workflow list [--json]
-  node scripts/cnai-agent.mjs workflow import-media --json [--file PATH]
+  node scripts/cnai-agent.mjs workflow import-media --json --lecture-id ID --file PATH [--language auto|en|zh] [--dry-run]
+  node scripts/cnai-agent.mjs workflow ocr-index --json --lecture-id ID [--pdf-path PATH] [--transcript-text TEXT] [--force-refresh] [--dry-run]
+  node scripts/cnai-agent.mjs workflow summarize --json [--lecture-id ID|--content TEXT] [--language zh|en] [--write-note] [--dry-run]
   node scripts/cnai-agent.mjs ui snapshot [--json]
   node scripts/cnai-agent.mjs ui tree [--json]
   node scripts/cnai-agent.mjs ui click --target ID [--json]
@@ -151,6 +153,15 @@ function parseArgs(argv) {
     dev: false,
     port: undefined,
     file: undefined,
+    lectureId: undefined,
+    courseId: undefined,
+    noteId: undefined,
+    pdfPath: undefined,
+    transcriptText: undefined,
+    content: undefined,
+    language: undefined,
+    forceRefresh: false,
+    writeNote: undefined,
     maxEvents: undefined,
     target: undefined,
     selector: undefined,
@@ -195,6 +206,26 @@ function parseArgs(argv) {
       options.output = args.shift();
     } else if (arg === '--file') {
       options.file = args.shift();
+    } else if (arg === '--lecture-id') {
+      options.lectureId = args.shift();
+    } else if (arg === '--course-id') {
+      options.courseId = args.shift();
+    } else if (arg === '--note-id') {
+      options.noteId = args.shift();
+    } else if (arg === '--pdf-path') {
+      options.pdfPath = args.shift();
+    } else if (arg === '--transcript-text') {
+      options.transcriptText = args.shift();
+    } else if (arg === '--content') {
+      options.content = args.shift();
+    } else if (arg === '--language') {
+      options.language = args.shift();
+    } else if (arg === '--force-refresh') {
+      options.forceRefresh = true;
+    } else if (arg === '--write-note') {
+      options.writeNote = true;
+    } else if (arg === '--no-write-note') {
+      options.writeNote = false;
     } else if (arg === '--max-events') {
       const raw = args.shift();
       const parsed = Number(raw);
@@ -298,6 +329,21 @@ function handshakePayload() {
         id: 'workflow.list',
         stability: 'experimental',
         description: 'List workflow command contracts exposed by this CLI.',
+      },
+      {
+        id: 'workflow.import-media',
+        stability: 'experimental',
+        description: 'Import audio/video media through the app bridge.',
+      },
+      {
+        id: 'workflow.ocr-index',
+        stability: 'experimental',
+        description: 'Build a lecture OCR/RAG index through the app bridge.',
+      },
+      {
+        id: 'workflow.summarize',
+        stability: 'experimental',
+        description: 'Generate a lecture summary through the app bridge.',
       },
       {
         id: 'call.raw',
@@ -781,21 +827,21 @@ function workflowContracts() {
       },
       {
         id: 'import-media',
-        stability: 'planned',
-        command: ['workflow', 'import-media', '--file', '<path>'],
+        stability: 'experimental',
+        command: ['workflow', 'import-media', '--lecture-id', '<id>', '--file', '<path>'],
         requiresBridge: true,
         description: 'Import an audio/video file into a lecture through the app bridge.',
       },
       {
         id: 'ocr-index',
-        stability: 'planned',
-        command: ['workflow', 'ocr-index', '--course-id', '<id>'],
+        stability: 'experimental',
+        command: ['workflow', 'ocr-index', '--lecture-id', '<id>', '--pdf-path', '<path>'],
         requiresBridge: true,
         description: 'Index course material through the app bridge.',
       },
       {
         id: 'summarize',
-        stability: 'planned',
+        stability: 'experimental',
         command: ['workflow', 'summarize', '--lecture-id', '<id>'],
         requiresBridge: true,
         description: 'Generate a lecture summary through the app bridge.',
@@ -1075,6 +1121,16 @@ async function handleWorkflowCommand(options) {
         method: 'POST',
         body: {
           file: options.file ?? null,
+          lectureId: options.lectureId ?? null,
+          courseId: options.courseId ?? null,
+          noteId: options.noteId ?? null,
+          pdfPath: options.pdfPath ?? null,
+          transcriptText: options.transcriptText ?? null,
+          content: options.content ?? null,
+          language: options.language ?? null,
+          forceRefresh: options.forceRefresh,
+          writeNote: options.writeNote ?? null,
+          dryRun: options.dryRun,
         },
       },
     );
