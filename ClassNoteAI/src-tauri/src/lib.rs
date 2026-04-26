@@ -339,6 +339,7 @@ fn get_build_features() -> serde_json::Value {
     serde_json::json!({
         "nmt_local": cfg!(feature = "nmt-local"),
         "gpu_cuda": cfg!(feature = "gpu-cuda"),
+        "bundle_cuda": cfg!(feature = "bundle-cuda"),
         "gpu_metal": cfg!(feature = "gpu-metal"),
         "gpu_vulkan": cfg!(feature = "gpu-vulkan"),
     })
