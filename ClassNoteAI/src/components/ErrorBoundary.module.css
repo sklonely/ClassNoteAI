@@ -1,0 +1,145 @@
+/* ============================================================
+ * ErrorBoundary fallback · v0.7.0 H18
+ * 對應 docs/design/h18-deep/extras-error-fallback.jsx
+ * ============================================================ */
+
+.shell {
+    position: fixed;
+    inset: 0;
+    z-index: 9800;
+    background: var(--h18-bg);
+    display: grid;
+    place-items: center;
+    padding: 40px;
+    font-family: var(--h18-font-sans);
+    color: var(--h18-text);
+    animation: errIn 320ms var(--h18-ease-spring);
+}
+
+.body {
+    width: 540px;
+    max-width: 100%;
+    text-align: center;
+}
+
+.glyph {
+    width: 64px;
+    height: 64px;
+    border-radius: 32px;
+    background: var(--h18-hot-bg);
+    color: var(--h18-hot);
+    display: grid;
+    place-items: center;
+    margin: 0 auto 20px;
+    border: 1px solid var(--h18-border);
+}
+
+.glyph svg {
+    width: 32px;
+    height: 32px;
+    stroke-width: 2.4;
+}
+
+.eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--h18-hot);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.title {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--h18-text);
+    margin: 8px 0 0;
+    letter-spacing: -0.02em;
+}
+
+.lead {
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    margin: 10px auto 0;
+    line-height: 1.7;
+    max-width: 420px;
+}
+
+.codeBlock {
+    margin-top: 24px;
+    padding: 14px 18px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    border-radius: 8px;
+    font-family: var(--h18-font-mono);
+    font-size: 11px;
+    text-align: left;
+    color: var(--h18-text);
+    max-height: 160px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.6;
+}
+
+.errorLine {
+    color: var(--h18-hot);
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.stackLine {
+    color: var(--h18-text-dim);
+}
+
+.actions {
+    margin-top: 24px;
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 18px;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    border: 1px solid var(--h18-border);
+    background: transparent;
+    color: var(--h18-text-mid);
+    transition: background 160ms;
+}
+
+.btn:hover {
+    background: var(--h18-surface2);
+}
+
+.btnPrimary {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    font-weight: 700;
+}
+
+.btnPrimary:hover {
+    background: var(--h18-invert);
+    opacity: 0.92;
+}
+
+.footer {
+    margin-top: 28px;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.12em;
+}
+
+@keyframes errIn {
+    from { opacity: 0; transform: scale(0.98); }
+    to { opacity: 1; transform: scale(1); }
+}

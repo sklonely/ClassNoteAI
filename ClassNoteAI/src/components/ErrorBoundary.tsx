@@ -1,5 +1,6 @@
 import { Component, ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
+import s from './ErrorBoundary.module.css';
 
 interface Props {
     children: ReactNode;
@@ -12,10 +13,6 @@ interface State {
     errorInfo: ErrorInfo | null;
 }
 
-/**
- * 錯誤邊界組件
- * 捕獲子組件的 JavaScript 錯誤，防止整個應用崩潰
- */
 class ErrorBoundary extends Component<Props, State> {
     constructor(props: Props) {
         super(props);
@@ -32,7 +29,6 @@ class ErrorBoundary extends Component<Props, State> {
 
     componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
         this.setState({ errorInfo });
-        // 記錄錯誤到控制台（未來可擴展為遠程日誌服務）
         console.error('[ErrorBoundary] 捕獲到錯誤:', error);
         console.error('[ErrorBoundary] 錯誤信息:', errorInfo.componentStack);
     }
@@ -47,46 +43,47 @@ class ErrorBoundary extends Component<Props, State> {
 
     render(): ReactNode {
         if (this.state.hasError) {
-            // 如果提供了自定義 fallback，使用它
             if (this.props.fallback) {
                 return this.props.fallback;
             }
 
-            // 默認錯誤 UI
+            const stack = this.state.error?.stack ?? '';
+            const stackPreview = stack.split('\n').slice(0, 5).join('\n');
+
             return (
-                <div className="flex flex-col items-center justify-center min-h-[400px] p-8 bg-gray-50 dark:bg-gray-900">
-                    <div className="max-w-md w-full bg-white dark:bg-slate-800 rounded-xl shadow-lg p-8 text-center">
-                        <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
-                            <AlertTriangle className="w-8 h-8 text-red-500" />
+                <div className={s.shell}>
+                    <div className={s.body}>
+                        <div className={s.glyph}>
+                            <AlertTriangle />
                         </div>
-
-                        <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                            出現了一些問題
-                        </h2>
-
-                        <p className="text-gray-600 dark:text-gray-400 mb-6">
-                            應用程式遇到了錯誤。請嘗試刷新頁面或重新啟動應用。
+                        <div className={s.eyebrow}>UNHANDLED EXCEPTION</div>
+                        <h2 className={s.title}>出了點問題</h2>
+                        <p className={s.lead}>
+                            ClassNote 遇到一個未預期的錯誤。可以試試重試或刷新頁面；如果反覆發生，請複製錯誤訊息回報給開發者。
                         </p>
 
                         {this.state.error && (
-                            <div className="mb-6 p-4 bg-gray-100 dark:bg-gray-700 rounded-lg text-left">
-                                <p className="text-sm font-mono text-gray-700 dark:text-gray-300 break-all">
+                            <div className={s.codeBlock}>
+                                <div className={s.errorLine}>
                                     {this.state.error.message}
-                                </p>
+                                </div>
+                                {stackPreview && (
+                                    <div className={s.stackLine}>{stackPreview}</div>
+                                )}
                             </div>
                         )}
 
-                        <div className="flex gap-3 justify-center">
+                        <div className={s.actions}>
                             <button
                                 onClick={this.handleReset}
-                                className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                                className={`${s.btn} ${s.btnPrimary}`}
                             >
-                                <RefreshCw className="w-4 h-4" />
+                                <RefreshCw size={14} />
                                 重試
                             </button>
                             <button
                                 onClick={() => window.location.reload()}
-                                className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                                className={s.btn}
                             >
                                 刷新頁面
                             </button>
