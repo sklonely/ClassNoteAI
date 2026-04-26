@@ -11,6 +11,7 @@ import NotesView from "./NotesView";
 import SettingsView from "./SettingsView";
 import ProfileView from "./ProfileView";
 import TaskIndicator from "./TaskIndicator";
+import TopBar from "./TopBar";
 import TrashView from "./TrashView";
 
 type ActiveView = 'home' | 'course' | 'lecture' | 'settings' | 'test' | 'test-translation';
@@ -223,56 +224,62 @@ export default function MainWindow() {
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100 relative">
-      {/* 頂部導航欄。z-[60] 高於 Settings/Profile/Trash overlay 的 z-50，
-          讓 TaskIndicator 等向下展開的氣泡（它繼承 header 的 stacking
-          context）能蓋在全螢幕 overlay 上面而不被截斷。 */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 z-[60] relative">
-        <div className="flex items-center gap-2">
-          <h1 className="text-xl font-semibold">ClassNote AI</h1>
-        </div>
+      {/* H18 TopBar — chrome shell。z-index 60 (CSS Modules) 高於
+          Settings/Profile/Trash overlay 的 z-50，讓 TaskIndicator
+          dropdown 能蓋在全螢幕 overlay 上面。
 
-        <nav className="flex items-center gap-1">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            // Highlight Home if we are in home, course, or lecture view (unless settings is open)
-            const isActive = item.id === 'settings' ? isSettingsOpen : (!isSettingsOpen && !isProfileOpen && ['home', 'course', 'lecture'].includes(activeView) && item.id === 'home');
-
-
-            return (
-              <button
-                key={item.id}
-                onClick={item.action}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${isActive
-                  ? "bg-blue-500 text-white"
-                  : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-                  }`}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        <div className="flex items-center gap-2">
-          <TaskIndicator />
-          <button
-            onClick={() => setIsProfileOpen(true)}
-            className={`p-2 rounded-lg transition-colors ${isProfileOpen ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
-            aria-label="個人中心"
-          >
-            <User size={20} />
-          </button>
-          <button
-
-            onClick={toggleTheme}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            aria-label="切換主題"
-          >
-            {theme === "light" ? <Moon size={20} /> : <Sun size={20} />}
-          </button>
-        </div>
-      </header>
+          showWindowControls 暫時 false：tauri.conf.json 還沒 flip
+          decorations: false，flip 後再開為 true (視覺切換見 v0.7.0
+          plan CP-1)。 */}
+      <TopBar
+        brand={
+          <h1 className="text-xl font-semibold" data-tauri-drag-region="false">
+            ClassNote AI
+          </h1>
+        }
+        nav={
+          <nav className="flex items-center gap-1" data-tauri-drag-region="false">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = item.id === 'settings'
+                ? isSettingsOpen
+                : (!isSettingsOpen && !isProfileOpen && ['home', 'course', 'lecture'].includes(activeView) && item.id === 'home');
+              return (
+                <button
+                  key={item.id}
+                  onClick={item.action}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${isActive
+                    ? "bg-blue-500 text-white"
+                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                    }`}
+                >
+                  <Icon size={18} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+        }
+        rightActions={
+          <div className="flex items-center gap-2" data-tauri-drag-region="false">
+            <TaskIndicator />
+            <button
+              onClick={() => setIsProfileOpen(true)}
+              className={`p-2 rounded-lg transition-colors ${isProfileOpen ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+              aria-label="個人中心"
+            >
+              <User size={20} />
+            </button>
+            <button
+              onClick={toggleTheme}
+              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              aria-label="切換主題"
+            >
+              {theme === "light" ? <Moon size={20} /> : <Sun size={20} />}
+            </button>
+          </div>
+        }
+      />
 
       {/* 狀態欄 */}
       <div className="px-6 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 z-10 relative">
