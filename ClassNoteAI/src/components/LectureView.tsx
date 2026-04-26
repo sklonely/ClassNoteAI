@@ -420,6 +420,8 @@ export default function LectureView() {
           text_zh: seg.displayTranslation || seg.roughTranslation || undefined,
           type: (seg.source === 'fine' ? 'fine' : 'rough') as 'rough' | 'fine',
           confidence: undefined,
+          speaker_role: seg.speakerRole ?? 'unknown',
+          speaker_id: seg.speakerId,
           created_at: now, // 設置創建時間
         }));
 

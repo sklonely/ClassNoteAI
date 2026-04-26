@@ -11,6 +11,7 @@ This README is for the app workspace. For the project overview, release links, a
 - Create or open a course.
 - Start a lecture recording from the desktop app.
 - Watch captions appear during the session.
+- Keep recording through long classes with disk-backed recovery and safety prompts if the session appears forgotten.
 - Stop the session to commit the final transcript and translation state.
 
 ### Import Media
@@ -22,6 +23,7 @@ This README is for the app workspace. For the project overview, release links, a
 ### Review And Search
 
 - Review transcript captions and translations in the lecture view.
+- See speaker labels when attribution is available, so teacher speech and student questions can stay distinguishable.
 - Add PDFs, notes, or syllabus material to the course.
 - Search across course material and ask the AI assistant contextual questions.
 

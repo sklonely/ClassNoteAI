@@ -45,9 +45,11 @@ import { subtitleImportService } from "../services/subtitleImportService";
 import { selectVideoFile } from "../services/fileService";
 import ImportModal, { PasteSubmission, VideoImportOptions } from "./ImportModal";
 import { Lecture, Note, RecordingStatus } from "../types";
+import { isSupportedMediaPath } from "../utils/mediaFileTypes";
 import CourseCreationDialog from "./CourseCreationDialog";
 import { AudioRecorder } from "../services/audioRecorder";
 import { BatteryMonitor } from "../services/batteryMonitorService";
+import { recordingSessionSafetyService, type RecordingSafetyStopReason } from "../services/recordingSessionSafetyService";
 import SubtitleDisplay from "./SubtitleDisplay";
 import AudioPlayer from "./AudioPlayer";
 import { transcriptionService } from "../services/transcriptionService";
@@ -62,6 +64,12 @@ import { pdfService } from "../services/pdfService";
 import AIChatPanel from "./AIChatPanel";
 
 type ViewMode = 'recording' | 'review';
+
+interface RecordingPipelineLag {
+  queueDepth: number;
+  oldestAgeMs: number;
+  noticedAt: number;
+}
 
 interface NotesViewProps {
   courseId?: string;
@@ -91,6 +99,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
   // Recording State
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>("idle");
   const [volume, setVolume] = useState(0);
+  const [recordingPipelineLag, setRecordingPipelineLag] = useState<RecordingPipelineLag | null>(null);
   const [pdfPath, setPdfPath] = useState<string | null>(null);
   const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
   const [modelLoaded, setModelLoaded] = useState(false);
@@ -932,6 +941,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               endTime: (sub.timestamp + 5) * 1000,
               source: sub.type === 'fine' ? 'fine' : 'rough',
               translationSource: sub.text_zh ? (sub.type === 'fine' ? 'fine' : 'rough') : undefined,
+              speakerRole: sub.speaker_role ?? 'unknown',
+              speakerId: sub.speaker_id,
               text: sub.text_en,
               translatedText: sub.text_zh,
             });
@@ -1255,6 +1266,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       audioRecorderRef.current.enablePersistence(currentLectureData.id);
 
       await audioRecorderRef.current.start();
+      setRecordingPipelineLag(null);
 
       // Phase 1 of speech-pipeline-v0.6.5 (#52): battery guard. Warns at
       // 10% and force-stops at 5% to flush the JSONL + finalize the WAV
@@ -1271,6 +1283,34 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       void batteryMonitorRef.current.start().catch((err) => {
         console.warn('[NotesView] battery monitor start failed:', err);
       });
+      recordingSessionSafetyService.start({
+        onLongSilenceWarning: () => {
+          toastService.warning(
+            'Recording has been silent for a while',
+            'ClassNoteAI will auto-stop soon if no speech resumes.',
+          );
+        },
+        onBackpressure: ({ queueDepth, oldestAgeMs }) => {
+          console.warn('[NotesView] Recording pipeline backpressure', {
+            queueDepth,
+            oldestAgeMs,
+          });
+          setRecordingPipelineLag({
+            queueDepth,
+            oldestAgeMs,
+            noticedAt: Date.now(),
+          });
+        },
+        onStop: (reason: RecordingSafetyStopReason) => {
+          console.warn('[NotesView] Recording safety auto-stop:', reason);
+          toastService.warning(
+            reason === 'hard_duration_cap'
+              ? 'Recording reached the safety time limit'
+              : 'Recording auto-stopped after long silence',
+          );
+          void handleStopRecording();
+        },
+      });
 
       const resolvedInputDeviceId = audioRecorderRef.current.getDeviceId();
       if (resolvedInputDeviceId && resolvedInputDeviceId !== preferredInputDeviceId) {
@@ -1282,6 +1322,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       setRecordingStartTime(Date.now());
     } catch (error) {
       console.error('Failed to start recording:', error);
+      recordingSessionSafetyService.stop();
+      setRecordingPipelineLag(null);
       toastService.error(
         '無法開始錄音',
         error instanceof Error ? error.message : String(error),
@@ -1306,11 +1348,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     // 00:00 / 00:00 in Review mode.
     //
     // New order of operations:
-    //   1. Snapshot the in-memory WAV (no throw — null is fine).
+    //   1. Snapshot the bounded in-memory WAV fallback (no throw — null is fine).
     //   2. Stop the recorder.
     //   3. ALWAYS attempt finalize (.pcm → .wav). If persistence was
     //      enabled, this is the lossless path covering the full session.
-    //   4. If finalize didn't produce a path, fall back to the in-memory
+    //   4. If finalize didn't produce a path, fall back to the bounded in-memory
     //      WAV (covers users upgrading from v0.5.1 where persistence is
     //      disabled mid-session).
     //   5. Whatever we end up with, persist the lecture row to the DB.
@@ -1338,6 +1380,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
       // listeners now that this session is done. start() is idempotent
       // so the next recording reattaches.
       batteryMonitorRef.current?.stop();
+      recordingSessionSafetyService.stop();
+      setRecordingPipelineLag(null);
       stopRecordingDeviceMonitor();
       setRecordingStatus("stopped");
       setVolume(0);
@@ -1637,6 +1681,8 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           text_zh: seg.displayTranslation || seg.roughTranslation || undefined,
           type: (seg.source === 'fine' ? 'fine' : 'rough') as 'rough' | 'fine',
           confidence: undefined,
+          speaker_role: seg.speakerRole ?? 'unknown',
+          speaker_id: seg.speakerId,
           created_at: now,
         }));
         await storageService.saveSubtitles(subtitles);
@@ -1798,7 +1844,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
     const path = paths[0];
     const lower = path.toLowerCase();
 
-    const isMedia = /\.(mp4|m4v|mkv|webm|mov|avi|wav|mp3|m4a|aac|flac|ogg|opus)$/.test(lower);
+    const isMedia = isSupportedMediaPath(path);
     const isPdf = lower.endsWith('.pdf');
     const isConvertible =
       lower.endsWith('.ppt') ||
@@ -2401,7 +2447,17 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                           <div className="h-full bg-green-500 transition-all" style={{ width: `${volume}%` }} />
                         </div>
                       </div>
-                      <span className="text-xs text-gray-500">{recordingStatus === 'recording' ? 'Recording...' : 'Ready'}</span>
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="text-xs text-gray-500">{recordingStatus === 'recording' ? 'Recording...' : 'Ready'}</span>
+                        {recordingPipelineLag && recordingStatus === 'recording' && (
+                          <span
+                            className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/25 border border-amber-200 dark:border-amber-800 rounded px-2 py-0.5"
+                            title={`Queue depth ${recordingPipelineLag.queueDepth}, oldest ${Math.round(recordingPipelineLag.oldestAgeMs / 1000)}s`}
+                          >
+                            Live subtitles delayed
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex gap-2">

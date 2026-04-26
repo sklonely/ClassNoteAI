@@ -69,6 +69,7 @@ beforeEach(() => {
       audioEndSec: 2,
       wallClockMs: 100,
       textEn: 'Hello class.',
+      speakerRole: 'unknown',
     });
     subtitleStream.emit({
       kind: 'translation_ready',
@@ -111,6 +112,7 @@ describe('videoImportService.importVideo', () => {
         id: 'seg-1',
         lecture_id: 'lecture-1',
         text_en: 'Hello class.',
+        speaker_role: 'unknown',
       }),
     ]);
   });
@@ -133,6 +135,7 @@ describe('videoImportService.importVideo', () => {
         id: 'seg-1',
         lecture_id: 'lecture-1',
         text_en: 'Hello class.',
+        speaker_role: 'unknown',
         text_zh: '各位同學好。',
       }),
     ]);
