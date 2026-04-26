@@ -17,6 +17,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { storageService } from '../../services/storageService';
 import type { Course } from '../../types';
+import { useAppSettings } from './useAppSettings';
 import s from './ProfilePage.module.css';
 
 /* ────────── primitives ───────── */
@@ -427,8 +428,42 @@ function ModelCard({
  * PTranslate — 翻譯
  * ════════════════════════════════════════════════════════════════ */
 
+type Engine = 'gemma' | 'google' | 'local';
+
+const SRC_LANG_OPTIONS: { label: string; value: string }[] = [
+    { label: '自動偵測', value: 'auto' },
+    { label: '英文', value: 'en' },
+    { label: '中文（繁）', value: 'zh-TW' },
+    { label: '中文（簡）', value: 'zh-CN' },
+    { label: '日文', value: 'ja' },
+    { label: '韓文', value: 'ko' },
+];
+
+const TGT_LANG_OPTIONS: { label: string; value: string }[] = [
+    { label: '中文（繁）', value: 'zh-TW' },
+    { label: '中文（簡）', value: 'zh-CN' },
+    { label: '英文', value: 'en' },
+    { label: '日文', value: 'ja' },
+    { label: '韓文', value: 'ko' },
+];
+
+function labelOf(opts: { label: string; value: string }[], value?: string): string {
+    return opts.find((o) => o.value === value)?.label || opts[0].label;
+}
+function valueOf(opts: { label: string; value: string }[], label: string): string {
+    return opts.find((o) => o.label === label)?.value || opts[0].value;
+}
+
 export function PTranslate() {
-    const [engine, setEngine] = useState<'gemma' | 'google' | 'local'>('gemma');
+    const { settings, update } = useAppSettings();
+    const t = settings?.translation;
+    const sub = settings?.subtitle;
+
+    const engine: Engine = (t?.provider as Engine) || 'gemma';
+    const srcLabel = labelOf(SRC_LANG_OPTIONS, t?.source_language);
+    const tgtLabel = labelOf(TGT_LANG_OPTIONS, t?.target_language);
+    const bilingual = sub?.display_mode === 'both';
+
     return (
         <div>
             <PHeader
@@ -443,7 +478,11 @@ export function PTranslate() {
                 right={
                     <PSeg
                         value={engine}
-                        onChange={setEngine}
+                        onChange={(v) =>
+                            update({
+                                translation: { ...(t || {}), provider: v as Engine },
+                            })
+                        }
                         options={[
                             { value: 'gemma', label: 'TranslateGemma' },
                             { value: 'google', label: 'Google Cloud' },
@@ -460,22 +499,20 @@ export function PTranslate() {
                 right={<span className={s.statusOK}>✓ 已下載 · 2.40 GB</span>}
             />
             <PRow
-                label="llama-server sidecar"
-                hint="Gemma 透過 llama-server 跑在本機 HTTP port，由 ClassNote 自動 spawn / 監控"
-                right={
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <span className={s.statusGreen}>
-                            <span className={s.statusGreenDot} />
-                            已連線
-                        </span>
-                        <PBtn>重新啟動</PBtn>
-                    </div>
-                }
-            />
-            <PRow
                 label="endpoint"
                 hint="預設 127.0.0.1:8080。除非自己改 llama-server port 否則不用動"
-                right={<PInput value="http://127.0.0.1:8080" monospace wide />}
+                right={
+                    <PInput
+                        value={t?.gemma_endpoint || 'http://127.0.0.1:8080'}
+                        onChange={(v) =>
+                            update({
+                                translation: { ...(t || {}), gemma_endpoint: v },
+                            })
+                        }
+                        monospace
+                        wide
+                    />
+                }
             />
 
             <PHead>Google Cloud (備用)</PHead>
@@ -483,10 +520,17 @@ export function PTranslate() {
                 label="API key"
                 hint="Translation API 憑證。沒填的話 Gemma 失敗時會直接報錯"
                 right={
-                    <div style={{ display: 'flex', gap: 8 }}>
-                        <PInput placeholder="AIza...." value="" monospace wide />
-                        <PBtn>測試</PBtn>
-                    </div>
+                    <PInput
+                        placeholder="AIza...."
+                        value={t?.google_api_key || ''}
+                        onChange={(v) =>
+                            update({
+                                translation: { ...(t || {}), google_api_key: v },
+                            })
+                        }
+                        monospace
+                        wide
+                    />
                 }
             />
 
@@ -496,15 +540,19 @@ export function PTranslate() {
                 hint="影響轉錄與字幕的主要語言"
                 right={
                     <PSelect
-                        value="自動偵測"
-                        options={[
-                            '自動偵測',
-                            '英文',
-                            '中文（繁）',
-                            '中文（簡）',
-                            '日文',
-                            '韓文',
-                        ]}
+                        value={srcLabel}
+                        options={SRC_LANG_OPTIONS.map((o) => o.label)}
+                        onChange={(label) =>
+                            update({
+                                translation: {
+                                    ...(t || {}),
+                                    source_language: valueOf(
+                                        SRC_LANG_OPTIONS,
+                                        label,
+                                    ) as AppSettingsSourceLang,
+                                },
+                            })
+                        }
                     />
                 }
             />
@@ -513,19 +561,47 @@ export function PTranslate() {
                 hint="字幕、摘要、Q&A 翻譯到這個語言"
                 right={
                     <PSelect
-                        value="中文（繁）"
-                        options={['中文（繁）', '中文（簡）', '英文', '日文', '韓文']}
+                        value={tgtLabel}
+                        options={TGT_LANG_OPTIONS.map((o) => o.label)}
+                        onChange={(label) =>
+                            update({
+                                translation: {
+                                    ...(t || {}),
+                                    target_language: valueOf(TGT_LANG_OPTIONS, label),
+                                },
+                            })
+                        }
                     />
                 }
             />
             <PRow
                 label="雙語字幕"
                 hint="同時顯示來源與目標語言"
-                right={<PToggle on />}
+                right={
+                    <PToggle
+                        on={bilingual}
+                        onChange={(v) =>
+                            update({
+                                subtitle: {
+                                    ...(sub || {
+                                        font_size: 16,
+                                        font_color: '#fff',
+                                        background_opacity: 0.6,
+                                        position: 'bottom',
+                                        display_mode: 'en',
+                                    }),
+                                    display_mode: v ? 'both' : 'en',
+                                },
+                            })
+                        }
+                    />
+                }
             />
         </div>
     );
 }
+
+type AppSettingsSourceLang = 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';
 
 /* ════════════════════════════════════════════════════════════════
  * PCloud — 雲端 AI 助理
@@ -764,7 +840,52 @@ export function PAppearance({
  * PAudio — 音訊與字幕
  * ════════════════════════════════════════════════════════════════ */
 
+interface AudioDevice {
+    deviceId: string;
+    label?: string;
+}
+
+const FONT_SIZE_OPTIONS = [
+    { value: 12, label: '小' },
+    { value: 16, label: '標準' },
+    { value: 20, label: '大' },
+    { value: 26, label: '超大' },
+] as const;
+
 export function PAudio() {
+    const { settings, update } = useAppSettings();
+    const sub = settings?.subtitle;
+    const audioCfg = settings?.audio;
+
+    const [devices, setDevices] = useState<AudioDevice[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        import('../../services/audioDeviceService')
+            .then(({ audioDeviceService }) => {
+                const list = audioDeviceService.getDevices();
+                if (!cancelled && list) setDevices(list as AudioDevice[]);
+            })
+            .catch(() => {
+                /* swallow */
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const fontSize = sub?.font_size ?? 16;
+    const fontLabel =
+        FONT_SIZE_OPTIONS.find((o) => o.value === fontSize)?.label || '標準';
+    const bilingual = sub?.display_mode === 'both';
+
+    const deviceLabels = devices.length > 0
+        ? ['預設裝置', ...devices.map((d) => d.label || d.deviceId)]
+        : ['預設裝置'];
+    const currentDevice = audioCfg?.device_id
+        ? (devices.find((d) => d.deviceId === audioCfg.device_id)?.label ||
+              audioCfg.device_id)
+        : '預設裝置';
+
     return (
         <div>
             <PHeader
@@ -775,16 +896,33 @@ export function PAudio() {
             <PHead first>麥克風</PHead>
             <PRow
                 label="輸入裝置"
-                hint="留白：實機從 audioDeviceService.list() 拉真實裝置列表"
-                right={<PSelect value="預設裝置" options={['預設裝置']} />}
-            />
-            <PRow
-                label="聲道"
-                right={<PSelect value="單聲道" options={['單聲道', '雙聲道']} />}
+                hint={
+                    devices.length > 0
+                        ? `偵測到 ${devices.length} 個輸入裝置`
+                        : '尚未列舉輸入裝置（首次使用麥克風授權後出現）'
+                }
+                right={
+                    <PSelect
+                        value={currentDevice}
+                        options={deviceLabels}
+                        onChange={(label) => {
+                            const d = devices.find(
+                                (x) => (x.label || x.deviceId) === label,
+                            );
+                            update({
+                                audio: {
+                                    sample_rate: audioCfg?.sample_rate ?? 48000,
+                                    chunk_duration: audioCfg?.chunk_duration ?? 5,
+                                    device_id: d?.deviceId,
+                                },
+                            });
+                        }}
+                    />
+                }
             />
             <PRow
                 label="自動切換偵測"
-                hint="移除耳機 / 關靜音時提示再次選裝置"
+                hint="移除耳機 / 關靜音時提示再次選裝置（留白：實裝接 recordingDeviceMonitor 開關）"
                 right={<PToggle on />}
             />
 
@@ -792,18 +930,49 @@ export function PAudio() {
             <PRow
                 label="字幕字級"
                 right={
-                    <PSelect value="標準" options={['小', '標準', '大', '超大']} />
+                    <PSelect
+                        value={fontLabel}
+                        options={FONT_SIZE_OPTIONS.map((o) => o.label)}
+                        onChange={(label) => {
+                            const sel = FONT_SIZE_OPTIONS.find((o) => o.label === label);
+                            if (!sel) return;
+                            update({
+                                subtitle: {
+                                    ...(sub || {
+                                        font_color: '#fff',
+                                        background_opacity: 0.6,
+                                        position: 'bottom',
+                                        display_mode: 'en',
+                                    }),
+                                    font_size: sel.value,
+                                },
+                            });
+                        }}
+                    />
                 }
             />
             <PRow
                 label="雙語字幕"
                 hint="同時顯示來源 + 翻譯"
-                right={<PToggle on />}
-            />
-            <PRow
-                label="逐字模式"
-                hint="細粒度時間戳，閱讀比較費力但定位精準"
-                right={<PToggle on={false} />}
+                right={
+                    <PToggle
+                        on={bilingual}
+                        onChange={(v) =>
+                            update({
+                                subtitle: {
+                                    ...(sub || {
+                                        font_size: 16,
+                                        font_color: '#fff',
+                                        background_opacity: 0.6,
+                                        position: 'bottom',
+                                        display_mode: 'en',
+                                    }),
+                                    display_mode: v ? 'both' : 'en',
+                                },
+                            })
+                        }
+                    />
+                }
             />
         </div>
     );
