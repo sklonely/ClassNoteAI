@@ -52,10 +52,27 @@ function normalizeAppSettings(settings: AppSettings | (AppSettings & Record<stri
     };
   }
 
+  // v0.7.0 H18: 確保 appearance 物件存在且 5 個欄位都有 default。
+  // 舊 user 升級時 settings.appearance === undefined → 全填 default。
+  // 已有 appearance 但缺某欄位 → 補該欄位。已有的不蓋。
+  // legacy `theme` field 只在 appearance.themeMode 缺時 migrate 過去。
+  const existingAppearance = normalized.appearance ?? {};
+  normalized.appearance = {
+    themeMode: existingAppearance.themeMode ?? normalized.theme ?? 'light',
+    density: existingAppearance.density ?? 'comfortable',
+    fontSize: existingAppearance.fontSize ?? 'normal',
+    layout: existingAppearance.layout ?? 'A',
+    toastStyle: existingAppearance.toastStyle ?? 'card',
+  };
+
   delete normalized.ollama;
   delete normalized.sync;
   return normalized;
 }
+
+// Test-only export — 讓 vitest 直接驗 normalize 邏輯，不必走 Tauri invoke
+// path。命名加 ForTest 避免被當成 public API 誤用。
+export const normalizeAppSettingsForTest = normalizeAppSettings;
 
 function joinAppPath(baseDir: string, ...parts: string[]): string {
   const separator = baseDir.includes('\\') ? '\\' : '/';

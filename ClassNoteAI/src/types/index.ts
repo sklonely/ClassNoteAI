@@ -119,6 +119,29 @@ export interface AppSettings {
     display_mode: "en" | "zh" | "both";
   };
   theme: "light" | "dark";
+  /**
+   * v0.7.0 H18 UI 大改新增的外觀偏好。對應 ProfilePage 介面與顯示
+   * sub-pane 內 5 項 tweaks。
+   *
+   * 跟 legacy `theme` 並存：
+   *   - 舊 user 升級時 normalizeAppSettings 會自動填 default 並把
+   *     legacy `theme` migrate 到 `appearance.themeMode`
+   *   - 元件層 (v0.7.0+) 一律讀 appearance.*；legacy `theme` 留給
+   *     舊 codepath 直到 Phase 5 全部 port 完才 deprecate
+   */
+  appearance?: {
+    /** 主題模式 — system 跟系統 prefers-color-scheme 自動切 */
+    themeMode?: 'light' | 'dark' | 'system';
+    /** 密度 — comfortable=舒適 (預設大間距) / compact=緊密 (一屏裝更多) */
+    density?: 'comfortable' | 'compact';
+    /** 全應用基準字級 */
+    fontSize?: 'small' | 'normal' | 'large';
+    /** 主頁佈局: A=預設 (週曆+inbox+preview三欄) / B=Inbox 為主 /
+     *  C=行事曆為主 */
+    layout?: 'A' | 'B' | 'C';
+    /** Toast 風格: card=卡片 (預設) / typewriter=打字機 mono 風 */
+    toastStyle?: 'card' | 'typewriter';
+  };
   models?: {
     whisper?: string; // Whisper 模型類型，例如 'base', 'small', 'medium'
     translation?: string; // 翻譯模型名稱，例如 'opus-mt-en-zh-onnx'

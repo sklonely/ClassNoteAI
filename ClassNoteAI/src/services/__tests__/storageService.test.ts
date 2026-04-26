@@ -504,6 +504,14 @@ describe('StorageService', () => {
                     ...baseAppSettings,
                     ocr: { mode: 'off' },
                     experimental: { refineProvider: 'auto' },
+                    // v0.7.0 H18: normalize 自動填 appearance default
+                    appearance: {
+                        themeMode: 'light',
+                        density: 'comfortable',
+                        fontSize: 'normal',
+                        layout: 'A',
+                        toastStyle: 'card',
+                    },
                 }),
             });
         });
