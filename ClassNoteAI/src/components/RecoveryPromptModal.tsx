@@ -4,6 +4,7 @@ import {
     recordingRecoveryService,
     type RecoverableSession,
 } from '../services/recordingRecoveryService';
+import s from './RecoveryPromptModal.module.css';
 
 /**
  * v0.5.2 crash-recovery modal. Replaces the MVP `window.confirm()` in
@@ -11,17 +12,6 @@ import {
  * sessions (rare but possible across several days of laptop-lid-close
  * "sleep"-kill events) shouldn't be forced through N sequential
  * blocking dialogs.
- *
- * Design notes:
- * - Non-dismissable by clicking outside. Recovery is a decision point
- *   that shouldn't be accidentally skipped — the .pcm on disk is
- *   dead weight until the user picks an action.
- * - Per-session recover/discard buttons. For >1 session, also show
- *   bulk "Recover all" / "Discard all" in the header so a user
- *   returning after multiple laptop-lid crashes isn't forced into N
- *   sequential clicks (F5 polish).
- * - Shows approx duration + started-at so the user knows whether a
- *   given orphan is worth keeping (2 min of noise vs 45 min of class).
  */
 
 interface Props {
@@ -41,8 +31,8 @@ export default function RecoveryPromptModal({
 
     if (sessions.length === 0) return null;
 
-    const setActionState = (id: string, s: ActionState) => {
-        setStates((prev) => ({ ...prev, [id]: s }));
+    const setActionState = (id: string, st: ActionState) => {
+        setStates((prev) => ({ ...prev, [id]: st }));
     };
 
     const handleRecover = async (session: RecoverableSession) => {
@@ -80,13 +70,6 @@ export default function RecoveryPromptModal({
         }
     };
 
-    /** Escape hatch for the case where both Recover AND Discard fail
-     *  deterministically (disk full, permissions broken, corrupted
-     *  .pcm). Without this the user would be trapped forever on the
-     *  modal every launch. "Skip" removes the session from the UI
-     *  list for this session only — the .pcm and DB row remain so a
-     *  future fix can still pick them up. Hidden behind an error
-     *  state so normal users never see it. */
     const handleSkipUntilNextLaunch = (session: RecoverableSession) => {
         onSessionResolved(session.lectureId);
         if (sessions.length === 1) onAllResolved();
@@ -116,20 +99,17 @@ export default function RecoveryPromptModal({
         }
     };
 
-    const remaining = sessions.filter((s) => !states[s.lectureId]?.done);
-    const anyInFlight = remaining.some((s) => states[s.lectureId]?.inFlight);
+    const remaining = sessions.filter((sess) => !states[sess.lectureId]?.done);
+    const anyInFlight = remaining.some((sess) => states[sess.lectureId]?.inFlight);
 
-    /** Bulk action helper: run recover or discard over every un-done
-     *  session sequentially, skipping ones that already failed (their
-     *  error state remains so the user can retry individually). */
     const bulkRun = async (
-        fn: (s: RecoverableSession) => Promise<void>,
+        fn: (sess: RecoverableSession) => Promise<void>,
     ) => {
-        for (const s of remaining) {
-            const cur = states[s.lectureId];
+        for (const sess of remaining) {
+            const cur = states[sess.lectureId];
             if (cur?.done || cur?.inFlight) continue;
             // eslint-disable-next-line no-await-in-loop
-            await fn(s);
+            await fn(sess);
         }
     };
 
@@ -141,103 +121,98 @@ export default function RecoveryPromptModal({
             )
         )
             return;
-        await bulkRun(async (s) => {
-            setActionState(s.lectureId, { inFlight: true });
+        await bulkRun(async (sess) => {
+            setActionState(sess.lectureId, { inFlight: true });
             try {
-                await recordingRecoveryService.discard(s.lectureId, true);
-                setActionState(s.lectureId, { inFlight: false, done: true });
-                onSessionResolved(s.lectureId);
+                await recordingRecoveryService.discard(sess.lectureId, true);
+                setActionState(sess.lectureId, { inFlight: false, done: true });
+                onSessionResolved(sess.lectureId);
             } catch (err) {
-                setActionState(s.lectureId, {
+                setActionState(sess.lectureId, {
                     inFlight: false,
                     error: err instanceof Error ? err.message : String(err),
                 });
             }
         });
-        if (remaining.every((s) => states[s.lectureId]?.done)) onAllResolved();
+        if (remaining.every((sess) => states[sess.lectureId]?.done)) onAllResolved();
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-            <div className="w-full max-w-2xl mx-4 bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 overflow-hidden">
-                <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0" />
-                    <div className="flex-1">
-                        <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+        <div className={s.backdrop}>
+            <div className={s.card}>
+                <div className={s.header}>
+                    <div className={s.headerIcon}>
+                        <AlertTriangle />
+                    </div>
+                    <div className={s.headerText}>
+                        <div className={s.eyebrow}>CRASH RECOVERY</div>
+                        <h2 className={s.title}>
                             未完成的錄音（{remaining.length}）
                         </h2>
-                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                        <p className={s.description}>
                             上次錄音時 app 沒有正常結束。這些音檔還保存在磁碟上，可以選擇還原成 WAV，或直接丟棄。
                         </p>
                     </div>
-                    {/* Bulk actions. Only visible with >1 pending session —
-                        a single-session prompt already has per-row buttons
-                        that are closer to the info. */}
                     {remaining.length > 1 && (
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <div className={s.bulkRow}>
                             <button
                                 onClick={handleRecoverAll}
                                 disabled={anyInFlight}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                className={`${s.bulkBtn} ${s.bulkRecover}`}
                                 title="還原每一筆未處理的錄音"
                             >
-                                <Sparkles className="w-3 h-3" />
+                                <Sparkles size={12} />
                                 全部還原
                             </button>
                             <button
                                 onClick={handleDiscardAll}
                                 disabled={anyInFlight}
-                                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                                className={`${s.bulkBtn} ${s.bulkDiscard}`}
                                 title="丟棄每一筆未處理的錄音"
                             >
-                                <Trash2 className="w-3 h-3" />
+                                <Trash2 size={12} />
                                 全部丟棄
                             </button>
                         </div>
                     )}
                 </div>
 
-                <div className="max-h-[60vh] overflow-y-auto p-4 space-y-3">
+                <div className={s.list}>
                     {sessions.map((session) => {
                         const state = states[session.lectureId] || { inFlight: false };
                         if (state.done) return null;
+                        const resolving = state.inFlight;
 
                         return (
                             <div
                                 key={session.lectureId}
-                                className="flex items-start gap-3 p-3 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-800/50"
+                                className={`${s.row} ${resolving ? s.rowResolving : ''}`}
                             >
-                                <div className="flex-1 min-w-0">
-                                    <div className="font-medium text-gray-900 dark:text-gray-100 truncate">
+                                <div className={s.rowMeta}>
+                                    <div className={s.rowTitle}>
                                         {session.lecture.title || '（未命名課堂）'}
                                     </div>
-                                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex items-center gap-3 flex-wrap">
+                                    <div className={s.rowSub}>
                                         <span>約 {formatDuration(session.durationSeconds)}</span>
                                         <span>·</span>
                                         <span>{formatStarted(session.startedAt)}</span>
                                         <span>·</span>
-                                        <span className="font-mono text-[10px]">
-                                            {(session.bytes / 1_000_000).toFixed(1)} MB
-                                        </span>
-                                        {/* Phase 1 of speech-pipeline-v0.6.5 (#52). Show
-                                            "+N 段已轉錄" if the JSONL sidecar captured live
-                                            captions before the crash; users now know their
-                                            text isn't lost, only the audio is being re-wrapped. */}
+                                        <span>{(session.bytes / 1_000_000).toFixed(1)} MB</span>
                                         {session.transcriptSegments > 0 && (
                                             <>
                                                 <span>·</span>
-                                                <span className="text-emerald-600 dark:text-emerald-400">
+                                                <span className={s.rowSubAccent}>
                                                     含 {session.transcriptSegments} 段已轉錄字幕
                                                 </span>
                                             </>
                                         )}
                                     </div>
                                     {state.error && (
-                                        <div className="text-xs text-red-500 mt-2 flex items-center gap-2 flex-wrap">
+                                        <div className={s.rowError}>
                                             <span>錯誤：{state.error}</span>
                                             <button
                                                 onClick={() => handleSkipUntilNextLaunch(session)}
-                                                className="underline text-red-700 dark:text-red-400 hover:text-red-900"
+                                                className={s.rowSkip}
                                                 title="本次啟動先跳過此項目；下次啟動仍會再次出現"
                                             >
                                                 暫時跳過
@@ -245,41 +220,37 @@ export default function RecoveryPromptModal({
                                         </div>
                                     )}
                                 </div>
-                                <div className="flex gap-2 flex-shrink-0">
-                                    <button
-                                        onClick={() => handleRecover(session)}
-                                        disabled={state.inFlight}
-                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        {state.inFlight ? (
-                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                        ) : (
-                                            <Save className="w-3.5 h-3.5" />
-                                        )}
-                                        還原
-                                    </button>
-                                    <button
-                                        onClick={() => handleDiscard(session)}
-                                        disabled={state.inFlight}
-                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-gray-200 dark:bg-slate-700 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                        丟棄
-                                    </button>
-                                </div>
+                                <button
+                                    onClick={() => handleDiscard(session)}
+                                    disabled={state.inFlight}
+                                    className={`${s.rowBtn} ${s.rowDiscard}`}
+                                >
+                                    <Trash2 size={12} />
+                                    丟棄
+                                </button>
+                                <button
+                                    onClick={() => handleRecover(session)}
+                                    disabled={state.inFlight}
+                                    className={`${s.rowBtn} ${s.rowRecover}`}
+                                >
+                                    {state.inFlight ? (
+                                        <Loader2 size={12} className={s.spin} />
+                                    ) : (
+                                        <Save size={12} />
+                                    )}
+                                    還原
+                                </button>
                             </div>
                         );
                     })}
                 </div>
 
-                <div className="px-6 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-800/30 flex items-center justify-between">
-                    <p className="text-[11px] text-gray-500 dark:text-gray-400 flex items-center gap-1">
-                        <X className="w-3 h-3" />
+                <div className={s.footer}>
+                    <span className={s.footerNote}>
+                        <X size={11} />
                         關閉本視窗前請先處理所有項目
-                    </p>
-                    <div className="text-[11px] text-gray-500 dark:text-gray-400 font-mono">
-                        v0.5.2 crash-recovery
-                    </div>
+                    </span>
+                    <span className={s.footerVer}>v0.5.2 crash-recovery</span>
                 </div>
             </div>
         </div>
