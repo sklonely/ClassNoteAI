@@ -571,6 +571,108 @@
     margin-bottom: 24px;
 }
 
+/* PAppearance — SVG preview + 3-card switcher (per prototype L2722+) */
+.layoutPreviewBox {
+    margin-top: 6px;
+    margin-bottom: 12px;
+    padding: 16px;
+    border-radius: 10px;
+    border: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface2);
+}
+
+.layoutPreviewInner {
+    max-width: 480px;
+    margin: 0 auto;
+    animation: layoutFade 320ms var(--h18-ease-spring);
+}
+
+@keyframes layoutFade {
+    from {
+        opacity: 0;
+        transform: scale(0.985);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.layoutPreviewCaption {
+    margin-top: 12px;
+    text-align: center;
+}
+
+.layoutPreviewEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.layoutPreviewTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    margin-top: 4px;
+    letter-spacing: -0.01em;
+}
+
+.layoutPreviewDesc {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    margin-top: 3px;
+}
+
+.layoutCards {
+    display: flex;
+    gap: 6px;
+}
+
+.layoutCard {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    cursor: pointer;
+    font-family: inherit;
+    color: var(--h18-text);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    transition: all 160ms var(--h18-ease-spring);
+}
+
+.layoutCard:hover {
+    border-color: var(--h18-text-faint);
+}
+
+.layoutCardActive {
+    border-color: var(--h18-accent);
+    background: var(--h18-chip-bg);
+}
+
+.layoutCardLetter {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-dim);
+}
+
+.layoutCardActive .layoutCardLetter {
+    color: var(--h18-accent);
+}
+
+.layoutCardTitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--h18-text);
+}
+
 /* "你已經累積了 N 小時的學習" hero — 對應 prototype POverview L1255+ */
 .bigHero {
     margin: 24px 0 28px;

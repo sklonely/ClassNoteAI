@@ -18,6 +18,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { storageService } from '../../services/storageService';
 import type { Course } from '../../types';
 import { useAppSettings } from './useAppSettings';
+import LayoutPreviewSVG, { type Variant } from './LayoutPreviewSVG';
 import s from './ProfilePage.module.css';
 
 /* ────────── primitives ───────── */
@@ -775,6 +776,18 @@ function UsageStat({ label, value, sub }: { label: string; value: string; sub: s
  * PAppearance — 介面與顯示
  * ════════════════════════════════════════════════════════════════ */
 
+const HOME_LAYOUT_OPTS: { v: Variant; t: string; d: string }[] = [
+    { v: 'A', t: '預設模式', d: '小週曆 + Inbox 主視，右側課程預覽' },
+    { v: 'B', t: 'Inbox 為主', d: 'Inbox 滿版主視，右側今日 + 預覽' },
+    { v: 'C', t: '行事曆為主', d: '大週曆主視，右側 Inbox' },
+];
+
+const REC_LAYOUT_OPTS: { v: Variant; t: string; d: string }[] = [
+    { v: 'A', t: '雙欄', d: '投影片 strip + 主投影片 + 字幕串流（預設）' },
+    { v: 'B', t: '字幕專注', d: '字幕滿版，投影片 strip 縮成右側 thumb' },
+    { v: 'C', t: '影片', d: '影片預覽 + 字幕邊欄 + 時間軸（用於 video import）' },
+];
+
 export function PAppearance({
     effectiveTheme,
     onToggleTheme,
@@ -783,14 +796,111 @@ export function PAppearance({
     onToggleTheme: () => void;
     applyTheme: (t: 'light' | 'dark') => void;
 }) {
+    const { settings, update } = useAppSettings();
+    const homeLayout: Variant = (settings?.appearance?.layout as Variant) || 'A';
+    const homeOpt =
+        HOME_LAYOUT_OPTS.find((o) => o.v === homeLayout) || HOME_LAYOUT_OPTS[0];
+
     return (
         <div>
             <PHeader
                 title="介面與顯示"
-                hint="主頁佈局、字級、密度、滾動條樣式，以及 AI 助教在哪呈現。"
+                hint="主頁佈局、錄音版面、主題、AI 助教與字級。"
             />
 
-            <PHead first>主題</PHead>
+            {/* 主頁佈局 SVG preview + 3-card switch */}
+            <PHead first>主頁佈局</PHead>
+            <p
+                style={{
+                    fontSize: 11,
+                    color: 'var(--h18-text-dim)',
+                    margin: '4px 0 12px',
+                    lineHeight: 1.55,
+                }}
+            >
+                切換首頁的三欄排版方式。下方預覽會即時更新，按下也會立刻套用，回到首頁就能看到。
+            </p>
+
+            <div className={s.layoutPreviewBox}>
+                <div key={homeLayout} className={s.layoutPreviewInner}>
+                    <LayoutPreviewSVG
+                        kind="home"
+                        variant={homeLayout}
+                        theme={effectiveTheme}
+                    />
+                </div>
+                <div className={s.layoutPreviewCaption}>
+                    <div className={s.layoutPreviewEyebrow}>
+                        預覽 · LAYOUT {homeLayout}
+                    </div>
+                    <div className={s.layoutPreviewTitle}>{homeOpt.t}</div>
+                    <div className={s.layoutPreviewDesc}>{homeOpt.d}</div>
+                </div>
+            </div>
+
+            <div className={s.layoutCards}>
+                {HOME_LAYOUT_OPTS.map((opt) => (
+                    <button
+                        key={opt.v}
+                        type="button"
+                        className={`${s.layoutCard} ${homeLayout === opt.v ? s.layoutCardActive : ''}`}
+                        onClick={() =>
+                            update({
+                                appearance: {
+                                    ...(settings?.appearance || {}),
+                                    layout: opt.v,
+                                },
+                            })
+                        }
+                    >
+                        <span className={s.layoutCardLetter}>{opt.v}</span>
+                        <span className={s.layoutCardTitle}>{opt.t}</span>
+                    </button>
+                ))}
+            </div>
+
+            {/* 錄音佈局 — 只 preview，wiring B/C 在下個 CP */}
+            <PHead>錄音佈局</PHead>
+            <p
+                style={{
+                    fontSize: 11,
+                    color: 'var(--h18-text-dim)',
+                    margin: '4px 0 12px',
+                    lineHeight: 1.55,
+                }}
+            >
+                錄音時的主畫面切版（A / B / C）。B / C 的實作仍在路上 — 切到的話會 fallback 到 A。
+            </p>
+            <div className={s.layoutPreviewBox}>
+                <div key="rec-A" className={s.layoutPreviewInner}>
+                    <LayoutPreviewSVG kind="recording" variant="A" theme={effectiveTheme} />
+                </div>
+                <div className={s.layoutPreviewCaption}>
+                    <div className={s.layoutPreviewEyebrow}>預覽 · RECORDING A</div>
+                    <div className={s.layoutPreviewTitle}>{REC_LAYOUT_OPTS[0].t}</div>
+                    <div className={s.layoutPreviewDesc}>{REC_LAYOUT_OPTS[0].d}</div>
+                </div>
+            </div>
+            <div className={s.layoutCards}>
+                {REC_LAYOUT_OPTS.map((opt) => (
+                    <button
+                        key={opt.v}
+                        type="button"
+                        className={`${s.layoutCard} ${opt.v === 'A' ? s.layoutCardActive : ''}`}
+                        onClick={() => {
+                            if (opt.v !== 'A') {
+                                /* B/C 仍 stub，實作 in next CP */
+                            }
+                        }}
+                    >
+                        <span className={s.layoutCardLetter}>{opt.v}</span>
+                        <span className={s.layoutCardTitle}>{opt.t}</span>
+                    </button>
+                ))}
+            </div>
+
+            {/* 主題 */}
+            <PHead>主題</PHead>
             <PRow
                 label="主題模式"
                 hint={`目前：${effectiveTheme === 'dark' ? '暗色' : '明亮'}。⌘\\ 也可即時切換。`}
@@ -801,25 +911,16 @@ export function PAppearance({
                             if (v !== effectiveTheme) onToggleTheme();
                         }}
                         options={[
-                            { value: 'light', label: '明亮' },
-                            { value: 'dark', label: '暗色' },
+                            { value: 'light', label: '☀ 亮色' },
+                            { value: 'dark', label: '☾ 深色' },
                         ]}
                     />
                 }
             />
             <PRow
                 label="跟隨系統"
-                hint="開啟後依系統偏好自動切換 (留白：尚未接 OS 設定變更事件)"
+                hint="開啟後依系統 prefers-color-scheme 自動切換 (留白：尚未掛 OS listener)"
                 right={<PToggle on={false} />}
-            />
-
-            <PHead>主頁佈局</PHead>
-            <PRow
-                label="HomeLayout 變體"
-                hint="A = 上 Calendar / 下 Inbox / 右 Preview。B/C 變體預計 v0.7.x 後加。"
-                right={
-                    <PSelect value="A (預設)" options={['A (預設)', 'B (留白)', 'C (留白)']} />
-                }
             />
 
             <PHead>字級 / 密度</PHead>

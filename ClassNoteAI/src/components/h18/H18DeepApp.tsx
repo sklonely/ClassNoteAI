@@ -244,6 +244,30 @@ export default function H18DeepApp() {
         ? () => setActiveNav(`recording:${parsed.courseId}`)
         : undefined;
 
+    // Read HomeLayout variant from AppSettings.appearance.layout;
+    // settings is loaded async, default to 'A' until it arrives.
+    const [homeVariant, setHomeVariant] = useState<'A' | 'B' | 'C'>('A');
+    useEffect(() => {
+        let cancelled = false;
+        const sync = async () => {
+            try {
+                const settings = await storageService.getAppSettings();
+                if (cancelled) return;
+                const v = settings?.appearance?.layout;
+                if (v === 'A' || v === 'B' || v === 'C') setHomeVariant(v);
+            } catch {
+                /* swallow */
+            }
+        };
+        sync();
+        const onChange = () => sync();
+        window.addEventListener('classnote-settings-changed', onChange);
+        return () => {
+            cancelled = true;
+            window.removeEventListener('classnote-settings-changed', onChange);
+        };
+    }, []);
+
     // ─── main content dispatch ──────────────────────────────────────
     const selectedCourse = courses.find((c) => c.id === selectedCourseId) ?? null;
 
@@ -255,6 +279,7 @@ export default function H18DeepApp() {
                         courses={courses}
                         selectedCourse={selectedCourse}
                         effectiveTheme={theme}
+                        variant={homeVariant}
                         onPickCourse={(id) => setSelectedCourseId(id)}
                         onOpenCourse={(id) => setActiveNav(`course:${id}`)}
                         onOpenLecture={(courseId, lectureId) =>

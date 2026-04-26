@@ -16,12 +16,15 @@ import s from './H18Calendar.module.css';
 
 const HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] as const;
 const DAYS_LABEL = ['一', '二', '三', '四', '五', '六', '日'] as const;
-const ROW_H = 30; // px
+const ROW_H_DEFAULT = 30; // px
+const ROW_H_COMPACT = 22; // px
 
 export interface H18CalendarProps {
     courses: Course[];
     onPickCourse?: (courseId: string) => void;
-    /** Compact mode for embedded uses; only "today" column. */
+    /** Compact mode: shorter row height (22 vs 30). */
+    compact?: boolean;
+    /** Show only today column. */
     onlyToday?: boolean;
 }
 
@@ -55,9 +58,11 @@ export default function H18Calendar({
     courses,
     onPickCourse,
     onlyToday = false,
+    compact = false,
 }: H18CalendarProps) {
     const today = todayIso1to7();
     const events = useMemo(() => deriveWeekEvents(courses), [courses]);
+    const ROW_H = compact ? ROW_H_COMPACT : ROW_H_DEFAULT;
 
     // recompute "now" line every minute
     const [now, setNow] = useState(nowFractionHours());
