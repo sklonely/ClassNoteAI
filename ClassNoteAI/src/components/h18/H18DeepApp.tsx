@@ -36,6 +36,8 @@ import HomeLayout from './HomeLayout';
 import CourseDetailPage from './CourseDetailPage';
 import AddCourseDialog from './AddCourseDialog';
 import H18ReviewPage from './H18ReviewPage';
+import H18AIDock from './H18AIDock';
+import H18AIPage from './H18AIPage';
 import SettingsView from '../SettingsView';
 import TrashView from '../TrashView';
 import s from './H18DeepApp.module.css';
@@ -87,6 +89,7 @@ export default function H18DeepApp() {
      *  activeNav — you can stay on home and inspect course X. */
     const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
     const [isCourseDialogOpen, setIsCourseDialogOpen] = useState(false);
+    const [aiDockOpen, setAiDockOpen] = useState(false);
 
     // P6.7 之前 legacy settings / trash 還是要能開 — 從 profile placeholder
     // 進入點觸發。Profile (achievement) 暫時不接，等 P6.7。
@@ -195,19 +198,18 @@ export default function H18DeepApp() {
             }
             if (meta && (e.key.toLowerCase() === 'j' || e.key === '/')) {
                 e.preventDefault();
-                // P6.6 之前先把 ⌘J 當 ai page 入口（沒有 dock 就直接全螢幕）
-                setActiveNav('ai');
-                setOverlayNav(null);
+                setAiDockOpen((v) => !v);
                 return;
             }
             if (e.key === 'Escape') {
-                if (overlayNav) setOverlayNav(null);
+                if (aiDockOpen) setAiDockOpen(false);
+                else if (overlayNav) setOverlayNav(null);
                 else if (isCourseDialogOpen) setIsCourseDialogOpen(false);
             }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-    }, [toggleTheme, overlayNav, isCourseDialogOpen]);
+    }, [toggleTheme, overlayNav, isCourseDialogOpen, aiDockOpen]);
 
     // ─── recording entry from topbar ────────────────────────────────
     const parsed = useMemo(() => parseNav(activeNav), [activeNav]);
@@ -243,13 +245,7 @@ export default function H18DeepApp() {
                     />
                 );
             case 'ai':
-                return (
-                    <Placeholder
-                        eyebrow="AI 助教 · P6.6 預定"
-                        title="全螢幕對話"
-                        hint="會放原本 AIChatWindow 的 detached 視窗體驗。⌘J 暫時也跳這頁；P6.6 補上浮動 AIDock 之後 ⌘J 會切回 dock。"
-                    />
-                );
+                return <H18AIPage onBack={() => setActiveNav('home')} />;
             case 'profile':
                 return (
                     <Placeholder
@@ -323,18 +319,35 @@ export default function H18DeepApp() {
                 <main className={s.main}>{renderMain()}</main>
             </div>
 
-            {/* AI dock fab — P6.6 真接 AIDock 之前先當 ai-page 入口 */}
-            {parsed.kind !== 'ai' && (
+            {/* AI dock fab — opens floating ⌘J dock; ai page hides it */}
+            {parsed.kind !== 'ai' && !aiDockOpen && (
                 <button
                     type="button"
                     className={s.fab}
                     title="問 AI (⌘J)"
                     aria-label="AI 助教"
-                    onClick={() => setActiveNav('ai')}
+                    onClick={() => setAiDockOpen(true)}
                 >
                     ✦
                 </button>
             )}
+
+            {/* H18 AIDock floating overlay (⌘J 切換) */}
+            <H18AIDock
+                open={aiDockOpen}
+                onClose={() => setAiDockOpen(false)}
+                onExpand={() => {
+                    setAiDockOpen(false);
+                    setActiveNav('ai');
+                }}
+                contextHint={
+                    parsed.kind === 'course'
+                        ? courses.find((c) => c.id === parsed.courseId)?.title
+                        : parsed.kind === 'review' || parsed.kind === 'recording'
+                          ? courses.find((c) => c.id === parsed.courseId)?.title
+                          : undefined
+                }
+            />
 
             {/* ⌘K stub — P6.8 才接全域搜尋 */}
             {overlayNav === 'search' && (
