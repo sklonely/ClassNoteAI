@@ -160,6 +160,9 @@ jobs:
       - name: Install dependencies
         run: npm ci --prefer-offline
 
+      - name: Frontend tests
+        run: npx vitest run
+
       # Explicit frontend build for parity with release-windows.yml.
       # `tauri build` does run `beforeBuildCommand` from tauri.conf.json,
       # but making it explicit means an accidental removal of that hook
