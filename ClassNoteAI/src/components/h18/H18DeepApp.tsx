@@ -41,6 +41,7 @@ import H18AIDock from './H18AIDock';
 import H18AIPage from './H18AIPage';
 import ProfilePage from './ProfilePage';
 import NotesEditorPage from './NotesEditorPage';
+import DraggableAIFab from './DraggableAIFab';
 import SearchOverlay, { type SearchAction } from './SearchOverlay';
 import s from './H18DeepApp.module.css';
 
@@ -367,18 +368,13 @@ export default function H18DeepApp() {
                 <main className={s.main}>{renderMain()}</main>
             </div>
 
-            {/* AI dock fab — opens floating ⌘J dock; ai page hides it.
-                Recording 模式時自動上提（避開 transport bar），per prototype h18-app.jsx L405-415。 */}
+            {/* Draggable AI fab — drag to reposition + snap to nearest edge,
+                position persisted to localStorage. */}
             {parsed.kind !== 'ai' && !aiDockOpen && (
-                <button
-                    type="button"
-                    className={`${s.fab} ${isOnRecordingPage ? s.fabRecording : ''}`}
-                    title="問 AI (⌘J)"
-                    aria-label="AI 助教"
+                <DraggableAIFab
                     onClick={() => setAiDockOpen(true)}
-                >
-                    ✦
-                </button>
+                    recording={isOnRecordingPage}
+                />
             )}
 
             {/* H18 AIDock floating overlay (⌘J 切換) */}
