@@ -1,0 +1,75 @@
+/* ============================================================
+ * H18 WindowControls · v0.7.0
+ *
+ * macOS-style traffic lights，紅 #e8412e 關閉 / 黃 #f6b24e 最小化
+ * / 綠 #22c55e 最大化。Hover 在群組內任一鈕時，三鈕皆露出 8×8
+ * glyph icon (× / − / □)，模仿 macOS 的群組 hover 行為。
+ *
+ * 12×12 圓 + inset shadow 模擬 macOS 立體感，dark mode shadow 加重。
+ * ============================================================ */
+
+.group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-right: 4px;
+}
+
+.btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.18);
+  transition: transform 80ms var(--h18-ease-spring);
+}
+
+:root.dark .btn {
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.4);
+}
+
+.btn:active {
+  transform: scale(0.92);
+}
+
+.btnClose {
+  background: #e8412e;
+}
+
+.btnMin {
+  background: #f6b24e;
+}
+
+.btnMax {
+  background: #22c55e;
+}
+
+.glyph {
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 80ms;
+}
+
+.group:hover .glyph,
+.group:focus-within .glyph {
+  opacity: 1;
+}
+
+.btnClose .glyph {
+  stroke: #5a1607;
+}
+
+.btnMin .glyph {
+  stroke: #7a4f0c;
+}
+
+.btnMax .glyph {
+  stroke: #0c4a1a;
+}
