@@ -2,23 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
-    system-ui, "PingFang TC", "Microsoft JhengHei", "Microsoft YaHei",
-    "Noto Sans TC", "Noto Sans SC", "Heiti TC", sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: #111827;
-  background-color: #FFFFFF;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+/* v0.7.0 H18: :root 字型 / 顏色 / font-smoothing 已搬到 global.css
+   保留 :root 給 Tailwind base layer 自己處理 */
 
 * {
   margin: 0;
@@ -39,35 +24,7 @@ body {
   overflow: hidden;
 }
 
-/* 深色模式 */
-.dark {
-  color: #F1F5F9;
-  background-color: #0F172A;
-}
-
-/* 滾動條樣式 */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #9CA3AF;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #6B7280;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: #64748B;
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: #94A3B8;
-}
+/* v0.7.0 H18: body 顏色 / scrollbar / 深色模式 base 已搬到 global.css
+   使用 --h18-* CSS vars。舊的硬編 #F1F5F9 / #0F172A / #9CA3AF 等在
+   migration 期間保留 Tailwind dark: classes 內 (28 個尚未 port 元件)
+   會繼續用，跟 H18 base 並存。Phase 5 全部元件 port 完才清。 */

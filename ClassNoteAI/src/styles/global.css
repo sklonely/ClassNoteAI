@@ -1,0 +1,81 @@
+/* ============================================================
+ * H18 Deep · Global base styles · v0.7.0
+ *
+ * 套用到 :root / body / scrollbar 等全域選擇器，使用 tokens.css 的
+ * --h18-* CSS vars，theme 切換時自動跟 (透過 <html class="dark">)。
+ *
+ * 跟 index.css 的關係：
+ *   - index.css 仍保留 @tailwind 指令 + 舊的硬編色，給尚未遷移到
+ *     CSS Modules 的 28 個元件用 (見 V0.7.0-PLAN Phase 5)
+ *   - global.css (本檔) 在 index.css 之後 load，覆寫 body bg/color
+ *     /scrollbar 等讓全應用先有 H18 base，元件層慢慢替換時不會看到
+ *     刺眼的「未換的 dark slate vs 已換的暖底」對比
+ *
+ * 載入順序在 main.tsx：
+ *   tokens.css → index.css (Tailwind) → global.css (H18 base)
+ * ============================================================ */
+
+:root {
+  /* H18 字型優先：Inter sans + Noto CJK fallback。SF / 系統字保留在
+     fallback 末端以防 Google Fonts 載入失敗 */
+  font-family: var(--h18-font-sans);
+  font-size: 14px;       /* H18 base 14px (vs Tailwind 預設 16px) */
+  line-height: 1.55;
+  font-weight: 400;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* 讓瀏覽器知道我們支援雙主題，autocomplete / form / scrollbar 配色
+     會自動跟 */
+  color-scheme: light dark;
+}
+
+body {
+  color: var(--h18-text);
+  background-color: var(--h18-bg);
+  /* min-width/height 跟 overflow 維持原 index.css 設定 (不重複定義) */
+}
+
+/* ─── Scrollbar (webkit) — 細、近透明、hover 才稍微浮現 ─────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--h18-border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 160ms;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--h18-text-faint);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--h18-border) transparent;
+}
+
+/* ─── Selection 樣式 ─────────────────────────────────────── */
+::selection {
+  background: var(--h18-sel-bg);
+  color: var(--h18-text);
+}
+
+/* ─── 通用 mono helper class ──────────────────────────────── */
+.h18-mono {
+  font-family: var(--h18-font-mono);
+  font-variant-numeric: tabular-nums;
+}
