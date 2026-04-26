@@ -19,7 +19,8 @@
     "tauri": "tauri",
     "tauri:build": "npm run build && tauri build",
     "tauri:build:debug": "npm run build && tauri build --debug",
-    "tauri:dev": "tauri dev"
+    "tauri:dev": "tauri dev",
+    "dev:ephemeral": "node scripts/dev-ephemeral.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

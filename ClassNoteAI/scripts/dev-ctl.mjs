@@ -26,10 +26,27 @@
  * Exit code: 0 on success, non-zero on any failure.
  */
 
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { resolve, join } from "node:path";
 
-const PORT = process.env.CDP_PORT ? parseInt(process.env.CDP_PORT, 10) : 9222;
+// Resolve CDP port: explicit env wins; otherwise read .dev-ephemeral.lock.json
+// (written by scripts/dev-ephemeral.mjs); otherwise fall back to 9222 (the
+// historical fixed port from win-tauri-dev.bat).
+function resolveCdpPort() {
+  if (process.env.CDP_PORT) return parseInt(process.env.CDP_PORT, 10);
+  const lock = join(process.cwd(), ".dev-ephemeral.lock.json");
+  if (existsSync(lock)) {
+    try {
+      const data = JSON.parse(readFileSync(lock, "utf8"));
+      if (typeof data?.cdpPort === "number") return data.cdpPort;
+    } catch {
+      /* fall through */
+    }
+  }
+  return 9222;
+}
+
+const PORT = resolveCdpPort();
 const HOST = process.env.CDP_HOST || "127.0.0.1";
 
 // ---------- CDP client ---------------------------------------------------
