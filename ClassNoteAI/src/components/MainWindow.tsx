@@ -301,18 +301,18 @@ export default function MainWindow() {
       </div>
 
       {/* 主內容區域 - 使用 Stack 方式管理視圖 */}
-      <main className="flex-1 overflow-hidden relative">
+      <main className={s.main}>
 
         {/* 1. Home View (Course List) */}
         {activeView === 'home' && !isSettingsOpen && !isProfileOpen && (
-          <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+          <div className={s.viewContainer}>
             <CourseListView onSelectCourse={handleSelectCourse} />
           </div>
         )}
 
         {/* 2. Course Detail View */}
         {activeView === 'course' && activeCourseId && !isSettingsOpen && !isProfileOpen && (
-          <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+          <div className={s.viewContainer}>
             <CourseDetailView
               courseId={activeCourseId}
               onBack={handleBackToCourses}
@@ -325,10 +325,10 @@ export default function MainWindow() {
         {/* 3. Lecture View (NotesView) - KEEP ALIVE */}
         {/* 始終渲染，但通過 CSS 控制顯示/隱藏 */}
         <div
-          className="absolute inset-0 bg-white dark:bg-slate-900"
+          className={s.surfaceContainer}
           style={{
             display: (activeView === 'lecture' && !isSettingsOpen && !isProfileOpen) ? 'block' : 'none',
-            zIndex: 0
+            zIndex: 0,
           }}
         >
           {activeLectureId && activeCourseId ? (
@@ -338,29 +338,27 @@ export default function MainWindow() {
               onBack={handleBackToCourseDetail}
             />
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              No active lecture
-            </div>
+            <div className={s.emptyHint}>No active lecture</div>
           )}
         </div>
 
         {/* 4. Settings Overlay */}
         {isSettingsOpen && (
-          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div className={s.overlayContainer}>
             <SettingsView onClose={() => setIsSettingsOpen(false)} />
           </div>
         )}
 
         {/* 5. Profile Overlay */}
         {isProfileOpen && (
-          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div className={s.overlayContainer}>
             <ProfileView onClose={() => setIsProfileOpen(false)} />
           </div>
         )}
 
         {/* 6. Trash Bin Overlay */}
         {showTrashView && (
-          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div className={s.overlayContainer}>
             <TrashView onBack={() => setShowTrashView(false)} />
           </div>
         )}

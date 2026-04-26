@@ -126,3 +126,51 @@
   height: 12px;
   background: var(--h18-border);
 }
+
+/* ─── Main body area ─────────────────────────────────────
+ * 取代 MainWindow.tsx 各 view container 內 inline 的
+ * `bg-gray-50 dark:bg-gray-900` / `bg-white dark:bg-slate-900` —
+ * 整片用 token，dark mode 跟著切。
+ * ────────────────────────────────────────────────────── */
+.main {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+.viewContainer {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  background: var(--h18-bg);
+}
+
+.surfaceContainer {
+  position: absolute;
+  inset: 0;
+  background: var(--h18-surface);
+}
+
+.overlayContainer {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: var(--h18-surface);
+  animation: mwOverlayIn 200ms var(--h18-ease-spring);
+}
+
+.emptyHint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--h18-text-dim);
+  font-family: var(--h18-font-mono);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+@keyframes mwOverlayIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
