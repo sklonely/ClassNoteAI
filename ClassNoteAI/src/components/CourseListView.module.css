@@ -1,0 +1,95 @@
+/* ============================================================
+ * H18 CourseListView · v0.7.0 Phase 2c
+ *
+ * 主視窗 home view 的 H18 樣式。Empty state + header + 主按鈕。
+ * 卡片樣式 (有科目時) 保留 Tailwind 暫時 — 等 v0.7.0 後續 phase
+ * 整理。
+ * ============================================================ */
+
+.root {
+  padding: 20px 24px;
+  height: 100%;
+  overflow: auto;
+  background: var(--h18-bg);
+  font-family: var(--h18-font-sans);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--h18-text);
+  letter-spacing: -0.018em;
+  margin: 0;
+}
+
+.titleIcon {
+  color: var(--h18-accent);
+  flex-shrink: 0;
+}
+
+.btnPrimary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--h18-invert);
+  color: var(--h18-invert-ink);
+  border: none;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 100ms var(--h18-ease-spring),
+              filter 140ms var(--h18-ease-spring);
+}
+
+.btnPrimary:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.btnPrimary:active {
+  transform: translateY(0);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  color: var(--h18-text-faint);
+}
+
+.emptyIcon {
+  color: var(--h18-text-faint);
+  opacity: 0.45;
+  margin-bottom: 14px;
+}
+
+.emptyTitle {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--h18-text-mid);
+  margin: 0;
+  letter-spacing: -0.012em;
+}
+
+.emptyHint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--h18-text-faint);
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+}

@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Course } from '../types';
 import { storageService } from '../services/storageService';
+import s from './CourseListView.module.css';
 import CourseCreationDialog from './CourseCreationDialog';
 
 /** Same defensive normalization as CourseDetailView — LLM JSON sometimes
@@ -179,26 +180,26 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
     };
 
     return (
-        <div className="p-6 h-full overflow-auto bg-gray-50 dark:bg-gray-900">
-            <div className="flex justify-between items-center mb-6">
-                <h1 className="text-3xl font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-                    <GraduationCap className="w-8 h-8 text-blue-600 dark:text-blue-400" />
+        <div className={s.root}>
+            <div className={s.header}>
+                <h1 className={s.title}>
+                    <GraduationCap size={20} className={s.titleIcon} />
                     我的科目
                 </h1>
                 <button
                     onClick={() => setIsDialogOpen(true)}
-                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                    className={s.btnPrimary}
                 >
-                    <Plus className="w-5 h-5" />
+                    <Plus size={14} />
                     新增科目
                 </button>
             </div>
 
             {courses.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-[60vh] text-gray-400 dark:text-gray-500">
-                    <GraduationCap className="w-24 h-24 mb-4 opacity-20" />
-                    <p className="text-xl font-medium">還沒有科目</p>
-                    <p className="mt-2 text-sm">點擊右上角按鈕開始創建您的第一個科目</p>
+                <div className={s.empty}>
+                    <GraduationCap size={56} className={s.emptyIcon} />
+                    <p className={s.emptyTitle}>還沒有科目</p>
+                    <p className={s.emptyHint}>點擊右上角按鈕開始創建您的第一個科目</p>
                 </div>
             ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">

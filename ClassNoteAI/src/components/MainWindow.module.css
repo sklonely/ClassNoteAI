@@ -1,0 +1,128 @@
+/* ============================================================
+ * H18 MainWindow shell · v0.7.0 Phase 2a
+ *
+ * 取代 MainWindow.tsx 原本的 Tailwind classes (bg-white dark:bg-slate-900
+ * 等) — 全用 H18 tokens，dark/light 自動跟。
+ *
+ * 範圍：
+ *   - .root        外層 flex container 背景 + 文字色
+ *   - .navBtn      TopBar nav 按鈕 (上課 / 設置)，active 用 accent
+ *   - .iconBtn     TopBar 右側 icon 按鈕 (個人 / 主題切換)
+ *   - .statusBar   TopBar 下面狀態列
+ * ============================================================ */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--h18-bg);
+  color: var(--h18-text);
+  font-family: var(--h18-font-sans);
+  position: relative;
+}
+
+/* ─── Nav button ─────────────────────────────────────────── */
+.navBtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--h18-text-mid);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 140ms var(--h18-ease-spring),
+              color 140ms var(--h18-ease-spring);
+}
+
+.navBtn:hover {
+  background: var(--h18-surface2);
+  color: var(--h18-text);
+}
+
+.navBtnActive {
+  background: var(--h18-invert);
+  color: var(--h18-invert-ink);
+}
+
+.navBtnActive:hover {
+  background: var(--h18-invert);
+  color: var(--h18-invert-ink);
+}
+
+/* ─── Icon button (Profile / Theme) ──────────────────────── */
+.iconBtn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--h18-text-mid);
+  cursor: pointer;
+  transition: background 140ms var(--h18-ease-spring),
+              border-color 140ms var(--h18-ease-spring),
+              color 140ms var(--h18-ease-spring);
+}
+
+.iconBtn:hover {
+  background: var(--h18-surface2);
+  border-color: var(--h18-border-soft);
+  color: var(--h18-text);
+}
+
+.iconBtnActive {
+  background: var(--h18-chip-bg);
+  border-color: var(--h18-border);
+  color: var(--h18-accent);
+}
+
+/* ─── Status bar (TopBar 下方一條) ──────────────────────── */
+.statusBar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px;
+  background: var(--h18-surface2);
+  border-bottom: 1px solid var(--h18-border-soft);
+  font-size: 11px;
+  color: var(--h18-text-mid);
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+  position: relative;
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+.statusItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: help;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--h18-text-faint);
+}
+
+.statusDot.ready {
+  background: #22c55e;
+}
+
+.statusDot.translation {
+  background: var(--h18-accent);
+}
+
+.statusDivider {
+  width: 1px;
+  height: 12px;
+  background: var(--h18-border);
+}

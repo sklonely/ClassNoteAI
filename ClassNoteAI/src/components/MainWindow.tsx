@@ -13,6 +13,7 @@ import ProfileView from "./ProfileView";
 import TaskIndicator from "./TaskIndicator";
 import TopBar from "./TopBar";
 import TrashView from "./TrashView";
+import s from "./MainWindow.module.css";
 
 type ActiveView = 'home' | 'course' | 'lecture' | 'settings' | 'test' | 'test-translation';
 
@@ -223,7 +224,7 @@ export default function MainWindow() {
   ];
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100 relative">
+    <div className={s.root}>
       {/* H18 TopBar — chrome shell。z-index 60 (CSS Modules) 高於
           Settings/Profile/Trash overlay 的 z-50，讓 TaskIndicator
           dropdown 能蓋在全螢幕 overlay 上面。
@@ -233,7 +234,7 @@ export default function MainWindow() {
           plan CP-1)。 */}
       <TopBar
         brand={
-          <h1 className="text-xl font-semibold" data-tauri-drag-region="false">
+          <h1 className="text-base font-bold" style={{ letterSpacing: '-0.012em' }} data-tauri-drag-region="false">
             ClassNote AI
           </h1>
         }
@@ -248,12 +249,9 @@ export default function MainWindow() {
                 <button
                   key={item.id}
                   onClick={item.action}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${isActive
-                    ? "bg-blue-500 text-white"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-                    }`}
+                  className={`${s.navBtn} ${isActive ? s.navBtnActive : ''}`}
                 >
-                  <Icon size={18} />
+                  <Icon size={16} />
                   <span>{item.label}</span>
                 </button>
               );
@@ -265,43 +263,41 @@ export default function MainWindow() {
             <TaskIndicator />
             <button
               onClick={() => setIsProfileOpen(true)}
-              className={`p-2 rounded-lg transition-colors ${isProfileOpen ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+              className={`${s.iconBtn} ${isProfileOpen ? s.iconBtnActive : ''}`}
               aria-label="個人中心"
             >
-              <User size={20} />
+              <User size={16} />
             </button>
             <button
               onClick={toggleTheme}
-              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              className={s.iconBtn}
               aria-label="切換主題"
             >
-              {theme === "light" ? <Moon size={20} /> : <Sun size={20} />}
+              {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
             </button>
           </div>
         }
       />
 
-      {/* 狀態欄 */}
-      <div className="px-6 py-2 bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 text-sm text-gray-600 dark:text-gray-400 z-10 relative">
-        <div className="flex items-center gap-4">
-          <span
-            className="flex items-center gap-2 cursor-help"
-            title={whisperModel ? `當前加載模型: ${whisperModel}` : "Whisper 模型尚未加載"}
-          >
-            <span className={`w-2 h-2 rounded-full ${whisperModel ? 'bg-blue-500' : 'bg-gray-400'}`}></span>
-            {whisperModel ? '模型就緒' : '模型未加載'}
-          </span>
+      {/* 狀態欄 — H18 mono small caps */}
+      <div className={s.statusBar}>
+        <span
+          className={s.statusItem}
+          title={whisperModel ? `當前加載模型: ${whisperModel}` : "Whisper 模型尚未加載"}
+        >
+          <span className={`${s.statusDot} ${whisperModel ? s.ready : ''}`}></span>
+          {whisperModel ? '模型就緒' : '模型未加載'}
+        </span>
 
-          <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-2"></div>
+        <div className={s.statusDivider}></div>
 
-          <span
-            className="flex items-center gap-2 cursor-help"
-            title={translationState.provider === 'google' ? "Google Cloud API" : "本地翻譯模型"}
-          >
-            <span className={`w-2 h-2 rounded-full ${translationState.provider === 'google' || translationState.model ? 'bg-purple-500' : 'bg-gray-400'}`}></span>
-            翻譯就緒
-          </span>
-        </div>
+        <span
+          className={s.statusItem}
+          title={translationState.provider === 'google' ? "Google Cloud API" : "本地翻譯模型"}
+        >
+          <span className={`${s.statusDot} ${translationState.provider === 'google' || translationState.model ? s.translation : ''}`}></span>
+          翻譯就緒
+        </span>
       </div>
 
       {/* 主內容區域 - 使用 Stack 方式管理視圖 */}
