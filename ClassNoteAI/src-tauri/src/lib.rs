@@ -23,6 +23,7 @@ mod setup;
 pub mod paths;
 // 統一下載管理模塊
 pub mod diagnostics;
+pub mod agent_bridge;
 pub mod downloads;
 // 同步模塊
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
@@ -2690,6 +2691,10 @@ pub fn run() {
                     println!("數據庫初始化成功");
                 }
             });
+
+            if let Err(e) = agent_bridge::maybe_start(app.handle().clone()) {
+                eprintln!("[agent_bridge] startup skipped/failed: {e}");
+            }
 
             // Auto-load the Nemotron model in the background if any
             // variant is already on disk. INT8 wins over FP32 if both

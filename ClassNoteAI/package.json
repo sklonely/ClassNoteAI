@@ -10,6 +10,8 @@
     "test": "vitest",
     "test:watch": "vitest --watch",
     "test:coverage": "vitest --coverage",
+    "agent:handshake": "node scripts/cnai-agent.mjs handshake --json",
+    "agent:smoke": "node scripts/cnai-agent.mjs smoke --profile quick --json",
     "smoke:ocr": "tsx evals/scripts/ocr-smoke.ts",
     "eval:asr": "tsx evals/scripts/asr-wer.ts",
     "eval:segmenter": "tsx evals/scripts/segmenter-eval.ts",
