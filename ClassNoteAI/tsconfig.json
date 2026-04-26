@@ -18,7 +18,14 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* v0.7.0 H18: typescript-plugin-css-modules 提供 IDE 端 (VSCode /
+       Cursor) 對 *.module.css import 的 per-file 型別補全。CLI tsc
+       不 load plugin，會 fallback 到 vite/client 提供的 loose type
+       ({ readonly [key: string]: string }) — build 仍 work，只是
+       少了 typo / 不存在 class name 的 compile-time check。 */
+    "plugins": [{ "name": "typescript-plugin-css-modules" }]
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]
