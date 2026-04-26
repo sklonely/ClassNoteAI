@@ -39,6 +39,7 @@ import H18ReviewPage from './H18ReviewPage';
 import H18AIDock from './H18AIDock';
 import H18AIPage from './H18AIPage';
 import ProfilePage from './ProfilePage';
+import SearchOverlay, { type SearchAction } from './SearchOverlay';
 import s from './H18DeepApp.module.css';
 
 interface PlaceholderProps {
@@ -334,18 +335,32 @@ export default function H18DeepApp() {
                 }
             />
 
-            {/* ⌘K stub — P6.8 才接全域搜尋 */}
-            {overlayNav === 'search' && (
-                <div className={s.stubOverlay} onClick={() => setOverlayNav(null)}>
-                    <div className={s.stubCard} onClick={(e) => e.stopPropagation()}>
-                        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
-                            ⌘K 全域搜尋
-                        </div>
-                        <div>P6.8 才會接 minisearch index — 先當佔位。</div>
-                        <div className={s.stubKbd}>ESC · 關閉</div>
-                    </div>
-                </div>
-            )}
+            <SearchOverlay
+                open={overlayNav === 'search'}
+                onClose={() => setOverlayNav(null)}
+                onAction={(action: SearchAction) => {
+                    switch (action.kind) {
+                        case 'open-course':
+                            setActiveNav(`course:${action.courseId}`);
+                            break;
+                        case 'open-lecture':
+                            setActiveNav(`review:${action.courseId}:${action.lectureId}`);
+                            break;
+                        case 'home':
+                            setActiveNav('home');
+                            break;
+                        case 'add-course':
+                            setIsCourseDialogOpen(true);
+                            break;
+                        case 'open-ai':
+                            setActiveNav('ai');
+                            break;
+                        case 'open-settings':
+                            setActiveNav('profile');
+                            break;
+                    }
+                }}
+            />
 
             {/* 新增課程 dialog — H18 重寫版 (P6.3) */}
             <AddCourseDialog
