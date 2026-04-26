@@ -5,6 +5,7 @@ import { readPDFFile, selectPDFFile } from "../services/fileService";
 import { pdfService } from "../services/pdfService";
 import { extractKeywords as llmExtractKeywords } from "../services/llm";
 import { toastService } from "../services/toastService";
+import s from "./CourseCreationDialog.module.css";
 
 interface CourseCreationDialogProps {
   isOpen: boolean;
@@ -261,24 +262,21 @@ export default function CourseCreationDialog({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
+    <div className={s.backdrop}>
+      <div className={s.card}>
         {/* 標題欄 */}
-        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 sticky top-0 bg-white dark:bg-slate-800 z-10">
-          <div className="flex items-center gap-2">
-            <BookOpen className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-            <h2 className="text-xl font-semibold">{labels.heading}</h2>
-          </div>
-          <button
-            onClick={handleClose}
-            className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          >
-            <X className="w-5 h-5" />
+        <div className={s.header}>
+          <h2 className={s.title}>
+            <BookOpen size={16} className={s.titleIcon} />
+            {labels.heading}
+          </h2>
+          <button onClick={handleClose} className={s.closeBtn} aria-label="關閉">
+            <X size={14} />
           </button>
         </div>
 
         {/* 表單內容 */}
-        <div className="p-6 space-y-4">
+        <div className={`${s.body} space-y-4`}>
           <div>
             <label className="block text-sm font-medium mb-2">
               {labels.titleField} <span className="text-red-500">*</span>
@@ -420,22 +418,19 @@ export default function CourseCreationDialog({
         </div>
 
         {/* 操作按鈕 */}
-        <div className="flex gap-3 p-4 border-t border-gray-200 dark:border-gray-700 sticky bottom-0 bg-white dark:bg-slate-800">
-          <button
-            onClick={handleClose}
-            className="flex-1 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-          >
+        <div className={s.footer}>
+          <button onClick={handleClose} className={s.btnCancel}>
             取消
           </button>
           <button
             onClick={handleSubmit}
             disabled={!title.trim() || isLoading || isSubmitting}
-            className="flex-1 px-4 py-2 rounded-lg bg-blue-500 text-white hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            className={s.btnPrimary}
           >
             {isSubmitting ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>處理中...</span>
+                <span>處理中</span>
               </>
             ) : (
               labels.submit
