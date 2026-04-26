@@ -1,0 +1,163 @@
+/* ============================================================
+ * H18AudioPlayer · v0.7.0 Phase 6.4
+ * 底部 sticky 52px audio bar，對應 h18-review-page.jsx L195-435。
+ * ============================================================ */
+
+.bar {
+    flex-shrink: 0;
+    border-top: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-family: var(--h18-font-sans);
+    height: 52px;
+    box-sizing: border-box;
+}
+
+.context {
+    min-width: 0;
+    flex-shrink: 0;
+    max-width: 200px;
+}
+
+.contextEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.contextTitle {
+    font-size: 11px;
+    color: var(--h18-text);
+    font-weight: 600;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.btnSm {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    font-family: inherit;
+    transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.btnSm:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.btnSm:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.btnPlay {
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    font-family: inherit;
+    transition: filter 120ms, transform 100ms;
+}
+
+.btnPlay:hover {
+    filter: brightness(1.1);
+}
+
+.btnPlay:active {
+    transform: scale(0.95);
+}
+
+.time {
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    min-width: 42px;
+    text-align: right;
+}
+
+.timeDim {
+    color: var(--h18-text-dim);
+    font-weight: 500;
+    text-align: left;
+}
+
+.progress {
+    flex: 1;
+    height: 4px;
+    background: var(--h18-border);
+    border-radius: 2px;
+    cursor: pointer;
+    position: relative;
+    transition: height 120ms;
+    min-width: 80px;
+}
+
+.progress:hover {
+    height: 6px;
+}
+
+.progressFill {
+    height: 100%;
+    background: var(--h18-accent);
+    border-radius: 2px;
+    transition: width 100ms linear;
+}
+
+.speed {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+    min-width: 44px;
+    transition: background 120ms;
+}
+
+.speed:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.close {
+    composes: btnSm;
+    margin-left: 4px;
+}
+
+.errorBar {
+    flex: 1;
+    font-size: 11px;
+    color: var(--h18-hot);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

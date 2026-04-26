@@ -35,7 +35,7 @@ import H18Rail from './H18Rail';
 import HomeLayout from './HomeLayout';
 import CourseDetailPage from './CourseDetailPage';
 import AddCourseDialog from './AddCourseDialog';
-import NotesView from '../NotesView';
+import H18ReviewPage from './H18ReviewPage';
 import SettingsView from '../SettingsView';
 import TrashView from '../TrashView';
 import s from './H18DeepApp.module.css';
@@ -294,7 +294,7 @@ export default function H18DeepApp() {
                 );
             case 'review':
                 return (
-                    <NotesView
+                    <H18ReviewPage
                         courseId={parsed.courseId}
                         lectureId={parsed.lectureId}
                         onBack={() => setActiveNav(`course:${parsed.courseId}`)}
