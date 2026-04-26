@@ -745,6 +745,117 @@
     font-family: var(--h18-font-mono);
 }
 
+/* PAbout — hero update card (對齊 prototype L2934+) */
+.aboutHero {
+    margin-top: 8px;
+    padding: 20px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.aboutHeroBadge {
+    width: 60px;
+    height: 60px;
+    border-radius: 14px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    display: grid;
+    place-items: center;
+    font-size: 28px;
+    font-weight: 800;
+    flex-shrink: 0;
+}
+
+.aboutHeroBody {
+    flex: 1;
+    min-width: 0;
+}
+
+.aboutHeroTitle {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    margin: 0;
+}
+
+.aboutHeroVersion {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aboutHeroSystem {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aboutHeroBtn {
+    flex-shrink: 0;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 700;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: filter 120ms;
+}
+
+.aboutHeroBtn:hover {
+    filter: brightness(1.08);
+}
+
+.aboutHeroBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.aboutUpdateBanner {
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--h18-chip-bg);
+    border: 1px solid var(--h18-accent);
+    font-size: 12px;
+    color: var(--h18-text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.aboutUpdateBannerIcon {
+    color: var(--h18-accent);
+    font-size: 14px;
+}
+
+.aboutUpdateBannerLabel {
+    font-weight: 700;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    font-size: 11px;
+}
+
+.aboutUpdateBannerSpacer {
+    flex: 1;
+}
+
 /* Trash list (in PData) ──────────────────────────────────────── */
 .trashList {
     margin-top: 8px;

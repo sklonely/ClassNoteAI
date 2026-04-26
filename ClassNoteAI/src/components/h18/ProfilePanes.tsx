@@ -782,12 +782,6 @@ const HOME_LAYOUT_OPTS: { v: Variant; t: string; d: string }[] = [
     { v: 'C', t: '行事曆為主', d: '大週曆主視，右側 Inbox' },
 ];
 
-const REC_LAYOUT_OPTS: { v: Variant; t: string; d: string }[] = [
-    { v: 'A', t: '雙欄', d: '投影片 strip + 主投影片 + 字幕串流（預設）' },
-    { v: 'B', t: '字幕專注', d: '字幕滿版，投影片 strip 縮成右側 thumb' },
-    { v: 'C', t: '影片', d: '影片預覽 + 字幕邊欄 + 時間軸（用於 video import）' },
-];
-
 export function PAppearance({
     effectiveTheme,
     onToggleTheme,
@@ -859,20 +853,6 @@ export function PAppearance({
                 ))}
             </div>
 
-            {/* 錄音佈局 — preview + 切換 (real wired in CP-6.16) */}
-            <PHead>錄音佈局</PHead>
-            <p
-                style={{
-                    fontSize: 11,
-                    color: 'var(--h18-text-dim)',
-                    margin: '4px 0 12px',
-                    lineHeight: 1.55,
-                }}
-            >
-                錄音時的主畫面切版。錄音頁右上角也有快速切換 segmented control。
-            </p>
-            <RecordingLayoutSection effectiveTheme={effectiveTheme} />
-
             {/* 主題 */}
             <PHead>主題</PHead>
             <PRow
@@ -908,38 +888,6 @@ export function PAppearance({
                 right={<PToggle on={false} />}
             />
         </div>
-    );
-}
-
-function RecordingLayoutSection({ effectiveTheme }: { effectiveTheme: 'light' | 'dark' }) {
-    const [previewVar, setPreviewVar] = useState<Variant>('A');
-    const recOpt = REC_LAYOUT_OPTS.find((o) => o.v === previewVar) || REC_LAYOUT_OPTS[0];
-    return (
-        <>
-            <div className={s.layoutPreviewBox}>
-                <div key={previewVar} className={s.layoutPreviewInner}>
-                    <LayoutPreviewSVG kind="recording" variant={previewVar} theme={effectiveTheme} />
-                </div>
-                <div className={s.layoutPreviewCaption}>
-                    <div className={s.layoutPreviewEyebrow}>預覽 · RECORDING {previewVar}</div>
-                    <div className={s.layoutPreviewTitle}>{recOpt.t}</div>
-                    <div className={s.layoutPreviewDesc}>{recOpt.d}</div>
-                </div>
-            </div>
-            <div className={s.layoutCards}>
-                {REC_LAYOUT_OPTS.map((opt) => (
-                    <button
-                        key={opt.v}
-                        type="button"
-                        className={`${s.layoutCard} ${previewVar === opt.v ? s.layoutCardActive : ''}`}
-                        onClick={() => setPreviewVar(opt.v)}
-                    >
-                        <span className={s.layoutCardLetter}>{opt.v}</span>
-                        <span className={s.layoutCardTitle}>{opt.t}</span>
-                    </button>
-                ))}
-            </div>
-        </>
     );
 }
 
@@ -1198,27 +1146,51 @@ export function PData() {
 
 export function PAbout() {
     const [version, setVersion] = useState<string>('—');
-    const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+    const [systemInfo, setSystemInfo] = useState<string>('—');
+    const [updateState, setUpdateState] = useState<{
+        kind: 'idle' | 'checking' | 'available' | 'latest' | 'error';
+        version?: string;
+        message?: string;
+    }>({ kind: 'idle' });
 
     useEffect(() => {
         import('@tauri-apps/api/app')
             .then(({ getVersion }) => getVersion())
             .then((v) => setVersion(v))
             .catch(() => {});
+        // System info (best effort from navigator)
+        try {
+            const ua = navigator.userAgent;
+            const platform =
+                /Windows NT ([\d.]+)/.exec(ua)?.[0] ||
+                /Mac OS X ([\d_]+)/.exec(ua)?.[0]?.replace(/_/g, '.') ||
+                /Linux/.exec(ua)?.[0] ||
+                'Unknown OS';
+            const arch = /x64|arm64|aarch64|x86_64/.exec(ua)?.[0] || '';
+            setSystemInfo(`${platform}${arch ? ' · ' + arch : ''}`);
+        } catch {
+            /* swallow */
+        }
     }, []);
 
     const handleCheckUpdate = async () => {
-        setUpdateStatus('檢查中…');
+        setUpdateState({ kind: 'checking' });
         try {
             const { updateService } = await import('../../services/updateService');
             const result = await updateService.checkForUpdates();
             if (result.available) {
-                setUpdateStatus(`有新版本：v${result.version}`);
+                setUpdateState({
+                    kind: 'available',
+                    version: result.version,
+                });
             } else {
-                setUpdateStatus('已是最新版');
+                setUpdateState({ kind: 'latest' });
             }
         } catch (err) {
-            setUpdateStatus(`檢查失敗：${(err as Error)?.message || '未知錯誤'}`);
+            setUpdateState({
+                kind: 'error',
+                message: (err as Error)?.message || '未知錯誤',
+            });
         }
     };
 
@@ -1227,7 +1199,6 @@ export function PAbout() {
             const { invoke } = await import('@tauri-apps/api/core');
             const audioDir = await invoke<string>('get_audio_dir');
             const { openPath } = await import('@tauri-apps/plugin-opener');
-            // open the parent dir (app data root) instead of just audio/
             const parentDir = audioDir.replace(/[\\/]audio[\\/]?$/, '');
             await openPath(parentDir || audioDir);
         } catch (err) {
@@ -1244,41 +1215,117 @@ export function PAbout() {
         }
     };
 
+    const handleOpenDevTools = async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('open_devtools').catch(() => {});
+        } catch {
+            /* swallow */
+        }
+    };
+
     return (
         <div>
-            <PHeader
-                title="關於與更新"
-                hint="當前版本、開發者選項、setup wizard 重置入口。"
-            />
+            <PHeader title="關於與更新" />
 
-            <PHead first>版本</PHead>
+            {/* Hero update card — 對應 prototype L2934 */}
+            <div className={s.aboutHero}>
+                <div className={s.aboutHeroBadge}>C</div>
+                <div className={s.aboutHeroBody}>
+                    <h2 className={s.aboutHeroTitle}>ClassNote AI</h2>
+                    <div className={s.aboutHeroVersion}>
+                        v{version} · build {new Date().toISOString().slice(0, 10)} ·
+                        Tauri 2
+                    </div>
+                    <div className={s.aboutHeroSystem}>{systemInfo}</div>
+                </div>
+                <button
+                    type="button"
+                    onClick={handleCheckUpdate}
+                    disabled={updateState.kind === 'checking'}
+                    className={s.aboutHeroBtn}
+                >
+                    {updateState.kind === 'checking' ? '檢查中…' : '檢查更新'}
+                </button>
+            </div>
+
+            {/* Update status banner — only render when we have a result */}
+            {updateState.kind === 'available' && (
+                <div className={s.aboutUpdateBanner}>
+                    <span className={s.aboutUpdateBannerIcon}>✦</span>
+                    <span className={s.aboutUpdateBannerLabel}>
+                        NEW v{updateState.version}
+                    </span>
+                    <span>有新版本可下載</span>
+                    <div className={s.aboutUpdateBannerSpacer} />
+                    <PBtn primary>下載</PBtn>
+                </div>
+            )}
+            {updateState.kind === 'latest' && (
+                <div className={s.aboutUpdateBanner}>
+                    <span className={s.aboutUpdateBannerIcon}>✓</span>
+                    <span className={s.aboutUpdateBannerLabel}>UP TO DATE</span>
+                    <span>已是最新版本</span>
+                </div>
+            )}
+            {updateState.kind === 'error' && (
+                <div
+                    className={s.aboutUpdateBanner}
+                    style={{
+                        borderColor: 'var(--h18-hot)',
+                        background: 'var(--h18-hot-bg)',
+                    }}
+                >
+                    <span className={s.aboutUpdateBannerIcon}>⚠</span>
+                    <span style={{ color: 'var(--h18-hot)' }}>
+                        檢查失敗：{updateState.message}
+                    </span>
+                </div>
+            )}
+
+            <PHead>更新</PHead>
             <PRow
-                label="ClassNoteAI"
-                hint="從 tauri app.getVersion() 拿"
-                right={<span className={s.statusOK}>v{version}</span>}
+                label="更新通道"
+                hint="Beta 每週更新，可能遇到 bug 但早享新功能 (留白：channel switch 沒接)"
+                right={
+                    <PSelect
+                        value="stable"
+                        options={['stable', 'beta', 'alpha']}
+                    />
+                }
             />
             <PRow
-                label="檢查更新"
-                hint={updateStatus || '每次啟動會自動靜默檢查；這裡可手動觸發'}
-                right={<PBtn onClick={handleCheckUpdate}>立即檢查</PBtn>}
+                label="自動下載更新"
+                hint="背景下載，準備好後在這裡通知"
+                right={<PToggle on />}
+            />
+            <PRow
+                label="自動安裝（重啟時）"
+                hint="關閉 app 時自動安裝下載好的更新"
+                right={<PToggle on={false} />}
             />
 
             <PHead>診斷</PHead>
             <PRow
-                label="重新執行 Setup Wizard"
-                hint="重新走一次首次啟動的環境檢查與模型下載流程 (留白：實裝接 setupService.reset)"
-                right={<PBtn>啟動</PBtn>}
+                label="開啟 app data 資料夾"
+                hint="包含 audio / pdf / RAG index / 設定檔"
+                right={<PBtn onClick={handleOpenFolder}>開啟</PBtn>}
             />
             <PRow
-                label="開啟資料夾"
-                hint="跳到 ClassNote 的 app data 目錄 (audio / pdf / index)"
-                right={<PBtn onClick={handleOpenFolder}>開啟</PBtn>}
+                label="DevTools"
+                hint="WebView2 開發者工具（除錯用）"
+                right={<PBtn onClick={handleOpenDevTools}>開啟</PBtn>}
+            />
+            <PRow
+                label="重新執行 Setup Wizard"
+                hint="重新走一次首次啟動的環境檢查與模型下載流程 (留白：實裝接 setupService.reset)"
+                right={<PBtn>重置</PBtn>}
             />
 
             <PHead>連結</PHead>
             <PRow
                 label="GitHub"
-                hint="原始碼、issues"
+                hint="原始碼、issues、release notes"
                 right={<PBtn onClick={handleOpenGitHub}>前往</PBtn>}
             />
             <PRow
