@@ -1,0 +1,356 @@
+/* ============================================================
+ * NotesView · v0.7.0 H18 視覺 port
+ *
+ * 對應 docs/design/h18-deep/h18-review-page.jsx + h18-recording-v2.jsx。
+ * 這個檔不重寫 NotesView (2870 行邏輯)，只提供 H18 token 化的容器 +
+ * 常用 button/chip class，把 inline Tailwind 蓋掉。
+ *
+ * 範圍：
+ *   - 根容器、header bar、左右 PDF/transcript panels 外殼
+ *   - 主要 mode toggle / save / import / AI 助教 buttons
+ *   - audio player bar
+ *   - empty/loading 狀態
+ *
+ * 先有的 @reference Tailwind utilities (flex / gap / hidden / overflow)
+ * 不動，只換顏色與框線。
+ * ============================================================ */
+
+.root {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--h18-bg);
+    color: var(--h18-text);
+    font-family: var(--h18-font-sans);
+}
+
+.loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    background: var(--h18-bg);
+    color: var(--h18-text-dim);
+    gap: 14px;
+}
+
+.loadingSpinner {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 3px solid var(--h18-border);
+    border-top-color: var(--h18-accent);
+    border-right-color: var(--h18-accent);
+    animation: nvSpin 800ms linear infinite;
+}
+
+.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    background: var(--h18-bg);
+    color: var(--h18-text-dim);
+    gap: 12px;
+}
+
+.emptyText {
+    font-size: 15px;
+    color: var(--h18-text-mid);
+    margin: 0;
+}
+
+.linkBtn {
+    background: transparent;
+    border: none;
+    color: var(--h18-accent);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+    text-decoration: underline;
+    padding: 0;
+}
+
+/* ─── Header bar ─────────────────────────────────────────── */
+.header {
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    z-index: 10;
+    flex-shrink: 0;
+}
+
+.headerLeft {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.iconBackBtn {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--h18-text-mid);
+    border-radius: 7px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 140ms, color 140ms, border-color 140ms;
+}
+
+.iconBackBtn:hover {
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    border-color: var(--h18-border-soft);
+}
+
+.headerTitleRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.014em;
+    margin: 0;
+}
+
+.headerEdit {
+    padding: 3px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--h18-text-dim);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: color 140ms, background 140ms, border-color 140ms;
+}
+
+.headerEdit:hover {
+    color: var(--h18-accent);
+    background: var(--h18-surface2);
+    border-color: var(--h18-border-soft);
+}
+
+.headerSub {
+    margin-top: 3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+.recDot {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--h18-hot);
+    font-weight: 700;
+}
+
+.recDotPulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--h18-hot);
+    animation: nvPulse 1.4s ease-in-out infinite;
+}
+
+.headerRight {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* Mode toggle (Live / Review) */
+.modeToggle {
+    display: flex;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    border-radius: 8px;
+    padding: 3px;
+    gap: 2px;
+}
+
+.modeBtn {
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--h18-text-mid);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 140ms, color 140ms;
+}
+
+.modeBtn:hover {
+    color: var(--h18-text);
+}
+
+.modeBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.modeBtnActive:hover {
+    color: var(--h18-invert-ink);
+}
+
+/* Toolbar buttons (auto-follow / save / import / summary / export / chat) */
+.toolBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    transition: background 140ms, color 140ms, border-color 140ms;
+}
+
+.toolBtn:hover:not(:disabled) {
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+}
+
+.toolBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.toolBtnActive {
+    background: var(--h18-chip-bg);
+    color: var(--h18-accent);
+    border-color: color-mix(in oklab, var(--h18-accent) 35%, var(--h18-border));
+}
+
+.toolBtnPrimary {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    font-weight: 700;
+}
+
+.toolBtnPrimary:hover:not(:disabled) {
+    filter: brightness(1.08);
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.toolBtnDanger {
+    background: var(--h18-hot-bg);
+    color: var(--h18-hot);
+    border-color: color-mix(in oklab, var(--h18-hot) 30%, transparent);
+}
+
+/* ─── Body / panels ──────────────────────────────────────── */
+.body {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    background: var(--h18-bg);
+}
+
+.panelLight {
+    background: var(--h18-surface);
+}
+
+.panelMid {
+    background: var(--h18-bg);
+}
+
+.panelDivider {
+    border-right: 1px solid var(--h18-border);
+}
+
+.panelHandle {
+    width: 3px;
+    background: var(--h18-border);
+    transition: background 140ms;
+    cursor: col-resize;
+}
+
+.panelHandle:hover {
+    background: var(--h18-accent);
+}
+
+/* Panel title bar (e.g., "Notes 草稿 / 整理筆記") */
+.panelHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface);
+    flex-shrink: 0;
+}
+
+.panelHeaderTitle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+}
+
+.panelHeaderEyebrow {
+    font-size: 9px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.18em;
+    color: var(--h18-text-dim);
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+/* Audio player bar */
+.audioBar {
+    background: var(--h18-surface2);
+    border-top: 1px solid var(--h18-border);
+    padding: 8px 16px;
+}
+
+/* Volume meter */
+.volBar {
+    height: 6px;
+    background: var(--h18-border-soft);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.volFill {
+    height: 100%;
+    background: linear-gradient(to right, var(--h18-accent) 0%, var(--h18-hot) 100%);
+    transition: width 100ms;
+}
+
+@keyframes nvSpin {
+    from { transform: rotate(0); }
+    to { transform: rotate(360deg); }
+}
+
+@keyframes nvPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}

@@ -59,6 +59,7 @@ import VideoPiP from "./VideoPiP";
 import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
 import AlignmentBanner from "./AlignmentBanner";
+import s from "./NotesView.module.css";
 import { pdfService } from "../services/pdfService";
 import AIChatPanel from "./AIChatPanel";
 
@@ -2121,83 +2122,73 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full bg-gray-50 dark:bg-gray-900">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+      <div className={s.loading}>
+        <div className={s.loadingSpinner} />
       </div>
     );
   }
 
   if (!currentLectureData) {
     return (
-      <div className="flex flex-col items-center justify-center h-full bg-gray-50 dark:bg-gray-900 text-gray-500">
-        <p className="text-lg mb-4">Lecture not found</p>
-        <button onClick={handleBack} className="text-blue-500 hover:underline">Back</button>
+      <div className={s.empty}>
+        <p className={s.emptyText}>Lecture not found</p>
+        <button onClick={handleBack} className={s.linkBtn}>Back</button>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full bg-gray-50 dark:bg-gray-900">
+    <div className={s.root}>
       {/* Header */}
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 flex items-center justify-between shadow-sm z-10">
-        <div className="flex items-center gap-4">
-          <button onClick={handleBack} className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors">
-            <ArrowLeft className="w-5 h-5 text-gray-600 dark:text-gray-300" />
+      <div className={s.header}>
+        <div className={s.headerLeft}>
+          <button onClick={handleBack} className={s.iconBackBtn}>
+            <ArrowLeft size={16} />
           </button>
           <div>
-            <h2 className="text-xl font-semibold flex items-center gap-2 text-gray-900 dark:text-gray-100">
+            <h2 className={s.headerTitleRow}>
               {currentLectureData.title}
-              <button onClick={() => setIsEditDialogOpen(true)} className="p-1 text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors">
-                <Pencil size={16} />
+              <button onClick={() => setIsEditDialogOpen(true)} className={s.headerEdit}>
+                <Pencil size={14} />
               </button>
             </h2>
-            <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mt-1">
+            <div className={s.headerSub}>
               {recordingStatus === 'recording' && (
-                <span className="flex items-center gap-1 text-red-500 animate-pulse">
-                  <div className="w-2 h-2 bg-red-500 rounded-full" />
-                  Recording
+                <span className={s.recDot}>
+                  <span className={s.recDotPulse} />
+                  REC
                 </span>
               )}
-              <span>{viewMode === 'recording' ? 'Live Mode' : 'Review Mode'}</span>
+              <span>{viewMode === 'recording' ? 'LIVE MODE' : 'REVIEW MODE'}</span>
             </div>
           </div>
         </div>
 
-        <div className="flex gap-2">
+        <div className={s.headerRight}>
           {/* View Mode Toggle */}
-          <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1 mr-2">
+          <div className={s.modeToggle}>
             <button
               onClick={() => setViewMode('recording')}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-all ${viewMode === 'recording'
-                ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                }`}
+              className={`${s.modeBtn} ${viewMode === 'recording' ? s.modeBtnActive : ''}`}
             >
               Live Recording
             </button>
             <button
               onClick={() => setViewMode('review')}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-all ${viewMode === 'review'
-                ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-sm'
-                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
-                }`}
+              className={`${s.modeBtn} ${viewMode === 'review' ? s.modeBtnActive : ''}`}
             >
               Notes Review
             </button>
-
           </div>
 
           {/* Auto Scroll Toggle */}
           {viewMode === 'recording' && (
             <button
               onClick={() => setAutoScrollEnabled(!autoScrollEnabled)}
-              className={`flex items-center gap-2 px-3 py-1 rounded-md text-sm font-medium transition-all mr-2 ${autoScrollEnabled
-                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-                : 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
-                }`}
+              className={`${s.toolBtn} ${autoScrollEnabled ? s.toolBtnActive : ''}`}
               title="Auto-follow slides based on speech"
             >
-              <Wand2 size={16} />
+              <Wand2 size={14} />
               <span className="hidden sm:inline">Auto-Follow</span>
             </button>
           )}
@@ -2207,9 +2198,9 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             <button
               onClick={handleSaveLecture}
               disabled={saveStatus === 'saving'}
-              className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors disabled:opacity-50"
+              className={`${s.toolBtn} ${s.toolBtnPrimary}`}
             >
-              <Save size={18} />
+              <Save size={14} />
               <span className="hidden sm:inline">{saveStatus === 'saving' ? 'Saving...' : 'Save'}</span>
             </button>
           )}
@@ -2230,10 +2221,10 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             <button
               onClick={() => setIsImportModalOpen(true)}
               disabled={isImportingVideo}
-              className="flex items-center gap-2 px-3 py-2 bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors disabled:opacity-50"
+              className={s.toolBtn}
               title="匯入已錄製的影片或課程字幕"
             >
-              {isImportingVideo ? <Loader2 size={18} className="animate-spin" /> : <Film size={18} />}
+              {isImportingVideo ? <Loader2 size={14} className="animate-spin" /> : <Film size={14} />}
               <span className="hidden sm:inline">
                 {isImportingVideo ? (importProgressMessage || '處理中…') : '匯入'}
               </span>
@@ -2243,12 +2234,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
           {/* Summary & Export Buttons (Visible in Review Mode) */}
           {viewMode === 'review' && selectedNote && (
             <>
-              <button onClick={() => handleGenerateSummary('zh')} disabled={isGeneratingSummary} className="flex items-center gap-2 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 dark:text-indigo-400 rounded-lg hover:bg-indigo-100 transition-colors disabled:opacity-50">
-                {isGeneratingSummary ? <Loader2 className="w-4 h-4 animate-spin" /> : <Cpu className="w-4 h-4" />}
+              <button onClick={() => handleGenerateSummary('zh')} disabled={isGeneratingSummary} className={s.toolBtn}>
+                {isGeneratingSummary ? <Loader2 size={14} className="animate-spin" /> : <Cpu size={14} />}
                 <span className="hidden sm:inline">Summary (ZH)</span>
               </button>
-              <button onClick={() => handleExport("markdown")} className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors">
-                <Download size={18} />
+              <button onClick={() => handleExport("markdown")} className={`${s.toolBtn} ${s.toolBtnPrimary}`}>
+                <Download size={14} />
                 <span className="hidden sm:inline">Export</span>
               </button>
             </>
@@ -2265,21 +2256,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                 if (lectureId) await openDetachedAiTutor(lectureId, theme);
                 return;
               }
-              // sidebar and floating: just toggle in-app state. Sidebar
-              // mode uses inline-push (content shrinks via PanelGroup)
-              // rather than window resize, which matches VSCode /
-              // Notion / Cursor and avoids the "window too wide to
-              // read" problem from the earlier expand-window approach.
               setIsAIChatOpen(!isAIChatOpen);
             }}
-            className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
-              (aiTutorMode !== 'detached' && isAIChatOpen)
-              ? 'bg-purple-500 text-white'
-              : 'bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400 hover:bg-purple-100'
-              }`}
+            className={`${s.toolBtn} ${(aiTutorMode !== 'detached' && isAIChatOpen) ? s.toolBtnActive : ''}`}
             title="AI 助教"
           >
-            <Bot size={18} />
+            <Bot size={14} />
             <span className="hidden sm:inline">AI 助教</span>
           </button>
         </div>
@@ -2324,13 +2306,13 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
             <PanelGroup direction="horizontal" className="flex-1">
               {/* Left Panel: PDF Viewer */}
               <Panel defaultSize={60} minSize={30}>
-                <div className="flex flex-col h-full border-r border-gray-200 dark:border-gray-700">
+                <div className={`flex flex-col h-full ${s.panelDivider}`}>
                   {(pdfPath || pdfData) && (
-                    <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
-                      <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-md">
+                    <div className={s.panelHeader}>
+                      <span className={s.panelHeaderEyebrow} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 360 }}>
                         {pdfPath ? (pdfPath.startsWith('blob:') ? 'Dropped File' : pdfPath.split('?')[0].split('#')[0].split(/[/\\]/).pop()) : 'Selected PDF'}
                       </span>
-                      <button onClick={handleSelectPDF} className="px-3 py-1 text-sm rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+                      <button onClick={handleSelectPDF} className={s.toolBtn}>
                         Change
                       </button>
                     </div>
@@ -2379,11 +2361,11 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                 </div>
               </Panel>
 
-              <PanelResizeHandle className="w-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-col-resize z-50" />
+              <PanelResizeHandle className={s.panelHandle} style={{ zIndex: 50 }} />
 
               {/* Right Panel: Subtitles & Controls */}
               <Panel defaultSize={40} minSize={20}>
-                <div className="flex flex-col h-full bg-white dark:bg-slate-800">
+                <div className={`flex flex-col h-full ${s.panelLight}`}>
                   <div className="flex-1 min-h-0 p-4 flex flex-col overflow-hidden">
                     <h2 className="text-lg font-semibold mb-4 flex-shrink-0 dark:text-white">Live Subtitles</h2>
                     <div className="flex-1 min-h-0 overflow-hidden">
@@ -2395,34 +2377,36 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                   <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-slate-900">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
-                        <MicOff size={16} className="text-gray-400" />
-                        <div className="w-24 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                          <div className="h-full bg-green-500 transition-all" style={{ width: `${volume}%` }} />
+                        <MicOff size={16} style={{ color: 'var(--h18-text-dim)' }} />
+                        <div className={s.volBar} style={{ width: 96 }}>
+                          <div className={s.volFill} style={{ width: `${volume}%` }} />
                         </div>
                       </div>
-                      <span className="text-xs text-gray-500">{recordingStatus === 'recording' ? 'Recording...' : 'Ready'}</span>
+                      <span style={{ fontSize: 11, color: 'var(--h18-text-dim)', fontFamily: 'var(--h18-font-mono)', letterSpacing: '0.06em' }}>
+                        {recordingStatus === 'recording' ? 'RECORDING...' : 'READY'}
+                      </span>
                     </div>
 
                     <div className="flex gap-2">
                       {recordingStatus === 'idle' || recordingStatus === 'stopped' ? (
-                        <button onClick={handleStartRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium">
+                        <button onClick={handleStartRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors font-bold" style={{ background: 'var(--h18-hot)', color: '#fff' }}>
                           <Mic size={20} /> Start
                         </button>
                       ) : recordingStatus === 'recording' ? (
                         <>
-                          <button onClick={handlePauseRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors font-medium">
+                          <button onClick={handlePauseRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors font-bold" style={{ background: 'var(--h18-chip-bg)', color: 'var(--h18-text)', border: '1px solid var(--h18-border)' }}>
                             <Pause size={20} /> Pause
                           </button>
-                          <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
+                          <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors font-bold" style={{ background: 'var(--h18-invert)', color: 'var(--h18-invert-ink)' }}>
                             <Square size={20} /> Stop
                           </button>
                         </>
                       ) : (
                         <>
-                          <button onClick={handleResumeRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors font-medium">
+                          <button onClick={handleResumeRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors font-bold" style={{ background: 'var(--h18-hot)', color: '#fff' }}>
                             <Mic size={20} /> Resume
                           </button>
-                          <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors font-medium">
+                          <button onClick={handleStopRecording} className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-lg transition-colors font-bold" style={{ background: 'var(--h18-invert)', color: 'var(--h18-invert-ink)' }}>
                             <Square size={20} /> Stop
                           </button>
                         </>
@@ -2451,7 +2435,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                     - both + split: vertical resizable split (video top / PDF bottom)
                     - both + pip:   PDF fills, video floats as an overlay
                   Layout choice comes from settings.lectureLayout.videoPdfMode. */}
-              <Panel defaultSize={50} minSize={20} className="flex flex-col border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
+              <Panel defaultSize={50} minSize={20} className={`flex flex-col ${s.panelDivider} ${s.panelMid}`}>
                 <DragDropZone onFileDrop={handleFileDrop} enabled={!isImportModalOpen} className="flex-1 overflow-hidden">
                   {(() => {
                     const hasVideo = !!currentLectureData?.video_path;
@@ -2519,12 +2503,12 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                 </DragDropZone>
               </Panel>
 
-              <PanelResizeHandle className="w-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-col-resize z-50" />
+              <PanelResizeHandle className={s.panelHandle} style={{ zIndex: 50 }} />
 
               {/* Right Panel: Note Editor & Subtitles */}
-              <Panel defaultSize={50} minSize={30} className="flex flex-col bg-white dark:bg-gray-900">
+              <Panel defaultSize={50} minSize={30} className={`flex flex-col ${s.panelLight}`}>
                 {/* Tab Switcher */}
-                <div className="flex items-center border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-800 px-4">
+                <div className={`${s.panelHeader} ${s.panelLight}`} style={{padding:"6px 16px"}}>
                   <button
                     onClick={() => setActiveTab('note')}
                     className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'note' ? 'border-blue-500 text-blue-600 dark:text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400'}`}
@@ -2713,7 +2697,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                     enables PDF + subtitle sync to current playback
                     timestamp; off is plain audio playback. */}
                 {viewMode === 'review' && (
-                  <div className="bg-white dark:bg-slate-800 border-t border-gray-200 dark:border-gray-700 px-4 py-2 flex items-center justify-between text-sm">
+                  <div className={s.audioBar} style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:13}}>
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -2786,7 +2770,7 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
               windows; maxSize 45% prevents it from crushing the PDF. */}
           {lectureId && aiTutorMode === 'sidebar' && isAIChatOpen && (
             <>
-              <PanelResizeHandle className="w-1.5 bg-gray-200 dark:bg-gray-700 hover:bg-blue-400 dark:hover:bg-blue-600 transition-colors cursor-col-resize" />
+              <PanelResizeHandle className={s.panelHandle} />
               <Panel
                 id="notesview-sidebar"
                 order={1}
