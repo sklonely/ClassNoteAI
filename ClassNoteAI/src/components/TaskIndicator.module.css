@@ -1,0 +1,251 @@
+/* ============================================================
+ * H18 TaskIndicator · v0.7.0
+ *
+ * 28×28 icon button + 320px dropdown panel。Idle 顯示 ☁ cloud
+ * icon，active 顯示 spinner + count badge。Offline 切 wifi-off
+ * icon (T.hot 紅)。
+ *
+ * Dropdown header 顯示「TASKS · N」mono 標題 + ONLINE/OFFLINE
+ * pill。每行 task 用 grid (status glyph / label+detail / dismiss)。
+ * ============================================================ */
+
+.wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+/* ─── Trigger button ─────────────────────────────────────── */
+.trigger {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--h18-text-dim);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-family: inherit;
+  transition: background 160ms var(--h18-ease-spring),
+              border-color 160ms var(--h18-ease-spring),
+              color 160ms var(--h18-ease-spring);
+  flex-shrink: 0;
+}
+
+.trigger:hover {
+  background: var(--h18-surface2);
+  border-color: var(--h18-border-soft);
+}
+
+.triggerActive {
+  background: var(--h18-surface2);
+  border-color: var(--h18-border);
+  color: var(--h18-accent);
+}
+
+.triggerOpen {
+  background: var(--h18-chip-bg);
+  border-color: var(--h18-border);
+}
+
+.triggerOffline {
+  color: var(--h18-hot);
+}
+
+.spinner {
+  animation: tiSpin 900ms linear infinite;
+}
+
+.badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  padding: 0 3px;
+  background: var(--h18-accent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  font-family: var(--h18-font-mono);
+  display: grid;
+  place-items: center;
+  border: 1.5px solid var(--h18-topbar);
+  letter-spacing: -0.02em;
+}
+
+/* ─── Dropdown panel ─────────────────────────────────────── */
+.dropdown {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  width: 320px;
+  background: var(--h18-surface);
+  color: var(--h18-text);
+  border: 1px solid var(--h18-border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+  z-index: 1000;
+  font-family: var(--h18-font-sans);
+  overflow: hidden;
+  animation: tiDropIn 200ms var(--h18-ease-spring);
+}
+
+:root.dark .dropdown {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5),
+              0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+}
+
+.header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--h18-border);
+  background: var(--h18-surface2);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.headerTitle {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--h18-text-dim);
+  font-weight: 800;
+  font-family: var(--h18-font-mono);
+}
+
+.headerSpacer {
+  flex: 1;
+}
+
+.connPill {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--h18-font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--h18-chip-bg);
+  color: #22c55e;
+}
+
+.connPill.offline {
+  background: rgba(232, 65, 46, 0.13);
+  color: var(--h18-hot);
+}
+
+.connDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 3px;
+  background: #22c55e;
+}
+
+.connPill.offline .connDot {
+  background: var(--h18-hot);
+}
+
+/* ─── Task list ──────────────────────────────────────────── */
+.list {
+  max-height: 280px;
+  overflow: auto;
+}
+
+.empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--h18-text-faint);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--h18-border-soft);
+  font-size: 12px;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+
+.statusGlyph {
+  font-weight: 700;
+  font-family: var(--h18-font-mono);
+  text-align: center;
+  color: var(--h18-text-dim);
+}
+
+.statusGlyph.processing {
+  color: var(--h18-accent);
+  animation: tiPulse 1.4s ease-in-out infinite;
+}
+
+.statusGlyph.failed {
+  color: var(--h18-hot);
+}
+
+.statusGlyph.done {
+  color: #22c55e;
+}
+
+.rowMain {
+  min-width: 0;
+}
+
+.rowLabel {
+  color: var(--h18-text);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowMeta {
+  font-size: 10px;
+  color: var(--h18-text-dim);
+  margin-top: 2px;
+  font-family: var(--h18-font-mono);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rowStatusBadge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--h18-font-mono);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  background: var(--h18-chip-bg);
+  color: var(--h18-text-mid);
+}
+
+.rowStatusBadge.failed {
+  background: rgba(232, 65, 46, 0.13);
+  color: var(--h18-hot);
+}
+
+@keyframes tiSpin {
+  from { transform: rotate(0); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes tiPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+@keyframes tiDropIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
