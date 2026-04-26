@@ -58,6 +58,7 @@ import DragDropZone from "./DragDropZone";
 import VideoPiP from "./VideoPiP";
 import { selectPDFFile } from "../services/fileService";
 import { autoAlignmentService, AlignmentSuggestion } from "../services/autoAlignmentService";
+import AlignmentBanner from "./AlignmentBanner";
 import { pdfService } from "../services/pdfService";
 import AIChatPanel from "./AIChatPanel";
 
@@ -2361,21 +2362,19 @@ export default function NotesView({ courseId: propCourseId, lectureId: propLectu
                       </div>
                     )}
                   </DragDropZone>
-                  {/* Alignment Suggestion Notification */}
+                  {/* Alignment Suggestion Notification — H18 pill banner */}
                   {alignmentSuggestion && !autoScrollEnabled && (
-                    <button
-                      className="absolute bottom-20 right-1/2 translate-x-1/2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2 animate-bounce z-50 hover:bg-blue-700 transition-colors"
-                      onClick={() => {
+                    <AlignmentBanner
+                      toPage={alignmentSuggestion.pageNumber}
+                      fromPage={currentPage}
+                      confidence={alignmentSuggestion.confidence}
+                      onAccept={() => {
                         if (pdfViewerRef.current) {
                           pdfViewerRef.current.scrollToPage(alignmentSuggestion.pageNumber);
-                          setAlignmentSuggestion(null);
                         }
                       }}
-                    >
-                      <Wand2 size={16} />
-                      <span>Jump to Slide {alignmentSuggestion.pageNumber}</span>
-                      <span className="text-xs opacity-75">({(alignmentSuggestion.confidence * 100).toFixed(0)}%)</span>
-                    </button>
+                      onDismiss={() => setAlignmentSuggestion(null)}
+                    />
                   )}
                 </div>
               </Panel>
