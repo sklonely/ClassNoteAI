@@ -1,0 +1,457 @@
+/* ============================================================
+ * CourseDetailPage · v0.7.0 Phase 6.3
+ *
+ * 對應 docs/design/h18-deep/h18-nav-pages.jsx L283-601.
+ * Layout：左 1fr 主內容 (hero + next + lectures) ｜ 右 380px (grading
+ * + course-scoped inbox 留白 + keywords + people)
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    background: var(--h18-border);
+    gap: 1px;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.left {
+    background: var(--h18-surface);
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    font-family: var(--h18-font-sans);
+}
+
+.right {
+    background: var(--h18-surface);
+    padding: 20px 0;
+    overflow: auto;
+    min-width: 0;
+    font-family: var(--h18-font-sans);
+}
+
+/* Hero (gradient bg) ─────────────────────────────────────────── */
+.hero {
+    color: #fff;
+    padding: 20px 32px 28px;
+    position: relative;
+}
+
+.heroHeadRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.crumbBack {
+    background: rgba(255, 255, 255, 0.18);
+    color: #fff;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+}
+
+.crumbBack:hover {
+    background: rgba(255, 255, 255, 0.28);
+}
+
+.crumbDivider {
+    opacity: 0.5;
+}
+
+.crumbExtra {
+    margin-left: auto;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    opacity: 0.85;
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+    color: #fff;
+    white-space: nowrap;
+}
+
+.heroTitle {
+    font-size: 34px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    margin: 0;
+}
+
+.heroStats {
+    display: flex;
+    gap: 24px;
+    margin-top: 16px;
+    font-size: 12px;
+    opacity: 0.92;
+    flex-wrap: wrap;
+}
+
+.heroStat {
+    white-space: nowrap;
+}
+
+.heroStatNum {
+    font-size: 18px;
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+}
+
+.heroStatTotal {
+    opacity: 0.7;
+}
+
+/* Next lecture card ─────────────────────────────────────────── */
+.section {
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--h18-border);
+}
+
+.sectionLast {
+    border-bottom: none;
+    flex: 1;
+}
+
+.sectionEyebrow {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.nextCard {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--h18-border-soft);
+}
+
+.nextNum {
+    width: 52px;
+    height: 52px;
+    border-radius: 10px;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 14px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    flex-shrink: 0;
+    text-align: center;
+    line-height: 1;
+}
+
+.nextBody {
+    flex: 1;
+    min-width: 0;
+}
+
+.nextTitle {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nextMeta {
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    margin-top: 2px;
+}
+
+.nextRecord {
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+
+.nextRecord:hover {
+    filter: brightness(1.05);
+}
+
+/* Lectures list ──────────────────────────────────────────────── */
+.lecturesHead {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.lecturesSub {
+    font-size: 11px;
+    color: var(--h18-text-faint);
+}
+
+.lecturesGroupHead {
+    margin-top: 16px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+}
+
+.lecturesGroup {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.lectureRow {
+    padding: 8px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface);
+    display: grid;
+    grid-template-columns: 42px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    cursor: pointer;
+    text-align: left;
+    color: var(--h18-text);
+    font-family: inherit;
+    transition: background 120ms;
+}
+
+.lectureRow:hover {
+    background: var(--h18-row-hover);
+}
+
+.lectureCode {
+    font-size: 10px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.lectureRowTitle {
+    font-size: 13px;
+    color: var(--h18-text);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.lectureMeta {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    white-space: nowrap;
+}
+
+.scheduleRow {
+    composes: lectureRow;
+    border-style: dashed;
+    opacity: 0.65;
+    cursor: default;
+}
+
+.scheduleRow:hover {
+    background: var(--h18-surface);
+}
+
+.lectureCodeMuted {
+    color: var(--h18-text-dim);
+}
+
+.lectureRowTitleMuted {
+    color: var(--h18-text-mid);
+}
+
+.emptyLectures {
+    margin-top: 12px;
+    padding: 18px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px dashed var(--h18-border);
+    font-size: 12px;
+    color: var(--h18-text-dim);
+    line-height: 1.6;
+    text-align: center;
+}
+
+/* Right side panels ──────────────────────────────────────────── */
+.rightHead {
+    padding: 0 20px;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin-top: 16px;
+}
+
+.rightHead:first-child {
+    margin-top: 0;
+}
+
+.gradeCard {
+    margin: 10px 20px;
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+}
+
+.gradeBar {
+    display: flex;
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+    margin-bottom: 10px;
+    background: var(--h18-border);
+}
+
+.gradeSeg {
+    height: 100%;
+}
+
+.gradeRow {
+    display: grid;
+    grid-template-columns: 10px 1fr auto;
+    gap: 8px;
+    align-items: center;
+    font-size: 12px;
+    padding: 3px 0;
+    color: var(--h18-text);
+}
+
+.gradeDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+}
+
+.gradeName {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.gradePct {
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.inboxEmpty {
+    margin: 4px 20px 0;
+    padding: 14px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px dashed var(--h18-border-soft);
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.5;
+}
+
+.inboxTag {
+    margin-top: 6px;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.kwBox {
+    padding: 8px 20px;
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.kw {
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text);
+    font-weight: 600;
+}
+
+.peopleBox {
+    padding: 8px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.personRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.personAvatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 16px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-mid);
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+
+.personName {
+    font-size: 12px;
+    color: var(--h18-text);
+    font-weight: 600;
+}
+
+.personRole {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+}
+
+/* error / not-found state ───────────────────────────────────── */
+.notFound {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-dim);
+    padding: 40px;
+    text-align: center;
+}

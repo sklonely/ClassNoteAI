@@ -33,9 +33,9 @@ import {
 import H18TopBar from './H18TopBar';
 import H18Rail from './H18Rail';
 import HomeLayout from './HomeLayout';
-import CourseDetailView from '../CourseDetailView';
+import CourseDetailPage from './CourseDetailPage';
+import AddCourseDialog from './AddCourseDialog';
 import NotesView from '../NotesView';
-import CourseCreationDialog from '../CourseCreationDialog';
 import SettingsView from '../SettingsView';
 import TrashView from '../TrashView';
 import s from './H18DeepApp.module.css';
@@ -261,22 +261,22 @@ export default function H18DeepApp() {
                     />
                 );
             case 'course':
+            case 'recording':
                 return (
-                    <CourseDetailView
+                    <CourseDetailPage
                         courseId={parsed.courseId}
                         onBack={() => setActiveNav('home')}
                         onSelectLecture={(lectureId: string) =>
                             setActiveNav(`review:${parsed.courseId}:${lectureId}`)
                         }
-                        onCreateLecture={(courseId: string) => {
-                            // create + jump to recording — re-uses storageService
+                        onCreateLecture={() => {
                             void (async () => {
                                 try {
                                     const id = crypto.randomUUID();
                                     const now = new Date().toISOString();
                                     await storageService.saveLecture({
                                         id,
-                                        course_id: courseId,
+                                        course_id: parsed.courseId,
                                         title: '新課堂',
                                         date: now,
                                         duration: 0,
@@ -284,26 +284,12 @@ export default function H18DeepApp() {
                                         created_at: now,
                                         updated_at: now,
                                     });
-                                    setActiveNav(`review:${courseId}:${id}`);
+                                    setActiveNav(`review:${parsed.courseId}:${id}`);
                                 } catch (err) {
                                     console.error('[H18DeepApp] create lecture failed:', err);
                                 }
                             })();
                         }}
-                    />
-                );
-            case 'recording':
-                // 進 recording 用 lectureId 為「最新一堂」，但目前沒這 helper
-                // → 實際路徑由 course detail 的 onCreateLecture 接手。recording-only
-                // 的 nav state 暫時 fallback 回 course detail。
-                return (
-                    <CourseDetailView
-                        courseId={parsed.courseId}
-                        onBack={() => setActiveNav('home')}
-                        onSelectLecture={(lectureId: string) =>
-                            setActiveNav(`review:${parsed.courseId}:${lectureId}`)
-                        }
-                        onCreateLecture={() => {}}
                     />
                 );
             case 'review':
@@ -363,8 +349,8 @@ export default function H18DeepApp() {
                 </div>
             )}
 
-            {/* 新增課程 dialog — onSubmit 回傳 courseId 供我們跳到 detail */}
-            <CourseCreationDialog
+            {/* 新增課程 dialog — H18 重寫版 (P6.3) */}
+            <AddCourseDialog
                 isOpen={isCourseDialogOpen}
                 onClose={() => setIsCourseDialogOpen(false)}
                 onSubmit={async (title, keywords, pdfData, description) => {
@@ -393,7 +379,6 @@ export default function H18DeepApp() {
                         console.error('[H18DeepApp] create course failed:', err);
                     }
                 }}
-                mode="create"
             />
 
             {/* legacy settings / trash — P6.7 之後拔 */}
