@@ -31,6 +31,9 @@ export interface Toast {
   at: number;
   /** Optional sub-line shown in smaller font under the main message. */
   detail?: string;
+  /** v0.7.0: 實際排程的 duration (含 default 處理)。0 = sticky。
+   *  H18 新 ToastContainer 用此值畫底部 countdown bar。 */
+  durationMs: number;
 }
 
 export interface ShowToastOptions {
@@ -47,6 +50,11 @@ class ToastService {
   private toasts: Toast[] = [];
   private listeners = new Set<Listener>();
   private timers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** v0.7.0: epoch ms when each toast 應該被 auto-dismiss。
+   *  pauseAll 時 clear timer 但保留此值；resumeAll 用 (expiresAt - now)
+   *  算 remaining time 重新 setTimeout。Sticky (durationMs=0) 不放入。 */
+  private expiresAt = new Map<number, number>();
+  private isPaused = false;
   private nextId = 1;
 
   subscribe(cb: Listener): () => void {
@@ -73,13 +81,17 @@ class ToastService {
       type,
       at: Date.now(),
       detail: opts.detail,
+      durationMs: duration,
     };
     this.toasts = [...this.toasts, toast];
     this.notify();
 
     if (duration > 0) {
-      const timer = setTimeout(() => this.dismiss(toast.id), duration);
-      this.timers.set(toast.id, timer);
+      this.expiresAt.set(toast.id, Date.now() + duration);
+      if (!this.isPaused) {
+        const timer = setTimeout(() => this.dismiss(toast.id), duration);
+        this.timers.set(toast.id, timer);
+      }
     }
     return toast.id;
   }
@@ -107,6 +119,7 @@ class ToastService {
       clearTimeout(timer);
       this.timers.delete(id);
     }
+    this.expiresAt.delete(id);
     this.notify();
   }
 
@@ -114,8 +127,39 @@ class ToastService {
   clear() {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
+    this.expiresAt.clear();
+    this.isPaused = false;
     this.toasts = [];
     this.notify();
+  }
+
+  /**
+   * v0.7.0 — 暫停所有 toast 的 auto-dismiss timer。typically called by
+   * H18 ToastContainer 在 onMouseEnter 時。expiresAt 保留以利 resume
+   * 時算 remaining time。Idempotent (pauseAll 多次無 side effect)。
+   */
+  pauseAll() {
+    if (this.isPaused) return;
+    this.isPaused = true;
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
+  }
+
+  /**
+   * v0.7.0 — 恢復 auto-dismiss timer。重新 setTimeout 用 max(800,
+   * expiresAt - now) 作 remaining (避免使用者剛 hover 出去 toast 立刻
+   * 消失，給 800ms grace)。Sticky toasts (durationMs=0, 不在 expiresAt
+   * 內) 不會被 re-schedule。
+   */
+  resumeAll() {
+    if (!this.isPaused) return;
+    this.isPaused = false;
+    const now = Date.now();
+    for (const [id, expires] of this.expiresAt.entries()) {
+      const remaining = Math.max(800, expires - now);
+      const timer = setTimeout(() => this.dismiss(id), remaining);
+      this.timers.set(id, timer);
+    }
   }
 
   private notify() {

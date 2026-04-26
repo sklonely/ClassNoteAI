@@ -117,4 +117,103 @@ describe('toastService', () => {
         const snap = listener.mock.calls[0][0];
         expect(snap[0].detail).toBe('sub');
     });
+
+    // v0.7.0 H18 — toast.durationMs surfaced + pauseAll/resumeAll for
+    // hover-pause behavior in the new container.
+    describe('v0.7.0 surfaces durationMs + supports pause/resume', () => {
+        it('toast.durationMs reflects the actual scheduled duration', () => {
+            const listener = vi.fn();
+            toastService.subscribe(listener);
+            listener.mockClear();
+
+            toastService.info('a');
+            expect(listener.mock.calls[0][0][0].durationMs).toBe(2_000);
+
+            toastService.error('b');
+            expect(listener.mock.calls[1][0].length).toBe(2);
+            const errorToast = listener.mock.calls[1][0].find(
+                (t: { message: string }) => t.message === 'b',
+            );
+            expect(errorToast.durationMs).toBe(5_000);
+
+            toastService.show({ message: 'c', durationMs: 0 });
+            const stickyToast = listener.mock.calls[2][0].find(
+                (t: { message: string }) => t.message === 'c',
+            );
+            expect(stickyToast.durationMs).toBe(0);
+        });
+
+        it('pauseAll prevents scheduled timers from firing', () => {
+            vi.useFakeTimers();
+            try {
+                const listener = vi.fn();
+                toastService.subscribe(listener);
+                listener.mockClear();
+
+                toastService.info('paused');
+                toastService.pauseAll();
+                vi.advanceTimersByTime(10_000); // 遠超 2s default
+                // 仍只有 show 那一次 notify，沒被 dismiss
+                expect(listener).toHaveBeenCalledTimes(1);
+                expect(listener.mock.calls[0][0].length).toBe(1);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('resumeAll re-schedules with remaining time', () => {
+            vi.useFakeTimers();
+            try {
+                const listener = vi.fn();
+                toastService.subscribe(listener);
+                listener.mockClear();
+
+                toastService.info('resume me');
+                vi.advanceTimersByTime(800); // 經過 800ms (剩 1200ms)
+                toastService.pauseAll();
+                vi.advanceTimersByTime(60_000); // 暫停期間時間流逝不該影響
+                expect(listener).toHaveBeenCalledTimes(1); // 還沒被 dismiss
+
+                toastService.resumeAll();
+                vi.advanceTimersByTime(1_300); // 過 1200ms remaining + 100ms 緩衝
+                expect(listener.mock.calls[listener.mock.calls.length - 1][0]).toEqual([]);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('resumeAll does NOT re-schedule sticky toasts (durationMs=0)', () => {
+            vi.useFakeTimers();
+            try {
+                const listener = vi.fn();
+                toastService.subscribe(listener);
+                listener.mockClear();
+
+                toastService.show({ message: 'sticky', durationMs: 0 });
+                toastService.pauseAll();
+                toastService.resumeAll();
+                vi.advanceTimersByTime(60_000);
+                expect(listener).toHaveBeenCalledTimes(1);
+                expect(listener.mock.calls[0][0].length).toBe(1);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
+        it('pauseAll twice is idempotent', () => {
+            vi.useFakeTimers();
+            try {
+                toastService.info('test');
+                toastService.pauseAll();
+                toastService.pauseAll();
+                vi.advanceTimersByTime(10_000);
+                // 沒被 dismiss = ok
+                const listener = vi.fn();
+                toastService.subscribe(listener);
+                expect(listener.mock.calls[0][0].length).toBe(1);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+    });
 });
