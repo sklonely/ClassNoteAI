@@ -1,0 +1,93 @@
+/* ============================================================
+ * H18RecordingPage · v0.7.0 Phase 6.5 (chrome wrap)
+ *
+ * 對應 docs/design/h18-deep/h18-recording-v2.jsx (RecordingPage).
+ *
+ * 注意：本 CP 是 thin chrome wrap — 真錄音引擎沿用 legacy NotesView
+ * (在 recording mode 自動激活 AudioRecorder + ASR + accumulator +
+ *  recordingDeviceMonitor + recordingRecoveryService...)。
+ *
+ * 完整 RV2 layout (slide strip + floating notes + 5-step finishing
+ * overlay) 等下個 CP 處理。
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+    font-family: var(--h18-font-sans);
+    position: relative;
+}
+
+.banner {
+    flex-shrink: 0;
+    padding: 8px 20px;
+    background: var(--h18-hot-bg);
+    color: var(--h18-hot);
+    border-bottom: 1px solid var(--h18-border);
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bannerDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--h18-dot);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--h18-dot) 30%, transparent);
+    animation: pulse 1.4s var(--h18-ease-spring) infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.4; }
+    100% { opacity: 1; }
+}
+
+.bannerLabel {
+    font-weight: 800;
+    color: var(--h18-hot);
+}
+
+.bannerNote {
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-sans);
+    letter-spacing: normal;
+    margin-left: 8px;
+}
+
+.bannerSpacer {
+    flex: 1;
+}
+
+.bannerBack {
+    padding: 4px 10px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.bannerBack:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.host {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}

@@ -26,6 +26,7 @@ import { resolveOrRecoverAudioPath } from '../../services/audioPathService';
 import type { Lecture, Note, Subtitle, Section } from '../../types';
 import { courseColor } from './courseColor';
 import H18AudioPlayer from './H18AudioPlayer';
+import H18RecordingPage from './H18RecordingPage';
 import s from './H18ReviewPage.module.css';
 
 export interface H18ReviewPageProps {
@@ -245,6 +246,17 @@ export default function H18ReviewPage({
                     </button>
                 </div>
             </div>
+        );
+    }
+
+    // P6.5: status='recording' 的 lecture 走 H18RecordingPage chrome wrap
+    if (lecture.status === 'recording') {
+        return (
+            <H18RecordingPage
+                courseId={courseId}
+                lectureId={lectureId}
+                onBack={onBack}
+            />
         );
     }
 
