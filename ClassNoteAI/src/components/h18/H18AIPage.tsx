@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { storageService } from '../../services/storageService';
 import { useAIHistory, type AIMsg } from './useAIHistory';
 import s from './H18AIPage.module.css';
 
@@ -20,8 +21,24 @@ export interface H18AIPageProps {
 export default function H18AIPage({ onBack }: H18AIPageProps) {
     const { msgs, streaming, send, clear } = useAIHistory();
     const [input, setInput] = useState('');
+    const [lectureCount, setLectureCount] = useState(0);
     const inputRef = useRef<HTMLInputElement | null>(null);
     const bodyRef = useRef<HTMLDivElement | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        storageService
+            .listLectures()
+            .then((list) => {
+                if (!cancelled) setLectureCount(list.length);
+            })
+            .catch(() => {
+                /* swallow */
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     useEffect(() => {
         const t = setTimeout(() => inputRef.current?.focus(), 80);
@@ -83,7 +100,7 @@ export default function H18AIPage({ onBack }: H18AIPageProps) {
                             全域對話 · {userMsgCount} 個提問
                         </div>
                     </div>
-                    <span className={s.headBadge}>llm.chatStream</span>
+                    <span className={s.headBadge}>覆蓋 {lectureCount} 份筆記</span>
                 </div>
 
                 <div className={s.body} ref={bodyRef}>

@@ -99,21 +99,20 @@
 
 .newBtn {
     margin-top: auto;
-    padding: 8px 12px;
+    padding: 10px 14px;
     font-size: 12px;
-    background: transparent;
-    color: var(--h18-text-mid);
-    border: 1px dashed var(--h18-border);
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
     border-radius: 7px;
     cursor: pointer;
     font-family: inherit;
-    font-weight: 600;
+    font-weight: 700;
+    transition: filter 120ms;
 }
 
 .newBtn:hover {
-    background: var(--h18-row-hover);
-    color: var(--h18-text);
-    border-style: solid;
+    filter: brightness(1.08);
 }
 
 /* Right ───────────────────────────────────────────────────────── */
