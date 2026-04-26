@@ -62,6 +62,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate source version consistency
+        working-directory: .
+        run: python3 scripts/check_version_consistency.py --repo-root . source
+
+      - name: Validate updater manifest PR consistency
+        if: startsWith(github.head_ref, 'updater-manifest/v')
+        working-directory: .
+        env:
+          MANIFEST_TAG: ${{ github.head_ref }}
+        run: |
+          python3 scripts/check_version_consistency.py \
+            --repo-root . \
+            manifest \
+            --tag "${MANIFEST_TAG#updater-manifest/}"
+
       # ============================================================
       # Frontend pipeline (cheap; fails fast on the most common
       # regression class — TS / vitest / vite-plugin breakage).
@@ -193,6 +208,22 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate source version consistency
+        working-directory: .
+        run: python scripts/check_version_consistency.py --repo-root . source
+
+      - name: Validate updater manifest PR consistency
+        if: startsWith(github.head_ref, 'updater-manifest/v')
+        working-directory: .
+        shell: bash
+        env:
+          MANIFEST_TAG: ${{ github.head_ref }}
+        run: |
+          python scripts/check_version_consistency.py \
+            --repo-root . \
+            manifest \
+            --tag "${MANIFEST_TAG#updater-manifest/}"
 
       # ============================================================
       # Frontend pipeline (see macos job for ordering rationale).
