@@ -74,11 +74,18 @@
     letter-spacing: 0.06em;
 }
 
-/* AI dock fab — floating ⌘J trigger (real AIDock arrives in P6.6) */
+/* AI dock fab — floating ⌘J trigger.
+ * Position 對應 prototype h18-app.jsx L405-415：右下角，但要避開頁面腳的內容
+ * (Preview keyboard hint footer / RecordingPage transport bar)。
+ *
+ * Default: bottom 80px (vs prototype 20px) — 留出空間給 Preview footer。
+ * Recording 模式：bottom 84px = transport (60-72px) + 12px gap，貼在 transport 上方。
+ *  (prototype 用 112，但 prototype transport 比較高；我們的 transport 只 ~60-72px。)
+ */
 .fab {
     position: absolute;
     right: 20px;
-    bottom: 20px;
+    bottom: 80px;
     z-index: 30;
     width: 44px;
     height: 44px;
@@ -93,7 +100,12 @@
     box-shadow: var(--h18-shadow);
     display: grid;
     place-items: center;
-    transition: transform 100ms var(--h18-ease-spring), filter 140ms;
+    transition: transform 100ms var(--h18-ease-spring), filter 140ms,
+                bottom 200ms var(--h18-ease-spring);
+}
+
+.fabRecording {
+    bottom: 84px;
 }
 
 .fab:hover {

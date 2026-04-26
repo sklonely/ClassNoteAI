@@ -256,9 +256,6 @@ export default function H18ReviewPage({
                 courseId={courseId}
                 lectureId={lectureId}
                 onBack={onBack}
-                onOpenAI={() =>
-                    window.dispatchEvent(new CustomEvent('h18-open-ai-dock'))
-                }
             />
         );
     }

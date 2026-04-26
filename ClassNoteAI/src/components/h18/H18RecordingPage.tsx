@@ -38,8 +38,6 @@ export interface H18RecordingPageProps {
     courseId: string;
     lectureId: string;
     onBack: () => void;
-    /** Open the H18 AIDock (⌘J) — passed from H18DeepApp. */
-    onOpenAI?: () => void;
 }
 
 type RecLayout = 'A' | 'B' | 'C';
@@ -58,7 +56,6 @@ export default function H18RecordingPage({
     courseId,
     lectureId,
     onBack,
-    onOpenAI,
 }: H18RecordingPageProps) {
     const [lecture, setLecture] = useState<Lecture | null>(null);
     const [course, setCourse] = useState<Course | null>(null);
@@ -344,17 +341,6 @@ export default function H18RecordingPage({
                     title="把目前句子標為考點"
                 >
                     ⚑ 標記考點
-                </button>
-
-                {/* ✦ 問 AI */}
-                <button
-                    type="button"
-                    onClick={onOpenAI}
-                    disabled={!onOpenAI}
-                    className={s.transportBtn}
-                    title="叫出 AI 助教 dock (⌘J)"
-                >
-                    ✦ 問 AI
                 </button>
 
                 <div className={s.transportSpacer} />

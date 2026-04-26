@@ -157,12 +157,6 @@ export default function H18DeepApp() {
         return () => clearInterval(id);
     }, [activeRecLecture]);
 
-    // Loose-coupled event for child components to open AI dock (e.g. recording page's ✦ 問 AI button).
-    useEffect(() => {
-        const onOpen = () => setAiDockOpen(true);
-        window.addEventListener('h18-open-ai-dock', onOpen);
-        return () => window.removeEventListener('h18-open-ai-dock', onOpen);
-    }, []);
 
     // ─── theme toggle (persist) ─────────────────────────────────────
     const toggleTheme = useCallback(async () => {
@@ -373,12 +367,12 @@ export default function H18DeepApp() {
                 <main className={s.main}>{renderMain()}</main>
             </div>
 
-            {/* AI dock fab — opens floating ⌘J dock; ai page + 錄音頁面 hide it
-                (錄音頁面 transport bar 自己有 ✦ 問 AI button，這 fab 會撞到「結束·儲存」) */}
-            {parsed.kind !== 'ai' && !aiDockOpen && !isOnRecordingPage && (
+            {/* AI dock fab — opens floating ⌘J dock; ai page hides it.
+                Recording 模式時自動上提（避開 transport bar），per prototype h18-app.jsx L405-415。 */}
+            {parsed.kind !== 'ai' && !aiDockOpen && (
                 <button
                     type="button"
-                    className={s.fab}
+                    className={`${s.fab} ${isOnRecordingPage ? s.fabRecording : ''}`}
                     title="問 AI (⌘J)"
                     aria-label="AI 助教"
                     onClick={() => setAiDockOpen(true)}
