@@ -15,6 +15,7 @@ import { AppSettings } from "../types";
 import { getVersion } from "@tauri-apps/api/app";
 
 import { storageService } from "../services/storageService";
+import s from "./SettingsView.module.css";
 import {
   audioDeviceService,
   AudioDevice,
@@ -334,87 +335,67 @@ export default function SettingsView({}: Props) {
       <button
         key={item.id}
         onClick={() => setActiveTab(item.id)}
-        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all ${
-          isActive
-            ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400 font-medium shadow-sm"
-            : "text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700/50"
-        }`}
+        className={`${s.navBtn} ${isActive ? s.navBtnActive : ''}`}
       >
-        <Icon
-          className={`w-4 h-4 ${
-            isActive
-              ? "text-blue-600 dark:text-blue-400"
-              : "text-gray-400"
-          }`}
-        />
-        <span className="flex-1 text-left">{item.label}</span>
-        {isActive && <ChevronRight className="w-4 h-4 opacity-50" />}
+        <Icon size={14} className={s.navIcon} />
+        <span className={s.navLabel}>{item.label}</span>
+        {isActive && <ChevronRight size={14} className={s.navChevron} />}
       </button>
     );
   };
 
   const renderSectionLabel = (label: string) => (
-    <div className="px-3 pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500 font-semibold">
-      {label}
-    </div>
+    <div className={s.sectionLabel}>{label}</div>
   );
 
   return (
-    <div className="h-full flex bg-gray-50 dark:bg-gray-900">
+    <div className={s.root}>
       {/* Sidebar */}
-      <div className="w-64 flex-shrink-0 bg-white dark:bg-slate-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
-        <div className="p-6 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-xl font-bold text-gray-800 dark:text-white">
-            設置
-          </h2>
+      <div className={s.sidebar}>
+        <div className={s.sidebarHeader}>
+          <h2 className={s.sidebarTitle}>設置</h2>
         </div>
-        <nav className="flex-1 overflow-y-auto p-3 space-y-0.5">
+        <nav className={s.sidebarNav}>
           {renderSectionLabel("主要")}
           {PRIMARY_NAV.map(renderNavButton)}
           {renderSectionLabel("其他")}
           {SECONDARY_NAV.map(renderNavButton)}
         </nav>
-        <div className="p-4 border-t border-gray-200 dark:border-gray-700">
-          <div className="text-xs text-center text-gray-400">
-            ClassNote AI v{appVersion}
-          </div>
+        <div className={s.sidebarFooter}>
+          ClassNote AI v{appVersion}
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
-        <div className="h-16 bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-8 flex-shrink-0">
-          <div>
-            <h1 className="text-lg font-semibold text-gray-800 dark:text-white">
-              {current?.label}
-            </h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {current?.description}
-            </p>
+      <div className={s.main}>
+        <div className={s.mainHeader}>
+          <div className={s.mainHeaderInfo}>
+            <h1 className={s.mainTitle}>{current?.label}</h1>
+            <p className={s.mainDescription}>{current?.description}</p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className={s.mainHeaderRight}>
             {saveStatus === "saving" && (
-              <span className="flex items-center gap-1 text-gray-500 dark:text-gray-400 text-sm">
-                <Save size={14} className="animate-pulse" />
-                儲存中...
+              <span className={`${s.saveStatus} ${s.saveStatusBusy}`}>
+                <Save size={12} className="animate-pulse" />
+                儲存中
               </span>
             )}
             {saveStatus === "success" && (
-              <span className="flex items-center gap-1 text-green-600 dark:text-green-400 text-sm animate-in fade-in slide-in-from-right-4">
-                <CheckCircle size={16} />
+              <span className={`${s.saveStatus} ${s.saveStatusSuccess}`}>
+                <CheckCircle size={14} />
                 已保存
               </span>
             )}
             {saveStatus === "error" && (
-              <span className="flex items-center gap-1 text-red-500 text-sm">
+              <span className={`${s.saveStatus} ${s.saveStatusError}`}>
                 儲存失敗
               </span>
             )}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-8">
-          <div className="max-w-3xl mx-auto">{renderContent()}</div>
+        <div className={s.mainContent}>
+          <div className="max-w-3xl mx-auto p-8">{renderContent()}</div>
         </div>
       </div>
     </div>
