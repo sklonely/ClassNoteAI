@@ -175,6 +175,16 @@ jobs:
             cp latest.json "docs/updater/$channel/latest.json"
           done
 
+      - name: Validate local channel manifests
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
+        env:
+          TAG: ${{ steps.ctx.outputs.tag }}
+        run: |
+          python3 scripts/check_version_consistency.py \
+            --repo-root . \
+            manifest \
+            --tag "$TAG"
+
       - name: Sanity check merged manifest
         if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
         run: |
@@ -243,3 +253,15 @@ jobs:
           gh release edit "$TAG" \
             -R "${GITHUB_REPOSITORY}" \
             --draft=false
+
+      - name: Validate published release + channel manifests
+        if: steps.wait.outputs.ok == 'true' || steps.ctx.outputs.skip_wait == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ctx.outputs.tag }}
+        run: |
+          python3 scripts/check_version_consistency.py \
+            --repo-root . \
+            published \
+            --tag "$TAG" \
+            --github-repository "${GITHUB_REPOSITORY}"

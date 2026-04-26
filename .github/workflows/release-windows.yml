@@ -62,6 +62,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Get version from tag
+        id: release_version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        working-directory: .
+
+      - name: Validate source version consistency for release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: .
+        shell: bash
+        run: |
+          python scripts/check_version_consistency.py \
+            --repo-root . \
+            source \
+            --expected-version "${{ steps.release_version.outputs.VERSION }}"
+
       # sccache — cache native C++ object files (ct2rs, whisper-rs-sys,
       # sentencepiece-sys) across releases. `CARGO_INCREMENTAL=0` is
       # already set above which is a prerequisite for sccache. First
