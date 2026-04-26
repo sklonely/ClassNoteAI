@@ -571,6 +571,47 @@
     margin-bottom: 24px;
 }
 
+/* "你已經累積了 N 小時的學習" hero — 對應 prototype POverview L1255+ */
+.bigHero {
+    margin: 24px 0 28px;
+    text-align: center;
+}
+
+.bigHeroEyebrow {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.bigHeroNumber {
+    font-size: 96px;
+    font-weight: 800;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    letter-spacing: -0.03em;
+    line-height: 1;
+    margin: 8px 0 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+.bigHeroUnit {
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    margin-top: 8px;
+    display: inline-flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-family: var(--h18-font-mono);
+}
+
+.bigHeroUnitVal {
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
 .statCard {
     padding: 14px;
     border-radius: 10px;

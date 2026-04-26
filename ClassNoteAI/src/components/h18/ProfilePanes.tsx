@@ -260,23 +260,26 @@ export function POverview({
                 </button>
             </div>
 
-            <div className={s.statsGrid}>
-                <Stat label="課程" value={stats.courses.toString()} sub="目前追蹤" />
-                <Stat
-                    label="課堂"
-                    value={stats.lectures.toString()}
-                    sub="累積錄製"
-                />
-                <Stat
-                    label="錄音時數"
-                    value={
-                        stats.totalMin >= 60
-                            ? `${(stats.totalMin / 60).toFixed(1)} h`
-                            : `${stats.totalMin} m`
-                    }
-                    sub="所有課堂總和"
-                />
-                <Stat label="連續登入" value="—" sub="streak (留白)" />
+            <div className={s.bigHero}>
+                <div className={s.bigHeroEyebrow}>你已經累積了</div>
+                <div className={s.bigHeroNumber}>
+                    {(stats.totalMin / 60).toFixed(1)}
+                </div>
+                <div className={s.bigHeroUnit}>
+                    <span>
+                        小時的學習{' '}
+                        <span className={s.bigHeroUnitVal}>{stats.lectures}</span> lectures
+                    </span>
+                    <span>
+                        <span className={s.bigHeroUnitVal}>{stats.courses}</span> courses
+                    </span>
+                    <span>
+                        <span className={s.bigHeroUnitVal}>—</span> concepts
+                        <span style={{ color: 'var(--h18-text-faint)', marginLeft: 4 }}>
+                            (留白)
+                        </span>
+                    </span>
+                </div>
             </div>
 
             <PHead first>連結</PHead>
@@ -294,15 +297,6 @@ export function POverview({
     );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
-    return (
-        <div className={s.statCard}>
-            <div className={s.statLabel}>{label}</div>
-            <div className={s.statValue}>{value}</div>
-            <div className={s.statSub}>{sub}</div>
-        </div>
-    );
-}
 
 /* ════════════════════════════════════════════════════════════════
  * PTranscribe — 本地轉錄
