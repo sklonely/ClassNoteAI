@@ -922,6 +922,7 @@ export function PData() {
 
 export function PAbout() {
     const [version, setVersion] = useState<string>('—');
+    const [updateStatus, setUpdateStatus] = useState<string | null>(null);
 
     useEffect(() => {
         import('@tauri-apps/api/app')
@@ -929,6 +930,43 @@ export function PAbout() {
             .then((v) => setVersion(v))
             .catch(() => {});
     }, []);
+
+    const handleCheckUpdate = async () => {
+        setUpdateStatus('檢查中…');
+        try {
+            const { updateService } = await import('../../services/updateService');
+            const result = await updateService.checkForUpdates();
+            if (result.available) {
+                setUpdateStatus(`有新版本：v${result.version}`);
+            } else {
+                setUpdateStatus('已是最新版');
+            }
+        } catch (err) {
+            setUpdateStatus(`檢查失敗：${(err as Error)?.message || '未知錯誤'}`);
+        }
+    };
+
+    const handleOpenFolder = async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const audioDir = await invoke<string>('get_audio_dir');
+            const { openPath } = await import('@tauri-apps/plugin-opener');
+            // open the parent dir (app data root) instead of just audio/
+            const parentDir = audioDir.replace(/[\\/]audio[\\/]?$/, '');
+            await openPath(parentDir || audioDir);
+        } catch (err) {
+            console.warn('[PAbout] open folder failed:', err);
+        }
+    };
+
+    const handleOpenGitHub = async () => {
+        try {
+            const { openUrl } = await import('@tauri-apps/plugin-opener');
+            await openUrl('https://github.com/sklonely/ClassNoteAI');
+        } catch (err) {
+            console.warn('[PAbout] open github failed:', err);
+        }
+    };
 
     return (
         <div>
@@ -945,8 +983,8 @@ export function PAbout() {
             />
             <PRow
                 label="檢查更新"
-                hint="每次啟動會自動靜默檢查；這裡可手動觸發"
-                right={<PBtn>立即檢查</PBtn>}
+                hint={updateStatus || '每次啟動會自動靜默檢查；這裡可手動觸發'}
+                right={<PBtn onClick={handleCheckUpdate}>立即檢查</PBtn>}
             />
 
             <PHead>診斷</PHead>
@@ -958,14 +996,18 @@ export function PAbout() {
             <PRow
                 label="開啟資料夾"
                 hint="跳到 ClassNote 的 app data 目錄 (audio / pdf / index)"
-                right={<PBtn>開啟</PBtn>}
+                right={<PBtn onClick={handleOpenFolder}>開啟</PBtn>}
             />
 
             <PHead>連結</PHead>
-            <PRow label="GitHub" hint="原始碼、issues" right={<PBtn>前往</PBtn>} />
+            <PRow
+                label="GitHub"
+                hint="原始碼、issues"
+                right={<PBtn onClick={handleOpenGitHub}>前往</PBtn>}
+            />
             <PRow
                 label="使用者指南"
-                hint="基本操作 / FAQ / 鍵盤快捷鍵"
+                hint="基本操作 / FAQ / 鍵盤快捷鍵 (留白：尚無 docs URL)"
                 right={<PBtn>前往</PBtn>}
             />
         </div>

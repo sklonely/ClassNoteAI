@@ -208,6 +208,23 @@ export default function H18DeepApp() {
                 setAiDockOpen((v) => !v);
                 return;
             }
+            if (meta && e.key.toLowerCase() === 'n') {
+                e.preventDefault();
+                setIsCourseDialogOpen(true);
+                return;
+            }
+            if (meta && e.key.toLowerCase() === 'h') {
+                e.preventDefault();
+                setActiveNav('home');
+                setOverlayNav(null);
+                return;
+            }
+            if (meta && e.key === ',') {
+                e.preventDefault();
+                setActiveNav('profile');
+                setOverlayNav(null);
+                return;
+            }
             if (e.key === 'Escape') {
                 if (aiDockOpen) setAiDockOpen(false);
                 else if (overlayNav) setOverlayNav(null);
