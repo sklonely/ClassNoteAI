@@ -32,6 +32,7 @@ import {
 } from '../../types/h18Nav';
 import H18TopBar from './H18TopBar';
 import H18Rail from './H18Rail';
+import HomeLayout from './HomeLayout';
 import CourseDetailView from '../CourseDetailView';
 import NotesView from '../NotesView';
 import CourseCreationDialog from '../CourseCreationDialog';
@@ -82,6 +83,9 @@ export default function H18DeepApp() {
     const [overlayNav, setOverlayNav] = useState<H18OverlayNav>(null);
     const [theme, setTheme] = useState<'light' | 'dark'>('light');
     const [courses, setCourses] = useState<Course[]>([]);
+    /** Course shown in HomeLayout's Preview pane. Independent from
+     *  activeNav — you can stay on home and inspect course X. */
+    const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
     const [isCourseDialogOpen, setIsCourseDialogOpen] = useState(false);
 
     // P6.7 之前 legacy settings / trash 還是要能開 — 從 profile placeholder
@@ -126,6 +130,8 @@ export default function H18DeepApp() {
         try {
             const list = await storageService.listCourses();
             setCourses(list);
+            // first-time: pick the first course as preview default
+            setSelectedCourseId((cur) => cur || list[0]?.id || null);
         } catch (err) {
             console.warn('[H18DeepApp] listCourses failed:', err);
             setCourses([]);
@@ -160,6 +166,14 @@ export default function H18DeepApp() {
         if (target === 'add') {
             setIsCourseDialogOpen(true);
             return;
+        }
+        // Hopping to a course-shaped nav target also pins the home Preview
+        // to that course, so when the user comes back to home they see
+        // the course they were last looking at.
+        if (typeof target === 'string') {
+            if (target.startsWith('course:')) setSelectedCourseId(target.slice('course:'.length));
+            else if (target.startsWith('review:')) setSelectedCourseId(target.slice('review:'.length).split(':')[0]);
+            else if (target.startsWith('recording:')) setSelectedCourseId(target.slice('recording:'.length));
         }
         setActiveNav(target);
         setOverlayNav(null);
@@ -203,14 +217,21 @@ export default function H18DeepApp() {
         : undefined;
 
     // ─── main content dispatch ──────────────────────────────────────
+    const selectedCourse = courses.find((c) => c.id === selectedCourseId) ?? null;
+
     const renderMain = () => {
         switch (parsed.kind) {
             case 'home':
                 return (
-                    <Placeholder
-                        eyebrow="HOME · P6.2 預定"
-                        title="Inbox · 行事曆 · Preview"
-                        hint="這裡會放 H18 三欄主畫面：左 Calendar / Inbox 列表，右 Course Preview。先用 rail 上的課程進入課堂，或點 + 新增課程。"
+                    <HomeLayout
+                        courses={courses}
+                        selectedCourse={selectedCourse}
+                        effectiveTheme={theme}
+                        onPickCourse={(id) => setSelectedCourseId(id)}
+                        onOpenCourse={(id) => setActiveNav(`course:${id}`)}
+                        onOpenLecture={(courseId, lectureId) =>
+                            setActiveNav(`review:${courseId}:${lectureId}`)
+                        }
                     />
                 );
             case 'notes':

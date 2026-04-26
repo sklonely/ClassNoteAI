@@ -1,0 +1,293 @@
+/* ============================================================
+ * H18Preview · v0.7.0 Phase 6.2
+ *
+ * 對應 docs/design/h18-deep/h18-inbox-preview.jsx L137-260.
+ * 接得到後端的：course title/description/listLectures。
+ * 留白：reminders, AI summary, 鍵盤快速鍵 (P6.6 之後接)。
+ * ============================================================ */
+
+.preview {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--h18-surface);
+    border-left: 1px solid var(--h18-border);
+    overflow: hidden;
+    font-family: var(--h18-font-sans);
+    color: var(--h18-text);
+}
+
+.head {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--h18-border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.courseChip {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-family: var(--h18-font-mono);
+    color: #fff;
+    flex-shrink: 0;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.headMeta {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.headIcons {
+    margin-left: auto;
+    color: var(--h18-text-faint);
+    font-size: 13px;
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.body {
+    padding: 18px;
+    overflow: auto;
+    flex: 1;
+}
+
+.title {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.25;
+    margin: 0;
+}
+
+.subTitle {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    margin-top: 4px;
+    font-family: var(--h18-font-mono);
+}
+
+.descBox {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    line-height: 1.65;
+    white-space: pre-wrap;
+}
+
+.descMissing {
+    color: var(--h18-text-faint);
+    font-style: italic;
+}
+
+.sectionHead {
+    margin-top: 16px;
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    letter-spacing: 0.16em;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.lectureList {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.lectureRow {
+    padding: 7px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--h18-border-soft);
+    display: grid;
+    grid-template-columns: 32px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--h18-text);
+    cursor: pointer;
+    background: transparent;
+    text-align: left;
+    font-family: inherit;
+    transition: background 120ms, border-color 120ms;
+}
+
+.lectureRow:hover {
+    background: var(--h18-row-hover);
+    border-color: var(--h18-border);
+}
+
+.lectureCode {
+    font-size: 9px;
+    font-weight: 800;
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.lectureMeta {
+    color: var(--h18-text-faint);
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.aiBox {
+    margin-top: 16px;
+    padding: 14px;
+    border-radius: 8px;
+    background: #14141a;
+    color: #e8e6de;
+    position: relative;
+    overflow: hidden;
+}
+
+:root.dark .aiBox {
+    background: #2a2d34;
+}
+
+.aiEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: #c7a77a;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.aiBody {
+    font-size: 12px;
+    margin-top: 6px;
+    line-height: 1.55;
+}
+
+.aiBodyDim {
+    color: rgba(232, 230, 222, 0.6);
+}
+
+.aiActions {
+    margin-top: 10px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.aiBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.aiBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.actions {
+    margin-top: 16px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.btnPrimary {
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border: none;
+    border-radius: 6px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.btnGhost {
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--h18-text);
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.btnGhost:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.foot {
+    padding: 7px 16px;
+    border-top: 1px solid var(--h18-border);
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    letter-spacing: 0.04em;
+    display: flex;
+    gap: 14px;
+    font-family: var(--h18-font-mono);
+    background: var(--h18-surface2);
+    flex-shrink: 0;
+}
+
+.kbd {
+    color: var(--h18-text-mid);
+    font-weight: 700;
+}
+
+.themeMode {
+    margin-left: auto;
+}
+
+/* fully empty (no course selected) */
+.empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--h18-text-dim);
+    padding: 40px;
+    text-align: center;
+    gap: 10px;
+}
+
+.emptyTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text-mid);
+    margin: 0;
+}
+
+.emptyHint {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.5;
+    max-width: 240px;
+    margin: 0;
+}
