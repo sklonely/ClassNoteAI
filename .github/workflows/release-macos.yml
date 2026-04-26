@@ -378,12 +378,6 @@ jobs:
           echo "### 📦 其他 (Other)" >> release_body.txt
           grep -ivE "^(feat|add|new|fix|bug|mod|modify|refactor|update|change|chore|style|build|ci|del|delete|remove|break|breaking)(\(.+\))?:" $LOG_FILE | grep -vE "!:" | sed 's/^/- /' >> release_body.txt || true
           
-          # Append installation instructions
-          echo "" >> release_body.txt
-          echo "---" >> release_body.txt
-          echo "### 自動更新" >> release_body.txt
-          echo "已安裝用戶可透過應用內「設定 → 關於與更新」檢查更新。" >> release_body.txt
-
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
