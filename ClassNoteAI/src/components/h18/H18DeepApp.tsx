@@ -39,46 +39,11 @@ import H18ReviewPage from './H18ReviewPage';
 import H18AIDock from './H18AIDock';
 import H18AIPage from './H18AIPage';
 import ProfilePage from './ProfilePage';
+import NotesEditorPage from './NotesEditorPage';
 import SearchOverlay, { type SearchAction } from './SearchOverlay';
 import s from './H18DeepApp.module.css';
 
-interface PlaceholderProps {
-    eyebrow: string;
-    title: string;
-    hint: string;
-    actionLabel?: string;
-    onAction?: () => void;
-}
-
-function Placeholder({ eyebrow, title, hint, actionLabel, onAction }: PlaceholderProps) {
-    return (
-        <div className={s.placeholder}>
-            <div className={s.placeholderEyebrow}>{eyebrow}</div>
-            <h2 className={s.placeholderTitle}>{title}</h2>
-            <p className={s.placeholderHint}>{hint}</p>
-            {actionLabel && onAction && (
-                <button
-                    type="button"
-                    onClick={onAction}
-                    style={{
-                        marginTop: 16,
-                        padding: '6px 14px',
-                        fontSize: 12,
-                        fontWeight: 700,
-                        border: '1px solid var(--h18-border)',
-                        borderRadius: 8,
-                        background: 'var(--h18-surface)',
-                        color: 'var(--h18-text)',
-                        cursor: 'pointer',
-                        fontFamily: 'inherit',
-                    }}
-                >
-                    {actionLabel}
-                </button>
-            )}
-        </div>
-    );
-}
+// (Placeholder helper removed in P6.9 — every nav target now has a real component)
 
 export default function H18DeepApp() {
     const [activeNav, setActiveNav] = useState<H18ActiveNav>('home');
@@ -225,13 +190,7 @@ export default function H18DeepApp() {
                     />
                 );
             case 'notes':
-                return (
-                    <Placeholder
-                        eyebrow="知識庫 · P6.9 預定"
-                        title="跨課筆記與白板"
-                        hint="doc / canvas / split 三模式編輯器、LaTeX equation block、iPad mirror。新功能 scope，等 chrome ship 後再決定要不要做。"
-                    />
-                );
+                return <NotesEditorPage onBack={() => setActiveNav('home')} />;
             case 'ai':
                 return <H18AIPage onBack={() => setActiveNav('home')} />;
             case 'profile':
