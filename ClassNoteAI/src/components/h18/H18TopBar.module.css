@@ -79,6 +79,91 @@
     letter-spacing: normal;
 }
 
+.inboxIndicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    cursor: pointer;
+    flex-shrink: 0;
+    font-weight: 600;
+    transition: background 120ms;
+}
+
+.inboxIndicator:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.center {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    min-width: 0;
+}
+
+.recIsland {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 11px 4px 9px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-radius: 999px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    border: none;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--h18-dot) 30%, transparent);
+    transition: filter 120ms, transform 100ms;
+}
+
+.recIsland:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.recIslandDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 4px;
+    background: var(--h18-dot);
+    animation: recpulse 1.2s var(--h18-ease-spring) infinite;
+}
+
+@keyframes recpulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.recIslandShort {
+    font-weight: 800;
+    color: #fff;
+    background: var(--h18-dot);
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+
+.recIslandLec {
+    color: var(--h18-invert-ink);
+    letter-spacing: 0.04em;
+}
+
+.recIslandTime {
+    color: color-mix(in srgb, var(--h18-invert-ink) 70%, transparent);
+    font-variant-numeric: tabular-nums;
+}
+
 .right {
     display: flex;
     align-items: center;

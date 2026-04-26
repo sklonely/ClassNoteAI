@@ -17,6 +17,17 @@ import WindowControls from '../WindowControls';
 import TaskIndicator from '../TaskIndicator';
 import s from './H18TopBar.module.css';
 
+/** Active recording lecture metadata for the center "recording island". */
+export interface ActiveRecording {
+    courseShort: string;
+    courseColor: string;
+    lectureNumber: number | string;
+    /** Elapsed seconds since recording started. */
+    elapsedSec: number;
+    /** Click → nav back to recording page. */
+    onClick: () => void;
+}
+
 export interface H18TopBarProps {
     dense?: boolean;
     showWindowControls?: boolean;
@@ -26,6 +37,11 @@ export interface H18TopBarProps {
     canStartRecording?: boolean;
     effectiveTheme: 'light' | 'dark';
     onToggleTheme: () => void;
+    /** Inbox unread count (留白 — schema 沒做時固定 0)。 */
+    inboxCount?: number;
+    onOpenInbox?: () => void;
+    /** Currently active recording session, displayed as center island. */
+    activeRecording?: ActiveRecording | null;
 }
 
 function formatDateTime(d: Date): string {
@@ -38,6 +54,17 @@ function formatDateTime(d: Date): string {
     return `${yyyy}·${mm}·${dd} · ${weekday} ${hh}:${mi}`;
 }
 
+function fmtElapsed(sec: number): string {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    if (m >= 60) {
+        const h = Math.floor(m / 60);
+        return `${String(h).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 export default function H18TopBar({
     dense = false,
     showWindowControls = true,
@@ -46,6 +73,9 @@ export default function H18TopBar({
     canStartRecording = true,
     effectiveTheme,
     onToggleTheme,
+    inboxCount = 0,
+    onOpenInbox,
+    activeRecording,
 }: H18TopBarProps) {
     const [now, setNow] = useState(() => formatDateTime(new Date()));
     useEffect(() => {
@@ -56,9 +86,9 @@ export default function H18TopBar({
     return (
         <div
             className={`${s.bar} ${dense ? s.barDense : ''}`}
-            data-tauri-drag-region="true"
+            data-tauri-drag-region
         >
-            <div className={s.left} data-tauri-drag-region="true">
+            <div className={s.left} data-tauri-drag-region>
                 {showWindowControls && (
                     <>
                         <span data-tauri-drag-region="false">
@@ -68,11 +98,45 @@ export default function H18TopBar({
                     </>
                 )}
                 <div className={s.logoBadge} data-tauri-drag-region="false">C</div>
-                <span className={s.brand} data-tauri-drag-region="true">
+                <span className={s.brand} data-tauri-drag-region>
                     ClassNote
                 </span>
+                <button
+                    type="button"
+                    onClick={onOpenInbox}
+                    className={s.inboxIndicator}
+                    title="Inbox"
+                    data-tauri-drag-region="false"
+                >
+                    Inbox · {inboxCount} 項
+                </button>
                 <div className={s.divider} />
                 <span className={s.meta}>{now}</span>
+            </div>
+
+            {/* Center — recording island (only when actively recording) */}
+            <div className={s.center} data-tauri-drag-region>
+                {activeRecording && (
+                    <button
+                        type="button"
+                        onClick={activeRecording.onClick}
+                        className={s.recIsland}
+                        data-tauri-drag-region="false"
+                        title="返回錄音"
+                    >
+                        <span className={s.recIslandDot} />
+                        <span
+                            className={s.recIslandShort}
+                            style={{ background: activeRecording.courseColor }}
+                        >
+                            {activeRecording.courseShort}
+                        </span>
+                        <span className={s.recIslandLec}>L{activeRecording.lectureNumber}</span>
+                        <span className={s.recIslandTime}>
+                            {fmtElapsed(activeRecording.elapsedSec)}
+                        </span>
+                    </button>
+                )}
             </div>
 
             <div className={s.right} data-tauri-drag-region="false">

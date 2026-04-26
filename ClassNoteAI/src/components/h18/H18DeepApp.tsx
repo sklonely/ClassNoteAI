@@ -32,6 +32,7 @@ import {
 } from '../../types/h18Nav';
 import H18TopBar from './H18TopBar';
 import H18Rail from './H18Rail';
+import { courseColor, courseShort } from './courseColor';
 import HomeLayout from './HomeLayout';
 import CourseDetailPage from './CourseDetailPage';
 import AddCourseDialog from './AddCourseDialog';
@@ -102,6 +103,59 @@ export default function H18DeepApp() {
         window.addEventListener('classnote-courses-changed', onChange);
         return () => window.removeEventListener('classnote-courses-changed', onChange);
     }, [reloadCourses]);
+
+    // ─── active recording detection (TopBar 中央 island) ─────────────
+    const [activeRecLecture, setActiveRecLecture] = useState<{
+        lectureId: string;
+        courseId: string;
+        startedAtMs: number;
+    } | null>(null);
+    const [recElapsedSec, setRecElapsedSec] = useState(0);
+
+    useEffect(() => {
+        let cancelled = false;
+        const probe = async () => {
+            try {
+                const all = await storageService.listLectures();
+                const rec = all.find((l) => l.status === 'recording');
+                if (cancelled) return;
+                if (rec) {
+                    const startedAtMs = new Date(rec.updated_at || rec.created_at).getTime();
+                    setActiveRecLecture({
+                        lectureId: rec.id,
+                        courseId: rec.course_id,
+                        startedAtMs,
+                    });
+                } else {
+                    setActiveRecLecture(null);
+                }
+            } catch {
+                /* swallow */
+            }
+        };
+        probe();
+        const id = setInterval(probe, 4000);
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+        };
+    }, []);
+
+    // tick elapsed once a second while recording
+    useEffect(() => {
+        if (!activeRecLecture) {
+            setRecElapsedSec(0);
+            return;
+        }
+        const tick = () => {
+            setRecElapsedSec(
+                Math.max(0, Math.floor((Date.now() - activeRecLecture.startedAtMs) / 1000)),
+            );
+        };
+        tick();
+        const id = setInterval(tick, 1000);
+        return () => clearInterval(id);
+    }, [activeRecLecture]);
 
     // ─── theme toggle (persist) ─────────────────────────────────────
     const toggleTheme = useCallback(async () => {
@@ -244,6 +298,26 @@ export default function H18DeepApp() {
         }
     };
 
+    // Build active recording payload for TopBar island
+    const activeRecCourse = activeRecLecture
+        ? courses.find((c) => c.id === activeRecLecture.courseId)
+        : null;
+    const activeRecording = activeRecLecture && activeRecCourse
+        ? {
+              courseShort: courseShort(
+                  activeRecCourse.title,
+                  activeRecCourse.keywords,
+              ),
+              courseColor: courseColor(activeRecCourse.id),
+              lectureNumber: '—',
+              elapsedSec: recElapsedSec,
+              onClick: () =>
+                  setActiveNav(
+                      `review:${activeRecLecture.courseId}:${activeRecLecture.lectureId}`,
+                  ),
+          }
+        : null;
+
     return (
         <div className={s.root}>
             <H18TopBar
@@ -253,6 +327,9 @@ export default function H18DeepApp() {
                 canStartRecording={canStartRecording}
                 effectiveTheme={theme}
                 onToggleTheme={() => void toggleTheme()}
+                inboxCount={0}
+                onOpenInbox={() => setActiveNav('home')}
+                activeRecording={activeRecording}
             />
             <div className={s.layout}>
                 <H18Rail
