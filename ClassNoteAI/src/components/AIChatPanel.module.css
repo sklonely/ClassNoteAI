@@ -1,0 +1,184 @@
+/* ============================================================
+ * AIChatPanel · v0.7.0 H18 (focus: floating + sidebar shells)
+ * 對應 docs/design/h18-deep/h18-aidock-recording.jsx
+ *
+ * 重點：把那條藍紫漸層 header 換成 H18 surface header (warm bg
+ * + accent dot)。其它內部 message / markdown 樣式留 v0.7.x。
+ * ============================================================ */
+
+.shellFloating {
+    position: fixed;
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: 12px;
+    box-shadow: var(--h18-shadow);
+    z-index: 50;
+    overflow: hidden;
+    font-family: var(--h18-font-sans);
+}
+
+.shellSidebar {
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border-left: 1px solid var(--h18-border);
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    font-family: var(--h18-font-sans);
+}
+
+.shellDetached {
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    font-family: var(--h18-font-sans);
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--h18-surface);
+    border-bottom: 1px solid var(--h18-border);
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.headerDrag {
+    cursor: move;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--h18-text);
+    font-weight: 700;
+    font-size: 13px;
+}
+
+.brandIcon {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-accent);
+    display: grid;
+    place-items: center;
+}
+
+.brandLabel {
+    letter-spacing: -0.01em;
+}
+
+.brandEyebrow {
+    font-size: 9px;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-dim);
+    letter-spacing: 0.16em;
+    font-weight: 700;
+    margin-left: 4px;
+}
+
+.headerActions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.iconBtn {
+    width: 24px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--h18-text-dim);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 140ms, color 140ms, border-color 140ms;
+}
+
+.iconBtn:hover {
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    border-color: var(--h18-border-soft);
+}
+
+.iconBtnActive {
+    background: var(--h18-chip-bg);
+    color: var(--h18-accent);
+    border-color: color-mix(in oklab, var(--h18-accent) 35%, var(--h18-border));
+}
+
+.sessionsList {
+    position: absolute;
+    top: 44px;
+    left: 0;
+    right: 0;
+    background: var(--h18-surface);
+    border-bottom: 1px solid var(--h18-border);
+    box-shadow: var(--h18-shadow);
+    z-index: 10;
+    max-height: 192px;
+    overflow-y: auto;
+}
+
+.sessionRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    cursor: pointer;
+    font-size: 13px;
+    border-bottom: 1px solid var(--h18-border-soft);
+    transition: background 100ms;
+}
+
+.sessionRow:last-child {
+    border-bottom: none;
+}
+
+.sessionRow:hover {
+    background: var(--h18-surface2);
+}
+
+.sessionRowActive {
+    background: var(--h18-chip-bg);
+    border-left: 3px solid var(--h18-accent);
+    padding-left: 7px;
+}
+
+.sessionTitle {
+    font-weight: 600;
+    color: var(--h18-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sessionMeta {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.sessionEmpty {
+    padding: 12px;
+    text-align: center;
+    color: var(--h18-text-dim);
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}

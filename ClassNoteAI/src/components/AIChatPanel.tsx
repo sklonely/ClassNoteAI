@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import { ragService, IndexingProgress } from '../services/ragService';
 import { chatSessionService, ChatSession, ChatMessage } from '../services/chatSessionService';
 import { chatStream as llmChatStream, usageTracker } from '../services/llm';
+import s from './AIChatPanel.module.css';
 
 // 重新導出 ChatMessage 類型供其他組件使用
 export type { ChatMessage } from '../services/chatSessionService';
@@ -408,12 +409,12 @@ export default function AIChatPanel({
     const isFloating = displayMode === 'floating';
     let shellClass: string;
     if (isFloating) {
-        shellClass = 'fixed flex flex-col bg-white dark:bg-slate-800 rounded-lg shadow-2xl border border-gray-200 dark:border-gray-600 z-50 overflow-hidden';
+        shellClass = s.shellFloating;
     } else if (displayMode === 'sidebar') {
-        shellClass = 'flex flex-col bg-white dark:bg-slate-800 border-l border-gray-200 dark:border-gray-700 overflow-hidden w-full h-full';
+        shellClass = s.shellSidebar;
     } else {
         // detached
-        shellClass = 'flex flex-col bg-white dark:bg-slate-800 overflow-hidden w-full h-full';
+        shellClass = s.shellDetached;
     }
     const shellStyle = isFloating
         ? {
@@ -432,22 +433,25 @@ export default function AIChatPanel({
             onMouseDown={isFloating ? handleMouseDown : undefined}
         >
             {/* Header - drag handle only when floating */}
-            <div className={`${isFloating ? 'drag-handle cursor-move' : ''} flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 bg-gradient-to-r from-purple-500 to-blue-500 select-none`}>
-                <div className="flex items-center gap-2 text-white">
-                    <Bot className="w-4 h-4" />
-                    <span className="font-medium text-sm">AI 助教</span>
+            <div className={`${s.header} ${isFloating ? `drag-handle ${s.headerDrag}` : ''}`}>
+                <div className={s.brand}>
+                    <span className={s.brandIcon}>
+                        <Bot size={13} />
+                    </span>
+                    <span className={s.brandLabel}>AI 助教</span>
+                    <span className={s.brandEyebrow}>RAG</span>
                 </div>
-                <div className="flex items-center gap-1">
+                <div className={s.headerActions}>
                     <button
                         onClick={createNewSession}
-                        className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                        className={s.iconBtn}
                         title="新對話"
                     >
                         <Plus className="w-3 h-3" />
                     </button>
                     <button
                         onClick={() => setShowSessions(!showSessions)}
-                        className={`p-1 hover:bg-white/20 rounded transition-colors text-white ${showSessions ? 'bg-white/20' : ''}`}
+                        className={`${s.iconBtn} ${showSessions ? s.iconBtnActive : ''}`}
                         title="對話歷史"
                     >
                         <History className="w-3 h-3" />
@@ -456,7 +460,7 @@ export default function AIChatPanel({
                         <button
                             onClick={handleResetPosition}
                             aria-label={'\u91cd\u7f6e\u4f4d\u7f6e'}
-                            className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                            className={s.iconBtn}
                             title={'\u91cd\u7f6e\u4f4d\u7f6e'}
                         >
                             <Maximize2 className="w-3 h-3" />
@@ -465,7 +469,7 @@ export default function AIChatPanel({
                     {isFloating && (
                         <button
                             onClick={() => setIsMinimized(!isMinimized)}
-                            className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                            className={s.iconBtn}
                             title={isMinimized ? '展開' : '最小化'}
                         >
                             {isMinimized ? <Maximize2 className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
@@ -473,7 +477,7 @@ export default function AIChatPanel({
                     )}
                     <button
                         onClick={onClose}
-                        className="p-1 hover:bg-white/20 rounded transition-colors text-white"
+                        className={s.iconBtn}
                         title="關閉"
                     >
                         <X className="w-3 h-3" />
