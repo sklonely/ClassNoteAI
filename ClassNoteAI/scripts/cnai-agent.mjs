@@ -83,6 +83,7 @@ Usage:
   node scripts/cnai-agent.mjs app attach [--json] [--attach-file PATH]
   node scripts/cnai-agent.mjs app handshake [--json] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs app status [--json] [--bridge-url URL] [--token TOKEN]
+  node scripts/cnai-agent.mjs app ai-status [--json] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs events watch [--ndjson] [--follow] [--max-events N] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs tasks list [--json] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs logs tail [--json] [--follow] [--bridge-url URL] [--token TOKEN]
@@ -107,6 +108,7 @@ Commands:
   app attach      Read the app bridge attach file.
   app handshake   Ask a running app bridge for its versioned contract.
   app status      Ask a running app bridge for app/session health.
+  app ai-status   Ask a running app bridge for AI provider readiness.
   events watch    Stream app bridge events as NDJSON.
   tasks list      List bridge task lifecycle records.
   logs tail       Read or follow app bridge logs.
@@ -300,6 +302,11 @@ function handshakePayload() {
         id: 'app.status',
         stability: 'experimental',
         description: 'Inspect a running app bridge state.',
+      },
+      {
+        id: 'app.ai-status',
+        stability: 'experimental',
+        description: 'Inspect AI provider readiness reported by the app bridge.',
       },
       {
         id: 'app.launch',
@@ -764,6 +771,7 @@ function appBridgeSmokeStepIds() {
     'raw-command',
     'ui-tree',
     'ui-ready',
+    'ai-config',
     'ui-snapshot',
     'workflow-import-media',
     'tasks',
@@ -944,6 +952,9 @@ async function runAppBridgeCheck(stepId, options) {
   if (stepId === 'ui-ready') {
     return waitForRendererUi(options);
   }
+  if (stepId === 'ai-config') {
+    return waitForAiConfig(options);
+  }
 
   const check = checks[stepId];
   if (!check) {
@@ -960,6 +971,27 @@ async function runAppBridgeCheck(stepId, options) {
     message: `${stepId} passed`,
     data: summarizeSmokePayload(payload),
   };
+}
+
+async function waitForAiConfig(options) {
+  const deadline = Date.now() + (options.timeoutMs ?? 30_000);
+  let lastStatus = null;
+  while (Date.now() <= deadline) {
+    const { code, payload } = await requestBridgeJson('app_ai_status', {
+      ...options,
+      timeoutMs: Math.min(options.timeoutMs ?? 5000, 5000),
+    }, '/v1/config/ai');
+    lastStatus = payload.body?.status ?? null;
+    if (code === 0 && lastStatus === 'ok') {
+      return {
+        status: 'passed',
+        message: 'AI provider state registered',
+        data: summarizeSmokePayload(payload),
+      };
+    }
+    await sleep(250);
+  }
+  throw new Error(`AI provider state did not register before timeout; last status: ${lastStatus ?? 'unknown'}`);
 }
 
 async function waitForRendererUi(options) {
@@ -1252,6 +1284,16 @@ async function handleAppCommand(options) {
       'app_status',
       options,
       '/v1/status',
+    );
+    printPayload(payload, options.format);
+    return code;
+  }
+
+  if (subcommand === 'ai-status') {
+    const { code, payload } = await requestBridgeJson(
+      'app_ai_status',
+      options,
+      '/v1/config/ai',
     );
     printPayload(payload, options.format);
     return code;

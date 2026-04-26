@@ -15,6 +15,7 @@ import { toastService } from "./services/toastService";
 import { buildInterruptedRecordingNotice } from "./services/recordingInterruptionNotice";
 import { audioDeviceService } from "./services/audioDeviceService";
 import { useAgentAutomationBridge } from "./services/agentAutomationService";
+import { useAgentAiStateBridge } from "./services/agentAiStateService";
 import { useAgentWorkflowBridge } from "./services/agentWorkflowService";
 import { useAuth } from "./contexts/AuthContext";
 
@@ -25,6 +26,7 @@ function App() {
   const [recoverableSessions, setRecoverableSessions] = useState<RecoverableSession[]>([]);
   const { user } = useAuth();
   useAgentAutomationBridge();
+  useAgentAiStateBridge();
   useAgentWorkflowBridge();
 
   // Detached AI 助教 webview: spawned by openDetachedAiTutor with the

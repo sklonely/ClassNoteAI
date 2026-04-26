@@ -2778,6 +2778,7 @@ pub fn run() {
             open_devtools,
             close_devtools,
             agent_bridge::agent_bridge_update_ui_state,
+            agent_bridge::agent_bridge_update_ai_state,
             agent_bridge::agent_bridge_complete_ui_action,
             agent_bridge::agent_bridge_workflow_progress,
             agent_bridge::agent_bridge_complete_workflow,
