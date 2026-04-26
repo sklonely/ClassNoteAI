@@ -17,6 +17,8 @@ export interface BuildFeatures {
   nmt_local: boolean;
   /** `gpu-cuda` — Whisper CUDA + CT2 cuda-dynamic-loading. Implies nmt_local. */
   gpu_cuda: boolean;
+  /** `bundle-cuda` — CUDA installer variant with bundled CUDA sidecars. */
+  bundle_cuda?: boolean;
   /** `gpu-metal` — macOS Metal for whisper + candle. */
   gpu_metal: boolean;
   /** `gpu-vulkan` — Whisper Vulkan backend. */

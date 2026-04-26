@@ -25,6 +25,7 @@ nmt-local = []
 speaker-diarization = ["parakeet-rs/sortformer"]
 gpu-directml = ["ort/directml", "parakeet-rs/directml"]
 gpu-coreml = ["ort/coreml", "parakeet-rs/coreml"]
+bundle-cuda = []
 
 # Whisper GPU backends. All three are opt-in and OFF by default — the
 # CPU build stays the baseline, so any regression from a broken
@@ -65,11 +66,9 @@ gpu-coreml = ["ort/coreml", "parakeet-rs/coreml"]
 #                             NVIDIA drivers.
 # Vulkan/Metal aren't supported by ct2rs (CUDA-only GPU backend). Metal
 # covers whisper + candle; Vulkan covers only whisper.
-# GPU features for the Candle BGE embedding model. v2 has no in-process
-# ASR (Parakeet runs as a sidecar) and no in-process translation
-# (TranslateGemma runs as a sidecar), so the only Rust-side accelerator
-# need is BGE embedding. Currently CUDA is disabled in CI for the same
-# reason as before — candle-kernels OOM in nvcc on 16 GB GitHub runners.
+# GPU features for runtime ML backends. Release CI uses `bundle-cuda`
+# for the CUDA installer variant so it can ship the CUDA llama.cpp
+# sidecar without compiling the heavier Rust CUDA backend.
 gpu-cuda = ["ort/cuda", "parakeet-rs/cuda"]
 gpu-vulkan = []
 gpu-metal = [
