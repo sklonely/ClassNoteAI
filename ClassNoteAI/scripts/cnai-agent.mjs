@@ -90,6 +90,11 @@ Usage:
   node scripts/cnai-agent.mjs workflow import-media --json [--file PATH]
   node scripts/cnai-agent.mjs ui snapshot [--json]
   node scripts/cnai-agent.mjs ui tree [--json]
+  node scripts/cnai-agent.mjs ui click --target ID [--json]
+  node scripts/cnai-agent.mjs ui type --target ID --text TEXT [--clear] [--json]
+  node scripts/cnai-agent.mjs ui key --key KEY [--json]
+  node scripts/cnai-agent.mjs ui navigate --path PATH [--json]
+  node scripts/cnai-agent.mjs ui wait-for [--target ID|--selector CSS|--text TEXT] [--timeout-ms N] [--json]
   node scripts/cnai-agent.mjs call raw <command> [--json]
   node scripts/cnai-agent.mjs smoke [--profile quick|frontend|release] [--json|--ndjson] [--dry-run] [--timeout-ms N]
 
@@ -105,6 +110,11 @@ Commands:
   workflow list   Print known workflow command contracts.
   ui snapshot     Ask the app bridge for a visual snapshot.
   ui tree         Ask the app bridge for a semantic UI tree.
+  ui click        Click a renderer UI element by stable id or selector.
+  ui type         Type text into an input/textarea/contenteditable target.
+  ui key          Send a keyboard event to the focused element.
+  ui navigate     Push a renderer route/path.
+  ui wait-for     Wait until text or a target appears in the renderer UI.
   call raw        Ask the bridge to invoke a raw app command.
   smoke           Run a deterministic local smoke profile for agents/CI.
 
@@ -139,6 +149,12 @@ function parseArgs(argv) {
     dev: false,
     port: undefined,
     file: undefined,
+    target: undefined,
+    selector: undefined,
+    text: undefined,
+    path: undefined,
+    key: undefined,
+    clear: false,
     positional: [],
   };
 
@@ -176,6 +192,18 @@ function parseArgs(argv) {
       options.output = args.shift();
     } else if (arg === '--file') {
       options.file = args.shift();
+    } else if (arg === '--target') {
+      options.target = args.shift();
+    } else if (arg === '--selector') {
+      options.selector = args.shift();
+    } else if (arg === '--text') {
+      options.text = args.shift();
+    } else if (arg === '--path') {
+      options.path = args.shift();
+    } else if (arg === '--key') {
+      options.key = args.shift();
+    } else if (arg === '--clear') {
+      options.clear = true;
     } else if (arg === '--follow') {
       options.follow = true;
     } else if (arg === '--detach') {
@@ -263,13 +291,18 @@ function handshakePayload() {
       },
       {
         id: 'ui.snapshot',
-        stability: 'planned',
+        stability: 'experimental',
         description: 'Capture visual state through the bridge.',
       },
       {
         id: 'ui.tree',
-        stability: 'planned',
+        stability: 'experimental',
         description: 'Read semantic UI state through the bridge.',
+      },
+      {
+        id: 'ui.action',
+        stability: 'experimental',
+        description: 'Drive renderer UI actions through the bridge.',
       },
     ],
     bridge: {
@@ -1004,12 +1037,77 @@ function parseSse(text) {
 
 async function handleUiCommand(options) {
   const subcommand = options.commandParts[1];
-  if (!['snapshot', 'tree'].includes(subcommand)) {
+  if (['snapshot', 'tree'].includes(subcommand)) {
+    const { code, payload } = await requestBridgeJson(`ui_${subcommand}`, options, `/v1/ui/${subcommand}`);
+    printPayload(payload, options.format);
+    return code;
+  }
+
+  if (!['click', 'type', 'key', 'navigate', 'wait-for'].includes(subcommand)) {
     throw new UsageError(`Unknown ui command: ${subcommand ?? ''}`);
   }
-  const { code, payload } = await requestBridgeJson(`ui_${subcommand}`, options, `/v1/ui/${subcommand}`);
+
+  const body = uiActionBody(subcommand, options);
+  const requestOptions = subcommand === 'wait-for'
+    ? {
+        ...options,
+        timeoutMs: Math.max(options.timeoutMs ?? 5000, (body.timeoutMs ?? 5000) + 5000),
+      }
+    : options;
+  const { code, payload } = await requestBridgeJson(`ui_${subcommand.replace('-', '_')}`, requestOptions, `/v1/ui/${subcommand}`, {
+    method: 'POST',
+    body,
+  });
   printPayload(payload, options.format);
   return code;
+}
+
+function uiActionBody(subcommand, options) {
+  if (subcommand === 'click') {
+    if (!options.target && !options.selector) {
+      throw new UsageError('ui click requires --target or --selector');
+    }
+    return { target: options.target ?? null, selector: options.selector ?? null };
+  }
+
+  if (subcommand === 'type') {
+    if (!options.target && !options.selector) {
+      throw new UsageError('ui type requires --target or --selector');
+    }
+    if (options.text == null) {
+      throw new UsageError('ui type requires --text');
+    }
+    return {
+      target: options.target ?? null,
+      selector: options.selector ?? null,
+      text: options.text,
+      clear: options.clear,
+    };
+  }
+
+  if (subcommand === 'key') {
+    if (!options.key && !options.text) {
+      throw new UsageError('ui key requires --key');
+    }
+    return { key: options.key ?? options.text };
+  }
+
+  if (subcommand === 'navigate') {
+    if (!options.path) {
+      throw new UsageError('ui navigate requires --path');
+    }
+    return { path: options.path };
+  }
+
+  if (!options.target && !options.selector && options.text == null) {
+    throw new UsageError('ui wait-for requires --target, --selector, or --text');
+  }
+  return {
+    target: options.target ?? null,
+    selector: options.selector ?? null,
+    text: options.text ?? null,
+    timeoutMs: options.timeoutMs ?? 5000,
+  };
 }
 
 async function handleCallCommand(options) {

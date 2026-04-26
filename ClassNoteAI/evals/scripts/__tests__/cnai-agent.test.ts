@@ -215,4 +215,62 @@ describe('cnai-agent CLI', () => {
     expect(payload.status).toBe('skipped');
     expect(payload.env.CNAI_AGENT_BRIDGE).toBe('1');
   });
+
+  it('posts renderer UI actions to the bridge', async () => {
+    let requestBody = '';
+    const server = createServer((req, res) => {
+      req.on('data', (chunk) => {
+        requestBody += chunk.toString();
+      });
+      req.on('end', () => {
+        res.setHeader('content-type', 'application/json');
+        res.end(
+          JSON.stringify({
+            schemaVersion: 1,
+            type: 'ui_action',
+            status: 'ok',
+            kind: 'click',
+          }),
+        );
+      });
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('server did not bind to a TCP port');
+    }
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'cnai-agent-test-'));
+    const attachFile = resolve(tempDir, 'agent-bridge.json');
+    writeFileSync(
+      attachFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        apiVersion: 1,
+        url: `http://127.0.0.1:${address.port}`,
+        token: 'test-token',
+        pid: 123,
+      }),
+    );
+
+    const result = await runCliAsync([
+      'ui',
+      'click',
+      '--target',
+      'nav.settings',
+      '--json',
+      '--attach-file',
+      attachFile,
+      '--timeout-ms',
+      '2000',
+    ]);
+    server.close();
+
+    const payload = JSON.parse(result.stdout);
+    expect(result.status).toBe(0);
+    expect(payload.type).toBe('ui_click');
+    expect(JSON.parse(requestBody)).toEqual({
+      target: 'nav.settings',
+      selector: null,
+    });
+  });
 });

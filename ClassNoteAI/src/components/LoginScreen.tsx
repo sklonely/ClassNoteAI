@@ -47,7 +47,10 @@ export default function LoginScreen({ onComplete }: LoginScreenProps) {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+        <div
+            data-agent-id="auth.login"
+            className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900"
+        >
             <div className="w-full max-w-md p-8 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 animate-in fade-in zoom-in duration-300">
                 <div className="text-center mb-8">
                     <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -64,6 +67,7 @@ export default function LoginScreen({ onComplete }: LoginScreenProps) {
                 <div className="space-y-4">
                     <div>
                         <input
+                            data-agent-id="auth.username"
                             type="text"
                             value={username}
                             onChange={(e) => setUsername(e.target.value)}
@@ -82,6 +86,7 @@ export default function LoginScreen({ onComplete }: LoginScreenProps) {
                     )}
 
                     <button
+                        data-agent-id="auth.submit"
                         onClick={handleLogin}
                         disabled={isLoading || !username.trim()}
                         className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl font-medium transition-all transform active:scale-[0.98]"

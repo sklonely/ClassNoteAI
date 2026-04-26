@@ -29,6 +29,11 @@ node scripts/cnai-agent.mjs workflow list --json
 node scripts/cnai-agent.mjs workflow diagnostics --json
 node scripts/cnai-agent.mjs call raw get_build_features --json
 node scripts/cnai-agent.mjs ui tree --json
+node scripts/cnai-agent.mjs ui click --target nav.settings --json
+node scripts/cnai-agent.mjs ui wait-for --target view.settings --json
+node scripts/cnai-agent.mjs ui type --target course.name --text "Algorithms" --clear --json
+node scripts/cnai-agent.mjs ui key --key Escape --json
+node scripts/cnai-agent.mjs ui navigate --path / --json
 node scripts/cnai-agent.mjs smoke --profile quick --json
 node scripts/cnai-agent.mjs smoke --profile frontend --ndjson
 node scripts/cnai-agent.mjs smoke --profile release --json
@@ -71,7 +76,8 @@ Issue #112 is larger than this first CLI PR. This table keeps the scope honest:
 | Diagnostic bundle | Implemented locally and through `/v1/diag/bundle` when attached to the app bridge. |
 | Raw command plane | Implemented for a small safe allowlist: `get_build_features` and `agent_bridge_status`. |
 | High-level workflow commands | `workflow list` exposes contracts locally and through `/v1/workflows`; `workflow diagnostics` is implemented as an app-backed workflow. Media/OCR/summary/chat execution endpoints currently return structured `unsupported`. |
-| Visual snapshot / semantic UI tree | `ui tree` returns native Tauri window inventory now. Pixel screenshot and full semantic DOM/accessibility tree still require UI instrumentation. |
+| Visual snapshot / semantic UI tree | `ui tree` and `ui snapshot` now return renderer DOM state when the app is attached, with native window inventory as fallback. Pixel screenshots remain a later bridge phase. |
+| UI action plane | Implemented for renderer `click`, `type`, `key`, `navigate`, and `wait-for` actions through authenticated bridge endpoints. |
 | Cross-platform app smoke | Local CLI smoke is cross-platform; real CLI-to-running-app smoke is available through `app launch` + `app status`, and should be added to CI/manual release smoke once stable on both OSes. |
 
 ## Smoke Profiles
@@ -104,11 +110,15 @@ The first bridge-backed version provides:
 - bridge-aware commands that fail with structured `bridge_unavailable` payloads
 - authenticated attach via an app-written attach file
 - status, logs, events, diagnostic bundle, and workflow discovery endpoints
+- renderer DOM state and basic UI actions for app-driving agents
 
 The next bridge-backed commands should reuse this entry point:
 
 ```bash
 node scripts/cnai-agent.mjs app status --json
+node scripts/cnai-agent.mjs ui tree --json
+node scripts/cnai-agent.mjs ui click --target nav.settings --json
+node scripts/cnai-agent.mjs ui wait-for --target view.settings --json
 node scripts/cnai-agent.mjs events watch --ndjson
 node scripts/cnai-agent.mjs workflow import-media --file lecture.mp4 --json
 node scripts/cnai-agent.mjs diag bundle --json
