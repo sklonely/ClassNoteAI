@@ -25,6 +25,7 @@ import {
 } from '../services/storageService';
 import CourseCreationDialog from './CourseCreationDialog';
 import { toastService } from '../services/toastService';
+import s from './CourseDetailView.module.css';
 
 /**
  * LLM syllabus output is best-effort JSON. Even with strict prompts,
@@ -222,17 +223,17 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
 
     if (isLoading) {
         return (
-            <div className="flex items-center justify-center h-full">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            <div className={s.fullCenter}>
+                <div className={s.spinner} />
             </div>
         );
     }
 
     if (!course) {
         return (
-            <div className="p-6 text-center text-gray-500">
+            <div className={s.fullCenter}>
                 <p>找不到該科目</p>
-                <button onClick={onBack} className="mt-4 text-blue-600 hover:underline">返回首頁</button>
+                <button onClick={onBack} className={s.linkBtn}>返回首頁</button>
             </div>
         );
     }
@@ -242,29 +243,29 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
     const syllabusFailureReason = getCourseSyllabusFailureReason(syllabus_info);
 
     return (
-        <div className="h-full flex flex-col bg-gray-50 dark:bg-gray-900">
+        <div className={s.root}>
             {/* Header */}
-            <div className="bg-white dark:bg-slate-800 border-b border-gray-200 dark:border-gray-700 px-6 py-4 shadow-sm z-10">
-                <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 mb-2">
-                    <button onClick={onBack} className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors">首頁</button>
-                    <ChevronRight className="w-4 h-4" />
-                    <span className="text-gray-800 dark:text-gray-200 font-medium">{course.title}</span>
+            <div className={s.header}>
+                <div className={s.crumb}>
+                    <button onClick={onBack} className={s.crumbBack}>HOME</button>
+                    <ChevronRight size={12} className={s.crumbSep} />
+                    <span className={s.crumbCurrent}>{course.title.toUpperCase()}</span>
                 </div>
 
-                <div className="flex justify-between items-start">
+                <div className={s.titleRow}>
                     <div>
-                        <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                        <h1 className={s.titleText}>
                             {course.title}
                             <button
                                 onClick={() => setIsEditDialogOpen(true)}
-                                className="p-1 text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                                className={s.editBtn}
                             >
-                                <Pencil className="w-5 h-5" />
+                                <Pencil size={16} />
                             </button>
                         </h1>
                         {course.keywords && (
-                            <div className="flex items-center gap-2 mt-2 text-sm text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 px-2 py-1 rounded w-fit">
-                                <Hash className="w-3 h-3" />
+                            <div className={s.kwChip}>
+                                <Hash size={11} />
                                 <span>{course.keywords}</span>
                             </div>
                         )}
@@ -273,86 +274,88 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
             </div>
 
             {/* Main Content - 2 Column Layout */}
-            <div className="flex-1 overflow-auto p-6">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+            <div className={s.body}>
+                <div className={s.grid}>
                     {/* Left Column: Syllabus Summary */}
-                    <div className="lg:col-span-1 space-y-6">
-                        <div className="bg-white dark:bg-slate-800 rounded-xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
-                            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4 flex items-center gap-2">
-                                <FileText className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                    <div>
+                        <div className={s.card}>
+                            <h2 className={s.cardTitle}>
+                                <FileText size={16} className={s.cardTitleIcon} />
                                 課程大綱
                             </h2>
 
                             {syllabusState === 'ready' && syllabus_info ? (
-                                <div className="space-y-4">
+                                <>
                                     {syllabus_info.topic && (
-                                        <div>
-                                            <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-1">課程主題</h3>
-                                            <p className="text-sm text-gray-700 dark:text-gray-300">{toDisplayString(syllabus_info.topic)}</p>
+                                        <div className={s.section}>
+                                            <span className={s.eyebrow}>課程主題</span>
+                                            <p className={`${s.synopsis} ${s.synopsisLg}`}>{toDisplayString(syllabus_info.topic)}</p>
                                         </div>
                                     )}
 
-                                    <div className="grid grid-cols-1 gap-3">
-                                        {syllabus_info.time && (
-                                            <div className="flex items-start gap-2">
-                                                <Clock className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
+                                    {syllabus_info.time && (
+                                        <div className={s.section}>
+                                            <div className={s.row}>
+                                                <Clock size={14} className={s.rowIcon} />
                                                 <div>
-                                                    <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">時間</h3>
-                                                    <p className="text-sm text-gray-700 dark:text-gray-300">{toDisplayString(syllabus_info.time)}</p>
+                                                    <span className={s.eyebrow}>時間</span>
+                                                    <p className={s.synopsis}>{toDisplayString(syllabus_info.time)}</p>
                                                 </div>
                                             </div>
-                                        )}
-                                        {syllabus_info.instructor && (
-                                            <div className="flex items-start gap-2">
-                                                <User className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
+                                        </div>
+                                    )}
+                                    {syllabus_info.instructor && (
+                                        <div className={s.section}>
+                                            <div className={s.row}>
+                                                <User size={14} className={s.rowIcon} />
                                                 <div>
-                                                    <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">講師 & 助教</h3>
-                                                    <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">{toDisplayString(syllabus_info.instructor)}</p>
+                                                    <span className={s.eyebrow}>講師 & 助教</span>
+                                                    <p className={`${s.synopsis} ${s.synopsisLg}`}>{toDisplayString(syllabus_info.instructor)}</p>
                                                     {syllabus_info.office_hours && (
-                                                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                                        <p className={s.synopsis} style={{ fontSize: 12 }}>
                                                             辦公時間: {toDisplayString(syllabus_info.office_hours)}
                                                         </p>
                                                     )}
                                                     {syllabus_info.teaching_assistants && (
-                                                        <div className="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700/50">
-                                                            <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                                <span className="font-medium">助教:</span> {toDisplayString(syllabus_info.teaching_assistants)}
-                                                            </p>
-                                                        </div>
+                                                        <p className={s.synopsis} style={{ fontSize: 12 }}>
+                                                            助教: {toDisplayString(syllabus_info.teaching_assistants)}
+                                                        </p>
                                                     )}
                                                 </div>
                                             </div>
-                                        )}
-                                        {syllabus_info.location && (
-                                            <div className="flex items-start gap-2">
-                                                <MapPin className="w-4 h-4 text-gray-400 mt-0.5 shrink-0" />
+                                        </div>
+                                    )}
+                                    {syllabus_info.location && (
+                                        <div className={s.section}>
+                                            <div className={s.row}>
+                                                <MapPin size={14} className={s.rowIcon} />
                                                 <div>
-                                                    <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">地點</h3>
-                                                    <p className="text-sm text-gray-700 dark:text-gray-300">{toDisplayString(syllabus_info.location)}</p>
+                                                    <span className={s.eyebrow}>地點</span>
+                                                    <p className={s.synopsis}>{toDisplayString(syllabus_info.location)}</p>
                                                 </div>
                                             </div>
-                                        )}
-                                    </div>
+                                        </div>
+                                    )}
 
                                     {syllabus_info.grading && Array.isArray(syllabus_info.grading) && (
-                                        <div className="pt-3 border-t border-gray-100 dark:border-gray-700">
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <GraduationCap className="w-4 h-4 text-gray-400" />
-                                                <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">評分標準</h3>
+                                        <div className={s.section}>
+                                            <div className={s.sectionHead}>
+                                                <GraduationCap size={14} className={s.rowIcon} />
+                                                <span className={s.eyebrow}>評分標準</span>
                                             </div>
-                                            <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-                                                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                                                    <thead className="bg-gray-50 dark:bg-gray-800">
+                                            <div className={s.tableWrap}>
+                                                <table className={s.table}>
+                                                    <thead className={s.tableHead}>
                                                         <tr>
-                                                            <th scope="col" className="px-3 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">項目</th>
-                                                            <th scope="col" className="px-3 py-2 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">佔比</th>
+                                                            <th className={s.tableHeadCell}>項目</th>
+                                                            <th className={`${s.tableHeadCell} ${s.tableHeadCellRight}`}>佔比</th>
                                                         </tr>
                                                     </thead>
-                                                    <tbody className="bg-white dark:bg-slate-800 divide-y divide-gray-200 dark:divide-gray-700">
+                                                    <tbody>
                                                         {syllabus_info.grading.map((item, index) => (
-                                                            <tr key={index}>
-                                                                <td className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300">{toDisplayString(item.item)}</td>
-                                                                <td className="px-3 py-2 text-sm text-gray-700 dark:text-gray-300 text-right font-medium">{toDisplayString(item.percentage)}</td>
+                                                            <tr key={index} className={s.tableRow}>
+                                                                <td>{toDisplayString(item.item)}</td>
+                                                                <td className={s.tableValue}>{toDisplayString(item.percentage)}</td>
                                                             </tr>
                                                         ))}
                                                     </tbody>
@@ -362,159 +365,142 @@ const CourseDetailView: React.FC<CourseDetailViewProps> = ({
                                     )}
 
                                     {syllabus_info.schedule && syllabus_info.schedule.length > 0 && (
-                                        <div className="pt-3 border-t border-gray-100 dark:border-gray-700">
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <List className="w-4 h-4 text-gray-400" />
-                                                <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wider">每週進度</h3>
+                                        <div className={s.section}>
+                                            <div className={s.sectionHead}>
+                                                <List size={14} className={s.rowIcon} />
+                                                <span className={s.eyebrow}>每週進度</span>
                                             </div>
-                                            <ul className="space-y-1">
+                                            <ul className={s.sectionList}>
                                                 {syllabus_info.schedule.map((item, index) => (
-                                                    <li key={index} className="text-sm text-gray-700 dark:text-gray-300 flex items-start gap-2">
-                                                        <span className="text-gray-400 text-xs mt-0.5">•</span>
+                                                    <li key={index} className={s.sectionItem}>
+                                                        <span className={s.sectionBullet}>·</span>
                                                         <span>{toDisplayString(item)}</span>
                                                     </li>
                                                 ))}
                                             </ul>
                                         </div>
                                     )}
-                                </div>
+                                </>
                             ) : syllabusState === 'generating' ? (
-                                <div className="text-sm text-gray-500 dark:text-gray-400">
-                                    {course.description ? (
-                                        <div className="space-y-2">
-                                            <p className="whitespace-pre-wrap">{course.description}</p>
-                                            <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 p-2 rounded-lg animate-pulse">
-                                                <Clock className="w-4 h-4" />
-                                                <span>AI 正在生成課程大綱...</span>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/20 p-2 rounded-lg animate-pulse">
-                                            <Clock className="w-4 h-4" />
-                                            <span>AI 正在生成課程大綱...</span>
-                                        </div>
+                                <>
+                                    {course.description && (
+                                        <p className={s.synopsis} style={{ whiteSpace: 'pre-wrap', marginBottom: 10 }}>
+                                            {course.description}
+                                        </p>
                                     )}
-                                </div>
-                            ) : syllabusState === 'failed' ? (
-                                <div className="space-y-3 text-sm text-gray-500 dark:text-gray-400">
-                                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/30 dark:bg-red-900/20">
-                                        <p className="font-medium text-red-700 dark:text-red-300">生成失敗</p>
-                                        {syllabusFailureReason && (
-                                            <p className="mt-1 text-xs text-red-600 dark:text-red-400 whitespace-pre-wrap">{syllabusFailureReason}</p>
-                                        )}
+                                    <div className={`${s.statePill} ${s.stateGen}`}>
+                                        <Clock size={14} />
+                                        <span>AI 正在生成課程大綱...</span>
                                     </div>
+                                </>
+                            ) : syllabusState === 'failed' ? (
+                                <div className={`${s.statePill} ${s.stateFail}`}>
+                                    <span className={s.stateFailTitle}>生成失敗</span>
+                                    {syllabusFailureReason && (
+                                        <span className={s.stateFailReason}>{syllabusFailureReason}</span>
+                                    )}
                                     <button
                                         type="button"
                                         onClick={handleRetrySyllabusGeneration}
                                         disabled={isRetrying}
-                                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-red-200 text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-900/30 dark:text-red-300 dark:hover:bg-red-900/20 transition-colors"
+                                        className={s.retryBtn}
                                     >
-                                        <Clock className={`w-4 h-4 ${isRetrying ? 'animate-spin' : ''}`} />
+                                        <Clock size={13} className={isRetrying ? 'animate-spin' : ''} />
                                         <span>{isRetrying ? '重試中...' : '重試生成'}</span>
                                     </button>
                                 </div>
                             ) : (
-                                <div className="text-sm text-gray-500 dark:text-gray-400">
-                                    <p className="italic">暫無課程大綱信息</p>
-                                </div>
+                                <p className={`${s.synopsis} ${s.synopsisFaint}`}>暫無課程大綱信息</p>
                             )}
                         </div>
                     </div>
 
                     {/* Right Column: Lectures List */}
-                    <div className="lg:col-span-2">
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-lg font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-2">
-                                <BookOpen className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                    <div>
+                        <div className={s.lecturesHeader}>
+                            <h2 className={s.lecturesTitle}>
+                                <BookOpen size={16} className={s.cardTitleIcon} />
                                 課堂列表
                             </h2>
                             <button
                                 onClick={() => onCreateLecture(courseId)}
-                                className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                                className={s.btnPrimary}
                             >
-                                <Plus className="w-4 h-4" />
+                                <Plus size={13} />
                                 新課堂
                             </button>
                         </div>
 
                         {lectures.length === 0 ? (
-                            <div className="flex flex-col items-center justify-center h-64 text-gray-400 dark:text-gray-500 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl bg-white dark:bg-slate-800">
-                                <BookOpen className="w-16 h-16 mb-4 opacity-20" />
-                                <p className="text-lg font-medium">此科目還沒有課堂記錄</p>
+                            <div className={s.lectureEmpty}>
+                                <BookOpen size={56} className={s.lectureEmptyIcon} />
+                                <p className={s.lectureEmptyTitle}>此科目還沒有課堂記錄</p>
                                 <button
                                     onClick={() => onCreateLecture(courseId)}
-                                    className="mt-4 text-blue-600 dark:text-blue-400 hover:underline font-medium"
+                                    className={s.lectureEmptyCta}
                                 >
                                     開始第一堂課
                                 </button>
                             </div>
                         ) : (
-                            <div className="space-y-3">
+                            <div className={s.lectureList}>
                                 {lectures.map((lecture) => (
                                     <div
                                         key={lecture.id}
                                         onClick={() => onSelectLecture(lecture.id)}
-                                        className="bg-white dark:bg-slate-800 rounded-xl p-4 shadow-sm border border-gray-100 dark:border-gray-700 hover:shadow-md hover:border-blue-200 dark:hover:border-blue-500/30 transition-all cursor-pointer flex items-center gap-4 group relative"
+                                        className={s.lectureRow}
                                     >
-                                        {/* Status Icon */}
-                                        <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${lecture.status === 'recording'
-                                            ? 'bg-red-50 dark:bg-red-900/20 text-red-500 dark:text-red-400 animate-pulse'
-                                            : 'bg-green-50 dark:bg-green-900/20 text-green-600 dark:text-green-400'
-                                            }`}>
+                                        <div
+                                            className={`${s.statusGlyph} ${lecture.status === 'recording' ? s.statusGlyphRecording : s.statusGlyphReady}`}
+                                        >
                                             {lecture.status === 'recording' ? (
-                                                <Mic className="w-5 h-5" />
+                                                <Mic size={16} />
                                             ) : (
-                                                <CheckCircle2 className="w-5 h-5" />
+                                                <CheckCircle2 size={16} />
                                             )}
                                         </div>
 
-                                        {/* Content */}
-                                        <div className="flex-1 min-w-0">
-                                            <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors truncate">
-                                                {lecture.title}
-                                            </h3>
-                                            <div className="flex items-center gap-4 text-sm text-gray-500 dark:text-gray-400 mt-1">
-                                                <div className="flex items-center gap-1">
-                                                    <Calendar className="w-3.5 h-3.5" />
+                                        <div className={s.lectureMeta}>
+                                            <h3 className={s.lectureTitle}>{lecture.title}</h3>
+                                            <div className={s.lectureSub}>
+                                                <span className={s.lectureChip}>
+                                                    <Calendar size={11} />
                                                     {new Date(lecture.date).toLocaleDateString()}
-                                                </div>
+                                                </span>
                                                 {lecture.duration > 0 && (
-                                                    <div className="flex items-center gap-1 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded text-xs">
-                                                        <Clock className="w-3 h-3" />
+                                                    <span className={s.lectureChip}>
+                                                        <Clock size={11} />
                                                         {Math.floor(lecture.duration / 60)} min
-                                                    </div>
+                                                    </span>
                                                 )}
                                             </div>
                                         </div>
 
-                                        {/* More Options Button */}
-                                        <div className="relative">
+                                        <div className={s.kebabWrap}>
                                             <button
                                                 onClick={(e) => {
                                                     e.stopPropagation();
                                                     setMenuOpenId(menuOpenId === lecture.id ? null : lecture.id);
                                                 }}
-                                                className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100"
+                                                className={s.kebab}
                                             >
-                                                <MoreVertical className="w-4 h-4 text-gray-400 dark:text-gray-500" />
+                                                <MoreVertical size={15} />
                                             </button>
 
-                                            {/* Dropdown Menu */}
                                             {menuOpenId === lecture.id && (
-                                                <div className="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-slate-700 rounded-lg shadow-lg border border-gray-200 dark:border-gray-600 py-1 z-50">
+                                                <div className={s.menu}>
                                                     <button
                                                         onClick={(e) => handleDeleteLecture(lecture.id, e)}
-                                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                                                        className={s.menuItem}
                                                     >
-                                                        <Trash2 className="w-4 h-4" />
+                                                        <Trash2 size={13} />
                                                         刪除課堂
                                                     </button>
                                                 </div>
                                             )}
                                         </div>
 
-                                        {/* Arrow */}
-                                        <ChevronRight className="w-5 h-5 text-gray-300 dark:text-gray-600 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors" />
+                                        <ChevronRight size={16} className={s.arrow} />
                                     </div>
                                 ))}
                             </div>
