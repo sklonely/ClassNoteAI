@@ -211,6 +211,38 @@ jobs:
           echo "signing_identity=$IDENTITY" >> "$GITHUB_OUTPUT"
           echo "Discovered signing identity: $IDENTITY"
 
+      - name: Sign bundled native resources
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_cert.outputs.signing_identity }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APPLE_SIGNING_IDENTITY}" ]; then
+            echo "::error::APPLE_SIGNING_IDENTITY is empty; cannot sign native resources."
+            exit 1
+          fi
+
+          signed_any=false
+          while IFS= read -r -d '' binary; do
+            if file "$binary" | grep -q "Mach-O"; then
+              echo "Signing native resource: $binary"
+              codesign \
+                --force \
+                --sign "$APPLE_SIGNING_IDENTITY" \
+                --options runtime \
+                --timestamp \
+                "$binary"
+              codesign --verify --strict --verbose=2 "$binary"
+              signed_any=true
+            fi
+          done < <(find src-tauri/resources -type f -print0)
+
+          if [ "$signed_any" != "true" ]; then
+            echo "::error::No Mach-O native resources were found to sign."
+            exit 1
+          fi
+
       # ===== Build Tauri =====
       # Tag builds are release builds: import the Developer ID cert above,
       # sign/notarize here, then upload updater artifacts.
