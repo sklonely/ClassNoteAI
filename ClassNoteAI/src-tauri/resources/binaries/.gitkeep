@@ -1,0 +1,11 @@
+# This directory is populated by release CI with runtime sidecar binaries.
+#
+# Windows release builds stage the llama.cpp `llama-server.exe` bundle here:
+# - CPU installer: official win-cpu-x64 llama.cpp bundle
+# - CUDA installer: official win-cuda-12.4-x64 llama.cpp bundle plus cudart DLLs
+#
+# Tauri copies this directory to `<resource_dir>/binaries/`, and
+# `translation::gemma_sidecar` starts `<resource_dir>/binaries/llama-server.exe`
+# before falling back to local dev paths or PATH lookup.
+#
+# Keep this .gitkeep so the resource path exists in fresh checkouts.

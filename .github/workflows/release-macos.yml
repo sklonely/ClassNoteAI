@@ -24,6 +24,7 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
+  LLAMA_CPP_RELEASE_TAG: b8933
 
 defaults:
   run:
@@ -126,6 +127,33 @@ jobs:
       # a known-good 1.23.0 instead of whatever else might be on path.
       - name: Fetch bundled ONNX Runtime (Silero VAD dep)
         run: bash src-tauri/scripts/fetch-onnxruntime.sh
+
+      - name: Stage llama.cpp sidecar (Apple Silicon)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="src-tauri/resources/binaries"
+          TMP_DIR="$RUNNER_TEMP/llama-cpp-macos"
+          ASSET="llama-${LLAMA_CPP_RELEASE_TAG}-bin-macos-arm64.tar.gz"
+
+          rm -rf "$TMP_DIR"
+          mkdir -p "$TMP_DIR" "$OUT_DIR"
+          find "$OUT_DIR" -mindepth 1 ! -name .gitkeep -exec rm -rf {} +
+
+          gh release download "$LLAMA_CPP_RELEASE_TAG" \
+            --repo ggml-org/llama.cpp \
+            --pattern "$ASSET" \
+            --dir "$TMP_DIR" \
+            --clobber
+          tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR"
+
+          find "$TMP_DIR" -type f \( -name "llama-server" -o -name "*.dylib" \) \
+            -exec cp -f {} "$OUT_DIR/" \;
+
+          test -x "$OUT_DIR/llama-server" || chmod +x "$OUT_DIR/llama-server"
+          "$OUT_DIR/llama-server" --version
+          ls -la "$OUT_DIR"
 
       # ===== 安裝 npm 依賴 =====
       - name: Install dependencies
