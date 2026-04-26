@@ -1,0 +1,121 @@
+/* ============================================================
+ * H18 Deep · Design Tokens · v0.7.0
+ *
+ * 從 prototype H18_THEMES 物件抄來的 light / dark token 組。
+ * 元件 (CSS Modules) 用 var(--h18-*) 引用，theme 切換 = 在
+ * <html> 上 toggle .dark class，全應用即時跟。
+ *
+ * 命名約定：camelCase TOKENS.borderSoft → kebab-case --h18-border-soft
+ *
+ * 不要直接修改 hex 值 — 修改前先在 prototype 同步 (h18-theme.jsx)
+ * 後再抄過來，保持兩邊一致。
+ * ============================================================ */
+
+:root {
+  /* Surfaces */
+  --h18-bg:           #f5f2ea;
+  --h18-surface:      #ffffff;
+  --h18-surface2:     #faf8f3;
+  --h18-rail:         #efece4;
+  --h18-topbar:       #ffffff;
+
+  /* Borders / dividers */
+  --h18-border:       #e8e3d6;
+  --h18-border-soft:  #efeae0;
+  --h18-divider:      #ece7dc;
+
+  /* Text scale */
+  --h18-text:         #15140f;
+  --h18-text-mid:     #5a564b;
+  --h18-text-dim:     #908977;
+  --h18-text-faint:   #b9b2a0;
+  --h18-mono:         #706a5a;
+
+  /* Brand / accent */
+  --h18-accent:       #d24a1a;
+  --h18-hot:          #b54b12;
+  --h18-hot-bg:       #fde4d4;
+  --h18-urgent:       #c44a24;
+  --h18-dot:          #d44a2e;
+
+  /* Inverted (dark chip on light bg) */
+  --h18-invert:       #111;
+  --h18-invert-ink:   #fafaf7;
+
+  /* Selection / today / hover */
+  --h18-sel-bg:       #fff6db;
+  --h18-sel-border:   #e5a04a;
+  --h18-today-bg:     #fff6db;
+  --h18-today-text:   #b54b12;
+  --h18-row-hover:    #faf6ea;
+
+  /* Calendar grid */
+  --h18-grid-line:      #efeadd;
+  --h18-grid-line-soft: #f5f1e5;
+
+  /* Misc */
+  --h18-chip-bg:      #f0ece0;
+  --h18-scrim:        rgba(0, 0, 0, 0.04);
+  --h18-shadow:       0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+}
+
+:root.dark {
+  /* Surfaces — 暖近黑，帶一點紫，非純黑 */
+  --h18-bg:           #16151a;
+  --h18-surface:      #1e1d24;
+  --h18-surface2:     #252430;
+  --h18-rail:         #1a1920;
+  --h18-topbar:       #1a1920;
+
+  /* Borders / dividers */
+  --h18-border:       #2f2d38;
+  --h18-border-soft:  #272530;
+  --h18-divider:      #242230;
+
+  /* Text scale — 暖白非純白 */
+  --h18-text:         #f0ede4;
+  --h18-text-mid:     #b4afa0;
+  --h18-text-dim:     #7d786a;
+  --h18-text-faint:   #4f4b42;
+  --h18-mono:         #9a9580;
+
+  /* Brand / accent */
+  --h18-accent:       #ffab7a;
+  --h18-hot:          #ffab7a;
+  --h18-hot-bg:       rgba(240, 130, 80, 0.18);
+  --h18-urgent:       #ff9267;
+  --h18-dot:          #ff7a4a;
+
+  /* Inverted (light chip on dark bg) */
+  --h18-invert:       #f0ede4;
+  --h18-invert-ink:   #16151a;
+
+  /* Selection / today / hover */
+  --h18-sel-bg:       rgba(240, 175, 110, 0.12);
+  --h18-sel-border:   #e8a86a;
+  --h18-today-bg:     rgba(255, 195, 120, 0.07);
+  --h18-today-text:   #f5b878;
+  --h18-row-hover:    #23222c;
+
+  /* Calendar grid */
+  --h18-grid-line:      #2a2834;
+  --h18-grid-line-soft: #22212a;
+
+  /* Misc */
+  --h18-chip-bg:      #2a2834;
+  --h18-scrim:        rgba(255, 255, 255, 0.03);
+  --h18-shadow:       0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+/* ============================================================
+ * Font tokens — 不放 :root 內以避免被覆寫；單純引用 Google Fonts
+ * 載入的 family，元件可用 font-family: var(--h18-font-sans)
+ * ============================================================ */
+:root {
+  --h18-font-sans:      'Inter', 'Noto Sans TC', system-ui, sans-serif;
+  --h18-font-mono:      'JetBrains Mono', 'Noto Sans Mono', Menlo, monospace;
+  --h18-font-serif:     'Fraunces', 'Noto Serif TC', Georgia, serif;
+
+  /* Animation curve — iOS spring，全 H18 動畫共用 */
+  --h18-ease-spring:    cubic-bezier(0.32, 0.72, 0, 1);
+}
