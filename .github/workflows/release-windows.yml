@@ -21,6 +21,10 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
+  # Pin the llama.cpp sidecar bundle so releases are reproducible. The
+  # official assets include both CPU and CUDA Windows builds; the matrix below
+  # picks the one that matches the installer variant.
+  LLAMA_CPP_RELEASE_TAG: b8933
 
 defaults:
   run:
@@ -55,8 +59,8 @@ jobs:
           # split here only affects the Candle BGE embedding model
           # (used for PDF↔transcript alignment). Sidecar binaries are
           # bundled separately by the post-build packaging step.
-          - { id: cpu,  features: "",         suffix: "",      label: "CPU" }
-          - { id: cuda, features: "gpu-cuda", suffix: "-cuda", label: "CUDA" }
+          - { id: cpu,  features: "",         suffix: "",      label: "CPU",  llama_asset: "llama-b8933-bin-win-cpu-x64.zip",       llama_cudart_asset: "" }
+          - { id: cuda, features: "gpu-cuda", suffix: "-cuda", label: "CUDA", llama_asset: "llama-b8933-bin-win-cuda-12.4-x64.zip", llama_cudart_asset: "cudart-llama-bin-win-cuda-12.4-x64.zip" }
     name: build-windows-${{ matrix.variant.id }}
     steps:
       - name: Checkout
@@ -186,6 +190,53 @@ jobs:
       - name: Fetch bundled ONNX Runtime (Silero VAD dep)
         shell: bash
         run: bash src-tauri/scripts/fetch-onnxruntime.sh
+
+      - name: Stage llama.cpp sidecar (${{ matrix.variant.label }})
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLAMA_ASSET: ${{ matrix.variant.llama_asset }}
+          LLAMA_CUDART_ASSET: ${{ matrix.variant.llama_cudart_asset }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $outDir = "src-tauri/resources/binaries"
+          $tmpDir = Join-Path $env:RUNNER_TEMP "llama-cpp-${{ matrix.variant.id }}"
+          if (Test-Path $tmpDir) {
+            Remove-Item -Recurse -Force $tmpDir
+          }
+          New-Item -ItemType Directory -Force $tmpDir | Out-Null
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+
+          Get-ChildItem -Path $outDir -Force |
+            Where-Object { $_.Name -ne ".gitkeep" } |
+            Remove-Item -Recurse -Force
+
+          $assets = @($env:LLAMA_ASSET)
+          if ($env:LLAMA_CUDART_ASSET) {
+            $assets += $env:LLAMA_CUDART_ASSET
+          }
+
+          foreach ($asset in $assets) {
+            gh release download $env:LLAMA_CPP_RELEASE_TAG `
+              --repo ggml-org/llama.cpp `
+              --pattern $asset `
+              --dir $tmpDir `
+              --clobber
+            Expand-Archive -Path (Join-Path $tmpDir $asset) -DestinationPath $tmpDir -Force
+          }
+
+          Get-ChildItem -Path $tmpDir -Recurse -File |
+            Where-Object { $_.Name -eq "llama-server.exe" -or $_.Extension -eq ".dll" } |
+            Copy-Item -Destination $outDir -Force
+
+          $server = Join-Path $outDir "llama-server.exe"
+          if (!(Test-Path $server)) {
+            Write-Error "llama-server.exe was not found after extracting llama.cpp assets."
+          }
+
+          & $server --version
+          Get-ChildItem -Path $outDir | Sort-Object Name | Format-Table Name,Length
 
       - name: Install dependencies
         run: npm ci --prefer-offline

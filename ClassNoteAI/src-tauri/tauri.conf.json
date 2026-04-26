@@ -52,6 +52,7 @@
       "icons/icon.ico"
     ],
     "resources": {
+      "resources/binaries/*": "./binaries/",
       "resources/cuda/*": "./",
       "resources/silero/*": "./resources/silero/",
       "resources/ort/*": "./resources/ort/"

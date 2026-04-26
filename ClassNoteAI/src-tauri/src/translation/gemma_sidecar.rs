@@ -85,7 +85,11 @@ pub fn is_running() -> bool {
 
 /// Locate the llama-server binary. See module docs for resolution order.
 pub fn locate_binary(app_resource_dir: Option<&PathBuf>) -> Option<PathBuf> {
-    let exe_name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+    let exe_name = if cfg!(windows) {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
 
     // 1. Bundled in app resources
     if let Some(dir) = app_resource_dir {
@@ -148,6 +152,27 @@ pub fn locate_binary(app_resource_dir: Option<&PathBuf>) -> Option<PathBuf> {
     }
 
     None
+}
+
+#[cfg(windows)]
+fn prepend_to_path(cmd: &mut std::process::Command, dir: &std::path::Path) {
+    let mut paths: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    paths.insert(0, dir.to_path_buf());
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
+fn configure_sidecar_command(cmd: &mut std::process::Command, bin: &std::path::Path) {
+    if let Some(dir) = bin.parent() {
+        // Keep llama.cpp's sibling backend/runtime DLLs resolvable. This is
+        // important for the CUDA build and harmless for the CPU build.
+        cmd.current_dir(dir);
+        #[cfg(windows)]
+        prepend_to_path(cmd, dir);
+    }
 }
 
 /// Probe `http://127.0.0.1:<port>/health` once.
@@ -252,7 +277,9 @@ pub async fn ensure_running(
     let bin = match locate_binary(app_resource_dir.as_ref()) {
         Some(p) => p,
         None => {
-            eprintln!("[gemma_sidecar] llama-server binary not found in any of: bundled, dev path, PATH");
+            eprintln!(
+                "[gemma_sidecar] llama-server binary not found in any of: bundled, dev path, PATH"
+            );
             return BringUpResult::BinaryNotFound;
         }
     };
@@ -269,9 +296,10 @@ pub async fn ensure_running(
         model_path
     );
     let log_path = sidecar_log_path();
-    let stderr_target = match log_path.as_ref().and_then(|p| {
-        OpenOptions::new().create(true).append(true).open(p).ok()
-    }) {
+    let stderr_target = match log_path
+        .as_ref()
+        .and_then(|p| OpenOptions::new().create(true).append(true).open(p).ok())
+    {
         Some(f) => {
             if let Some(p) = log_path.as_ref() {
                 println!("[gemma_sidecar] llama-server stderr → {}", p.display());
@@ -288,6 +316,7 @@ pub async fn ensure_running(
         }
     };
     let mut cmd = no_window(&bin);
+    configure_sidecar_command(&mut cmd, &bin);
     cmd.args(server_args(model_path, port))
         // stdout still discarded — llama-server's progress chatter is
         // verbose and not actionable. stderr is what carries the
