@@ -1,447 +1,481 @@
-/* Setup Wizard Styles */
+/* ============================================================
+ * SetupWizard · v0.7.0 H18
+ *
+ * 維持原有 class 名 (SetupWizard.tsx 不動)，全部換成 H18 tokens。
+ * 從藍紫漸層 + glassmorphism 改成 warm cream / warm dark + 樸素卡片。
+ * ============================================================ */
 
 .setup-wizard {
     min-height: 100vh;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    background:
+        radial-gradient(ellipse at 50% 25%, rgba(232, 65, 46, 0.06), transparent 60%),
+        var(--h18-bg);
     padding: 2rem;
+    font-family: var(--h18-font-sans);
+    color: var(--h18-text);
 }
 
 .setup-container {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(10px);
-    border-radius: 24px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    padding: 3rem;
-    max-width: 700px;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 16px;
+    padding: 36px 32px;
+    max-width: 640px;
     width: 100%;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-    /* v0.5.2 review fix: on smaller viewports (or steps that embed a
-       lot of form content — e.g. the AI config step) the container
-       could extend past the viewport and the Continue / Next button
-       would end up off-screen with no way to click it. Cap the height
-       and scroll internally so the outer viewport never clips the
-       step's action buttons. */
+    box-shadow: var(--h18-shadow);
     max-height: calc(100vh - 4rem);
     overflow-y: auto;
 }
 
-/* Step Indicator */
+/* ─── Step indicator ─────────────────────────────────────── */
 .step-indicator {
     display: flex;
     justify-content: center;
-    gap: 0.5rem;
-    margin-bottom: 2rem;
+    gap: 6px;
+    margin-bottom: 24px;
 }
 
 .step-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
-    transition: all 0.3s ease;
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--h18-border);
+    transition: all 220ms var(--h18-ease-spring);
 }
 
 .step-dot.active {
-    background: #3b82f6;
-    transform: scale(1.3);
+    width: 18px;
+    background: var(--h18-accent);
 }
 
 .step-dot.done {
     background: #22c55e;
 }
 
-/* Step Common Styles */
+/* ─── Common step ────────────────────────────────────────── */
 .setup-step {
     text-align: center;
-    color: white;
+    color: var(--h18-text);
 }
 
 .setup-title {
-    font-size: 2rem;
-    font-weight: 700;
-    margin-bottom: 0.5rem;
-    background: linear-gradient(135deg, #60a5fa, #a78bfa);
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+    font-size: 22px;
+    font-weight: 800;
+    margin-bottom: 8px;
+    letter-spacing: -0.02em;
+    color: var(--h18-text);
 }
 
 .setup-subtitle {
-    font-size: 1.5rem;
-    font-weight: 600;
-    margin-bottom: 1rem;
-    color: white;
+    font-size: 16px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: var(--h18-text);
+    letter-spacing: -0.012em;
 }
 
 .setup-description {
-    color: rgba(255, 255, 255, 0.7);
-    margin-bottom: 2rem;
-    line-height: 1.6;
+    color: var(--h18-text-mid);
+    margin-bottom: 24px;
+    line-height: 1.7;
+    font-size: 13px;
 }
 
 .setup-note {
-    color: rgba(255, 255, 255, 0.5);
-    font-size: 0.875rem;
-    margin-bottom: 2rem;
+    color: var(--h18-text-faint);
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    margin-bottom: 20px;
 }
 
-/* Welcome Step */
+/* ─── Welcome step ──────────────────────────────────────── */
 .setup-icon-container {
-    margin-bottom: 1.5rem;
+    margin-bottom: 18px;
 }
 
 .setup-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 100px;
-    height: 100px;
-    background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(167, 139, 250, 0.2));
-    border-radius: 50%;
-    border: 2px solid rgba(59, 130, 246, 0.3);
+    width: 80px;
+    height: 80px;
+    background: var(--h18-chip-bg);
+    border-radius: 40px;
+    border: 1px solid var(--h18-border);
+    color: var(--h18-accent);
 }
 
 .feature-cards {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 1rem;
-    margin-bottom: 2rem;
+    gap: 12px;
+    margin-bottom: 24px;
 }
 
 .feature-card {
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 12px;
-    padding: 1.5rem 1rem;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    transition: transform 0.2s, border-color 0.2s;
+    background: var(--h18-surface2);
+    border-radius: 10px;
+    padding: 16px 12px;
+    border: 1px solid var(--h18-border-soft);
+    transition: transform 140ms var(--h18-ease-spring),
+                border-color 140ms var(--h18-ease-spring);
 }
 
 .feature-card:hover {
     transform: translateY(-2px);
-    border-color: rgba(59, 130, 246, 0.3);
+    border-color: var(--h18-border);
 }
 
 .feature-card h3 {
-    font-size: 0.95rem;
-    font-weight: 600;
-    margin: 0.75rem 0 0.5rem;
+    font-size: 12px;
+    font-weight: 700;
+    margin: 8px 0 4px;
+    color: var(--h18-text);
 }
 
 .feature-card p {
-    font-size: 0.75rem;
-    color: rgba(255, 255, 255, 0.6);
+    font-size: 11px;
+    color: var(--h18-text-dim);
     margin: 0;
+    line-height: 1.5;
 }
 
 .feature-icon {
-    width: 32px;
-    height: 32px;
-    color: #60a5fa;
+    width: 24px;
+    height: 24px;
+    color: var(--h18-accent);
 }
 
-/* Buttons */
+/* ─── Buttons ───────────────────────────────────────────── */
 .setup-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    padding: 0.875rem 1.75rem;
-    border-radius: 12px;
-    font-weight: 600;
-    font-size: 1rem;
+    gap: 8px;
+    padding: 11px 22px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 13px;
     cursor: pointer;
-    transition: all 0.2s;
+    transition: filter 140ms var(--h18-ease-spring),
+                transform 80ms var(--h18-ease-spring);
     border: none;
+    font-family: inherit;
 }
 
 .setup-button.primary {
-    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-    color: white;
-    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
 }
 
-.setup-button.primary:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+.setup-button.primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
 }
 
 .setup-button.secondary {
-    background: rgba(255, 255, 255, 0.1);
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
 }
 
-.setup-button.secondary:hover {
-    background: rgba(255, 255, 255, 0.15);
+.setup-button.secondary:hover:not(:disabled) {
+    background: var(--h18-surface2);
+    color: var(--h18-text);
 }
 
 .setup-button:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
 }
 
-/* Actions */
+/* ─── Actions row ────────────────────────────────────────── */
 .setup-actions {
     display: flex;
     justify-content: center;
-    gap: 1rem;
-    margin-top: 2rem;
+    gap: 12px;
+    margin-top: 24px;
 }
 
-/* Requirements List */
+/* ─── Requirements list ─────────────────────────────────── */
 .requirements-list {
-    max-height: 300px;
+    max-height: 320px;
     overflow-y: auto;
-    margin-bottom: 1.5rem;
+    margin-bottom: 18px;
 }
 
 .requirement-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.875rem 1rem;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 10px;
-    margin-bottom: 0.5rem;
+    padding: 12px 14px;
+    background: var(--h18-surface2);
+    border-radius: 9px;
+    margin-bottom: 6px;
     border: 1px solid transparent;
-    transition: border-color 0.2s;
+    transition: border-color 140ms var(--h18-ease-spring);
 }
 
 .requirement-item.installed {
-    border-color: rgba(34, 197, 94, 0.2);
+    border-color: rgba(34, 197, 94, 0.30);
 }
 
 .requirement-item.missing {
-    border-color: rgba(239, 68, 68, 0.2);
+    border-color: rgba(232, 65, 46, 0.30);
 }
 
 .requirement-info {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 12px;
     text-align: left;
+    min-width: 0;
 }
 
 .requirement-details {
     display: flex;
     flex-direction: column;
+    min-width: 0;
 }
 
 .requirement-name {
-    font-weight: 500;
+    font-weight: 600;
+    font-size: 13px;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 6px;
+    color: var(--h18-text);
 }
 
 .requirement-desc {
-    font-size: 0.75rem;
-    color: rgba(255, 255, 255, 0.5);
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
 }
 
 .requirement-status {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
 }
 
 .requirement-size {
-    font-size: 0.75rem;
-    color: rgba(255, 255, 255, 0.5);
+    font-size: 11px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
 }
 
 .optional-badge {
-    font-size: 0.65rem;
-    padding: 0.15rem 0.4rem;
-    background: rgba(234, 179, 8, 0.2);
-    color: #fbbf24;
+    font-size: 9px;
+    padding: 2px 6px;
+    background: rgba(245, 178, 78, 0.18);
+    color: #c48a2c;
     border-radius: 4px;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
 }
 
-/* Install Summary */
+:root.dark .optional-badge {
+    color: #f5b878;
+}
+
+/* ─── Install summary ──────────────────────────────────── */
 .install-summary {
-    background: rgba(59, 130, 246, 0.1);
-    border-radius: 12px;
-    padding: 1rem;
-    margin-bottom: 1rem;
+    background: var(--h18-chip-bg);
+    border: 1px solid var(--h18-border-soft);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 14px;
     text-align: left;
+    font-size: 12.5px;
 }
 
 .install-summary p {
-    margin: 0.25rem 0;
+    margin: 4px 0;
+    color: var(--h18-text-mid);
 }
 
 .install-estimate {
-    font-size: 0.875rem;
-    color: rgba(255, 255, 255, 0.6);
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
 }
 
 .optional-checkbox {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    margin-top: 0.75rem;
-    font-size: 0.875rem;
+    gap: 8px;
+    margin-top: 10px;
+    font-size: 12px;
     cursor: pointer;
+    color: var(--h18-text-mid);
 }
 
 .optional-checkbox input {
-    width: 16px;
-    height: 16px;
-    accent-color: #3b82f6;
+    width: 14px;
+    height: 14px;
+    accent-color: var(--h18-accent);
 }
 
-/* Error */
+/* ─── Error ─────────────────────────────────────────────── */
 .setup-error {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    background: rgba(239, 68, 68, 0.1);
-    border: 1px solid rgba(239, 68, 68, 0.3);
-    color: #f87171;
-    padding: 0.75rem 1rem;
+    gap: 8px;
+    background: rgba(232, 65, 46, 0.10);
+    border: 1px solid rgba(232, 65, 46, 0.28);
+    color: var(--h18-hot);
+    padding: 10px 14px;
     border-radius: 8px;
-    margin-bottom: 1rem;
+    margin-bottom: 14px;
+    font-size: 12px;
 }
 
-/* Installing Step */
+/* ─── Installing step ──────────────────────────────────── */
 .overall-progress {
     display: flex;
     align-items: center;
-    gap: 1rem;
-    margin-bottom: 2rem;
+    gap: 14px;
+    margin-bottom: 22px;
 }
 
 .progress-bar {
     flex: 1;
-    height: 8px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 4px;
+    height: 6px;
+    background: var(--h18-border-soft);
+    border-radius: 3px;
     overflow: hidden;
 }
 
 .progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, #3b82f6, #8b5cf6);
-    border-radius: 4px;
-    transition: width 0.3s ease;
+    background: var(--h18-accent);
+    border-radius: 3px;
+    transition: width 280ms var(--h18-ease-spring);
 }
 
 .progress-text {
-    font-weight: 600;
+    font-weight: 700;
     min-width: 3rem;
     text-align: right;
+    font-family: var(--h18-font-mono);
+    font-size: 12px;
+    color: var(--h18-text);
 }
 
 .current-task {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.75rem;
-    color: rgba(255, 255, 255, 0.8);
-    margin-bottom: 1.5rem;
+    gap: 8px;
+    color: var(--h18-text-mid);
+    margin-bottom: 16px;
+    font-size: 12.5px;
 }
 
 .task-message {
-    font-size: 0.875rem;
-    color: rgba(255, 255, 255, 0.5);
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
 }
 
 .task-list {
     text-align: left;
-    margin-bottom: 2rem;
+    margin-bottom: 22px;
 }
 
 .task-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.5rem 0.75rem;
+    padding: 7px 12px;
     border-radius: 6px;
-    margin-bottom: 0.25rem;
-    font-size: 0.875rem;
+    margin-bottom: 3px;
+    font-size: 12px;
+    color: var(--h18-text);
 }
 
 .task-item.completed {
-    opacity: 0.6;
+    opacity: 0.55;
 }
 
 .task-item.active {
-    background: rgba(59, 130, 246, 0.1);
+    background: var(--h18-chip-bg);
 }
 
 .task-item.failed {
-    color: #f87171;
+    color: var(--h18-hot);
 }
 
 .task-progress {
-    font-weight: 500;
-    color: #60a5fa;
+    font-weight: 700;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    font-size: 11px;
 }
 
-/* Complete Step */
+/* ─── Complete step ────────────────────────────────────── */
 .complete-icon {
-    margin-bottom: 1.5rem;
-    animation: scaleIn 0.4s ease-out;
+    margin-bottom: 18px;
+    animation: scaleIn 360ms var(--h18-ease-spring);
+    color: #22c55e;
 }
 
 @keyframes scaleIn {
-    from {
-        transform: scale(0);
-        opacity: 0;
-    }
-
-    to {
-        transform: scale(1);
-        opacity: 1;
-    }
+    from { transform: scale(0); opacity: 0; }
+    to   { transform: scale(1); opacity: 1; }
 }
 
 .feature-summary {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    margin: 2rem auto;
-    max-width: 300px;
+    gap: 10px;
+    margin: 24px auto;
+    max-width: 320px;
 }
 
 .feature-item {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: 10px;
     text-align: left;
+    color: var(--h18-text-mid);
+    font-size: 12.5px;
 }
 
-/* Animations */
+.feature-item :global(svg) {
+    color: var(--h18-accent);
+    flex-shrink: 0;
+}
+
+/* ─── Animations / responsive ─────────────────────────── */
 @keyframes spin {
-    to {
-        transform: rotate(360deg);
-    }
+    to { transform: rotate(360deg); }
 }
 
 .animate-spin {
     animation: spin 1s linear infinite;
 }
 
-/* Responsive */
 @media (max-width: 640px) {
     .setup-container {
-        padding: 2rem;
-        margin: 1rem;
+        padding: 24px 20px;
+        margin: 16px;
     }
-
     .feature-cards {
         grid-template-columns: 1fr;
     }
-
     .setup-title {
-        font-size: 1.5rem;
+        font-size: 18px;
     }
-
     .setup-actions {
         flex-direction: column;
     }
