@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"/>
+<title>ClassNote · Setup Wizard (擴充)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700;800&family=Noto+Sans+TC:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+    font-family: 'Inter', 'Noto Sans TC', system-ui, sans-serif; background: #0a0a0a; }
+  #root { width: 100vw; height: 100vh; }
+  .stage { position: absolute; inset: 0; display: grid; place-items: center;
+    transition: background 320ms; }
+  .canvas { width: 1440px; height: 900px; transform-origin: center;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4); border-radius: 12px; overflow: hidden;
+    transition: border-radius 280ms cubic-bezier(0.2, 0, 0, 1),
+                box-shadow 280ms, opacity 280ms,
+                transform 360ms cubic-bezier(0.2, 0, 0, 1); }
+  .canvas.maxed { border-radius: 0; box-shadow: none; }
+  .canvas.mind { transform: translate(calc(50vw - 90px), calc(50vh - 30px)) scale(0.06) !important;
+    cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.5); border-radius: 24px; }
+  .canvas.closed { opacity: 0; transform: scale(0.94) !important; pointer-events: none; }
+  .closed-msg { position: absolute; inset: 0; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 14px;
+    color: #888; font-size: 13px; text-align: center; pointer-events: none; }
+  .closed-msg.show { display: flex; pointer-events: auto; }
+  .closed-msg button { padding: 8px 14px; font-size: 12px; font-weight: 700;
+    background: #1a1a1a; color: #fff; border: 1px solid #333; border-radius: 6px;
+    cursor: pointer; font-family: inherit; }
+  .min-hint { position: fixed; bottom: 18px; right: 18px; z-index: 50;
+    padding: 5px 10px; font-size: 10px; color: #888;
+    background: rgba(40,40,40,0.85); border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    pointer-events: none; opacity: 0; transition: opacity 200ms;
+    border: 1px solid rgba(255,255,255,0.08); }
+  .min-hint.show { opacity: 1; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="h18-theme.jsx"></script>
+<script type="text/babel" src="h18-parts.jsx"></script>
+<script type="text/babel" src="extras-setup-wizard.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const Stage = () => {
+  const [scale, setScale] = React.useState(1);
+  const [winState, setWinState] = React.useState('normal');
+
+  React.useEffect(() => {
+    const fit = () => {
+      const s = Math.min(window.innerWidth / 1440, window.innerHeight / 900);
+      setScale(s);
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
+
+  React.useEffect(() => {
+    const onWin = (e) => {
+      const action = e.detail?.action;
+      if (action === 'close') setWinState('closed');
+      else if (action === 'min') setWinState(s => s === 'mind' ? 'normal' : 'mind');
+      else if (action === 'max') setWinState(s => s === 'maxed' ? 'normal' : 'maxed');
+    };
+    window.addEventListener('h18-win', onWin);
+    return () => window.removeEventListener('h18-win', onWin);
+  }, []);
+
+  const onCanvasClick = () => {
+    if (winState === 'mind') setWinState('normal');
+  };
+
+  const cls = `canvas ${winState === 'maxed' ? 'maxed' : ''} ${winState === 'mind' ? 'mind' : ''} ${winState === 'closed' ? 'closed' : ''}`;
+
+  return (
+    <div className="stage" style={{ background: winState === 'maxed' ? '#16151a' : '#0a0a0a' }}>
+      <div className={cls.trim()}
+        style={{ transform: winState === 'maxed' || winState === 'mind' || winState === 'closed' ? undefined : `scale(${scale})` }}
+        onClick={onCanvasClick}>
+        {winState === 'maxed' ? (
+          <div style={{ width: '100vw', height: '100vh', overflow: 'hidden' }}>
+            <SetupWizardApp onExit={() => alert('設置完成 / 取消 (standalone demo)')}/>
+          </div>
+        ) : (
+          <SetupWizardApp onExit={() => alert('設置完成 / 取消 (standalone demo)')}/>
+        )}
+      </div>
+      <div className={`min-hint ${winState === 'mind' ? 'show' : ''}`}>↗ 點擊縮圖復原視窗</div>
+      <div className={`closed-msg ${winState === 'closed' ? 'show' : ''}`}>
+        <div>
+          <div style={{ fontSize: 16, color: '#bbb', marginBottom: 6 }}>視窗已關閉</div>
+          <div style={{ fontSize: 11, color: '#666', fontFamily: 'JetBrains Mono' }}>
+            (prototype · Tauri 實作會呼叫 appWindow.close())
+          </div>
+        </div>
+        <button onClick={() => setWinState('normal')}>重新打開</button>
+      </div>
+    </div>
+  );
+};
+ReactDOM.createRoot(document.getElementById('root')).render(<Stage/>);
+</script>
+</body>
+</html>

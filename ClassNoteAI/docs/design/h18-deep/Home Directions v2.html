@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"/>
+<title>ClassNote · 首頁方向 v2 (IA)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+  html, body { margin: 0; padding: 0; background: #eeeae2; overflow: hidden;
+    font-family: 'Inter', 'Noto Sans TC', system-ui, sans-serif; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="home-v3-data.jsx"></script>
+<script type="text/babel" src="home-v3-ab.jsx"></script>
+<script type="text/babel" src="home-v3-cd.jsx"></script>
+<script type="text/babel" src="home-v3-ef.jsx"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const W = 1280, H = 820;
+
+const Frame = ({ children, bg = '#fff' }) => (
+  <div style={{ width: W, height: H, background: bg, position: 'relative',
+    overflow: 'hidden' }}>
+    <div style={{ height: 26, background: '#f3f1ec',
+      borderBottom: '1px solid rgba(0,0,0,0.06)', display: 'flex',
+      alignItems: 'center', padding: '0 12px', gap: 6, fontFamily: 'Inter',
+      fontSize: 11, color: '#999' }}>
+      <span style={{ width: 10, height: 10, borderRadius: 5, background: '#ff5f57' }}/>
+      <span style={{ width: 10, height: 10, borderRadius: 5, background: '#febc2e' }}/>
+      <span style={{ width: 10, height: 10, borderRadius: 5, background: '#28c840' }}/>
+      <span style={{ marginLeft: 16 }}>classnote.app</span>
+    </div>
+    <div style={{ width: '100%', height: H - 26, position: 'relative' }}>
+      {children}
+    </div>
+  </div>
+);
+
+const App = () => (
+  <DesignCanvas initialZoom={0.55}>
+    <DCSection id="ia" title="首頁 · 資訊架構 6 方向（桌面）">
+      <DCArtboard id="h7"  label="H7 · Today-First · 三欄（時間軸 + Inbox + 課程格）" width={W} height={H}>
+        <Frame><HomeTodayFirst/></Frame>
+      </DCArtboard>
+      <DCArtboard id="h8"  label="H8 · Course-First Grid · Spotify 風大卡片 + 課內提醒" width={W} height={H}>
+        <Frame><HomeCourseGrid/></Frame>
+      </DCArtboard>
+      <DCArtboard id="h9"  label="H9 · Split Inbox · Superhuman 三欄（分類+串流+預覽）" width={W} height={H}>
+        <Frame><HomeSplitInbox/></Frame>
+      </DCArtboard>
+      <DCArtboard id="h10" label="H10 · Kanban · 今天/本週/之後/完成 四欄拖拉" width={W} height={H}>
+        <Frame><HomeKanban/></Frame>
+      </DCArtboard>
+      <DCArtboard id="h11" label="H11 · Command Center · 一個輸入框、鍵盤優先" width={W} height={H}>
+        <Frame><HomeCommandCenter/></Frame>
+      </DCArtboard>
+      <DCArtboard id="h12" label="H12 · Week Calendar · 週曆 + 學期泳道" width={W} height={H}>
+        <Frame><HomeWeekGrid/></Frame>
+      </DCArtboard>
+    </DCSection>
+  </DesignCanvas>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
