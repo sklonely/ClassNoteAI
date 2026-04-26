@@ -10,13 +10,14 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{broadcast, oneshot, Mutex};
 use uuid::Uuid;
 
 const API_VERSION: u32 = 1;
 const DEFAULT_PORT: u16 = 4317;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const EVENT_RING_CAPACITY: usize = 128;
+const EVENT_BROADCAST_CAPACITY: usize = 256;
 const UI_ACTION_TIMEOUT_MS: u64 = 30_000;
 
 static BRIDGE_STATE: OnceLock<Arc<BridgeState>> = OnceLock::new();
@@ -43,13 +44,27 @@ struct BridgeEvent {
     payload: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeTask {
+    id: String,
+    task_type: String,
+    status: String,
+    started_at: String,
+    updated_at: String,
+    message: Option<String>,
+    artifacts: Vec<Value>,
+}
+
 #[derive(Debug)]
 struct BridgeState {
     app: AppHandle,
     attach: AttachFile,
     started_at: String,
     events: Mutex<VecDeque<BridgeEvent>>,
+    event_tx: broadcast::Sender<BridgeEvent>,
     next_event_id: Mutex<u64>,
+    tasks: Mutex<HashMap<String, BridgeTask>>,
     ui_state: Mutex<Option<Value>>,
     pending_ui_actions: Mutex<HashMap<String, oneshot::Sender<Value>>>,
 }
@@ -118,12 +133,15 @@ async fn run_server(app: AppHandle, requested_port: u16, token: String) -> Resul
 
     write_attach_file(&app, &attach)?;
 
+    let (event_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
     let state = Arc::new(BridgeState {
         app,
         attach,
         started_at: created_at,
         events: Mutex::new(VecDeque::with_capacity(EVENT_RING_CAPACITY)),
+        event_tx,
         next_event_id: Mutex::new(1),
+        tasks: Mutex::new(HashMap::new()),
         ui_state: Mutex::new(None),
         pending_ui_actions: Mutex::new(HashMap::new()),
     });
@@ -168,7 +186,84 @@ async fn push_event(state: &Arc<BridgeState>, event_type: &str, payload: Value) 
     if events.len() >= EVENT_RING_CAPACITY {
         events.pop_front();
     }
-    events.push_back(event);
+    events.push_back(event.clone());
+    let _ = state.event_tx.send(event);
+}
+
+async fn start_task(state: &Arc<BridgeState>, task_id: String, task_type: &str, payload: Value) {
+    let timestamp = now();
+    let task = BridgeTask {
+        id: task_id.clone(),
+        task_type: task_type.to_string(),
+        status: "running".to_string(),
+        started_at: timestamp.clone(),
+        updated_at: timestamp,
+        message: None,
+        artifacts: Vec::new(),
+    };
+    state
+        .tasks
+        .lock()
+        .await
+        .insert(task_id.clone(), task.clone());
+    push_event(
+        state,
+        "task.started",
+        json!({
+            "taskId": task_id,
+            "taskType": task_type,
+            "task": task,
+            "payload": payload,
+        }),
+    )
+    .await;
+}
+
+async fn finish_task(
+    state: &Arc<BridgeState>,
+    task_id: &str,
+    status: &str,
+    message: Option<String>,
+    artifacts: Vec<Value>,
+    payload: Value,
+) {
+    let updated_at = now();
+    let mut tasks = state.tasks.lock().await;
+    let task = tasks
+        .entry(task_id.to_string())
+        .or_insert_with(|| BridgeTask {
+            id: task_id.to_string(),
+            task_type: "unknown".to_string(),
+            status: status.to_string(),
+            started_at: updated_at.clone(),
+            updated_at: updated_at.clone(),
+            message: None,
+            artifacts: Vec::new(),
+        });
+    task.status = status.to_string();
+    task.updated_at = updated_at;
+    task.message = message.clone();
+    task.artifacts = artifacts;
+    let task_snapshot = task.clone();
+    drop(tasks);
+
+    let event_type = match status {
+        "completed" => "task.completed",
+        "failed" => "task.failed",
+        "timeout" => "task.timeout",
+        _ => "task.updated",
+    };
+    push_event(
+        state,
+        event_type,
+        json!({
+            "taskId": task_id,
+            "taskType": task_snapshot.task_type,
+            "task": task_snapshot,
+            "payload": payload,
+        }),
+    )
+    .await;
 }
 
 #[tauri::command]
@@ -228,6 +323,10 @@ fn generate_token() -> String {
 
 async fn handle_connection(mut stream: TcpStream, state: Arc<BridgeState>) -> Result<(), String> {
     let request = read_request(&mut stream).await?;
+    if is_events_follow_request(&request) && is_authorized(&request, &state.attach.token) {
+        write_events_stream(&mut stream, state).await?;
+        return Ok(());
+    }
     let response = route_request(request, state).await;
     stream
         .write_all(&response)
@@ -300,6 +399,7 @@ async fn route_request(request: HttpRequest, state: Arc<BridgeState>) -> Vec<u8>
         ("GET", "/v1/status") => json_response(200, status_payload(&state).await),
         ("GET", "/v1/logs") => json_response(200, logs_payload(&state, &request).await),
         ("GET", "/v1/events") => events_response(&state).await,
+        ("GET", "/v1/tasks") => json_response(200, tasks_payload(&state).await),
         ("POST", "/v1/diag/bundle") => diag_bundle_response(&state).await,
         ("GET", "/v1/workflows") => json_response(200, workflow_payload()),
         ("POST", "/v1/call/raw") => raw_command_response(&state, &request).await,
@@ -348,6 +448,8 @@ fn handshake_payload(state: &BridgeState) -> Value {
             {"id": "app.status", "stability": "stable"},
             {"id": "logs.tail", "stability": "experimental"},
             {"id": "events.watch", "stability": "experimental"},
+            {"id": "events.follow", "stability": "experimental"},
+            {"id": "tasks.list", "stability": "experimental"},
             {"id": "diag.bundle", "stability": "experimental"},
             {"id": "workflow.list", "stability": "experimental"},
             {"id": "call.raw", "stability": "planned"},
@@ -369,6 +471,7 @@ fn handshake_payload(state: &BridgeState) -> Value {
 
 async fn status_payload(state: &Arc<BridgeState>) -> Value {
     let events = state.events.lock().await;
+    let tasks = state.tasks.lock().await;
     let window_count = state.app.webview_windows().len();
     let log_dir = state
         .app
@@ -397,6 +500,8 @@ async fn status_payload(state: &Arc<BridgeState>) -> Value {
             "apiVersion": API_VERSION,
             "startedAt": state.started_at,
             "eventCount": events.len(),
+            "taskCount": tasks.len(),
+            "runningTaskCount": tasks.values().filter(|task| task.status == "running").count(),
         },
         "paths": {
             "appDataDir": app_data_dir,
@@ -445,7 +550,116 @@ async fn events_response(state: &Arc<BridgeState>) -> Vec<u8> {
     )
 }
 
+async fn tasks_payload(state: &Arc<BridgeState>) -> Value {
+    let tasks = state.tasks.lock().await;
+    json!({
+        "schemaVersion": 1,
+        "type": "task_list",
+        "status": "ok",
+        "tasks": tasks.values().collect::<Vec<_>>(),
+    })
+}
+
+fn is_events_follow_request(request: &HttpRequest) -> bool {
+    request.method == "GET"
+        && request.path == "/v1/events"
+        && request
+            .query
+            .get("follow")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+}
+
+async fn write_events_stream(
+    stream: &mut TcpStream,
+    state: Arc<BridgeState>,
+) -> Result<(), String> {
+    let mut receiver = state.event_tx.subscribe();
+    let snapshot = {
+        let events = state.events.lock().await;
+        json!({
+            "schemaVersion": 1,
+            "type": "event_snapshot",
+            "status": "ok",
+            "events": events.iter().collect::<Vec<_>>(),
+        })
+    };
+
+    let headers = "HTTP/1.1 200 OK\r\n\
+         Content-Type: text/event-stream; charset=utf-8\r\n\
+         Cache-Control: no-cache\r\n\
+         Access-Control-Allow-Origin: http://localhost\r\n\
+         Access-Control-Allow-Headers: authorization, content-type\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Connection: close\r\n\r\n";
+    stream
+        .write_all(headers.as_bytes())
+        .await
+        .map_err(|e| format!("write event stream headers: {e}"))?;
+    write_sse_event(stream, "bridge.snapshot", &snapshot).await?;
+
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
+    loop {
+        tokio::select! {
+            event = receiver.recv() => {
+                match event {
+                    Ok(event) => {
+                        let payload = serde_json::to_value(&event)
+                            .map_err(|e| format!("serialize event: {e}"))?;
+                        write_sse_event(stream, &event.event_type, &payload).await?;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        write_sse_event(
+                            stream,
+                            "bridge.events.lagged",
+                            &json!({
+                                "schemaVersion": 1,
+                                "type": "event_lagged",
+                                "status": "warning",
+                                "skipped": skipped,
+                            }),
+                        ).await?;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                }
+            }
+            _ = heartbeat.tick() => {
+                write_sse_comment(stream, "keepalive").await?;
+            }
+        }
+    }
+}
+
+async fn write_sse_event(
+    stream: &mut TcpStream,
+    event_type: &str,
+    payload: &Value,
+) -> Result<(), String> {
+    let data = serde_json::to_string(payload).map_err(|e| format!("serialize sse data: {e}"))?;
+    let text = format!("event: {event_type}\ndata: {data}\n\n");
+    stream
+        .write_all(text.as_bytes())
+        .await
+        .map_err(|e| format!("write sse event: {e}"))
+}
+
+async fn write_sse_comment(stream: &mut TcpStream, comment: &str) -> Result<(), String> {
+    let text = format!(": {comment}\n\n");
+    stream
+        .write_all(text.as_bytes())
+        .await
+        .map_err(|e| format!("write sse heartbeat: {e}"))
+}
+
 async fn diag_bundle_response(state: &Arc<BridgeState>) -> Vec<u8> {
+    let task_id = format!("diag-{}", Uuid::new_v4());
+    start_task(
+        state,
+        task_id.clone(),
+        "workflow.diagnostics",
+        json!({ "source": "agent_bridge" }),
+    )
+    .await;
     let log_text = read_recent_log_lines(&state.app, 2000).unwrap_or_default();
     let input = crate::diagnostics::DiagnosticPackageInput {
         lecture_meta_json: "{}".to_string(),
@@ -467,24 +681,55 @@ async fn diag_bundle_response(state: &Arc<BridgeState>) -> Vec<u8> {
         .unwrap_or_else(|_| "{}".to_string()),
     };
     match crate::diagnostics::build_diagnostic_zip(input, false) {
-        Ok(path) => json_response(
-            200,
-            json!({
-                "schemaVersion": 1,
-                "type": "diag_bundle",
-                "status": "ok",
-                "path": path.to_string_lossy(),
-            }),
-        ),
-        Err(error) => json_response(
-            500,
-            json!({
-                "schemaVersion": 1,
-                "type": "diag_bundle",
-                "status": "failed",
-                "message": error,
-            }),
-        ),
+        Ok(path) => {
+            let path_text = path.to_string_lossy().to_string();
+            let artifact = json!({
+                "type": "diagnostic_bundle",
+                "path": path_text,
+            });
+            finish_task(
+                state,
+                &task_id,
+                "completed",
+                None,
+                vec![artifact.clone()],
+                json!({ "path": path_text }),
+            )
+            .await;
+            json_response(
+                200,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "diag_bundle",
+                    "status": "ok",
+                    "taskId": task_id,
+                    "path": path_text,
+                    "artifacts": [artifact],
+                }),
+            )
+        }
+        Err(error) => {
+            let error_text = error;
+            finish_task(
+                state,
+                &task_id,
+                "failed",
+                Some(error_text.clone()),
+                Vec::new(),
+                json!({ "message": error_text.clone() }),
+            )
+            .await;
+            json_response(
+                500,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "diag_bundle",
+                    "status": "failed",
+                    "taskId": task_id,
+                    "message": error_text,
+                }),
+            )
+        }
     }
 }
 
@@ -614,10 +859,33 @@ async fn ui_action_response(
 ) -> Vec<u8> {
     let mut payload: Value = serde_json::from_slice(&request.body).unwrap_or_else(|_| json!({}));
     let action_id = Uuid::new_v4().to_string();
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("ui-{action_id}"));
     payload["actionId"] = json!(action_id);
+    payload["taskId"] = json!(task_id);
     payload["kind"] = json!(kind);
 
+    start_task(
+        state,
+        task_id.clone(),
+        &format!("ui.{kind}"),
+        payload.clone(),
+    )
+    .await;
+
     let Some(window) = state.app.get_webview_window("main") else {
+        finish_task(
+            state,
+            &task_id,
+            "failed",
+            Some("main webview window is not available".to_string()),
+            Vec::new(),
+            json!({ "kind": kind }),
+        )
+        .await;
         return json_response(
             500,
             json!({
@@ -626,6 +894,7 @@ async fn ui_action_response(
                 "status": "failed",
                 "kind": kind,
                 "message": "main webview window is not available",
+                "taskId": task_id,
             }),
         );
     };
@@ -649,6 +918,16 @@ async fn ui_action_response(
 
     if let Err(error) = window.emit("agent-bridge-ui-action", payload.clone()) {
         let _ = state.pending_ui_actions.lock().await.remove(&action_id);
+        let message = format!("emit ui action: {error}");
+        finish_task(
+            state,
+            &task_id,
+            "failed",
+            Some(message.clone()),
+            Vec::new(),
+            json!({ "kind": kind, "actionId": action_id }),
+        )
+        .await;
         return json_response(
             500,
             json!({
@@ -657,7 +936,8 @@ async fn ui_action_response(
                 "status": "failed",
                 "kind": kind,
                 "actionId": action_id,
-                "message": format!("emit ui action: {error}"),
+                "taskId": task_id,
+                "message": message,
             }),
         );
     }
@@ -679,6 +959,24 @@ async fn ui_action_response(
                 .and_then(Value::as_str)
                 .map(|status| status == "ok")
                 .unwrap_or(false);
+            let task_status = if ok { "completed" } else { "failed" };
+            let message = result
+                .get("message")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            finish_task(
+                state,
+                &task_id,
+                task_status,
+                message,
+                Vec::new(),
+                json!({
+                    "kind": kind,
+                    "actionId": action_id,
+                    "result": result,
+                }),
+            )
+            .await;
             json_response(
                 if ok { 200 } else { 500 },
                 json!({
@@ -687,23 +985,45 @@ async fn ui_action_response(
                     "status": if ok { "ok" } else { "failed" },
                     "kind": kind,
                     "actionId": action_id,
+                    "taskId": task_id,
                     "result": result,
                 }),
             )
         }
-        Ok(Err(_)) => json_response(
-            500,
-            json!({
-                "schemaVersion": 1,
-                "type": "ui_action",
-                "status": "failed",
-                "kind": kind,
-                "actionId": action_id,
-                "message": "renderer dropped ui action response",
-            }),
-        ),
+        Ok(Err(_)) => {
+            finish_task(
+                state,
+                &task_id,
+                "failed",
+                Some("renderer dropped ui action response".to_string()),
+                Vec::new(),
+                json!({ "kind": kind, "actionId": action_id }),
+            )
+            .await;
+            json_response(
+                500,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "ui_action",
+                    "status": "failed",
+                    "kind": kind,
+                    "actionId": action_id,
+                    "taskId": task_id,
+                    "message": "renderer dropped ui action response",
+                }),
+            )
+        }
         Err(_) => {
             let _ = state.pending_ui_actions.lock().await.remove(&action_id);
+            finish_task(
+                state,
+                &task_id,
+                "timeout",
+                Some("renderer did not complete ui action before timeout".to_string()),
+                Vec::new(),
+                json!({ "kind": kind, "actionId": action_id }),
+            )
+            .await;
             json_response(
                 504,
                 json!({
@@ -712,6 +1032,7 @@ async fn ui_action_response(
                     "status": "timeout",
                     "kind": kind,
                     "actionId": action_id,
+                    "taskId": task_id,
                     "message": "renderer did not complete ui action before timeout",
                 }),
             )
@@ -908,6 +1229,21 @@ mod tests {
                 .unwrap(),
             25
         );
+    }
+
+    #[test]
+    fn detects_events_follow_requests() {
+        let request = parse_http_request(
+            b"GET /v1/events?follow=1 HTTP/1.1\r\nAuthorization: Bearer abc\r\n\r\n",
+        )
+        .unwrap();
+
+        assert!(is_events_follow_request(&request));
+
+        let snapshot =
+            parse_http_request(b"GET /v1/events HTTP/1.1\r\nAuthorization: Bearer abc\r\n\r\n")
+                .unwrap();
+        assert!(!is_events_follow_request(&snapshot));
     }
 
     #[test]

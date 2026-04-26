@@ -273,4 +273,114 @@ describe('cnai-agent CLI', () => {
       selector: null,
     });
   });
+
+  it('streams followed bridge events as NDJSON with a max event guard', async () => {
+    const server = createServer((req, res) => {
+      expect(req.url).toBe('/v1/events?follow=1');
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+      });
+      res.write(
+        `event: bridge.snapshot\ndata: ${JSON.stringify({
+          schemaVersion: 1,
+          type: 'event_snapshot',
+          status: 'ok',
+          events: [],
+        })}\n\n`,
+      );
+      res.write(
+        `event: task.started\ndata: ${JSON.stringify({
+          id: 2,
+          eventType: 'task.started',
+          payload: { taskId: 'task-1' },
+        })}\n\n`,
+      );
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('server did not bind to a TCP port');
+    }
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'cnai-agent-test-'));
+    const attachFile = resolve(tempDir, 'agent-bridge.json');
+    writeFileSync(
+      attachFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        apiVersion: 1,
+        url: `http://127.0.0.1:${address.port}`,
+        token: 'test-token',
+        pid: 123,
+      }),
+    );
+
+    const result = await runCliAsync([
+      'events',
+      'watch',
+      '--follow',
+      '--ndjson',
+      '--max-events',
+      '2',
+      '--attach-file',
+      attachFile,
+      '--timeout-ms',
+      '5000',
+    ]);
+    server.close();
+
+    const events = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(result.status).toBe(0);
+    expect(events.map((event: { event: string }) => event.event)).toEqual([
+      'bridge.snapshot',
+      'task.started',
+    ]);
+  });
+
+  it('lists bridge tasks through the CLI', async () => {
+    const server = createServer((req, res) => {
+      expect(req.url).toBe('/v1/tasks');
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          schemaVersion: 1,
+          type: 'task_list',
+          status: 'ok',
+          tasks: [{ id: 'task-1', status: 'completed' }],
+        }),
+      );
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('server did not bind to a TCP port');
+    }
+    const tempDir = mkdtempSync(resolve(tmpdir(), 'cnai-agent-test-'));
+    const attachFile = resolve(tempDir, 'agent-bridge.json');
+    writeFileSync(
+      attachFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        apiVersion: 1,
+        url: `http://127.0.0.1:${address.port}`,
+        token: 'test-token',
+        pid: 123,
+      }),
+    );
+
+    const result = await runCliAsync([
+      'tasks',
+      'list',
+      '--json',
+      '--attach-file',
+      attachFile,
+      '--timeout-ms',
+      '2000',
+    ]);
+    server.close();
+
+    const payload = JSON.parse(result.stdout);
+    expect(result.status).toBe(0);
+    expect(payload.type).toBe('tasks_list');
+    expect(payload.body.tasks[0].id).toBe('task-1');
+  });
 });

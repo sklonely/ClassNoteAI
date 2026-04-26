@@ -83,7 +83,8 @@ Usage:
   node scripts/cnai-agent.mjs app attach [--json] [--attach-file PATH]
   node scripts/cnai-agent.mjs app handshake [--json] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs app status [--json] [--bridge-url URL] [--token TOKEN]
-  node scripts/cnai-agent.mjs events watch [--ndjson] [--bridge-url URL] [--token TOKEN]
+  node scripts/cnai-agent.mjs events watch [--ndjson] [--follow] [--max-events N] [--bridge-url URL] [--token TOKEN]
+  node scripts/cnai-agent.mjs tasks list [--json] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs logs tail [--json] [--follow] [--bridge-url URL] [--token TOKEN]
   node scripts/cnai-agent.mjs diag bundle [--json] [--output PATH]
   node scripts/cnai-agent.mjs workflow list [--json]
@@ -105,6 +106,7 @@ Commands:
   app handshake   Ask a running app bridge for its versioned contract.
   app status      Ask a running app bridge for app/session health.
   events watch    Stream app bridge events as NDJSON.
+  tasks list      List bridge task lifecycle records.
   logs tail       Read or follow app bridge logs.
   diag bundle     Write a local CLI diagnostic bundle.
   workflow list   Print known workflow command contracts.
@@ -127,7 +129,7 @@ Output:
 function parseArgs(argv) {
   const args = [...argv];
   let command = args.shift();
-  if (['app', 'events', 'logs', 'diag', 'workflow', 'ui', 'call'].includes(command)) {
+  if (['app', 'events', 'tasks', 'logs', 'diag', 'workflow', 'ui', 'call'].includes(command)) {
     const subcommand = args.shift();
     if (!subcommand || subcommand.startsWith('-')) {
       throw new UsageError(`Missing subcommand for: ${command}`);
@@ -149,6 +151,7 @@ function parseArgs(argv) {
     dev: false,
     port: undefined,
     file: undefined,
+    maxEvents: undefined,
     target: undefined,
     selector: undefined,
     text: undefined,
@@ -192,6 +195,13 @@ function parseArgs(argv) {
       options.output = args.shift();
     } else if (arg === '--file') {
       options.file = args.shift();
+    } else if (arg === '--max-events') {
+      const raw = args.shift();
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new UsageError(`Invalid --max-events value: ${raw}`);
+      }
+      options.maxEvents = parsed;
     } else if (arg === '--target') {
       options.target = args.shift();
     } else if (arg === '--selector') {
@@ -268,6 +278,11 @@ function handshakePayload() {
         id: 'events.watch',
         stability: 'experimental',
         description: 'Stream structured app events from the bridge.',
+      },
+      {
+        id: 'tasks.list',
+        stability: 'experimental',
+        description: 'List bridge task lifecycle records.',
       },
       {
         id: 'logs.tail',
@@ -871,7 +886,7 @@ async function handleEventsCommand(options) {
     return 3;
   }
 
-  const endpoint = bridgeEndpoint(bridge.url, '/v1/events');
+  const endpoint = bridgeEndpoint(bridge.url, options.follow ? '/v1/events?follow=1' : '/v1/events');
   try {
     const response = await fetch(endpoint, {
       signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
@@ -880,6 +895,10 @@ async function handleEventsCommand(options) {
         ...(bridge.token ? { authorization: `Bearer ${bridge.token}` } : {}),
       },
     });
+    if (options.follow) {
+      const streamed = await streamSseEvents(response, options, bridge.url);
+      return streamed ? 0 : 1;
+    }
     const text = await response.text();
     const events = parseSse(text);
     if (options.format === 'ndjson') {
@@ -910,6 +929,61 @@ async function handleEventsCommand(options) {
     );
     return 3;
   }
+}
+
+async function handleTasksCommand(options) {
+  const subcommand = options.commandParts[1];
+  if (subcommand !== 'list') {
+    throw new UsageError(`Unknown tasks command: ${subcommand ?? ''}`);
+  }
+  const { code, payload } = await requestBridgeJson('tasks_list', options, '/v1/tasks');
+  printPayload(payload, options.format);
+  return code;
+}
+
+async function streamSseEvents(response, options, bridgeUrl) {
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    printPayload(
+      {
+        schemaVersion: 1,
+        type: 'events_watch',
+        status: 'failed',
+        bridge: { url: bridgeUrl, httpStatus: response.status },
+        body: text,
+      },
+      options.format,
+    );
+    return false;
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = '';
+  let count = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split(/\r?\n\r?\n/u);
+    buffer = parts.pop() ?? '';
+    for (const block of parts) {
+      const events = parseSse(block);
+      for (const event of events) {
+        count += 1;
+        if (options.format === 'ndjson') {
+          process.stdout.write(`${JSON.stringify(event)}\n`);
+        } else {
+          printPayload(event, options.format);
+        }
+        if (options.maxEvents && count >= options.maxEvents) {
+          await reader.cancel();
+          return true;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 async function handleLogsCommand(options) {
@@ -1015,15 +1089,21 @@ function parseSse(text) {
   return text
     .split(/\r?\n\r?\n/u)
     .filter((block) => block.trim().length > 0)
-    .map((block) => {
+    .flatMap((block) => {
       const event = { schemaVersion: 1, type: 'sse_event', event: 'message', data: null };
       const dataLines = [];
       for (const line of block.split(/\r?\n/u)) {
+        if (line.startsWith(':')) {
+          continue;
+        }
         if (line.startsWith('event:')) {
           event.event = line.slice('event:'.length).trim();
         } else if (line.startsWith('data:')) {
           dataLines.push(line.slice('data:'.length).trim());
         }
+      }
+      if (dataLines.length === 0) {
+        return [];
       }
       const dataText = dataLines.join('\n');
       try {
@@ -1031,7 +1111,7 @@ function parseSse(text) {
       } catch {
         event.data = dataText;
       }
-      return event;
+      return [event];
     });
 }
 
@@ -1159,6 +1239,9 @@ async function main() {
     }
     if (options.commandParts[0] === 'events') {
       return await handleEventsCommand(options);
+    }
+    if (options.commandParts[0] === 'tasks') {
+      return await handleTasksCommand(options);
     }
     if (options.commandParts[0] === 'logs') {
       return await handleLogsCommand(options);
