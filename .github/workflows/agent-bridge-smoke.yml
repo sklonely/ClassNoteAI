@@ -1,0 +1,48 @@
+name: Agent Bridge Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      launch_app:
+        description: "Start the desktop app and run the live bridge smoke"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: agent-bridge-smoke-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: ClassNoteAI
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ClassNoteAI/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Agent bridge contract smoke
+        shell: bash
+        run: |
+          if [ "${{ inputs.launch_app }}" = "true" ]; then
+            npm run agent:smoke:app -- --launch-app --timeout-ms 180000
+          else
+            npm run agent:smoke:app -- --dry-run
+          fi

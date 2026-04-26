@@ -78,6 +78,14 @@ Run the agent CLI handshake:
 npm run agent:handshake
 ```
 
+Validate the app bridge contract without changing app data:
+
+```bash
+npm run agent:smoke:app -- --dry-run
+```
+
+When you need a real desktop smoke, run the same profile with `--launch-app`; it starts the app with the local bridge enabled, checks status/logs/events/UI/workflow paths, then stops the app it launched.
+
 Rust checks live under `src-tauri`:
 
 ```bash
