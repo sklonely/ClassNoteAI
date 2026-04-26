@@ -93,3 +93,215 @@
   font-family: var(--h18-font-mono);
   letter-spacing: 0.04em;
 }
+
+/* ─── Card grid (新, P5-courselist) ───────────────────────── */
+.grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+@media (min-width: 640px) {
+  .grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (min-width: 1024px) {
+  .grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.card {
+  background: var(--h18-surface);
+  border: 1px solid var(--h18-border);
+  border-radius: 14px;
+  padding: 18px 18px 16px;
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  transition: transform 160ms var(--h18-ease-spring),
+              box-shadow 160ms var(--h18-ease-spring),
+              border-color 140ms var(--h18-ease-spring);
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--h18-shadow);
+  border-color: var(--h18-border);
+}
+
+.cardHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cardTitle {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--h18-text);
+  letter-spacing: -0.014em;
+  margin: 0;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  transition: color 140ms;
+}
+
+.card:hover .cardTitle {
+  color: var(--h18-accent);
+}
+
+.kebabWrap {
+  position: relative;
+}
+
+.kebab {
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--h18-text-dim);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 140ms, color 140ms, border-color 140ms;
+}
+
+.kebab:hover {
+  background: var(--h18-surface2);
+  border-color: var(--h18-border-soft);
+  color: var(--h18-text);
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: 32px;
+  width: 132px;
+  background: var(--h18-surface);
+  border: 1px solid var(--h18-border);
+  border-radius: 8px;
+  box-shadow: var(--h18-shadow);
+  padding: 4px;
+  z-index: 20;
+  animation: listMenuIn 160ms var(--h18-ease-spring);
+}
+
+.menuItem {
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--h18-text);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 100ms;
+}
+
+.menuItem:hover {
+  background: var(--h18-surface2);
+}
+
+.menuItemDanger {
+  color: var(--h18-hot);
+}
+
+.menuItemDanger:hover {
+  background: var(--h18-hot-bg);
+}
+
+.cardBody {
+  flex-grow: 1;
+  margin-bottom: 14px;
+}
+
+.cardSummary {
+  font-size: 13px;
+  color: var(--h18-text-mid);
+  font-weight: 500;
+  margin: 0;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cardSummaryFaint {
+  color: var(--h18-text-dim);
+  font-weight: 400;
+}
+
+.cardFooter {
+  padding-top: 11px;
+  border-top: 1px solid var(--h18-border-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--h18-text-dim);
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+}
+
+.metaRowMulti {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.metaIcon {
+  flex-shrink: 0;
+}
+
+.metaIconAccent { color: var(--h18-accent); }
+.metaIconOk     { color: #22c55e; }
+.metaIconHot    { color: var(--h18-hot); }
+
+.metaText {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-width: 120px;
+}
+
+.metaSpread {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--h18-text-faint);
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+}
+
+.metaCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--h18-text-mid);
+  font-weight: 600;
+}
+
+@keyframes listMenuIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}

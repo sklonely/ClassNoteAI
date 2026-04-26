@@ -202,42 +202,40 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                     <p className={s.emptyHint}>點擊右上角按鈕開始創建您的第一個科目</p>
                 </div>
             ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className={s.grid}>
                     {courses.map((course) => (
                         <div
                             key={course.id}
                             onClick={() => onSelectCourse(course.id)}
-                            className="bg-white dark:bg-slate-800 rounded-xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 hover:shadow-md hover:-translate-y-1 transition-all cursor-pointer group relative flex flex-col h-full"
+                            className={s.card}
                         >
-                            <div className="flex justify-between items-start mb-3">
-                                <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100 line-clamp-1 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                                    {course.title}
-                                </h2>
-                                <div className="relative">
+                            <div className={s.cardHead}>
+                                <h2 className={s.cardTitle}>{course.title}</h2>
+                                <div className={s.kebabWrap}>
                                     <button
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             setMenuOpenId(menuOpenId === course.id ? null : course.id);
                                         }}
-                                        className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                                        className={s.kebab}
                                     >
-                                        <MoreVertical className="w-5 h-5" />
+                                        <MoreVertical size={16} />
                                     </button>
 
                                     {menuOpenId === course.id && (
-                                        <div className="absolute right-0 top-8 w-32 bg-white dark:bg-slate-800 rounded-lg shadow-lg border border-gray-100 dark:border-gray-700 z-10 py-1">
+                                        <div className={s.menu}>
                                             <button
                                                 onClick={(e) => handleEditCourse(course, e)}
-                                                className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                                                className={s.menuItem}
                                             >
-                                                <Edit2 className="w-4 h-4" />
+                                                <Edit2 size={13} />
                                                 編輯
                                             </button>
                                             <button
                                                 onClick={(e) => handleDeleteCourse(course.id, e)}
-                                                className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2"
+                                                className={`${s.menuItem} ${s.menuItemDanger}`}
                                             >
-                                                <Trash2 className="w-4 h-4" />
+                                                <Trash2 size={13} />
                                                 刪除
                                             </button>
                                         </div>
@@ -245,56 +243,52 @@ const CourseListView: React.FC<CourseListViewProps> = ({ onSelectCourse }) => {
                                 </div>
                             </div>
 
-                            {/* Course Content / Description */}
-                            <div className="flex-grow mb-4">
+                            <div className={s.cardBody}>
                                 {course.syllabus_info?.topic ? (
-                                    <div className="space-y-2">
-                                        <p className="text-sm text-gray-600 dark:text-gray-300 line-clamp-3 font-medium">
-                                            {toDisplayString(course.syllabus_info.topic)}
-                                        </p>
-                                    </div>
+                                    <p className={s.cardSummary}>
+                                        {toDisplayString(course.syllabus_info.topic)}
+                                    </p>
                                 ) : (
-                                    <p className="text-gray-500 dark:text-gray-400 text-sm line-clamp-3">
+                                    <p className={`${s.cardSummary} ${s.cardSummaryFaint}`}>
                                         {course.description || (course.keywords ? `關鍵詞: ${course.keywords}` : '無描述')}
                                     </p>
                                 )}
                             </div>
 
-                            {/* Footer Info */}
-                            <div className="pt-3 border-t border-gray-50 dark:border-gray-700 space-y-2">
+                            <div className={s.cardFooter}>
                                 {course.syllabus_info ? (
                                     <>
                                         {course.syllabus_info.instructor && (
-                                            <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
-                                                <User className="w-3.5 h-3.5 text-blue-500" />
-                                                <span className="line-clamp-1">{toDisplayString(course.syllabus_info.instructor)}</span>
+                                            <div className={s.metaRow}>
+                                                <User size={12} className={`${s.metaIcon} ${s.metaIconAccent}`} />
+                                                <span className={s.metaText}>{toDisplayString(course.syllabus_info.instructor)}</span>
                                             </div>
                                         )}
-                                        <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
+                                        <div className={`${s.metaRow} ${s.metaRowMulti}`}>
                                             {course.syllabus_info.time && (
-                                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                                    <Clock className="w-3.5 h-3.5 text-green-500" />
-                                                    <span className="line-clamp-1 max-w-[100px]">{toDisplayString(course.syllabus_info.time)}</span>
+                                                <div className={s.metaRow} style={{ gap: 6 }}>
+                                                    <Clock size={12} className={`${s.metaIcon} ${s.metaIconOk}`} />
+                                                    <span className={s.metaText}>{toDisplayString(course.syllabus_info.time)}</span>
                                                 </div>
                                             )}
                                             {course.syllabus_info.location && (
-                                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                                    <MapPin className="w-3.5 h-3.5 text-red-500" />
-                                                    <span className="line-clamp-1 max-w-[80px]">{toDisplayString(course.syllabus_info.location)}</span>
+                                                <div className={s.metaRow} style={{ gap: 6 }}>
+                                                    <MapPin size={12} className={`${s.metaIcon} ${s.metaIconHot}`} />
+                                                    <span className={s.metaText} style={{ maxWidth: 80 }}>{toDisplayString(course.syllabus_info.location)}</span>
                                                 </div>
                                             )}
                                         </div>
                                     </>
                                 ) : (
-                                    <div className="flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
-                                        <div className="flex items-center gap-1">
-                                            <Calendar className="w-3.5 h-3.5" />
+                                    <div className={s.metaSpread}>
+                                        <span className={s.metaRow}>
+                                            <Calendar size={12} className={s.metaIcon} />
                                             {course.updated_at ? new Date(course.updated_at).toLocaleDateString() : ''}
-                                        </div>
-                                        <div className="flex items-center gap-1">
-                                            <BookOpen className="w-3.5 h-3.5" />
+                                        </span>
+                                        <span className={s.metaCta}>
+                                            <BookOpen size={12} />
                                             進入學習
-                                        </div>
+                                        </span>
                                     </div>
                                 )}
                             </div>
