@@ -38,8 +38,7 @@ import AddCourseDialog from './AddCourseDialog';
 import H18ReviewPage from './H18ReviewPage';
 import H18AIDock from './H18AIDock';
 import H18AIPage from './H18AIPage';
-import SettingsView from '../SettingsView';
-import TrashView from '../TrashView';
+import ProfilePage from './ProfilePage';
 import s from './H18DeepApp.module.css';
 
 interface PlaceholderProps {
@@ -91,18 +90,6 @@ export default function H18DeepApp() {
     const [isCourseDialogOpen, setIsCourseDialogOpen] = useState(false);
     const [aiDockOpen, setAiDockOpen] = useState(false);
 
-    // P6.7 之前 legacy settings / trash 還是要能開 — 從 profile placeholder
-    // 進入點觸發。Profile (achievement) 暫時不接，等 P6.7。
-    const [isLegacySettingsOpen, setIsLegacySettingsOpen] = useState(false);
-    const [isTrashOpen, setIsTrashOpen] = useState(false);
-
-    // expose globally for SettingsView's "manage trash" button (parity with MainWindow)
-    useEffect(() => {
-        (window as unknown as Record<string, unknown>).__setShowTrashView = setIsTrashOpen;
-        return () => {
-            delete (window as unknown as Record<string, unknown>).__setShowTrashView;
-        };
-    }, []);
 
     // ─── theme bootstrap ────────────────────────────────────────────
     useEffect(() => {
@@ -248,12 +235,10 @@ export default function H18DeepApp() {
                 return <H18AIPage onBack={() => setActiveNav('home')} />;
             case 'profile':
                 return (
-                    <Placeholder
-                        eyebrow="個人頁 · P6.7 預定"
-                        title="Overview + 7 個設置 sub-pane"
-                        hint="P6.7 才會把 ProfileView / SettingsView / TrashView 折成 H18 ProfilePage。在那之前用下方按鈕暫時打開 legacy 視圖。"
-                        actionLabel="開啟 legacy 設置"
-                        onAction={() => setIsLegacySettingsOpen(true)}
+                    <ProfilePage
+                        onBack={() => setActiveNav('home')}
+                        effectiveTheme={theme}
+                        onToggleTheme={() => void toggleTheme()}
                     />
                 );
             case 'course':
@@ -394,11 +379,6 @@ export default function H18DeepApp() {
                 }}
             />
 
-            {/* legacy settings / trash — P6.7 之後拔 */}
-            {isLegacySettingsOpen && (
-                <SettingsView onClose={() => setIsLegacySettingsOpen(false)} />
-            )}
-            {isTrashOpen && <TrashView onBack={() => setIsTrashOpen(false)} />}
         </div>
     );
 }
