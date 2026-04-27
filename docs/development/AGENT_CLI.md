@@ -23,6 +23,8 @@ node scripts/cnai-agent.mjs app attach --json
 node scripts/cnai-agent.mjs app status --json
 node scripts/cnai-agent.mjs app handshake --json --bridge-url http://127.0.0.1:4317
 node scripts/cnai-agent.mjs events watch --ndjson --bridge-url http://127.0.0.1:4317
+node scripts/cnai-agent.mjs events watch --follow --ndjson --max-events 10
+node scripts/cnai-agent.mjs tasks list --json
 node scripts/cnai-agent.mjs logs tail --json --bridge-url http://127.0.0.1:4317
 node scripts/cnai-agent.mjs diag bundle --json
 node scripts/cnai-agent.mjs workflow list --json
@@ -72,7 +74,8 @@ Issue #112 is larger than this first CLI PR. This table keeps the scope honest:
 | App launch / attach / authenticated local bridge | Implemented behind opt-in `CNAI_AGENT_BRIDGE=1`; `app launch` starts dev mode with the bridge, `app attach` reads the attach file, and app-backed commands send bearer auth. |
 | App status | Implemented through `/v1/status`. |
 | Log tail | Implemented through `/v1/logs` for recent logs. Continuous follow is part of the command contract but currently returns the current log snapshot. |
-| Structured event streaming | Implemented through `/v1/events` as a bridge SSE snapshot. Long-lived streaming is the next bridge increment. |
+| Structured event streaming | Implemented through `/v1/events`; add `?follow=1` or CLI `events watch --follow --ndjson` for a long-lived stream. |
+| Task lifecycle records | Implemented through `/v1/tasks` and `tasks list`; bridge-backed workflows/actions emit `task.started` and terminal task events. |
 | Diagnostic bundle | Implemented locally and through `/v1/diag/bundle` when attached to the app bridge. |
 | Raw command plane | Implemented for a small safe allowlist: `get_build_features` and `agent_bridge_status`. |
 | High-level workflow commands | `workflow list` exposes contracts locally and through `/v1/workflows`; `workflow diagnostics` is implemented as an app-backed workflow. Media/OCR/summary/chat execution endpoints currently return structured `unsupported`. |
@@ -111,6 +114,7 @@ The first bridge-backed version provides:
 - authenticated attach via an app-written attach file
 - status, logs, events, diagnostic bundle, and workflow discovery endpoints
 - renderer DOM state and basic UI actions for app-driving agents
+- task lifecycle records and long-lived event follow mode for action/workflow correlation
 
 The next bridge-backed commands should reuse this entry point:
 
@@ -119,7 +123,8 @@ node scripts/cnai-agent.mjs app status --json
 node scripts/cnai-agent.mjs ui tree --json
 node scripts/cnai-agent.mjs ui click --target nav.settings --json
 node scripts/cnai-agent.mjs ui wait-for --target view.settings --json
-node scripts/cnai-agent.mjs events watch --ndjson
+node scripts/cnai-agent.mjs events watch --follow --ndjson
+node scripts/cnai-agent.mjs tasks list --json
 node scripts/cnai-agent.mjs workflow import-media --file lecture.mp4 --json
 node scripts/cnai-agent.mjs diag bundle --json
 ```
