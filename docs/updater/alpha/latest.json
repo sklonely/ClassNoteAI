@@ -1,19 +1,19 @@
 {
-  "version": "0.6.5-alpha.2",
-  "notes": "ClassNoteAI 0.6.5-alpha.2 更新",
-  "pub_date": "2026-04-27T17:53:53Z",
+  "version": "0.6.5-alpha.3",
+  "notes": "ClassNoteAI 0.6.5-alpha.3 更新",
+  "pub_date": "2026-04-27T20:49:50Z",
   "platforms": {
     "darwin-aarch64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNE4wN3cyU1gva3V0NFIwL1NqVjlZcmNoT1JvSmRpKy90UitFS1hpTzQxTUVuZUc5R1ZkRlR6WGM1SlZSSS9wRkFxTy9vL1daZkRXa0ZwamtzMFl2TVE4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzEyNDMyCWZpbGU6Q2xhc3NOb3RlQUkuYXBwLnRhci5negpiaU1xMEJPN2g2L0g5NFBIdFFiZnVrRC9ESU5TRnlwbkNiQVFTcUhDNTdnTTJvKzhLQnFzb3RNcGFzeWZBTHIxeG9KUFNEaXdiVmhaNHk3OUpmWnFBUT09Cg==",
-      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.5-alpha.2/ClassNoteAI_0.6.5-alpha.2_aarch64.app.tar.gz"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNFBuenh5bndYVzh5d1l1dWp5VTlQRitGdkxJS3FBVENBQkpjU0NOakJWaU14cUU1NFlVY3M1TnNwM3VMdFpBcFB1Q0R3V05QaVUwdFEzUU1hTkhvVmdJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzIyOTkwCWZpbGU6Q2xhc3NOb3RlQUkuYXBwLnRhci5negovM0VpWWpLRWR6dGpmMDhDSUl4RmF2bk9KT3BybFYxOUh0bGVjbUFtVWk3bTVLc2U0K2laSkFLWThQc1RzZXFhdFFmM01XUGRDMktnODlES1IwSjRDZz09Cg==",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.5-alpha.3/ClassNoteAI_0.6.5-alpha.3_aarch64.app.tar.gz"
     },
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNEVJemVBa0NzTU10bFR2TGh3aGJrTzVBWkZwL0Juc0dBSGJHMGZpb3d4MDZCUUpWT1hlQUNyMzNhZXUrbkpDOExmTTZGejZMbmFtZk5YTCtjOVdSSkFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzEyODUyCWZpbGU6Q2xhc3NOb3RlQUlfMC42LjUtYWxwaGEuMl94NjQtc2V0dXAuZXhlClp3L1RqVktTTEVrckV1dE1PZDN6dnVWL3VFeURtTHVoZjFRb0pINnBqeXN2UUxzR29UdThIT1d1R244TVh2RllHL2F6VUZNMGxRM3FjOGRRS2RTWEFnPT0K",
-      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.5-alpha.2/ClassNoteAI_0.6.5-alpha.2_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNE5jRjBIWEpLQjhsbnliMUFJT0tRa3dCZStoSGdZRjE4VHRyNjZSVkc4SlpGTkNaUnRyWWJPUFV3NDh0cVRoVTVxb3hzb2tzZXd5ZnZFZVlyTEdGdHdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzIzMjQ3CWZpbGU6Q2xhc3NOb3RlQUlfMC42LjUtYWxwaGEuM194NjQtc2V0dXAuZXhlCi9XN2FpWnArYWhuRTVpVnlTclhLY1J0VDJYM3FNTUJKVHdGU0NOb3B5Q1VIS3JLblNoT21QTnN3V3FITG5rZ2tMQ2VOeng1SldYVDlnRGJJbm5kd0NBPT0K",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.5-alpha.3/ClassNoteAI_0.6.5-alpha.3_x64-setup.exe"
     },
     "windows-x86_64-cuda": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNE1pcmJzajVTQ0dQbWNwVDBxM01QYnFUWnFzS0xNM1FwaEt2VHpKOWd3Uzl4elV3aWczaVRvaGN2dGdqYkVja2Q2YVg3M0xnVzhVamZ6WkU3TEMzSGd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzEzNjA3CWZpbGU6Q2xhc3NOb3RlQUlfMC42LjUtYWxwaGEuMl94NjQtc2V0dXAuZXhlCkxNZ29HUkNqc0RBQlJPcGlsSXlIb2Q3UTBwUGRlRmw3NUxSTG1LdFQxUkxxL3ZYcHdNUklHMHhMOWZmN014RkE5Q240cjllY1huaUN1a0JXVXZBQkNRPT0K",
-      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.5-alpha.2/ClassNoteAI_0.6.5-alpha.2_x64-cuda-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZEt6NnIvdHAxNExVSjZIOVQvU0pDT3ZORFBEdk1lLzZ0ZGlyZ21NZjVxK080R2tSTjEzK0J1eXM4cS96ZEpBcXB2TTdVT0JXNzdYOWk5bjFzY1J3MjZoUVFub1hFRUFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzI0NTU4CWZpbGU6Q2xhc3NOb3RlQUlfMC42LjUtYWxwaGEuM194NjQtc2V0dXAuZXhlCjMvZTdXb1cwNzh1N1ZNb29vOHZpUzhjSVNMQWswK1pmazJRcTBJMityaWd0NE9vOW80S1hwbmlNRjhDUE5LRTY4c2UwWDRQM0VHQnp4MWlDT0JPM0RnPT0K",
+      "url": "https://github.com/sklonely/ClassNoteAI/releases/download/v0.6.5-alpha.3/ClassNoteAI_0.6.5-alpha.3_x64-cuda-setup.exe"
     }
   }
 }
