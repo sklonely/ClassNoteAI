@@ -69,6 +69,9 @@ describe('cnai-agent CLI', () => {
       expect.arrayContaining(['agent.handshake', 'agent.smoke']),
     );
     expect(payload.smokeProfiles.quick).toEqual(['typecheck']);
+    expect(payload.smokeProfiles['app-bridge']).toEqual(
+      expect.arrayContaining(['attach', 'handshake', 'workflow-import-media']),
+    );
     expect(payload.capabilities.map((cap: { id: string }) => cap.id)).toEqual(
       expect.arrayContaining([
         'app.launch',
@@ -97,6 +100,22 @@ describe('cnai-agent CLI', () => {
       'skipped',
       'skipped',
     ]);
+  });
+
+  it('supports app bridge smoke dry-runs without launching the app', () => {
+    const payload = JSON.parse(
+      runCli(['smoke', '--profile', 'app-bridge', '--dry-run', '--json']),
+    );
+
+    expect(payload.schemaVersion).toBe(1);
+    expect(payload.type).toBe('smoke_result');
+    expect(payload.profile).toBe('app-bridge');
+    expect(payload.status).toBe('passed');
+    expect(payload.launchedApp).toBe(false);
+    expect(payload.steps.map((step: { id: string }) => step.id)).toEqual(
+      expect.arrayContaining(['attach', 'handshake', 'workflow-import-media', 'tasks']),
+    );
+    expect(payload.steps.every((step: { status: string }) => step.status === 'skipped')).toBe(true);
   });
 
   it('streams NDJSON events for parent agents', () => {

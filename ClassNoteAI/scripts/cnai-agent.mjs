@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
@@ -99,7 +99,7 @@ Usage:
   node scripts/cnai-agent.mjs ui navigate --path PATH [--json]
   node scripts/cnai-agent.mjs ui wait-for [--target ID|--selector CSS|--text TEXT] [--timeout-ms N] [--json]
   node scripts/cnai-agent.mjs call raw <command> [--json]
-  node scripts/cnai-agent.mjs smoke [--profile quick|frontend|release] [--json|--ndjson] [--dry-run] [--timeout-ms N]
+  node scripts/cnai-agent.mjs smoke [--profile quick|frontend|release|app-bridge] [--json|--ndjson] [--dry-run] [--launch-app] [--keep-app] [--timeout-ms N]
 
 Commands:
   handshake       Print the machine-readable CLI capability contract.
@@ -149,6 +149,8 @@ function parseArgs(argv) {
     attachFile: DEFAULT_ATTACH_FILE,
     output: undefined,
     follow: false,
+    launchApp: false,
+    keepApp: false,
     detach: false,
     dev: false,
     port: undefined,
@@ -247,6 +249,10 @@ function parseArgs(argv) {
       options.clear = true;
     } else if (arg === '--follow') {
       options.follow = true;
+    } else if (arg === '--launch-app') {
+      options.launchApp = true;
+    } else if (arg === '--keep-app') {
+      options.keepApp = true;
     } else if (arg === '--detach') {
       options.detach = true;
     } else if (arg === '--dev') {
@@ -374,10 +380,13 @@ function handshakePayload() {
       status: DEFAULT_BRIDGE_URL ? 'configured' : 'not_configured',
     },
     smokeProfiles: Object.fromEntries(
-      Object.entries(PROFILES).map(([name, steps]) => [
-        name,
-        steps.map((step) => step.id),
-      ]),
+      [
+        ...Object.entries(PROFILES).map(([name, steps]) => [
+          name,
+          steps.map((step) => step.id),
+        ]),
+        ['app-bridge', appBridgeSmokeStepIds()],
+      ],
     ),
     outputFormats: ['human', 'json', 'ndjson'],
     exitCodes: {
@@ -680,6 +689,10 @@ async function runStep(step, options) {
 }
 
 async function runSmoke(options) {
+  if (options.profile === 'app-bridge') {
+    return runAppBridgeSmoke(options);
+  }
+
   const steps = PROFILES[options.profile];
   if (!steps) {
     throw new UsageError(
@@ -738,6 +751,336 @@ async function runSmoke(options) {
   }
 
   return payload.status === 'passed' ? 0 : 1;
+}
+
+function appBridgeSmokeStepIds() {
+  return [
+    'launch',
+    'attach',
+    'handshake',
+    'status',
+    'logs',
+    'events',
+    'raw-command',
+    'ui-tree',
+    'ui-ready',
+    'ui-snapshot',
+    'workflow-import-media',
+    'tasks',
+  ];
+}
+
+async function runAppBridgeSmoke(options) {
+  const startedAt = nowIso();
+  const results = [];
+  let launchedProcess = null;
+  let cleanupProcess = null;
+  const smokeOptions = {
+    ...options,
+    attachFile: options.attachFile || resolve(tmpdir(), `cnai-agent-bridge-${Date.now()}.json`),
+  };
+
+  emitEvent(
+    {
+      type: 'run_started',
+      profile: options.profile,
+      dryRun: options.dryRun,
+      message: 'starting app bridge smoke profile',
+    },
+    options,
+  );
+
+  try {
+    if (options.launchApp) {
+      const launchResult = await runAppBridgeSmokeStep('launch', options, async () => {
+        if (options.dryRun) {
+          return {
+            status: 'skipped',
+            message: 'launch skipped for dry-run',
+            data: {
+              attachFile: smokeOptions.attachFile,
+            },
+          };
+        }
+        const launch = launchAppForSmoke(smokeOptions);
+        launchedProcess = launch.child;
+        cleanupProcess = launch.cleanup;
+        await waitForAttach(smokeOptions.attachFile, options.timeoutMs ?? 120_000);
+        return {
+          status: 'passed',
+          message: 'app bridge attach file created',
+          data: {
+            pid: launchedProcess.pid,
+            attachFile: smokeOptions.attachFile,
+          },
+        };
+      });
+      results.push(launchResult);
+      if (launchResult.status === 'failed') return finishAppBridgeSmoke(options, startedAt, results);
+    } else {
+      results.push({
+        id: 'launch',
+        status: 'skipped',
+        startedAt,
+        finishedAt: nowIso(),
+        durationMs: 0,
+        message: 'use --launch-app to start the desktop app for this smoke profile',
+      });
+    }
+
+    for (const stepId of appBridgeSmokeStepIds().filter((id) => id !== 'launch')) {
+      const result = await runAppBridgeSmokeStep(stepId, smokeOptions, () => runAppBridgeCheck(stepId, smokeOptions));
+      results.push(result);
+      if (result.status === 'failed') break;
+    }
+
+    return finishAppBridgeSmoke(options, startedAt, results);
+  } finally {
+    if (cleanupProcess && !options.keepApp) {
+      cleanupProcess();
+    }
+  }
+}
+
+async function runAppBridgeSmokeStep(id, options, fn) {
+  const startedAt = nowIso();
+  const startedMs = Date.now();
+  emitEvent(
+    {
+      type: 'step_started',
+      stepId: id,
+      timeoutMs: options.timeoutMs,
+      message: `running ${id}`,
+    },
+    options,
+  );
+
+  let result;
+  if (options.dryRun && id !== 'launch') {
+    result = {
+      id,
+      status: 'skipped',
+      startedAt,
+      finishedAt: nowIso(),
+      durationMs: 0,
+      message: `${id} skipped for dry-run`,
+    };
+  } else {
+    try {
+      const outcome = await fn();
+      result = {
+        id,
+        status: outcome.status,
+        startedAt,
+        finishedAt: nowIso(),
+        durationMs: Date.now() - startedMs,
+        message: outcome.message,
+        data: outcome.data,
+      };
+    } catch (error) {
+      result = {
+        id,
+        status: 'failed',
+        startedAt,
+        finishedAt: nowIso(),
+        durationMs: Date.now() - startedMs,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  emitEvent(
+    {
+      type: 'step_finished',
+      stepId: id,
+      status: result.status,
+      durationMs: result.durationMs,
+      message: `${id} ${result.status}`,
+    },
+    options,
+  );
+  return result;
+}
+
+async function runAppBridgeCheck(stepId, options) {
+  if (stepId === 'attach') {
+    const attach = readAttachFile(options.attachFile);
+    if (!attach) {
+      throw new Error(`No attach file found at ${options.attachFile}. Use --launch-app or pass --attach-file.`);
+    }
+    return {
+      status: 'passed',
+      message: 'attach file readable',
+      data: {
+        url: attach.url,
+        pid: attach.pid,
+        apiVersion: attach.apiVersion,
+      },
+    };
+  }
+
+  const checks = {
+    handshake: ['app_handshake', '/v1/handshake', {}],
+    status: ['app_status', '/v1/status', {}],
+    logs: ['logs_tail', '/v1/logs', {}],
+    events: ['events_watch', '/v1/events', {}],
+    'raw-command': ['call_raw', '/v1/call/raw', {
+      method: 'POST',
+      body: { command: 'get_build_features', args: [] },
+    }],
+    'ui-tree': ['ui_tree', '/v1/ui/tree', {}],
+    'ui-snapshot': ['ui_snapshot', '/v1/ui/snapshot', {}],
+    'workflow-import-media': ['workflow_import-media', '/v1/workflow/import-media', {
+      method: 'POST',
+      body: {
+        dryRun: true,
+        lectureId: 'agent-smoke-lecture',
+        file: 'agent-smoke-media.mp4',
+        language: 'auto',
+      },
+    }],
+    tasks: ['tasks_list', '/v1/tasks', {}],
+  };
+  if (stepId === 'ui-ready') {
+    return waitForRendererUi(options);
+  }
+
+  const check = checks[stepId];
+  if (!check) {
+    throw new Error(`Unknown app bridge smoke step: ${stepId}`);
+  }
+
+  const [command, path, init] = check;
+  const { code, payload } = await requestBridgeJson(command, options, path, init);
+  if (code !== 0) {
+    throw new Error(payload.message || payload.body?.message || `${stepId} failed`);
+  }
+  return {
+    status: 'passed',
+    message: `${stepId} passed`,
+    data: summarizeSmokePayload(payload),
+  };
+}
+
+async function waitForRendererUi(options) {
+  const deadline = Date.now() + (options.timeoutMs ?? 30_000);
+  let lastSource = null;
+  while (Date.now() <= deadline) {
+    const { code, payload } = await requestBridgeJson('ui_tree', {
+      ...options,
+      timeoutMs: Math.min(options.timeoutMs ?? 5000, 5000),
+    }, '/v1/ui/tree');
+    lastSource = payload.body?.source ?? null;
+    if (code === 0 && lastSource === 'renderer-dom') {
+      return {
+        status: 'passed',
+        message: 'renderer UI state registered',
+        data: summarizeSmokePayload(payload),
+      };
+    }
+    await sleep(250);
+  }
+  throw new Error(`Renderer UI state did not register before timeout; last source: ${lastSource ?? 'unknown'}`);
+}
+
+function summarizeSmokePayload(payload) {
+  return {
+    type: payload.type,
+    httpStatus: payload.bridge?.httpStatus,
+    status: payload.body?.status ?? payload.status,
+    taskId: payload.body?.taskId ?? null,
+    workflowId: payload.body?.workflowId ?? null,
+    eventCount: Array.isArray(payload.body?.events) ? payload.body.events.length : undefined,
+    taskCount: Array.isArray(payload.body?.tasks) ? payload.body.tasks.length : undefined,
+  };
+}
+
+function finishAppBridgeSmoke(options, startedAt, results) {
+  const failed = results.find((result) => result.status === 'failed');
+  const payload = {
+    schemaVersion: 1,
+    type: 'smoke_result',
+    profile: 'app-bridge',
+    status: failed ? 'failed' : 'passed',
+    dryRun: options.dryRun,
+    launchedApp: options.launchApp,
+    startedAt,
+    finishedAt: nowIso(),
+    steps: results,
+  };
+
+  emitEvent(
+    {
+      type: 'run_finished',
+      profile: 'app-bridge',
+      status: payload.status,
+      message: `app-bridge smoke ${payload.status}`,
+    },
+    options,
+  );
+
+  if (options.format === 'json') {
+    printPayload(payload, 'json');
+  } else if (options.format === 'human') {
+    printPayload(payload, 'human');
+  }
+
+  return payload.status === 'passed' ? 0 : 1;
+}
+
+function launchAppForSmoke(options) {
+  const command = npmExec();
+  const args = ['run', 'tauri', '--', 'dev'];
+  const env = {
+    ...process.env,
+    CNAI_AGENT_BRIDGE: '1',
+    CNAI_AGENT_ATTACH_FILE: options.attachFile,
+  };
+  if (options.port !== undefined) {
+    env.CNAI_AGENT_BRIDGE_PORT = String(options.port);
+  } else {
+    env.CNAI_AGENT_BRIDGE_PORT = '0';
+  }
+
+  const spec = spawnSpec({ command, args });
+  const child = spawn(spec.command, spec.args, {
+    cwd: PROJECT_ROOT,
+    env,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+
+  return {
+    child,
+    cleanup: () => stopSpawnedProcess(child),
+  };
+}
+
+function stopSpawnedProcess(child) {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    return;
+  }
+  child.kill('SIGTERM');
+}
+
+async function waitForAttach(attachFile, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (readAttachFile(attachFile)) {
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`Timed out waiting for bridge attach file: ${attachFile}`);
+}
+
+function sleep(ms) {
+  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
 function launchApp(options) {
