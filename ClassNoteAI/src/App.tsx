@@ -15,6 +15,7 @@ import { toastService } from "./services/toastService";
 import { buildInterruptedRecordingNotice } from "./services/recordingInterruptionNotice";
 import { audioDeviceService } from "./services/audioDeviceService";
 import { useAgentAutomationBridge } from "./services/agentAutomationService";
+import { useAgentWorkflowBridge } from "./services/agentWorkflowService";
 import { useAuth } from "./contexts/AuthContext";
 
 type AppState = 'loading' | 'setup' | 'ready';
@@ -24,6 +25,7 @@ function App() {
   const [recoverableSessions, setRecoverableSessions] = useState<RecoverableSession[]>([]);
   const { user } = useAuth();
   useAgentAutomationBridge();
+  useAgentWorkflowBridge();
 
   // Detached AI 助教 webview: spawned by openDetachedAiTutor with the
   // `?aiTutorWindow=1` query flag. That window shares this bundle

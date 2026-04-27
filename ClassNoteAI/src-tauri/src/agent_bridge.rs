@@ -19,6 +19,7 @@ const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const EVENT_RING_CAPACITY: usize = 128;
 const EVENT_BROADCAST_CAPACITY: usize = 256;
 const UI_ACTION_TIMEOUT_MS: u64 = 30_000;
+const WORKFLOW_TIMEOUT_MS: u64 = 15 * 60_000;
 
 static BRIDGE_STATE: OnceLock<Arc<BridgeState>> = OnceLock::new();
 
@@ -67,6 +68,7 @@ struct BridgeState {
     tasks: Mutex<HashMap<String, BridgeTask>>,
     ui_state: Mutex<Option<Value>>,
     pending_ui_actions: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    pending_workflows: Mutex<HashMap<String, oneshot::Sender<Value>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +146,7 @@ async fn run_server(app: AppHandle, requested_port: u16, token: String) -> Resul
         tasks: Mutex::new(HashMap::new()),
         ui_state: Mutex::new(None),
         pending_ui_actions: Mutex::new(HashMap::new()),
+        pending_workflows: Mutex::new(HashMap::new()),
     });
     let _ = BRIDGE_STATE.set(state.clone());
 
@@ -295,6 +298,55 @@ pub async fn agent_bridge_complete_ui_action(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn agent_bridge_workflow_progress(
+    task_id: String,
+    message: Option<String>,
+    payload: Value,
+) -> Result<(), String> {
+    let Some(bridge_state) = BRIDGE_STATE.get() else {
+        return Ok(());
+    };
+    if let Some(message) = message.clone() {
+        let updated_at = now();
+        let mut tasks = bridge_state.tasks.lock().await;
+        if let Some(task) = tasks.get_mut(&task_id) {
+            task.updated_at = updated_at;
+            task.message = Some(message);
+        }
+    }
+    push_event(
+        bridge_state,
+        "task.progress",
+        json!({
+            "taskId": task_id,
+            "message": message,
+            "payload": payload,
+        }),
+    )
+    .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn agent_bridge_complete_workflow(
+    task_id: String,
+    result: Value,
+) -> Result<(), String> {
+    let Some(bridge_state) = BRIDGE_STATE.get() else {
+        return Ok(());
+    };
+    let sender = bridge_state
+        .pending_workflows
+        .lock()
+        .await
+        .remove(&task_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(result);
+    }
+    Ok(())
+}
+
 fn write_attach_file(app: &AppHandle, attach: &AttachFile) -> Result<(), String> {
     let path = attach_file_path(app)?;
     if let Some(parent) = path.parent() {
@@ -404,9 +456,11 @@ async fn route_request(request: HttpRequest, state: Arc<BridgeState>) -> Vec<u8>
         ("GET", "/v1/workflows") => json_response(200, workflow_payload()),
         ("POST", "/v1/call/raw") => raw_command_response(&state, &request).await,
         ("POST", "/v1/workflow/diagnostics") => diag_bundle_response(&state).await,
-        ("POST", "/v1/workflow/import-media") => unsupported_response("workflow.import-media"),
-        ("POST", "/v1/workflow/ocr-index") => unsupported_response("workflow.ocr-index"),
-        ("POST", "/v1/workflow/summarize") => unsupported_response("workflow.summarize"),
+        ("POST", "/v1/workflow/import-media") => {
+            workflow_response(&state, "import-media", &request).await
+        }
+        ("POST", "/v1/workflow/ocr-index") => workflow_response(&state, "ocr-index", &request).await,
+        ("POST", "/v1/workflow/summarize") => workflow_response(&state, "summarize", &request).await,
         ("POST", "/v1/workflow/chat") => unsupported_response("workflow.chat"),
         ("GET", "/v1/ui/snapshot") => json_response(200, ui_snapshot_payload(&state).await),
         ("GET", "/v1/ui/tree") => json_response(200, ui_tree_payload(&state).await),
@@ -453,10 +507,10 @@ fn handshake_payload(state: &BridgeState) -> Value {
             {"id": "diag.bundle", "stability": "experimental"},
             {"id": "workflow.list", "stability": "experimental"},
             {"id": "call.raw", "stability": "planned"},
-            {"id": "workflow.import-media", "stability": "planned"},
+            {"id": "workflow.import-media", "stability": "experimental"},
             {"id": "workflow.diagnostics", "stability": "experimental"},
-            {"id": "workflow.ocr-index", "stability": "planned"},
-            {"id": "workflow.summarize", "stability": "planned"},
+            {"id": "workflow.ocr-index", "stability": "experimental"},
+            {"id": "workflow.summarize", "stability": "experimental"},
             {"id": "workflow.chat", "stability": "planned"},
             {"id": "ui.snapshot", "stability": "experimental"},
             {"id": "ui.tree", "stability": "experimental"},
@@ -733,6 +787,197 @@ async fn diag_bundle_response(state: &Arc<BridgeState>) -> Vec<u8> {
     }
 }
 
+async fn workflow_response(
+    state: &Arc<BridgeState>,
+    workflow_id: &str,
+    request: &HttpRequest,
+) -> Vec<u8> {
+    let mut payload: Value = serde_json::from_slice(&request.body).unwrap_or_else(|_| json!({}));
+    let task_id = payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("workflow-{workflow_id}-{}", Uuid::new_v4()));
+    payload["taskId"] = json!(task_id);
+    payload["workflowId"] = json!(workflow_id);
+
+    start_task(
+        state,
+        task_id.clone(),
+        &format!("workflow.{workflow_id}"),
+        payload.clone(),
+    )
+    .await;
+
+    let Some(window) = state.app.get_webview_window("main") else {
+        let message = "main webview window is not available".to_string();
+        finish_task(
+            state,
+            &task_id,
+            "failed",
+            Some(message.clone()),
+            Vec::new(),
+            json!({ "workflowId": workflow_id }),
+        )
+        .await;
+        return json_response(
+            500,
+            json!({
+                "schemaVersion": 1,
+                "type": "workflow_result",
+                "status": "failed",
+                "workflowId": workflow_id,
+                "taskId": task_id,
+                "message": message,
+            }),
+        );
+    };
+
+    let (sender, receiver) = oneshot::channel();
+    state
+        .pending_workflows
+        .lock()
+        .await
+        .insert(task_id.clone(), sender);
+
+    push_event(
+        state,
+        "workflow.dispatched",
+        json!({
+            "workflowId": workflow_id,
+            "taskId": task_id,
+        }),
+    )
+    .await;
+
+    if let Err(error) = window.emit("agent-bridge-workflow", payload.clone()) {
+        let _ = state.pending_workflows.lock().await.remove(&task_id);
+        let message = format!("emit workflow: {error}");
+        finish_task(
+            state,
+            &task_id,
+            "failed",
+            Some(message.clone()),
+            Vec::new(),
+            json!({ "workflowId": workflow_id }),
+        )
+        .await;
+        return json_response(
+            500,
+            json!({
+                "schemaVersion": 1,
+                "type": "workflow_result",
+                "status": "failed",
+                "workflowId": workflow_id,
+                "taskId": task_id,
+                "message": message,
+            }),
+        );
+    }
+
+    match tokio::time::timeout(Duration::from_millis(WORKFLOW_TIMEOUT_MS), receiver).await {
+        Ok(Ok(result)) => {
+            let status = result
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("failed");
+            let task_status = match status {
+                "ok" => "completed",
+                "timeout" => "timeout",
+                _ => "failed",
+            };
+            let http_status = match status {
+                "ok" => 200,
+                "needs_input" => 400,
+                "unsupported" => 501,
+                "timeout" => 504,
+                _ => 500,
+            };
+            let message = result
+                .get("message")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let artifacts = result
+                .get("artifacts")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            finish_task(
+                state,
+                &task_id,
+                task_status,
+                message.clone(),
+                artifacts.clone(),
+                json!({
+                    "workflowId": workflow_id,
+                    "result": result,
+                }),
+            )
+            .await;
+            json_response(
+                http_status,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "workflow_result",
+                    "status": status,
+                    "workflowId": workflow_id,
+                    "taskId": task_id,
+                    "message": message,
+                    "result": result,
+                    "artifacts": artifacts,
+                }),
+            )
+        }
+        Ok(Err(_)) => {
+            let message = "renderer dropped workflow response".to_string();
+            finish_task(
+                state,
+                &task_id,
+                "failed",
+                Some(message.clone()),
+                Vec::new(),
+                json!({ "workflowId": workflow_id }),
+            )
+            .await;
+            json_response(
+                500,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "workflow_result",
+                    "status": "failed",
+                    "workflowId": workflow_id,
+                    "taskId": task_id,
+                    "message": message,
+                }),
+            )
+        }
+        Err(_) => {
+            let _ = state.pending_workflows.lock().await.remove(&task_id);
+            let message = "renderer did not complete workflow before timeout".to_string();
+            finish_task(
+                state,
+                &task_id,
+                "timeout",
+                Some(message.clone()),
+                Vec::new(),
+                json!({ "workflowId": workflow_id }),
+            )
+            .await;
+            json_response(
+                504,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "workflow_result",
+                    "status": "timeout",
+                    "workflowId": workflow_id,
+                    "taskId": task_id,
+                    "message": message,
+                }),
+            )
+        }
+    }
+}
+
 fn workflow_payload() -> Value {
     json!({
         "schemaVersion": 1,
@@ -740,9 +985,9 @@ fn workflow_payload() -> Value {
         "status": "ok",
         "workflows": [
             {"id": "diagnostics", "stability": "experimental", "requiresBridge": true},
-            {"id": "import-media", "stability": "planned", "requiresBridge": true},
-            {"id": "ocr-index", "stability": "planned", "requiresBridge": true},
-            {"id": "summarize", "stability": "planned", "requiresBridge": true},
+            {"id": "import-media", "stability": "experimental", "requiresBridge": true},
+            {"id": "ocr-index", "stability": "experimental", "requiresBridge": true},
+            {"id": "summarize", "stability": "experimental", "requiresBridge": true},
             {"id": "chat", "stability": "planned", "requiresBridge": true}
         ]
     })
@@ -1184,6 +1429,7 @@ fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
         204 => "No Content",
+        400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         504 => "Gateway Timeout",
@@ -1261,5 +1507,25 @@ mod tests {
         let token = generate_token();
         assert_eq!(token.len(), 64);
         assert!(token.chars().all(|ch| ch.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn workflow_contract_marks_app_workflows_experimental() {
+        let payload = workflow_payload();
+        let workflows = payload
+            .get("workflows")
+            .and_then(Value::as_array)
+            .unwrap();
+
+        for id in ["import-media", "ocr-index", "summarize"] {
+            let workflow = workflows
+                .iter()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                .unwrap();
+            assert_eq!(
+                workflow.get("stability").and_then(Value::as_str),
+                Some("experimental")
+            );
+        }
     }
 }

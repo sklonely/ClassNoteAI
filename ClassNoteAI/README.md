@@ -25,6 +25,13 @@ This README is for the app workspace. For the project overview, release links, a
 - Add PDFs, notes, or syllabus material to the course.
 - Search across course material and ask the AI assistant contextual questions.
 
+### Agent-Assisted Debugging
+
+- Launch the desktop app with an opt-in automation bridge for local debugging.
+- Inspect app state, recent events, logs, task progress, and visible UI controls.
+- Run high-level app workflows such as media import, course indexing, and lecture summaries from the agent CLI.
+- Use dry runs when validating automation contracts without changing app data.
+
 ## Local Data
 
 The app keeps course data, lecture metadata, captions, notes, and local indexes on your machine. Some optional AI actions may send selected content to the provider you configure.
@@ -63,6 +70,12 @@ Run a production frontend build:
 
 ```bash
 npm run build
+```
+
+Run the agent CLI handshake:
+
+```bash
+npm run agent:handshake
 ```
 
 Rust checks live under `src-tauri`:

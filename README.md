@@ -67,6 +67,8 @@ npm install
 npm run tauri:dev
 ```
 
+The app workspace also includes an opt-in agent CLI for local debugging, smoke checks, and high-level workflow validation.
+
 ## License
 
 [MIT License](LICENSE)
