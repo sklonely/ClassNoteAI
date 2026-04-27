@@ -9,6 +9,7 @@
  */
 
 import { resolveActiveProvider } from './registry';
+import { readPreferredProviderId } from './providerState';
 import type { LLMMessage } from './types';
 import { LLMError } from './types';
 import { usageTracker, type UsageTask } from './usageTracker';
@@ -36,12 +37,6 @@ function trackUsage(
     outputTokens: usage.outputTokens ?? 0,
     segments,
   });
-}
-
-const DEFAULT_PROVIDER_KEY = 'llm.defaultProvider';
-
-function preferredProvider(): string | undefined {
-  return localStorage.getItem(DEFAULT_PROVIDER_KEY) || undefined;
 }
 
 /**
@@ -97,7 +92,7 @@ function pickModelForTier(models: { id: string }[], tier: ModelTier): string {
 async function activeProviderAndModel(
   tier: ModelTier = 'high',
 ): Promise<{ providerId: string; model: string; provider: Awaited<ReturnType<typeof resolveActiveProvider>> }> {
-  const provider = await resolveActiveProvider(preferredProvider());
+  const provider = await resolveActiveProvider(await readPreferredProviderId());
   if (!provider) {
     throw new LLMError(
       'No AI provider configured. Open Settings → AI 增強 to set one up.',

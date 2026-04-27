@@ -2,6 +2,12 @@ export * from './types';
 export { keyStore } from './keyStore';
 export { listProviders, getProvider, resolveActiveProvider } from './registry';
 export {
+  DEFAULT_PROVIDER_KEY,
+  readPreferredProviderId,
+  readPreferredProviderFromLocalStorage,
+  writePreferredProviderId,
+} from './providerState';
+export {
   summarize,
   summarizeStream,
   chunkForSummarization,

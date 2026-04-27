@@ -86,6 +86,8 @@ npm run agent:smoke:app -- --dry-run
 
 When you need a real desktop smoke, run the same profile with `--launch-app`; it starts the app with the local bridge enabled, checks status/logs/events/UI/workflow paths, then stops the app it launched.
 
+For workflow debugging, `app ai-status` reports whether the running app has a configured AI provider for text or vision tasks without exposing credentials.
+
 Rust checks live under `src-tauri`:
 
 ```bash

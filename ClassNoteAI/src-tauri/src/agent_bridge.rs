@@ -67,6 +67,7 @@ struct BridgeState {
     next_event_id: Mutex<u64>,
     tasks: Mutex<HashMap<String, BridgeTask>>,
     ui_state: Mutex<Option<Value>>,
+    ai_state: Mutex<Option<Value>>,
     pending_ui_actions: Mutex<HashMap<String, oneshot::Sender<Value>>>,
     pending_workflows: Mutex<HashMap<String, oneshot::Sender<Value>>>,
 }
@@ -145,6 +146,7 @@ async fn run_server(app: AppHandle, requested_port: u16, token: String) -> Resul
         next_event_id: Mutex::new(1),
         tasks: Mutex::new(HashMap::new()),
         ui_state: Mutex::new(None),
+        ai_state: Mutex::new(None),
         pending_ui_actions: Mutex::new(HashMap::new()),
         pending_workflows: Mutex::new(HashMap::new()),
     });
@@ -275,6 +277,16 @@ pub async fn agent_bridge_update_ui_state(state: Value) -> Result<(), String> {
         return Ok(());
     };
     let mut slot = bridge_state.ui_state.lock().await;
+    *slot = Some(state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn agent_bridge_update_ai_state(state: Value) -> Result<(), String> {
+    let Some(bridge_state) = BRIDGE_STATE.get() else {
+        return Ok(());
+    };
+    let mut slot = bridge_state.ai_state.lock().await;
     *slot = Some(state);
     Ok(())
 }
@@ -452,6 +464,7 @@ async fn route_request(request: HttpRequest, state: Arc<BridgeState>) -> Vec<u8>
         ("GET", "/v1/logs") => json_response(200, logs_payload(&state, &request).await),
         ("GET", "/v1/events") => events_response(&state).await,
         ("GET", "/v1/tasks") => json_response(200, tasks_payload(&state).await),
+        ("GET", "/v1/config/ai") => json_response(200, ai_config_payload(&state).await),
         ("POST", "/v1/diag/bundle") => diag_bundle_response(&state).await,
         ("GET", "/v1/workflows") => json_response(200, workflow_payload()),
         ("POST", "/v1/call/raw") => raw_command_response(&state, &request).await,
@@ -504,6 +517,7 @@ fn handshake_payload(state: &BridgeState) -> Value {
             {"id": "events.watch", "stability": "experimental"},
             {"id": "events.follow", "stability": "experimental"},
             {"id": "tasks.list", "stability": "experimental"},
+            {"id": "config.ai", "stability": "experimental"},
             {"id": "diag.bundle", "stability": "experimental"},
             {"id": "workflow.list", "stability": "experimental"},
             {"id": "call.raw", "stability": "planned"},
@@ -526,6 +540,7 @@ fn handshake_payload(state: &BridgeState) -> Value {
 async fn status_payload(state: &Arc<BridgeState>) -> Value {
     let events = state.events.lock().await;
     let tasks = state.tasks.lock().await;
+    let ai_state = state.ai_state.lock().await.clone();
     let window_count = state.app.webview_windows().len();
     let log_dir = state
         .app
@@ -556,6 +571,24 @@ async fn status_payload(state: &Arc<BridgeState>) -> Value {
             "eventCount": events.len(),
             "taskCount": tasks.len(),
             "runningTaskCount": tasks.values().filter(|task| task.status == "running").count(),
+        },
+        "ai": {
+            "registered": ai_state.is_some(),
+            "readyForText": ai_state
+                .as_ref()
+                .and_then(|state| state.get("readyForText"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "readyForVision": ai_state
+                .as_ref()
+                .and_then(|state| state.get("readyForVision"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            "activeProviderId": ai_state
+                .as_ref()
+                .and_then(|state| state.get("activeProviderId"))
+                .cloned()
+                .unwrap_or_else(|| json!(null)),
         },
         "paths": {
             "appDataDir": app_data_dir,
@@ -1094,6 +1127,27 @@ async fn ui_snapshot_payload(state: &Arc<BridgeState>) -> Value {
         "source": "tauri-window-inventory",
         "note": "Renderer DOM state has not registered yet; pixel capture is reserved for a later bridge phase.",
         "state": ui_tree_payload(state).await,
+    })
+}
+
+async fn ai_config_payload(state: &Arc<BridgeState>) -> Value {
+    if let Some(renderer_state) = state.ai_state.lock().await.clone() {
+        return json!({
+            "schemaVersion": 1,
+            "type": "ai_config",
+            "status": "ok",
+            "source": "renderer-llm",
+            "state": renderer_state,
+        });
+    }
+
+    json!({
+        "schemaVersion": 1,
+        "type": "ai_config",
+        "status": "unavailable",
+        "source": "bridge",
+        "message": "Renderer AI provider state has not registered yet.",
+        "state": null,
     })
 }
 
