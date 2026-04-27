@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "classnoteai"
-version = "0.6.5-alpha.1"
+version = "0.6.5-alpha.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -815,6 +815,7 @@ dependencies = [
  "futures-util",
  "hf-hub",
  "hound",
+ "libloading 0.8.9",
  "log",
  "ndarray 0.15.6",
  "num_cpus",
