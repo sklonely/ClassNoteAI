@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "classnoteai"
-version = "0.6.5-alpha.2"
+version = "0.6.5-alpha.3"
 dependencies = [
  "anyhow",
  "async-trait",
