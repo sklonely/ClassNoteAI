@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Moon, Sun, Mic } from 'lucide-react';
+import { Moon, Sun } from 'lucide-react';
 import WindowControls from '../WindowControls';
 import TaskIndicator from '../TaskIndicator';
 import s from './H18TopBar.module.css';
@@ -32,9 +32,6 @@ export interface H18TopBarProps {
     dense?: boolean;
     showWindowControls?: boolean;
     onOpenSearch: () => void;
-    onStartRecording?: () => void;
-    /** When recording isn't possible (e.g. no selected course), disable. */
-    canStartRecording?: boolean;
     effectiveTheme: 'light' | 'dark';
     onToggleTheme: () => void;
     /** Inbox unread count (留白 — schema 沒做時固定 0)。 */
@@ -69,8 +66,6 @@ export default function H18TopBar({
     dense = false,
     showWindowControls = true,
     onOpenSearch,
-    onStartRecording,
-    canStartRecording = true,
     effectiveTheme,
     onToggleTheme,
     inboxCount = 0,
@@ -152,19 +147,6 @@ export default function H18TopBar({
                         搜尋筆記、課程、語音片段…
                     </span>
                     <span className={s.searchKbd}>⌘K</span>
-                </button>
-
-                <button
-                    type="button"
-                    onClick={onStartRecording}
-                    disabled={!canStartRecording || !onStartRecording}
-                    title={canStartRecording ? '開始錄音' : '請先選擇課程'}
-                    aria-label="開始錄音"
-                    className={s.recordBtn}
-                >
-                    <span className={s.recordDot} />
-                    <Mic size={12} />
-                    錄音
                 </button>
 
                 <button

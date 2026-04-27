@@ -235,6 +235,50 @@ impl Database {
             )?;
         }
 
+        // 1.6 v0.7.x: courses 表加 canvas_course_id 列 (Canvas LMS pairing)
+        let mut stmt = self.conn.prepare("PRAGMA table_info(courses)")?;
+        let has_canvas_course_id = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| name.unwrap_or_default() == "canvas_course_id");
+        drop(stmt);
+
+        if !has_canvas_course_id {
+            println!("Migrating courses table: adding canvas_course_id column");
+            self.conn.execute(
+                "ALTER TABLE courses ADD COLUMN canvas_course_id TEXT",
+                [],
+            )?;
+            // Index for the lookup path: rail/preview filter events by
+            // canvas_course_id constantly. Sparse index — most existing
+            // rows have NULL until the user runs the pairing wizard.
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_courses_canvas_course_id ON courses(canvas_course_id) WHERE canvas_course_id IS NOT NULL",
+                [],
+            )?;
+
+            // One-time migration of legacy stash: any course whose
+            // syllabus_info JSON has `_classnote_canvas_course_id` (the
+            // pre-Rust-schema fallback) gets promoted to the new column.
+            // We only fix rows where the new column is NULL to avoid
+            // clobbering anything written through the new path.
+            // This uses SQLite's json_extract — courses.syllabus_info is
+            // already serialized as a JSON text blob.
+            let migrated = self.conn.execute(
+                "UPDATE courses
+                    SET canvas_course_id = json_extract(syllabus_info, '$._classnote_canvas_course_id')
+                    WHERE canvas_course_id IS NULL
+                      AND syllabus_info IS NOT NULL
+                      AND json_extract(syllabus_info, '$._classnote_canvas_course_id') IS NOT NULL",
+                [],
+            ).unwrap_or(0);
+            if migrated > 0 {
+                println!(
+                    "  → promoted {} legacy syllabus_info._classnote_canvas_course_id rows",
+                    migrated
+                );
+            }
+        }
+
         // 1.4 創建 local_users 表
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS local_users (
@@ -655,8 +699,8 @@ impl Database {
     pub fn save_course(&self, course: &Course) -> SqlResult<()> {
         let syllabus_str = course.syllabus_info.as_ref().map(|v| v.to_string());
         self.conn.execute(
-            "INSERT INTO courses (id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO courses (id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 title = excluded.title,
@@ -664,7 +708,8 @@ impl Database {
                 keywords = excluded.keywords,
                 syllabus_info = excluded.syllabus_info,
                 updated_at = excluded.updated_at,
-                is_deleted = excluded.is_deleted",
+                is_deleted = excluded.is_deleted,
+                canvas_course_id = excluded.canvas_course_id",
             rusqlite::params![
                 course.id,
                 course.user_id,
@@ -674,7 +719,8 @@ impl Database {
                 syllabus_str,
                 course.created_at,
                 course.updated_at,
-                course.is_deleted // Persist is_deleted
+                course.is_deleted, // Persist is_deleted
+                course.canvas_course_id, // v0.7.x: Canvas LMS pairing
             ],
         )?;
         Ok(())
@@ -683,7 +729,7 @@ impl Database {
     /// 獲取科目
     pub fn get_course(&self, id: &str) -> SqlResult<Option<Course>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
+            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
              FROM courses WHERE id = ?1",
         )?;
 
@@ -697,7 +743,7 @@ impl Database {
     /// 列出指定使用者的所有科目 (不包含已刪除)
     pub fn list_courses(&self, user_id: &str) -> SqlResult<Vec<Course>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
+            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
              FROM courses WHERE user_id = ?1 AND is_deleted = 0 ORDER BY created_at DESC",
         )?;
 
@@ -1169,7 +1215,7 @@ impl Database {
     /// 列出已刪除的課程
     pub fn list_deleted_courses(&self, user_id: &str) -> SqlResult<Vec<Course>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
+            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
              FROM courses WHERE user_id = ?1 AND is_deleted = 1 ORDER BY updated_at DESC",
         )?;
         let courses = stmt

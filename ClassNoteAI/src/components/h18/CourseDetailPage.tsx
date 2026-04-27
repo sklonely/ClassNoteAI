@@ -10,11 +10,13 @@
  *  - grading                → syllabus_info.grading[]
  *  - schedule               → syllabus_info.schedule[] (字串列表)
  *
+ * 已接：
+ *  - 課程編輯 → CourseEditPage (✎ 編輯按鈕在 hero)
+ *
  * 留白 (per "沒做的後端就留白"):
  *  - 課堂提醒 (course-scoped Inbox) — reminders schema 沒做
  *  - 已複習 / NEW status per lecture — 沒 reviewed 欄位
  *  - ★ key count per lecture — 沒 concept extraction
- *  - 老師 / 助教 email — 沒儲存
  *  - 加權平均成績 — 沒 grade 欄位
  */
 
@@ -22,6 +24,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { storageService } from '../../services/storageService';
 import type { Course, Lecture } from '../../types';
 import { courseColor } from './courseColor';
+import CanvasRemindersPanel from './CanvasRemindersPanel';
+import CanvasItemPreviewModal, {
+    type CanvasPreviewItem,
+} from './CanvasItemPreviewModal';
 import s from './CourseDetailPage.module.css';
 
 export interface CourseDetailPageProps {
@@ -29,6 +35,7 @@ export interface CourseDetailPageProps {
     onBack: () => void;
     onSelectLecture: (lectureId: string) => void;
     onCreateLecture: () => void;
+    onEditCourse: () => void;
 }
 
 const GRADING_COLORS = ['#3451b2', '#1f7a4f', '#9e3a24', '#6a3da0', '#1d6477'];
@@ -69,14 +76,36 @@ function parsePercent(p?: string): number {
     return isNaN(n) ? 0 : n;
 }
 
+/**
+ * Strip date / day-of-week prefix from a schedule entry so the title
+ * column can show JUST the topic (date is shown separately in the meta
+ * column). Tolerates the formats we see in real AI output:
+ *   "Mon 03/30: Introduction" → "Introduction"
+ *   "(04/15) Backpropagation" → "Backpropagation"
+ *   "週一 03/30: 簡介"          → "簡介"
+ *   "Lecture 1"                 → "Lecture 1" (unchanged when no prefix)
+ */
+function stripScheduleDatePrefix(text: string): string {
+    let cleaned = text;
+    // Day-of-week (English / Chinese)
+    cleaned = cleaned
+        .replace(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day|s)?\s*/i, '')
+        .replace(/^(?:週|周|星期)[一二三四五六日天]\s*/, '');
+    // Date prefix: optional `(`, M/D, optional `)`, optional separator
+    cleaned = cleaned.replace(/^\(?\s*\d{1,2}[\/\-]\d{1,2}\s*\)?\s*[:：\-—]?\s*/, '');
+    return cleaned.trim() || text;
+}
+
 export default function CourseDetailPage({
     courseId,
     onBack,
     onSelectLecture,
     onCreateLecture,
+    onEditCourse,
 }: CourseDetailPageProps) {
     const [course, setCourse] = useState<Course | null>(null);
     const [lectures, setLectures] = useState<Lecture[]>([]);
+    const [canvasPreview, setCanvasPreview] = useState<CanvasPreviewItem | null>(null);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -131,6 +160,179 @@ export default function CourseDetailPage({
         ? Math.round((completedCount / schedule.length) * 100)
         : 0;
 
+    /* ────────── schedule slot date awareness ──────────
+     * 之前 schedule 的後半段都歸「未開始」— 但很多 case 是日期已過卻沒
+     * 對應的 Lecture 行 (= 沒錄音 / 沒匯入)。把這類 row 拆出來歸「已過未錄」
+     * 顯示，UX 才不會誤導。
+     *
+     * Date 來源（依優先順序）：
+     *   1. entry 字串前 30 chars 內的 MM/DD pattern（容錯多格式：
+     *      `(04/15) topic` / `Mon 04/15: topic` / `04/15 - topic`）
+     *   2. 沒 match 時，從 course.start_date + 上課 weekdays + index 推算
+     *      (e.g. start 3/30 + 週一/三 + L7 → 推算 4/20)
+     *   3. 都不行就 null（顯示「日期未明」走 ordinal fallback）
+     */
+    const today0 = useMemo(() => {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        return d;
+    }, []);
+
+    const yearHint = useMemo(() => {
+        const sd = course?.syllabus_info?.start_date;
+        if (sd) {
+            const d = new Date(sd);
+            if (!isNaN(d.getTime())) return d.getFullYear();
+        }
+        return today0.getFullYear();
+    }, [course?.syllabus_info?.start_date, today0]);
+
+    // Pre-compute meeting weekdays + start date for inference fallback.
+    const meetingContext = useMemo(() => {
+        const sd = course?.syllabus_info?.start_date;
+        const time = course?.syllabus_info?.time || '';
+        if (!sd || !time) return null;
+        const start = new Date(sd);
+        if (isNaN(start.getTime())) return null;
+        // ISO weekday: Mon=1..Sun=7
+        const weekdays = new Set<number>();
+        const cnTable: Record<string, number> = {
+            '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '日': 7, '天': 7,
+        };
+        const enTable: Record<string, number> = {
+            mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7,
+        };
+        const cnRe = /(?:週|周|星期)\s*([一二三四五六日天])/g;
+        const enRe = /\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\b/gi;
+        let m: RegExpExecArray | null;
+        while ((m = cnRe.exec(time))) {
+            const w = cnTable[m[1]];
+            if (w) weekdays.add(w);
+        }
+        while ((m = enRe.exec(time))) {
+            const w = enTable[m[1].toLowerCase()];
+            if (w) weekdays.add(w);
+        }
+        if (weekdays.size === 0) return null;
+        return {
+            startDay: new Date(start.getFullYear(), start.getMonth(), start.getDate()),
+            weekdays,
+        };
+    }, [course?.syllabus_info?.start_date, course?.syllabus_info?.time]);
+
+    /**
+     * Walk forward day-by-day from start, count meeting days; return the
+     * date corresponding to the n-th meeting (1-based). Capped at 365 days
+     * to avoid infinite loops on malformed input.
+     */
+    const inferScheduleDate = (n: number): Date | null => {
+        if (!meetingContext || n < 1) return null;
+        const { startDay, weekdays } = meetingContext;
+        const cur = new Date(startDay.getTime());
+        let count = 0;
+        for (let i = 0; i < 365; i++) {
+            const isoWd = cur.getDay() === 0 ? 7 : cur.getDay();
+            if (weekdays.has(isoWd)) {
+                count++;
+                if (count === n) {
+                    return new Date(cur.getFullYear(), cur.getMonth(), cur.getDate());
+                }
+            }
+            cur.setDate(cur.getDate() + 1);
+        }
+        return null;
+    };
+
+    /**
+     * Parse MM/DD from the first 30 chars of an entry. Tolerates formats
+     * we've seen in real AI output: `(MM/DD) ...`, `Mon MM/DD: ...`,
+     * `MM/DD - ...`. Rejects month/day out of range to dodge false
+     * positives like "Chapter 4/5".
+     */
+    const parseDateFromText = (text: string): Date | null => {
+        const head = text.slice(0, 30);
+        const m = head.match(/\b(\d{1,2})[\/\-](\d{1,2})\b/);
+        if (!m) return null;
+        const month = parseInt(m[1], 10) - 1;
+        const day = parseInt(m[2], 10);
+        if (month < 0 || month > 11 || day < 1 || day > 31) return null;
+        return new Date(yearHint, month, day);
+    };
+
+    interface ScheduleSlot {
+        text: string;
+        index: number; // 1-based across full schedule (matches L{N})
+        date: Date | null;
+        dateSource: 'parsed' | 'inferred' | 'none';
+        isPast: boolean;
+    }
+
+    const unmatchedSlots: ScheduleSlot[] = useMemo(() => {
+        return schedule.slice(sortedLectures.length).map((text, i) => {
+            const index = sortedLectures.length + i + 1;
+            let date = parseDateFromText(text);
+            let dateSource: ScheduleSlot['dateSource'] = date ? 'parsed' : 'none';
+            if (!date) {
+                const inferred = inferScheduleDate(index);
+                if (inferred) {
+                    date = inferred;
+                    dateSource = 'inferred';
+                }
+            }
+            return {
+                text,
+                index,
+                date,
+                dateSource,
+                isPast: !!(date && date < today0),
+            };
+        });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [schedule, sortedLectures.length, yearHint, today0, meetingContext]);
+
+    const pastUncoveredSlots = unmatchedSlots.filter((s) => s.isPast);
+    const futureSlots = unmatchedSlots.filter((s) => !s.isPast);
+
+    /**
+     * Click handler for "已過未錄" rows — creates a lecture record for
+     * the slot (status=completed, date set to slot date so it sorts back
+     * with the other completed lectures), then navigates to it. User can
+     * then drag-drop a recording / type notes there.
+     *
+     * Dedup: if a lecture already exists on the slot's date, jump to it
+     * instead of creating a duplicate.
+     */
+    const handleOpenPastSlot = async (slot: ScheduleSlot) => {
+        const slotIso = slot.date ? slot.date.toISOString() : new Date().toISOString();
+        const slotDayKey = slotIso.slice(0, 10); // YYYY-MM-DD
+        const existing = sortedLectures.find(
+            (l) => l.date && l.date.slice(0, 10) === slotDayKey,
+        );
+        if (existing) {
+            onSelectLecture(existing.id);
+            return;
+        }
+        const id = crypto.randomUUID();
+        const now = new Date().toISOString();
+        const cleanTitle = stripScheduleDatePrefix(slot.text) || `Lecture ${slot.index}`;
+        try {
+            await storageService.saveLecture({
+                id,
+                course_id: courseId,
+                title: cleanTitle,
+                date: slotIso,
+                duration: 0,
+                // 已過時間，建立成 completed → review 頁面接 import audio / notes
+                status: 'completed',
+                created_at: now,
+                updated_at: now,
+            });
+            onSelectLecture(id);
+        } catch (err) {
+            console.error('[CourseDetailPage] create past lecture failed:', err);
+        }
+    };
+
     if (loading) {
         return (
             <div className={s.page}>
@@ -163,8 +365,9 @@ export default function CourseDetailPage({
                                 type="button"
                                 onClick={onBack}
                                 className={s.crumbBack}
+                                title="返回首頁"
                             >
-                                ← HOME
+                                ← 首頁
                             </button>
                             <span className={s.crumbDivider}>/</span>
                             <span style={{ fontWeight: 700, opacity: 0.95 }}>{course.title}</span>
@@ -179,6 +382,14 @@ export default function CourseDetailPage({
                                     .join(' · ')}
                             </span>
                         )}
+                        <button
+                            type="button"
+                            onClick={onEditCourse}
+                            className={s.editCourseBtn}
+                            title="編輯課程資訊"
+                        >
+                            ✎ 編輯
+                        </button>
                     </div>
                     <h1 className={s.heroTitle}>{course.title}</h1>
                     <div className={s.heroStats}>
@@ -298,30 +509,114 @@ export default function CourseDetailPage({
                         </>
                     )}
 
-                    {schedule.length > 0 && schedule.length > sortedLectures.length && (
+                    {pastUncoveredSlots.length > 0 && (
                         <>
                             <div className={s.lecturesGroupHead}>
-                                ○ 未開始 · {schedule.length - sortedLectures.length}
+                                ⚠ 已過未錄 · {pastUncoveredSlots.length}
                             </div>
                             <div className={s.lecturesGroup}>
-                                {schedule.slice(sortedLectures.length).map((title, i) => {
-                                    const n = sortedLectures.length + i + 1;
+                                {pastUncoveredSlots.map((slot) => {
+                                    const cleanTitle = stripScheduleDatePrefix(slot.text);
+                                    const daysAgo = slot.date
+                                        ? Math.round(
+                                              (today0.getTime() - slot.date.getTime()) /
+                                                  (1000 * 60 * 60 * 24),
+                                          )
+                                        : null;
+                                    return (
+                                        <button
+                                            type="button"
+                                            key={`past-${slot.index}-${slot.text}`}
+                                            className={`${s.lectureRow} ${s.scheduleRowPast}`}
+                                            onClick={() => handleOpenPastSlot(slot)}
+                                            title="點開：建立這堂課的紀錄頁，可匯入錄音 / 寫筆記"
+                                        >
+                                            <span className={s.lectureCode}>
+                                                L{slot.index}
+                                            </span>
+                                            <span className={s.lectureRowTitle}>
+                                                {cleanTitle}
+                                            </span>
+                                            <span className={s.dateCol}>
+                                                {slot.date ? (
+                                                    <>
+                                                        <span className={s.dateColMain}>
+                                                            {`${slot.date.getMonth() + 1}/${slot.date.getDate()}`}
+                                                        </span>
+                                                        <span className={s.dateColRel}>
+                                                            {daysAgo === 0
+                                                                ? '今天'
+                                                                : `${daysAgo} 天前`}
+                                                            {slot.dateSource === 'inferred' && ' · 推算'}
+                                                        </span>
+                                                    </>
+                                                ) : (
+                                                    <span className={s.dateColRel}>
+                                                        日期未明
+                                                    </span>
+                                                )}
+                                            </span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    )}
+
+                    {futureSlots.length > 0 && (
+                        <>
+                            <div className={s.lecturesGroupHead}>
+                                ○ 未開始 · {futureSlots.length}
+                            </div>
+                            <div className={s.lecturesGroup}>
+                                {futureSlots.map((slot) => {
+                                    const cleanTitle = stripScheduleDatePrefix(slot.text);
+                                    const days = slot.date
+                                        ? Math.round(
+                                              (slot.date.getTime() - today0.getTime()) /
+                                                  (1000 * 60 * 60 * 24),
+                                          )
+                                        : null;
+                                    const relLabel = (() => {
+                                        if (days == null) return null;
+                                        if (days === 0) return '今天';
+                                        if (days === 1) return '明天';
+                                        if (days < 7) return `${days} 天後`;
+                                        if (days < 14) return '下週';
+                                        return `${days} 天後`;
+                                    })();
                                     return (
                                         <div
-                                            key={`${n}-${title}`}
+                                            key={`fut-${slot.index}-${slot.text}`}
                                             className={s.scheduleRow}
                                         >
                                             <span
                                                 className={`${s.lectureCode} ${s.lectureCodeMuted}`}
                                             >
-                                                L{n}
+                                                L{slot.index}
                                             </span>
                                             <span
                                                 className={`${s.lectureRowTitle} ${s.lectureRowTitleMuted}`}
                                             >
-                                                {title}
+                                                {cleanTitle}
                                             </span>
-                                            <span className={s.lectureMeta}>第 {Math.ceil(n / 2) + 1} 週</span>
+                                            <span className={s.dateCol}>
+                                                {slot.date ? (
+                                                    <>
+                                                        <span className={s.dateColMain}>
+                                                            {`${slot.date.getMonth() + 1}/${slot.date.getDate()}`}
+                                                        </span>
+                                                        <span className={s.dateColRel}>
+                                                            {relLabel}
+                                                            {slot.dateSource === 'inferred' && ' · 推算'}
+                                                        </span>
+                                                    </>
+                                                ) : (
+                                                    <span className={s.dateColRel}>
+                                                        第 {Math.ceil(slot.index / 2)} 週
+                                                    </span>
+                                                )}
+                                            </span>
                                         </div>
                                     );
                                 })}
@@ -373,11 +668,17 @@ export default function CourseDetailPage({
                     </>
                 )}
 
-                <div className={s.rightHead}>這堂課的提醒 · 0</div>
-                <div className={s.inboxEmpty}>
-                    Reminders 後端待開 (作業、老師說、公告、成績…)。
-                    <div className={s.inboxTag}>P6.2 · 留白</div>
-                </div>
+                <div className={s.rightHead}>這堂課的提醒</div>
+                <CanvasRemindersPanel
+                    course={course}
+                    onPickEvent={(ev) =>
+                        setCanvasPreview({ kind: 'event', data: ev })
+                    }
+                    onPickAnnouncement={(a) =>
+                        setCanvasPreview({ kind: 'announcement', data: a })
+                    }
+                    onEditCourse={onEditCourse}
+                />
 
                 {keywords.length > 0 && (
                     <>
@@ -420,6 +721,15 @@ export default function CourseDetailPage({
                     </>
                 )}
             </div>
+
+            {canvasPreview && (
+                <CanvasItemPreviewModal
+                    item={canvasPreview}
+                    accent={color}
+                    courseTitle={course.title}
+                    onClose={() => setCanvasPreview(null)}
+                />
+            )}
         </div>
     );
 }

@@ -11,6 +11,7 @@ export type H18ActiveNav =
     | 'ai'                               // ✦ AIPage (full screen, P6.6)
     | 'profile'                          // 👤 ProfilePage (P6.7)
     | `course:${string}`                 // course detail
+    | `course-edit:${string}`            // course 編輯頁
     | `recording:${string}`              // recording mode for course id
     | `review:${string}:${string}`;      // review mode for course id + lecture id
 
@@ -23,12 +24,16 @@ export function parseNav(nav: H18ActiveNav):
     | { kind: 'ai' }
     | { kind: 'profile' }
     | { kind: 'course'; courseId: string }
+    | { kind: 'course-edit'; courseId: string }
     | { kind: 'recording'; courseId: string }
     | { kind: 'review'; courseId: string; lectureId: string } {
     if (nav === 'home') return { kind: 'home' };
     if (nav === 'notes') return { kind: 'notes' };
     if (nav === 'ai') return { kind: 'ai' };
     if (nav === 'profile') return { kind: 'profile' };
+    if (nav.startsWith('course-edit:')) {
+        return { kind: 'course-edit', courseId: nav.slice('course-edit:'.length) };
+    }
     if (nav.startsWith('course:')) {
         return { kind: 'course', courseId: nav.slice('course:'.length) };
     }

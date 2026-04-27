@@ -19,7 +19,7 @@
  *  - about        · 版本 / 關於 / setup wizard 重置 (留白)
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { applyTheme } from '../../utils/theme';
 import s from './ProfilePage.module.css';
@@ -31,6 +31,7 @@ import {
     PAppearance,
     PAudio,
     PData,
+    PIntegrations,
     PAbout,
 } from './ProfilePanes';
 
@@ -42,12 +43,18 @@ export type ProfileTab =
     | 'appearance'
     | 'audio'
     | 'data'
+    | 'integrations'
     | 'about';
 
 export interface ProfilePageProps {
     onBack: () => void;
     effectiveTheme: 'light' | 'dark';
     onToggleTheme: () => void;
+    /**
+     * v0.7.x: 從 actionable toast 跳進來時帶的 sub-pane id。
+     * 使用者跳到設定頁就會直接停在對應 tab。undefined 走預設 'overview'。
+     */
+    initialTab?: ProfileTab;
 }
 
 interface NavItem {
@@ -66,6 +73,7 @@ const SETTINGS: NavItem[] = [
     { id: 'cloud', label: '雲端 AI 助理', hint: '摘要 · Q&A · OCR' },
     { id: 'appearance', label: '介面與顯示', hint: 'AI · 版面' },
     { id: 'audio', label: '音訊與字幕', hint: '麥克風 · 字幕' },
+    { id: 'integrations', label: '整合', hint: 'Canvas · LMS RSS' },
     { id: 'data', label: '資料管理', hint: '匯入匯出 · 回收桶' },
     { id: 'about', label: '關於與更新', hint: '版本 · 診斷' },
 ];
@@ -74,8 +82,15 @@ export default function ProfilePage({
     onBack,
     effectiveTheme,
     onToggleTheme,
+    initialTab,
 }: ProfilePageProps) {
-    const [tab, setTab] = useState<ProfileTab>('overview');
+    const [tab, setTab] = useState<ProfileTab>(initialTab ?? 'overview');
+    // If the parent dispatches a fresh nav-request while we're already
+    // mounted, switch tab to match. (Mount-time `initialTab` covers the
+    // mount-from-other-page case via the useState initialiser.)
+    useEffect(() => {
+        if (initialTab) setTab(initialTab);
+    }, [initialTab]);
     const { user, logout } = useAuth();
 
     const username = user?.username || 'Unknown';
@@ -144,6 +159,7 @@ export default function ProfilePage({
                     />
                 )}
                 {tab === 'audio' && <PAudio />}
+                {tab === 'integrations' && <PIntegrations />}
                 {tab === 'data' && <PData />}
                 {tab === 'about' && <PAbout />}
             </main>

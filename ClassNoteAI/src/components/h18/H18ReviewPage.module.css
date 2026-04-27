@@ -130,11 +130,43 @@
 .body {
     flex: 1;
     display: grid;
-    grid-template-columns: 220px 1fr 420px;
+    grid-template-columns:
+        var(--toc-w, 220px)
+        5px
+        minmax(0, 1fr)
+        5px
+        var(--right-w, 420px);
     background: var(--h18-border);
-    gap: 1px;
     overflow: hidden;
     min-height: 0;
+}
+
+/* Splitter handles between columns */
+.splitter {
+    background: var(--h18-border);
+    cursor: col-resize;
+    position: relative;
+    transition: background 120ms ease;
+    touch-action: none;
+    user-select: none;
+}
+
+.splitter::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    right: -3px;
+    /* expand hit area for easier grabbing */
+}
+
+.splitter:hover {
+    background: var(--h18-accent);
+}
+
+.splitterActive {
+    background: var(--h18-accent);
 }
 
 /* TOC ─────────────────────────────────────────────────────────── */
@@ -503,6 +535,42 @@
     overflow: auto;
 }
 
+.notesUserView {
+    flex: 1;
+    overflow: auto;
+    padding: 14px 16px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    color: var(--h18-text);
+    font-family: var(--h18-font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.notesSeedBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--h18-chip-bg);
+    border: 1px dashed var(--h18-border-soft);
+    font-size: 11px;
+    color: var(--h18-text-mid);
+}
+
+.tabHeadStatus {
+    font-weight: 500;
+    color: var(--h18-text-faint);
+    text-transform: none;
+    letter-spacing: 0.04em;
+    font-size: 9px;
+}
+
 .notesEdit {
     flex: 1;
     min-height: 200px;
@@ -648,3 +716,70 @@
     padding: 40px;
     text-align: center;
 }
+
+/* Course context strip (top of right pane) ─────────────────── */
+.ctxStrip {
+    flex-shrink: 0;
+    padding: 12px 14px;
+    background: var(--h18-surface2);
+    border-bottom: 1px solid var(--h18-border-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ctxRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+}
+
+.ctxItem {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+.ctxLabel {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+
+.ctxValue {
+    font-size: 11.5px;
+    color: var(--h18-text);
+    font-weight: 600;
+    line-height: 1.4;
+    word-break: break-word;
+    min-width: 0;
+}
+
+.ctxGrading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ctxGradingList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.ctxGradingChip {
+    font-size: 10px;
+    padding: 2px 7px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-mid);
+    border-radius: 999px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+

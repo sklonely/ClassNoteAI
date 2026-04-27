@@ -17,8 +17,54 @@
  */
 
 import { useEffect, useState } from 'react';
-import { toastService, type Toast, type ToastType } from '../services/toastService';
+import {
+    toastService,
+    type Toast,
+    type ToastType,
+    type ToastAction,
+} from '../services/toastService';
 import s from './ToastContainer.module.css';
+
+/**
+ * Resolve a toast action to a concrete handler. Callback wins over
+ * navRequest; navRequest dispatches a custom event that H18DeepApp
+ * subscribes to (services don't need a React/nav reference).
+ */
+function runToastAction(action: ToastAction) {
+    if (action.onClick) {
+        try {
+            action.onClick();
+        } catch (err) {
+            console.warn('[ToastContainer] action.onClick threw:', err);
+        }
+        return;
+    }
+    if (action.navRequest) {
+        window.dispatchEvent(
+            new CustomEvent('classnote-h18-nav-request', {
+                detail: { target: action.navRequest },
+            }),
+        );
+    }
+}
+
+function defaultActionLabel(action?: ToastAction): string | null {
+    if (!action) return null;
+    if (action.label) return action.label;
+    if (action.navRequest) {
+        switch (action.navRequest.kind) {
+            case 'home':
+                return '前往首頁';
+            case 'profile':
+                return '前往設定';
+            case 'course':
+                return '查看課程';
+            case 'course-edit':
+                return '編輯課程';
+        }
+    }
+    return '前往修正';
+}
 
 type ToastStyle = 'card' | 'typewriter';
 
@@ -103,10 +149,32 @@ function CountdownBar({ toast, hovered }: ItemProps) {
 }
 
 function ToastItemCard({ toast, hovered }: ItemProps) {
+  const actionLabel = defaultActionLabel(toast.action);
+  const isActionable = !!toast.action;
+
+  const handleActivate = () => {
+    if (toast.action) {
+      runToastAction(toast.action);
+      toastService.dismiss(toast.id);
+    }
+  };
+
   return (
     <div
-      className={`${s.toastCard} ${TYPE_CLASS[toast.type]}`}
-      role="status"
+      className={`${s.toastCard} ${TYPE_CLASS[toast.type]} ${isActionable ? s.toastCardActionable : ''}`}
+      role={isActionable ? 'button' : 'status'}
+      tabIndex={isActionable ? 0 : undefined}
+      onClick={isActionable ? handleActivate : undefined}
+      onKeyDown={
+        isActionable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleActivate();
+              }
+            }
+          : undefined
+      }
       data-testid="toast"
     >
       <div className={s.stripe} />
@@ -115,10 +183,21 @@ function ToastItemCard({ toast, hovered }: ItemProps) {
         <div className={s.text}>
           <div className={s.message}>{toast.message}</div>
           {toast.detail && <div className={s.detail}>{toast.detail}</div>}
+          {isActionable && actionLabel && (
+            <div className={s.actionLine}>
+              <span className={s.actionLabel}>{actionLabel}</span>
+              <span className={s.actionArrow} aria-hidden>
+                →
+              </span>
+            </div>
+          )}
         </div>
         <button
           className={s.dismiss}
-          onClick={() => toastService.dismiss(toast.id)}
+          onClick={(e) => {
+            e.stopPropagation();
+            toastService.dismiss(toast.id);
+          }}
           aria-label="關閉通知"
           title="關閉"
         >
@@ -136,10 +215,32 @@ function ToastItemTypewriter({ toast, hovered }: ItemProps) {
   const pad = (n: number) => String(n).padStart(2, '0');
   const tsStr = `${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`;
 
+  const actionLabel = defaultActionLabel(toast.action);
+  const isActionable = !!toast.action;
+
+  const handleActivate = () => {
+    if (toast.action) {
+      runToastAction(toast.action);
+      toastService.dismiss(toast.id);
+    }
+  };
+
   return (
     <div
-      className={`${s.toastTypewriter} ${TYPE_CLASS[toast.type]}`}
-      role="status"
+      className={`${s.toastTypewriter} ${TYPE_CLASS[toast.type]} ${isActionable ? s.toastCardActionable : ''}`}
+      role={isActionable ? 'button' : 'status'}
+      tabIndex={isActionable ? 0 : undefined}
+      onClick={isActionable ? handleActivate : undefined}
+      onKeyDown={
+        isActionable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleActivate();
+              }
+            }
+          : undefined
+      }
       data-testid="toast"
     >
       <span className={s.iconTypewriter}>{ICONS_TYPEWRITER[toast.type]}</span>
@@ -154,10 +255,21 @@ function ToastItemTypewriter({ toast, hovered }: ItemProps) {
             {toast.detail}
           </div>
         )}
+        {isActionable && actionLabel && (
+          <div className={s.actionLine}>
+            <span className={s.actionLabel}>{actionLabel}</span>
+            <span className={s.actionArrow} aria-hidden>
+              →
+            </span>
+          </div>
+        )}
       </div>
       <button
         className={s.dismiss}
-        onClick={() => toastService.dismiss(toast.id)}
+        onClick={(e) => {
+          e.stopPropagation();
+          toastService.dismiss(toast.id);
+        }}
         aria-label="關閉通知"
         title="關閉"
       >

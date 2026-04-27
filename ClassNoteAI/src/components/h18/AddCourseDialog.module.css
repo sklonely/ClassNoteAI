@@ -46,6 +46,30 @@
     line-height: 1.5;
 }
 
+.canvasPairingBadge {
+    margin-top: 12px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--h18-accent) 12%, var(--h18-surface));
+    border: 1px solid color-mix(in srgb, var(--h18-accent) 40%, transparent);
+    color: var(--h18-text);
+    font-size: 11.5px;
+    line-height: 1.55;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.canvasPairingBadge code {
+    font-family: var(--h18-font-mono);
+    font-size: 10.5px;
+    padding: 1px 5px;
+    background: var(--h18-chip-bg);
+    border-radius: 3px;
+    color: var(--h18-accent);
+    margin: 0 2px;
+}
+
 .srcRow {
     margin-top: 18px;
     display: grid;

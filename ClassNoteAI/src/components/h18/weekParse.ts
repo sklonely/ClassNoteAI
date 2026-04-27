@@ -35,8 +35,44 @@ function parseHour(hhmm: string): number | null {
     return h + mn / 60;
 }
 
+function parseDate(iso?: string): Date | null {
+    if (!iso) return null;
+    const trimmed = iso.trim();
+    if (!trimmed) return null;
+    // Accept YYYY-MM-DD with optional time
+    const d = new Date(trimmed);
+    if (isNaN(d.getTime())) return null;
+    return d;
+}
+
+export interface WeekRange {
+    /** Monday 00:00 of the displayed week. */
+    weekStart: Date;
+    /** Sunday 23:59:59.999 of the displayed week. */
+    weekEnd: Date;
+}
+
+/**
+ * Returns true when the course is "active" during the displayed week.
+ * - No start/end date → always active (legacy / no info)
+ * - Has dates → active iff [start, end] overlaps [weekStart, weekEnd]
+ */
+function isCourseActiveInWeek(course: Course, range?: WeekRange): boolean {
+    if (!range) return true;
+    const start = parseDate(course.syllabus_info?.start_date);
+    const end = parseDate(course.syllabus_info?.end_date);
+    if (!start && !end) return true; // no info → don't filter out
+    // Treat end-of-day for end_date so a course ending today still counts
+    const endDay = end ? new Date(end.getFullYear(), end.getMonth(), end.getDate(), 23, 59, 59, 999) : null;
+    if (start && start > range.weekEnd) return false; // hasn't started yet
+    if (endDay && endDay < range.weekStart) return false; // already ended
+    return true;
+}
+
 /** Extract events from one course's syllabus.time string. */
-function parseCourseTime(course: Course): WeekEvent[] {
+function parseCourseTime(course: Course, range?: WeekRange): WeekEvent[] {
+    if (!isCourseActiveInWeek(course, range)) return [];
+
     const raw = course.syllabus_info?.time?.trim();
     if (!raw) return [];
 
@@ -73,7 +109,16 @@ function parseCourseTime(course: Course): WeekEvent[] {
     }));
 }
 
-/** All events across all courses for a single canonical week. */
-export function deriveWeekEvents(courses: Course[]): WeekEvent[] {
-    return courses.flatMap(parseCourseTime);
+/**
+ * All events across all courses for the displayed week.
+ *
+ * If `range` is given, courses with start_date / end_date outside the week
+ * are filtered out — handles semester transitions cleanly. Without a range,
+ * every course is always shown (matches v0.6 behaviour).
+ */
+export function deriveWeekEvents(
+    courses: Course[],
+    range?: WeekRange,
+): WeekEvent[] {
+    return courses.flatMap((c) => parseCourseTime(c, range));
 }

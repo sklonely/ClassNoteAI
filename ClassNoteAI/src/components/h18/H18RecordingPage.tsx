@@ -14,11 +14,11 @@
  *
  * 留白（per CP-6.5+ 範圍）：
  *  - Slide strip / 投影片：display only，PDF 匯入 / OCR / 對齊**沒接**
- *  - RV2FloatingNotes 浮動筆記窗：沒做
+ *  - RV2FloatingNotes 浮動筆記窗 — 已做 (FloatingNotesPanel)，autosave 進 userNotesStore
  *  - 5-step finishing animation：UI 在，但跑的是 fixed timer (3.6s 模擬)
  *    ，沒對應後端的 transcribe → segment → summary → index 階段事件
  *  - BatteryMonitor / recordingDeviceMonitor：沒接（用戶低電量時不會 auto-stop）
- *  - 鍵盤快捷鍵 ⌘⇧N（floating notes）/ Esc：沒接
+ *  - 鍵盤快捷鍵 ⌘⇧N (floating notes) — 已接 (本次)；Esc 關閉浮動筆記
  *  - drag-drop 教材匯入：沒接
  */
 
@@ -32,6 +32,7 @@ import {
     fmtElapsed,
 } from './useRecordingSession';
 import { courseColor } from './courseColor';
+import FloatingNotesPanel from './FloatingNotesPanel';
 import s from './H18RecordingPage.module.css';
 
 export interface H18RecordingPageProps {
@@ -85,13 +86,22 @@ export default function H18RecordingPage({
         };
     }, [lectureId, courseId]);
 
-    // Auto-start recording on mount (lecture is already status='recording'
-    // when we land here). User can click "結束" to stop.
+    // v0.7.x: 不再 auto-start。使用者進到這頁可能是「準備錄音」(從首頁
+    // 下一堂或 rail [+] 進來) 或「中斷後回來」。一律由使用者明確按
+    // transport bar 的 ● 開始錄音 才啟動 session.start()，避免 mic
+    // 在使用者沒準備好時就被搶走。
+
+    // ⌘⇧N / Ctrl⇧N — toggle floating notes window
     useEffect(() => {
-        if (session.status === 'idle') {
-            void session.start();
-        }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        const onKey = (e: KeyboardEvent) => {
+            const cmd = e.metaKey || e.ctrlKey;
+            if (cmd && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+                e.preventDefault();
+                setNotesOpen((v) => !v);
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
     }, []);
 
     // 5-step finishing overlay simulation
@@ -142,17 +152,15 @@ export default function H18RecordingPage({
             {/* Hero — breadcrumb + layout switcher + 筆記 + 匯入 (per prototype) */}
             <div className={s.hero}>
                 <div className={s.crumb}>
-                    <button type="button" onClick={onBack} className={s.crumbBack}>
-                        ← 返回課程
+                    <button
+                        type="button"
+                        onClick={onBack}
+                        className={s.crumbBack}
+                        title={course?.title ? `返回 ${course.title}` : '返回課程'}
+                    >
+                        ← {course?.title || '返回課程'}
                     </button>
-                    {course && (
-                        <>
-                            <span className={s.crumbCourse} style={{ color: accent }}>
-                                {course.title}
-                            </span>
-                            <span className={s.crumbDivider}>/</span>
-                        </>
-                    )}
+                    {course && <span className={s.crumbDivider}>/</span>}
                     <span className={s.crumbLecture}>
                         {lecture?.title || '錄音中…'}
                     </span>
@@ -190,16 +198,10 @@ export default function H18RecordingPage({
                     ))}
                 </div>
 
-                {/* 筆記 toggle (留白：floating notes window 沒做) */}
+                {/* 筆記 toggle — 浮動 markdown 筆記窗 (⌘⇧N) */}
                 <button
                     type="button"
-                    onClick={() => {
-                        setNotesOpen((v) => !v);
-                        toastService.info(
-                            notesOpen ? '關閉筆記窗' : '開啟筆記窗',
-                            '留白：浮動 markdown 筆記窗 P6.x 後接 (⌘⇧N)',
-                        );
-                    }}
+                    onClick={() => setNotesOpen((v) => !v)}
                     className={`${s.heroBtn} ${notesOpen ? s.heroBtnActive : ''}`}
                     title="筆記 ⌘⇧N"
                 >
@@ -322,7 +324,7 @@ export default function H18RecordingPage({
                     <span className={s.recTime}>{fmtElapsed(session.elapsed)}</span>
                 </div>
 
-                {/* Pause / 繼續錄 (red when paused, per prototype) */}
+                {/* idle 狀態 = 明確紅色 ● 開始錄音；其他狀態走 pause/resume/finished */}
                 <button
                     type="button"
                     onClick={
@@ -331,9 +333,9 @@ export default function H18RecordingPage({
                             : () => void session.start()
                     }
                     disabled={session.status === 'stopping'}
-                    className={`${s.transportBtn} ${isPaused ? s.transportBtnRedFill : ''} ${session.status === 'recording' ? s.transportBtnInvert : ''}`}
+                    className={`${s.transportBtn} ${session.status === 'idle' ? s.transportBtnRedFill : ''} ${isPaused ? s.transportBtnRedFill : ''} ${session.status === 'recording' ? s.transportBtnInvert : ''}`}
                 >
-                    {session.status === 'idle' && '開始錄音'}
+                    {session.status === 'idle' && '● 開始錄音'}
                     {session.status === 'recording' && '暫停'}
                     {isPaused && '繼續錄'}
                     {session.status === 'stopping' && '處理中'}
@@ -389,6 +391,15 @@ export default function H18RecordingPage({
                     結束 · 儲存
                 </button>
             </div>
+
+            {/* Floating notes window (⌘⇧N) — autosaves to userNotesStore */}
+            {notesOpen && (
+                <FloatingNotesPanel
+                    lectureId={lectureId}
+                    lectureTitle={lecture?.title}
+                    onClose={() => setNotesOpen(false)}
+                />
+            )}
 
             {/* RV2 Finishing Overlay */}
             {finishOpen && (

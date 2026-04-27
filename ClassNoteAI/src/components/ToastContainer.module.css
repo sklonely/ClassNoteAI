@@ -232,6 +232,47 @@
   margin-right: 8px;
 }
 
+/* ─── Actionable (clickable) toast ─────────────────────────── */
+.toastCardActionable {
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.toastCardActionable:hover {
+  border-color: color-mix(in srgb, var(--h18-accent) 50%, var(--h18-border));
+  transform: translateX(-2px);
+}
+
+.toastCardActionable:focus-visible {
+  outline: 2px solid var(--h18-accent);
+  outline-offset: 2px;
+}
+
+.actionLine {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--h18-accent);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-family: var(--h18-font-mono);
+}
+
+.actionLabel {
+  white-space: nowrap;
+}
+
+.actionArrow {
+  font-size: 12px;
+  transition: transform 120ms ease;
+}
+
+.toastCardActionable:hover .actionArrow {
+  transform: translateX(3px);
+}
+
 /* ─── Entry animation ──────────────────────────────────────── */
 @keyframes toastEnter {
   from { transform: translateX(20px); opacity: 0; }

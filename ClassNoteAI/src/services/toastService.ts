@@ -23,6 +23,47 @@
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
+/**
+ * v0.7.x: Actionable toast — clicking the toast body navigates to a
+ * fix-up page (e.g. "no AI provider" toast → ProfilePage cloud tab).
+ *
+ * Two ways to specify the click target:
+ *   1. `navRequest` — declarative; ToastContainer dispatches a
+ *      `classnote-h18-nav-request` CustomEvent and H18DeepApp routes it.
+ *      Preferred from service code (no React/nav refs needed).
+ *   2. `onClick` — escape hatch; called directly. Use when the action
+ *      isn't navigation (retry button, open modal, etc.).
+ *
+ * If both are set, `onClick` wins.
+ */
+export type ToastNavTarget =
+  | { kind: 'home' }
+  | { kind: 'profile'; tab?: ProfileTabId }
+  | { kind: 'course'; courseId: string }
+  | { kind: 'course-edit'; courseId: string };
+
+/** Keep in sync with ProfilePage.ProfileTab. Strings only here to avoid
+ *  pulling in the whole H18 type tree from non-H18 services. */
+export type ProfileTabId =
+  | 'overview'
+  | 'transcribe'
+  | 'translate'
+  | 'cloud'
+  | 'appearance'
+  | 'audio'
+  | 'data'
+  | 'integrations'
+  | 'about';
+
+export interface ToastAction {
+  /** Button-like label shown beside the message; defaults to '前往修正'. */
+  label?: string;
+  /** Where to go when the user clicks; routed via `classnote-h18-nav-request`. */
+  navRequest?: ToastNavTarget;
+  /** Direct callback (overrides navRequest). */
+  onClick?: () => void;
+}
+
 export interface Toast {
   id: number;
   message: string;
@@ -34,6 +75,8 @@ export interface Toast {
   /** v0.7.0: 實際排程的 duration (含 default 處理)。0 = sticky。
    *  H18 新 ToastContainer 用此值畫底部 countdown bar。 */
   durationMs: number;
+  /** v0.7.x: 設了之後整個卡片變可點，點下去執行 action + dismiss。 */
+  action?: ToastAction;
 }
 
 export interface ShowToastOptions {
@@ -42,6 +85,7 @@ export interface ShowToastOptions {
   /** 0 = no auto-dismiss, user must click to close. */
   durationMs?: number;
   detail?: string;
+  action?: ToastAction;
 }
 
 type Listener = (toasts: Toast[]) => void;
@@ -82,6 +126,7 @@ class ToastService {
       at: Date.now(),
       detail: opts.detail,
       durationMs: duration,
+      action: opts.action,
     };
     this.toasts = [...this.toasts, toast];
     this.notify();
@@ -97,17 +142,17 @@ class ToastService {
   }
 
   /** Convenience shorthands — saves 20 chars at every call-site. */
-  success(message: string, detail?: string) {
-    return this.show({ message, type: 'success', detail });
+  success(message: string, detail?: string, action?: ToastAction) {
+    return this.show({ message, type: 'success', detail, action });
   }
-  error(message: string, detail?: string) {
-    return this.show({ message, type: 'error', detail });
+  error(message: string, detail?: string, action?: ToastAction) {
+    return this.show({ message, type: 'error', detail, action });
   }
-  info(message: string, detail?: string) {
-    return this.show({ message, type: 'info', detail });
+  info(message: string, detail?: string, action?: ToastAction) {
+    return this.show({ message, type: 'info', detail, action });
   }
-  warning(message: string, detail?: string) {
-    return this.show({ message, type: 'warning', detail });
+  warning(message: string, detail?: string, action?: ToastAction) {
+    return this.show({ message, type: 'warning', detail, action });
   }
 
   dismiss(id: number) {

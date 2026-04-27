@@ -100,7 +100,7 @@ async function activeProviderAndModel(
   const provider = await resolveActiveProvider(preferredProvider());
   if (!provider) {
     throw new LLMError(
-      'No AI provider configured. Open Settings → AI 增強 to set one up.',
+      '尚未設定雲端 AI 提供商，請到「個人頁 → 雲端 AI 助理」設一個。',
       'auth'
     );
   }
@@ -438,30 +438,176 @@ export async function extractKeywords(text: string, max = 20): Promise<string[]>
     .slice(0, max);
 }
 
+export interface TeachingPerson {
+  name: string;
+  email?: string;
+  office_hours?: string;
+}
+
 export interface SyllabusInfo {
   topic?: string;
+  /** 2–3 句話的課程簡介 (AI 生成)。 */
+  overview?: string;
+  /**
+   * 上課時間。為了 weekParse 能消費，**請用 24 小時 HH:MM-HH:MM 格式**
+   * 配合中文週幾（週一、週三）或英文縮寫（Mon, Wed），例如：
+   *   "週一、週三 14:00-15:50"
+   *   "Mon, Wed 14:00-15:50"
+   */
   time?: string;
-  instructor?: string;
-  office_hours?: string;
-  teaching_assistants?: string;
   location?: string;
+  /** 課程開始日期 (ISO YYYY-MM-DD)。AI 抓得到再填，不亂猜。 */
+  start_date?: string;
+  /** 課程結束日期 (ISO YYYY-MM-DD)。 */
+  end_date?: string;
+
+  // 老師（v0.7：結構化）
+  instructor?: string;            // 姓名（純字串，舊欄位；v0.7 仍填以維持顯示）
+  instructor_email?: string;
+  instructor_office_hours?: string;
+
+  // Legacy: 老師單一 OH 字串（v0.7 推薦用 instructor_office_hours）
+  office_hours?: string;
+
+  // 助教（v0.7：結構化）
+  teaching_assistants?: string;            // legacy 字串（v0.7 也填，逗號分隔姓名）
+  teaching_assistant_list?: TeachingPerson[];
+  ta_office_hours?: string;                // 助教共用 OH（個別 TA 沒指定時用）
+
   grading?: { item: string; percentage: string }[];
+  /**
+   * 每堂課的主題列表 (Lecture 1, Lecture 2, …)。
+   * v0.7 起以 *Lecture* (一次上課) 為單位，**不是「每週」** —
+   * 一週可能多堂或無堂。
+   *
+   * 規則（v0.7+）：
+   *   - 若大綱中有明確的 per-lecture 主題列表 → 抽進來。
+   *   - 若大綱只列「課程進度大綱」/「Course Calendar」/「Course Summary」
+   *     而那實際上是作業 / 月曆事件，**不要把它們當 lecture 主題**。
+   *   - 若沒有明確 lecture 主題，留空 — 後續可由前端從 start_date /
+   *     end_date / 上課頻率自動產生 "Lecture 1", "Lecture 2", ...
+   */
   schedule?: string[];
+}
+
+export interface ExtractSyllabusOptions {
+  targetLanguage?: 'zh' | 'en';
+  /**
+   * 已存在的 syllabus 內容（不含 metadata）。傳入後 AI 改成 merge 模式：
+   *   - 看得到既有欄位 → 不重複抽
+   *   - 只填缺的欄位
+   *   - 不覆寫 / 不無中生有
+   */
+  existing?: Partial<SyllabusInfo> & Record<string, unknown>;
 }
 
 export async function extractSyllabus(
   title: string,
   description: string | undefined,
-  targetLanguage: 'zh' | 'en' = 'zh'
+  optionsOrTargetLanguage: ExtractSyllabusOptions | 'zh' | 'en' = {},
 ): Promise<SyllabusInfo> {
+  // Backward-compat: older callers pass a target language string directly.
+  const options: ExtractSyllabusOptions =
+    typeof optionsOrTargetLanguage === 'string'
+      ? { targetLanguage: optionsOrTargetLanguage }
+      : optionsOrTargetLanguage;
+  const targetLanguage: 'zh' | 'en' = options.targetLanguage ?? 'zh';
+  const existing = options.existing && Object.keys(options.existing).length > 0
+    ? options.existing
+    : undefined;
   // Low tier: structured extraction into a fixed schema; mini models
   // handle this reliably and we keep the High pool available for
   // user-visible work.
   const { provider, model } = await activeProviderAndModel('low');
+
+  // v0.7 schema — see SyllabusInfo above. Structured TA list + separate
+  // instructor / TA office hours so the edit page can surface per-person
+  // info; explicitly retire the "weekly schedule" framing in favor of
+  // per-Lecture items.
+  //
+  // v0.7+ merge mode: when `existing` is provided, the prompt instructs
+  // the model to fill ONLY what's missing — never overwrite existing
+  // values, never invent new info. Re-runs are additive.
+  const isMerge = !!existing;
   const sys =
     targetLanguage === 'zh'
-      ? '從使用者提供的課程描述中抽取結構化資訊並回傳 JSON。欄位：topic, time, instructor, office_hours, teaching_assistants, location, grading（陣列，每項 {item, percentage}）, schedule（陣列，每項為一週進度字串）。找不到的欄位省略。'
-      : 'Extract structured syllabus info from the user\'s course description. Return JSON with fields: topic, time, instructor, office_hours, teaching_assistants, location, grading (array of {item, percentage}), schedule (array of week strings). Omit fields you can\'t determine.';
+      ? `從使用者提供的課程大綱抽取結構化資訊並回傳 JSON。
+
+JSON 欄位定義：
+- topic (string): 課程主題，一句話。
+- overview (string): 2-3 句話的課程簡介；總結這堂課要學什麼、適合哪些學生。
+- time (string): 上課時間。**請用 24 小時 HH:MM-HH:MM 格式 + 中文週幾或英文 Mon/Tue 縮寫**，例如 "週一、週三 14:00-15:50" 或 "Mon, Wed 14:00-15:50"。**不要用 12 小時 am/pm**。多天用「、」或「,」分隔。
+- location (string): 上課地點。
+- start_date (string, ISO YYYY-MM-DD): 學期/課程開始日期。**只有大綱明確寫到才填**，不要瞎猜。
+- end_date (string, ISO YYYY-MM-DD): 學期/課程結束日期。同上規則。
+- instructor (string): 授課老師姓名。
+- instructor_email (string): 授課老師 Email。
+- instructor_office_hours (string): 授課老師個人 office hours，e.g. "週四 14:00-16:00 / 工程館 502"。
+- teaching_assistant_list (array): 助教清單，每位 { name: string, email?: string, office_hours?: string }。即使只有姓名也填進來。
+- ta_office_hours (string): 助教**共用** office hours；只有個別助教沒寫自己的 OH 時才用這個。
+- grading (array): 評分組成，每項 { item: string, percentage: string }，e.g. {"item":"期中考","percentage":"30%"}。
+- schedule (array of string): **每堂課的主題清單**。
+
+關於 schedule（重要）：
+- 只有當大綱裡有**明確的 per-lecture 主題列表**時才填（例如「Lecture 1: HCI 簡介」/「W1: 什麼是 UI」）。
+- **不要**把這些當 lecture 主題：作業列表（Assignment 1, Project Part 2 …）、Canvas 的 Course Summary（那通常是月曆事件 / 作業 due date）、考試日期、活動。
+- 若 Week N 明確列了多個小主題，可以拆成多個 Lecture 條目；否則一週一條也行。
+- **大綱沒列 lecture 主題就不要填 schedule**。前端會用 start_date / end_date / 上課頻率自動產出 "Lecture 1, Lecture 2, ..." 占位。
+- **每條 entry 若大綱寫得出對應日期，請在開頭加 (MM/DD) 前綴**，例：'(04/15) Backpropagation' 或 '(04/15) 反向傳播'。沒對應日期就直接寫主題，不要瞎猜日期。前端會用這個前綴判斷哪些 lecture 已經過期 / 哪些還沒上。
+
+通則（最重要）：
+- 不要瞎猜、不要無中生有 — 大綱沒明說的東西**永遠別填**，欄位省略即可。
+- email / OH 抽不到就不要填。
+${
+  isMerge
+    ? `\n本次為「補缺模式」，下面是已經存在的欄位：
+${JSON.stringify(existing, null, 2)}
+
+規則：
+- 已經有非空值的欄位**完全不要動**（不要回傳該欄位）。
+- 只回傳目前是空 / 缺的欄位。
+- 如果原始大綱本來就沒寫到該欄位，**直接省略**，不要硬補。
+- 不要把已經有的內容「改寫得更好」— 使用者編輯過的東西要尊重。`
+    : ''
+}`
+      : `Extract structured syllabus info from the user's course description. Return JSON.
+
+Schema:
+- topic (string): One-line course theme.
+- overview (string): 2-3 sentence summary.
+- time (string): Class meeting time. **Use 24-hour HH:MM-HH:MM format with Chinese weekday (週一/週三) or English abbrev (Mon, Wed)**, e.g. "Mon, Wed 14:00-15:50". **No 12-hour am/pm**.
+- location (string).
+- start_date (ISO YYYY-MM-DD): Course start date. ONLY if explicitly stated; don't guess.
+- end_date (ISO YYYY-MM-DD): Course end date. Same rule.
+- instructor (string).
+- instructor_email (string).
+- instructor_office_hours (string).
+- teaching_assistant_list (array of { name, email?, office_hours? }).
+- ta_office_hours (string): SHARED TA OH only.
+- grading (array of { item, percentage }).
+- schedule (array of string): Per-LECTURE topic list.
+
+About schedule (IMPORTANT):
+- Fill ONLY when the syllabus explicitly lists per-lecture topics ("Lecture 1: …" / "W1: Intro to HCI").
+- DO NOT treat as lecture topics: assignment lists, Canvas "Course Summary" (which is usually due-dates), exam dates, course-meta events.
+- Leave empty when the syllabus has no per-lecture topic list — the frontend will auto-generate "Lecture 1, Lecture 2, ..." placeholders from start_date / end_date / meeting frequency.
+- **If the syllabus pairs each lecture with a specific date, prefix the entry with (MM/DD)**, e.g. '(04/15) Backpropagation'. Skip the prefix when the date isn't stated. The frontend uses this to mark past-but-not-recorded lectures.
+
+General rules (MOST IMPORTANT):
+- Don't guess. If the syllabus doesn't explicitly state something, OMIT the field. Never invent.
+- Don't fill emails / OH that aren't written.
+${
+  isMerge
+    ? `\nThis is a MERGE pass. Existing fields:
+${JSON.stringify(existing, null, 2)}
+
+Rules:
+- DO NOT modify fields that already have non-empty values — don't even include them in your response.
+- Return ONLY fields currently empty / missing.
+- If the source genuinely doesn't say, OMIT — don't backfill blindly.
+- Respect the user's edits.`
+    : ''
+}`;
 
   const res = await provider!.complete({
     model,
@@ -474,14 +620,76 @@ export async function extractSyllabus(
     ],
     temperature: 0.1,
     jsonMode: true,
-    maxTokens: 2048,
+    maxTokens: 4096,
   });
   trackUsage(provider!.descriptor.id, model, 'syllabus', res.usage);
   try {
-    return JSON.parse(res.content) as SyllabusInfo;
+    const parsed = JSON.parse(res.content) as SyllabusInfo;
+    return normaliseSyllabus(parsed, existing as SyllabusInfo | undefined);
   } catch {
     return {};
   }
+}
+
+/**
+ * Defensive post-processing on the raw AI JSON:
+ *   - in merge mode: existing non-empty values win over AI output
+ *     (defense-in-depth: the prompt already tells the model not to
+ *     return existing fields, but the model might re-emit them anyway)
+ *   - back-fill legacy `instructor` / `teaching_assistants` / `office_hours`
+ *     strings from the new structured fields, so existing displays
+ *     (CourseDetailPage etc.) that read the old shape keep working.
+ *   - drop empty TA list entries.
+ */
+function normaliseSyllabus(s: SyllabusInfo, existing?: SyllabusInfo): SyllabusInfo {
+  const out: SyllabusInfo = { ...s };
+
+  // ─── Merge guard ────────────────────────────────────────────
+  if (existing) {
+    function isFilled(v: unknown): boolean {
+      if (Array.isArray(v)) return v.length > 0;
+      if (typeof v === 'string') return v.trim().length > 0;
+      return v != null;
+    }
+    for (const [k, v] of Object.entries(existing)) {
+      if (isFilled(v)) {
+        // Force existing value to win — never let AI overwrite.
+        (out as Record<string, unknown>)[k] = v;
+      }
+    }
+  }
+
+  // ─── TA list cleanup ────────────────────────────────────────
+  if (Array.isArray(out.teaching_assistant_list)) {
+    const cleaned = out.teaching_assistant_list
+      .filter((t) => t && typeof t.name === 'string' && t.name.trim().length > 0)
+      .map((t) => ({
+        name: t.name.trim(),
+        email: typeof t.email === 'string' && t.email.trim() ? t.email.trim() : undefined,
+        office_hours:
+          typeof t.office_hours === 'string' && t.office_hours.trim()
+            ? t.office_hours.trim()
+            : undefined,
+      }));
+    out.teaching_assistant_list = cleaned.length > 0 ? cleaned : undefined;
+  }
+
+  // ─── Legacy back-fills ──────────────────────────────────────
+  // teaching_assistants (joined names) when only the structured list is set
+  if (!out.teaching_assistants && out.teaching_assistant_list) {
+    out.teaching_assistants = out.teaching_assistant_list
+      .map((t) => t.name)
+      .filter((n) => n && n.length > 0)
+      .join('、');
+    if (!out.teaching_assistants) delete out.teaching_assistants;
+  }
+
+  // office_hours <- instructor_office_hours
+  if (!out.office_hours && out.instructor_office_hours) {
+    out.office_hours = out.instructor_office_hours;
+  }
+
+  return out;
 }
 
 export async function chat(messages: LLMMessage[]): Promise<string> {

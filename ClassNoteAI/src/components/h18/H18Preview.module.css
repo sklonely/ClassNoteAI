@@ -151,59 +151,329 @@
 }
 
 .aiBox {
-    margin-top: 16px;
-    padding: 14px;
-    border-radius: 8px;
-    background: #14141a;
-    color: #e8e6de;
+    margin-top: 14px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    color: var(--h18-text);
     position: relative;
     overflow: hidden;
-}
-
-:root.dark .aiBox {
-    background: #2a2d34;
 }
 
 .aiEyebrow {
     font-size: 9px;
     letter-spacing: 0.18em;
-    color: #c7a77a;
+    color: var(--h18-accent);
     font-weight: 800;
     font-family: var(--h18-font-mono);
+    text-transform: uppercase;
 }
 
 .aiBody {
-    font-size: 12px;
-    margin-top: 6px;
-    line-height: 1.55;
+    font-size: 12.5px;
+    margin-top: 8px;
+    line-height: 1.7;
+    color: var(--h18-text);
+    white-space: pre-wrap;
 }
 
 .aiBodyDim {
-    color: rgba(232, 230, 222, 0.6);
+    color: var(--h18-text-faint);
+    font-style: italic;
 }
 
-.aiActions {
-    margin-top: 10px;
+/* TODO / 提醒 list ───────────────────────────────────────── */
+.todoList {
+    margin-top: 6px;
     display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
+    flex-direction: column;
+    gap: 4px;
 }
 
-.aiBtn {
-    padding: 4px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.2);
+.todoRow {
+    padding: 7px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--h18-border-soft);
     background: transparent;
-    color: #fff;
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--h18-text);
+    text-align: left;
+    font-family: inherit;
+    cursor: default;
+    width: 100%;
+    transition: background 120ms, border-color 120ms;
+}
+
+.todoRowAction {
     cursor: pointer;
+}
+
+.todoRowAction:hover {
+    background: var(--h18-row-hover);
+    border-color: var(--h18-border);
+}
+
+.todoIcon {
+    color: var(--h18-accent);
+    font-size: 11px;
+    text-align: center;
+}
+
+.todoTitle {
+    font-weight: 600;
+    color: var(--h18-text);
+}
+
+.todoMeta {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 50%;
+}
+
+.sectionFetching {
+    font-size: 9px;
+    color: var(--h18-accent);
+    font-weight: 600;
+    margin-left: 4px;
+    letter-spacing: 0.02em;
+    font-family: var(--h18-font-mono);
+}
+
+.canvasError {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--h18-hot-bg);
+    border: 1px solid var(--h18-hot);
+    color: var(--h18-text);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+a.todoRow {
+    text-decoration: none;
+}
+
+/* ─── Focus mode (Phase B) ─────────────────────────────── */
+.focusBackBtn {
+    flex-shrink: 0;
+    padding: 4px 10px;
+    font-size: 10px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.focusBackBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.focusEyebrow {
+    font-size: 9px;
+    color: var(--h18-accent);
+    letter-spacing: 0.18em;
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+
+.focusHtmlBody {
+    margin-top: 14px;
+    color: var(--h18-text);
+    font-size: 13px;
+    line-height: 1.7;
+    word-break: break-word;
+}
+
+.focusHtmlBody p {
+    margin: 0 0 12px;
+}
+
+.focusHtmlBody p:last-child {
+    margin-bottom: 0;
+}
+
+.focusHtmlBody a {
+    color: var(--h18-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+.focusHtmlBody strong,
+.focusHtmlBody b {
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
+.focusHtmlBody ul,
+.focusHtmlBody ol {
+    padding-left: 22px;
+    margin: 0 0 12px;
+}
+
+.focusHtmlBody ul li,
+.focusHtmlBody ol li {
+    margin-bottom: 4px;
+}
+
+.focusHtmlBody blockquote {
+    margin: 0 0 12px;
+    padding: 8px 12px;
+    border-left: 3px solid var(--h18-border);
+    color: var(--h18-text-mid);
+    background: var(--h18-surface2);
+    border-radius: 0 6px 6px 0;
+}
+
+.focusHtmlBody pre,
+.focusHtmlBody code {
+    font-family: var(--h18-font-mono);
+    background: var(--h18-surface2);
+    border-radius: 4px;
+}
+
+.focusHtmlBody code {
+    padding: 1px 6px;
+    font-size: 12px;
+}
+
+.focusHtmlBody pre {
+    padding: 10px 12px;
+    overflow: auto;
+    margin: 0 0 12px;
+    font-size: 12px;
+}
+
+.focusHtmlBody img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    margin: 8px 0;
+}
+
+.focusPlainBody {
+    margin-top: 14px;
+    color: var(--h18-text);
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ─── Focus mode: 推遲 / 完成 ───────────────────────────── */
+.focusStateBadge {
+    margin-top: 14px;
+    padding: 8px 12px;
+    border-radius: 7px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    font-size: 11px;
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.focusStateUndoBtn {
+    margin-left: auto;
+    padding: 4px 10px;
+    font-size: 10px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.focusStateUndoBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.focusSnoozeWrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.focusSnoozePopover {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 50;
+    min-width: 160px;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
     font-family: inherit;
 }
 
-.aiBtn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+.focusSnoozeHead {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    font-weight: 800;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    text-transform: uppercase;
+    padding: 4px 8px;
+}
+
+.focusSnoozeOption {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 6px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--h18-text);
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    width: 100%;
+    gap: 8px;
+}
+
+.focusSnoozeOption:hover {
+    background: var(--h18-row-hover);
+}
+
+.focusSnoozeHint {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    font-weight: 500;
 }
 
 .actions {

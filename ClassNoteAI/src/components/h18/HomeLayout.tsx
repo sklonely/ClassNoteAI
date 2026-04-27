@@ -24,10 +24,12 @@
  *   └──────────────────────┴───────────┘
  */
 
+import { useState } from 'react';
 import type { Course } from '../../types';
 import H18Calendar from './H18Calendar';
 import H18Inbox from './H18Inbox';
 import H18Preview from './H18Preview';
+import type { InboxItem } from './useAggregatedCanvasInbox';
 import s from './HomeLayout.module.css';
 
 export type HomeVariant = 'A' | 'B' | 'C';
@@ -40,6 +42,8 @@ export interface HomeLayoutProps {
     onPickCourse: (courseId: string) => void;
     onOpenCourse: (courseId: string) => void;
     onOpenLecture: (courseId: string, lectureId: string) => void;
+    /** Click 「下一堂課」sticky row → 建 lecture + 跳到錄音頁. */
+    onStartNewLecture?: (courseId: string) => void;
 }
 
 function todayLabel(): string {
@@ -68,7 +72,12 @@ export default function HomeLayout({
     onPickCourse,
     onOpenCourse,
     onOpenLecture,
+    onStartNewLecture,
 }: HomeLayoutProps) {
+    // Click 一條 inbox row → focus 該 item 在 Preview 顯示詳情
+    // (Phase B 會把 Preview 改成接收這個 prop 進 focus mode)
+    const [focusedItem, setFocusedItem] = useState<InboxItem | null>(null);
+
     const calendar = (compact = false, onlyToday = false) => (
         <H18Calendar
             courses={courses}
@@ -77,13 +86,22 @@ export default function HomeLayout({
             compact={compact}
         />
     );
-    const inbox = <H18Inbox />;
+    const inbox = (
+        <H18Inbox
+            courses={courses}
+            onSelectItem={setFocusedItem}
+            selectedItemId={focusedItem?.id}
+            onStartNextLecture={onStartNewLecture}
+        />
+    );
     const preview = (
         <H18Preview
             course={selectedCourse}
             onOpenCourse={onOpenCourse}
             onOpenLecture={onOpenLecture}
             effectiveTheme={effectiveTheme}
+            focusedInboxItem={focusedItem}
+            onClearFocus={() => setFocusedItem(null)}
         />
     );
 

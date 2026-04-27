@@ -1,0 +1,288 @@
+/* ============================================================
+ * InboxRow · v0.7.x
+ *
+ * 抽自 H18Inbox。row 結構保持原本的 4-column grid，但外面包了
+ * 一個 .rowWrap 作為 absolute action overlay 的 positioning
+ * context。padding-right 預留 56px 給 actions，避免 .rowWhen
+ * 跟 action button 視覺重疊。
+ * ============================================================ */
+
+.rowWrap {
+    position: relative;
+    border-left: 3px solid transparent;
+    transition: background 100ms;
+}
+
+.rowWrap:hover {
+    background: var(--h18-row-hover);
+}
+
+.rowWrap:hover .actions,
+.rowWrap:focus-within .actions {
+    opacity: 1;
+}
+
+.rowWrapSelected {
+    background: var(--h18-sel-bg);
+    border-left-color: var(--h18-sel-border, var(--h18-accent));
+}
+
+.rowWrapSelected:hover {
+    background: var(--h18-sel-bg);
+}
+
+.rowWrapUrgent .rowTitle {
+    font-weight: 700;
+}
+
+.rowWrapSnoozed .row,
+.rowWrapSnoozed .rowTypeIcon {
+    opacity: 0.6;
+}
+
+.rowWrapDone .row,
+.rowWrapDone .rowTypeIcon {
+    opacity: 0.55;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 70px 16px 1fr 78px;
+    gap: 8px;
+    align-items: center;
+    padding: 7px 64px 7px 16px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--h18-text);
+    font-family: inherit;
+    text-align: left;
+    width: 100%;
+}
+
+.rowCourse {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+}
+
+.rowCourseDot {
+    width: 5px;
+    height: 5px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.rowCourseShort {
+    font-size: 9px;
+    color: var(--h18-text-mid);
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    font-family: var(--h18-font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rowTypeIcon {
+    font-size: 12px;
+    text-align: center;
+    color: var(--h18-text-mid);
+    opacity: 0.85;
+}
+
+.rowMain {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 1px;
+}
+
+.rowTitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--h18-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 0 1 auto;
+    max-width: 100%;
+}
+
+.rowTitleDone {
+    text-decoration: line-through;
+    text-decoration-color: var(--h18-text-faint);
+    color: var(--h18-text-mid);
+}
+
+.rowDetail {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    min-width: 0;
+}
+
+.rowKindTag {
+    font-family: var(--h18-font-mono);
+    padding: 0 4px;
+    background: var(--h18-chip-bg);
+    border-radius: 2px;
+    color: var(--h18-text-mid);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+.rowDetailText {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rowWhen {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-weight: 500;
+    text-align: right;
+    font-family: var(--h18-font-mono);
+}
+
+.rowWhenUrgent {
+    color: var(--h18-hot, #c0392b);
+    font-weight: 700;
+}
+
+/* ─── State badges (snoozed / done) ────────────────────── */
+.stateBadgeSnoozed {
+    font-size: 9px;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.stateBadgeDone {
+    font-size: 9px;
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    font-weight: 700;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ─── Actions overlay (✓ / ⏰ / ↶) ───────────────────── */
+.actions {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    gap: 3px;
+    opacity: 0.35;
+    transition: opacity 120ms;
+    pointer-events: auto;
+}
+
+.actionBtn {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    color: var(--h18-text-mid);
+    font-size: 13px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-family: inherit;
+    padding: 0;
+    transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.actionBtn:hover {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+}
+
+.actionBtn[aria-expanded='true'] {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+}
+
+/* ─── Snooze popover ─────────────────────────────────── */
+.snoozeWrap {
+    position: relative;
+}
+
+.snoozePopover {
+    position: absolute;
+    top: 30px;
+    right: 0;
+    z-index: 50;
+    min-width: 160px;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-family: inherit;
+}
+
+.snoozeHead {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    font-weight: 800;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    text-transform: uppercase;
+    padding: 4px 8px 4px;
+}
+
+.snoozeOption {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 6px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--h18-text);
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    width: 100%;
+    gap: 8px;
+}
+
+.snoozeOption:hover {
+    background: var(--h18-row-hover);
+}
+
+.snoozeLabel {
+    font-weight: 700;
+}
+
+.snoozeHint {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    font-weight: 500;
+}

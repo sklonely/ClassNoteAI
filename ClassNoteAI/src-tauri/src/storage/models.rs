@@ -11,6 +11,11 @@ pub struct Course {
     pub description: Option<String>,
     pub keywords: Option<String>,                 // 全域關鍵詞
     pub syllabus_info: Option<serde_json::Value>, // 結構化課程大綱
+    /// v0.7.x: Canvas LMS course id (per-user pairing result).
+    /// String of digits like `"2042524"` (no `course_` prefix).
+    /// `None` when the course hasn't been paired with a Canvas course.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_course_id: Option<String>,
     pub is_deleted: bool,                         // Soft Delete
     pub created_at: String,
     pub updated_at: String,
@@ -32,6 +37,7 @@ impl Course {
             description,
             keywords,
             syllabus_info,
+            canvas_course_id: None,
             is_deleted: false,
             created_at: now.clone(),
             updated_at: now,
@@ -66,6 +72,10 @@ impl TryFrom<&Row<'_>> for Course {
             updated_at: row.get(7)?,
             is_deleted: row.get(8).unwrap_or(false), // Handle case where it might be missing during migration? No, query will fail if column count mismatch.
                                                      // But strict index is safer.
+            // v0.7.x: canvas_course_id (index 9). Defensive default to None
+            // for SELECT queries that don't include the column or for rows
+            // pre-dating the migration.
+            canvas_course_id: row.get::<_, Option<String>>(9).unwrap_or(None),
         })
     }
 }

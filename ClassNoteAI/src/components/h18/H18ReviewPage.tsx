@@ -23,10 +23,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { storageService } from '../../services/storageService';
 import { resolveOrRecoverAudioPath } from '../../services/audioPathService';
-import type { Lecture, Note, Subtitle, Section } from '../../types';
+import type { Course, Lecture, Note, Subtitle, Section } from '../../types';
 import { courseColor } from './courseColor';
 import H18AudioPlayer from './H18AudioPlayer';
 import H18RecordingPage from './H18RecordingPage';
+import {
+    loadUserNotes,
+    saveUserNotes,
+    subscribeUserNotes,
+} from './userNotesStore';
 import s from './H18ReviewPage.module.css';
 
 export interface H18ReviewPageProps {
@@ -44,6 +49,11 @@ function fmtTime(sec: number): string {
     const m = Math.floor(sec / 60);
     const s2 = Math.floor(sec % 60);
     return `${String(m).padStart(2, '0')}:${String(s2).padStart(2, '0')}`;
+}
+
+function fmtSavedTime(ts: number): string {
+    const d = new Date(ts);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
 function shortDate(iso?: string): string {
@@ -99,6 +109,7 @@ export default function H18ReviewPage({
     onBack,
 }: H18ReviewPageProps) {
     const [lecture, setLecture] = useState<Lecture | null>(null);
+    const [course, setCourse] = useState<Course | null>(null);
     const [subs, setSubs] = useState<Subtitle[]>([]);
     const [note, setNote] = useState<Note | null>(null);
     const [loading, setLoading] = useState(true);
@@ -107,7 +118,10 @@ export default function H18ReviewPage({
     const [grouping, setGrouping] = useState<Group>('para');
     const [tab, setTab] = useState<Tab>('notes');
     const [editingNotes, setEditingNotes] = useState(false);
-    const [notesDraft, setNotesDraft] = useState('');
+    const [notesDraft, setNotesDraft] = useState(() => loadUserNotes(lectureId));
+    const [notesSavedAt, setNotesSavedAt] = useState<number | null>(null);
+    const [notesDirty, setNotesDirty] = useState(false);
+    const notesSaveTimerRef = useRef<number | null>(null);
 
     const [audioOpen, setAudioOpen] = useState(false);
     const [audioSrc, setAudioSrc] = useState<string | null>(null);
@@ -119,18 +133,94 @@ export default function H18ReviewPage({
 
     const transcriptRef = useRef<HTMLDivElement | null>(null);
 
-    // Load lecture, subs, notes
+    /* ────────── 3-column resizable splitters ───────── */
+    const TOC_MIN = 160;
+    const TOC_MAX = 380;
+    const RIGHT_MIN = 320;
+    const RIGHT_MAX = 560;
+    const PANEL_W_KEY = 'classnote-h18-review-panels';
+
+    const [tocWidth, setTocWidth] = useState<number>(220);
+    const [rightWidth, setRightWidth] = useState<number>(420);
+    const [dragSide, setDragSide] = useState<'toc' | 'right' | null>(null);
+    const bodyRef = useRef<HTMLDivElement | null>(null);
+
+    // Load persisted widths
+    useEffect(() => {
+        try {
+            const raw = localStorage.getItem(PANEL_W_KEY);
+            if (!raw) return;
+            const p = JSON.parse(raw) as { toc?: number; right?: number };
+            if (typeof p.toc === 'number') {
+                setTocWidth(Math.min(TOC_MAX, Math.max(TOC_MIN, p.toc)));
+            }
+            if (typeof p.right === 'number') {
+                setRightWidth(Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, p.right)));
+            }
+        } catch {
+            /* swallow */
+        }
+    }, []);
+
+    // Persist widths
+    useEffect(() => {
+        try {
+            localStorage.setItem(
+                PANEL_W_KEY,
+                JSON.stringify({ toc: tocWidth, right: rightWidth }),
+            );
+        } catch {
+            /* swallow */
+        }
+    }, [tocWidth, rightWidth]);
+
+    const startSplitterDrag = (
+        side: 'toc' | 'right',
+        e: React.PointerEvent<HTMLDivElement>,
+    ) => {
+        if (e.button !== 0) return;
+        setDragSide(side);
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        e.preventDefault();
+    };
+
+    const onSplitterMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!dragSide || !bodyRef.current) return;
+        const rect = bodyRef.current.getBoundingClientRect();
+        if (dragSide === 'toc') {
+            const next = e.clientX - rect.left;
+            setTocWidth(Math.min(TOC_MAX, Math.max(TOC_MIN, next)));
+        } else {
+            const next = rect.right - e.clientX;
+            setRightWidth(Math.min(RIGHT_MAX, Math.max(RIGHT_MIN, next)));
+        }
+    };
+
+    const endSplitterDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (dragSide) {
+            setDragSide(null);
+            try {
+                (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+            } catch {
+                /* swallow */
+            }
+        }
+    };
+
+    // Load lecture, course, subs, notes
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
         Promise.all([
             storageService.getLecture(lectureId),
+            storageService.getCourse(courseId).catch(() => null),
             storageService.getSubtitles(lectureId).catch(() => []),
             storageService.getNote(lectureId).catch(() => null),
         ])
-            .then(([lec, ss, n]) => {
+            .then(([lec, c, ss, n]) => {
                 if (cancelled) return;
                 setLecture(lec);
+                setCourse(c);
                 setSubs(ss);
                 setNote(n);
             })
@@ -141,7 +231,7 @@ export default function H18ReviewPage({
         return () => {
             cancelled = true;
         };
-    }, [lectureId]);
+    }, [lectureId, courseId]);
 
     // Resolve audio source on lecture change
     useEffect(() => {
@@ -189,13 +279,65 @@ export default function H18ReviewPage({
         };
     }, [lecture]);
 
-    // sync notesDraft with loaded note
+    // Load user notes (free-form) for this lecture + sync with floating
+    // notes window edits made on the recording page.
     useEffect(() => {
-        if (note) {
-            const md = renderNoteAsMarkdown(note);
-            setNotesDraft(md);
+        const cur = loadUserNotes(lectureId);
+        setNotesDraft(cur);
+        setNotesSavedAt(cur.length > 0 ? Date.now() : null);
+        setNotesDirty(false);
+        const off = subscribeUserNotes(lectureId, () => {
+            const next = loadUserNotes(lectureId);
+            setNotesDraft((d) => (d === next ? d : next));
+        });
+        return () => {
+            off();
+            // best-effort flush of any pending save when navigating away
+            if (notesSaveTimerRef.current) {
+                window.clearTimeout(notesSaveTimerRef.current);
+                notesSaveTimerRef.current = null;
+            }
+        };
+    }, [lectureId]);
+
+    const handleNotesChange = (next: string) => {
+        setNotesDraft(next);
+        setNotesDirty(true);
+        if (notesSaveTimerRef.current) {
+            window.clearTimeout(notesSaveTimerRef.current);
         }
-    }, [note]);
+        notesSaveTimerRef.current = window.setTimeout(() => {
+            saveUserNotes(lectureId, next);
+            setNotesSavedAt(Date.now());
+            setNotesDirty(false);
+        }, 500);
+    };
+
+    const flushNotesSave = () => {
+        if (notesSaveTimerRef.current) {
+            window.clearTimeout(notesSaveTimerRef.current);
+            notesSaveTimerRef.current = null;
+        }
+        if (notesDirty) {
+            saveUserNotes(lectureId, notesDraft);
+            setNotesSavedAt(Date.now());
+            setNotesDirty(false);
+        }
+    };
+
+    const handleSeedFromAi = () => {
+        if (!note) return;
+        const md = renderNoteAsMarkdown(note);
+        setNotesDraft(md);
+        setNotesDirty(true);
+        // also kick the debounced save so it lands within 500ms
+        if (notesSaveTimerRef.current) window.clearTimeout(notesSaveTimerRef.current);
+        notesSaveTimerRef.current = window.setTimeout(() => {
+            saveUserNotes(lectureId, md);
+            setNotesSavedAt(Date.now());
+            setNotesDirty(false);
+        }, 500);
+    };
 
     const paragraphs = useMemo(
         () => groupSubsBySections(subs, note?.sections || []),
@@ -276,8 +418,12 @@ export default function H18ReviewPage({
             <div className={s.hero}>
                 <div className={s.heroTopRow}>
                     <div className={s.crumb}>
-                        <button onClick={onBack} className={s.crumbBack}>
-                            ← HOME
+                        <button
+                            onClick={onBack}
+                            className={s.crumbBack}
+                            title={course?.title ? `返回 ${course.title}` : '返回課程'}
+                        >
+                            ← {course?.title || '返回課程'}
                         </button>
                         <span className={s.crumbDivider}>/</span>
                         <span className={s.crumbCourse}>{lecture.title}</span>
@@ -324,7 +470,17 @@ export default function H18ReviewPage({
                 </div>
             </div>
 
-            <div className={s.body}>
+            <div
+                ref={bodyRef}
+                className={s.body}
+                style={
+                    {
+                        '--toc-w': `${tocWidth}px`,
+                        '--right-w': `${rightWidth}px`,
+                        cursor: dragSide ? 'col-resize' : undefined,
+                    } as React.CSSProperties
+                }
+            >
                 {/* TOC */}
                 <div className={s.toc}>
                     <div className={s.tocHead}>章節 · {sectionsForToc.length}</div>
@@ -360,6 +516,18 @@ export default function H18ReviewPage({
                         Concept extraction 尚未啟動 — P6.x 後接。
                     </div>
                 </div>
+
+                {/* TOC ↔ Transcript splitter */}
+                <div
+                    className={`${s.splitter} ${dragSide === 'toc' ? s.splitterActive : ''}`}
+                    onPointerDown={(e) => startSplitterDrag('toc', e)}
+                    onPointerMove={onSplitterMove}
+                    onPointerUp={endSplitterDrag}
+                    onPointerCancel={endSplitterDrag}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="調整章節欄寬度"
+                />
 
                 {/* Transcript */}
                 <div className={s.transcript} ref={transcriptRef}>
@@ -493,8 +661,25 @@ export default function H18ReviewPage({
                     )}
                 </div>
 
+                {/* Transcript ↔ Right splitter */}
+                <div
+                    className={`${s.splitter} ${dragSide === 'right' ? s.splitterActive : ''}`}
+                    onPointerDown={(e) => startSplitterDrag('right', e)}
+                    onPointerMove={onSplitterMove}
+                    onPointerUp={endSplitterDrag}
+                    onPointerCancel={endSplitterDrag}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="調整側邊欄寬度"
+                />
+
                 {/* Right tabs */}
                 <div className={s.right}>
+                    {/* Course context strip — instructor / TA / location / grading */}
+                    {course && (
+                        <CourseContextStrip course={course} />
+                    )}
+
                     <div className={s.tabRow}>
                         {(
                             [
@@ -518,54 +703,83 @@ export default function H18ReviewPage({
                         <div className={s.tabPane}>
                             <div className={s.tabHead}>
                                 <span className={s.tabHeadEyebrow}>
-                                    我的筆記 · {note?.sections?.length ?? 0} 段
+                                    我的筆記
+                                    <span className={s.tabHeadStatus}>
+                                        {notesDirty
+                                            ? ' · 編輯中…'
+                                            : notesSavedAt
+                                              ? ` · 已儲存 ${fmtSavedTime(notesSavedAt)}`
+                                              : notesDraft.length > 0
+                                                ? ''
+                                                : ' · 空白'}
+                                    </span>
                                 </span>
                                 <button
                                     type="button"
-                                    onClick={() => setEditingNotes((v) => !v)}
+                                    onClick={() => {
+                                        if (editingNotes) flushNotesSave();
+                                        setEditingNotes((v) => !v);
+                                    }}
                                     className={s.editBtn}
-                                    disabled={!note}
                                 >
                                     {editingNotes ? '✓ 完成' : '✎ 編輯'}
                                 </button>
                             </div>
-                            {!note ? (
-                                <div className={s.tabEmpty}>
-                                    這堂課還沒生成筆記 — 錄音 + 摘要跑完會自動出現。
-                                    <div className={s.tabEmptyTag}>P6.4 · 預期</div>
-                                </div>
-                            ) : editingNotes ? (
+                            {editingNotes ? (
                                 <textarea
                                     value={notesDraft}
-                                    onChange={(e) => setNotesDraft(e.target.value)}
+                                    onChange={(e) => handleNotesChange(e.target.value)}
+                                    onBlur={flushNotesSave}
+                                    placeholder={'用 markdown 寫下重點 / 公式 / 疑問…\n\n錄音時用 ⌘⇧N 浮動筆記窗，這裡會同步看到。'}
                                     className={s.notesEdit}
+                                    spellCheck={false}
                                 />
+                            ) : notesDraft.trim().length > 0 ? (
+                                <div className={s.notesUserView}>{notesDraft}</div>
+                            ) : note && note.sections.length > 0 ? (
+                                <>
+                                    <div className={s.notesSeedBar}>
+                                        還沒有手寫筆記 — 可以從 AI 章節為起點：
+                                        <button
+                                            type="button"
+                                            onClick={handleSeedFromAi}
+                                            className={s.editBtn}
+                                            style={{ marginLeft: 'auto' }}
+                                        >
+                                            從 AI 摘要載入
+                                        </button>
+                                    </div>
+                                    <div className={s.notesView}>
+                                        {note.sections.map((sec, i) => (
+                                            <div key={i} className={s.section}>
+                                                <h3 className={s.sectionTitle}>
+                                                    <span>{sec.title}</span>
+                                                    <button
+                                                        type="button"
+                                                        className={s.sectionTime}
+                                                        onClick={() => startSeek(sec.timestamp)}
+                                                    >
+                                                        {fmtTime(sec.timestamp)}
+                                                    </button>
+                                                </h3>
+                                                {sec.bullets && sec.bullets.length > 0 && (
+                                                    <ul className={s.sectionBullets}>
+                                                        {sec.bullets.map((b, j) => (
+                                                            <li key={j} className={s.sectionBullet}>
+                                                                {b}
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                                <div className={s.sectionContent}>{sec.content}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </>
                             ) : (
-                                <div className={s.notesView}>
-                                    {note.sections.map((sec, i) => (
-                                        <div key={i} className={s.section}>
-                                            <h3 className={s.sectionTitle}>
-                                                <span>{sec.title}</span>
-                                                <button
-                                                    type="button"
-                                                    className={s.sectionTime}
-                                                    onClick={() => startSeek(sec.timestamp)}
-                                                >
-                                                    {fmtTime(sec.timestamp)}
-                                                </button>
-                                            </h3>
-                                            {sec.bullets && sec.bullets.length > 0 && (
-                                                <ul className={s.sectionBullets}>
-                                                    {sec.bullets.map((b, j) => (
-                                                        <li key={j} className={s.sectionBullet}>
-                                                            {b}
-                                                        </li>
-                                                    ))}
-                                                </ul>
-                                            )}
-                                            <div className={s.sectionContent}>{sec.content}</div>
-                                        </div>
-                                    ))}
+                                <div className={s.tabEmpty}>
+                                    還沒有筆記 — 按 ✎ 編輯 開始寫，或在錄音時用 ⌘⇧N 開浮動筆記窗。
+                                    <div className={s.tabEmptyTag}>autosave · localStorage</div>
                                 </div>
                             )}
                         </div>
@@ -627,6 +841,46 @@ export default function H18ReviewPage({
                     seekTo={seekTo}
                     onClose={() => setAudioOpen(false)}
                 />
+            )}
+        </div>
+    );
+}
+
+function CourseContextStrip({ course }: { course: Course }) {
+    const sy = course.syllabus_info || {};
+    const items: { label: string; value: string }[] = [];
+    if (sy.instructor) items.push({ label: '老師', value: sy.instructor });
+    if (sy.teaching_assistants) items.push({ label: '助教', value: sy.teaching_assistants });
+    if (sy.location) items.push({ label: '地點', value: sy.location });
+    if (sy.time) items.push({ label: '時間', value: sy.time });
+
+    const grading = sy.grading || [];
+
+    if (items.length === 0 && grading.length === 0) return null;
+
+    return (
+        <div className={s.ctxStrip}>
+            {items.length > 0 && (
+                <div className={s.ctxRow}>
+                    {items.map((it) => (
+                        <div key={it.label} className={s.ctxItem}>
+                            <span className={s.ctxLabel}>{it.label}</span>
+                            <span className={s.ctxValue}>{it.value}</span>
+                        </div>
+                    ))}
+                </div>
+            )}
+            {grading.length > 0 && (
+                <div className={s.ctxGrading}>
+                    <span className={s.ctxLabel}>評分</span>
+                    <div className={s.ctxGradingList}>
+                        {grading.map((g, i) => (
+                            <span key={i} className={s.ctxGradingChip}>
+                                {g.item} {g.percentage}
+                            </span>
+                        ))}
+                    </div>
+                </div>
             )}
         </div>
     );

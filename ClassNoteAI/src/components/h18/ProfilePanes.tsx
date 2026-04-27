@@ -14,12 +14,69 @@
  *  - PData 回收桶列表 → 顯示真資料 (storageService.listTrashed*)
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { storageService } from '../../services/storageService';
 import type { Course } from '../../types';
 import { useAppSettings } from './useAppSettings';
 import LayoutPreviewSVG, { type Variant } from './LayoutPreviewSVG';
+import {
+    OpenAIIcon,
+    GitHubIcon,
+    GenericProviderIcon,
+} from './providerIcons';
+import { keyStore } from '../../services/llm/keyStore';
+import { ChatGPTOAuthProvider } from '../../services/llm/providers/chatgpt-oauth';
+import { fetchCalendarFeed } from '../../services/canvasFeedService';
+import { saveCanvasCache } from '../../services/canvasCacheService';
+import CanvasPairingWizard, { type PairingChanges } from './CanvasPairingWizard';
 import s from './ProfilePage.module.css';
+
+/* ────────── provider credential helpers ───────── */
+
+const PROVIDER_FIELDS: Record<string, string> = {
+    'github-models': 'pat',
+    openai: 'apiKey',
+    anthropic: 'apiKey',
+    gemini: 'apiKey',
+    azure: 'apiKey',
+    'chatgpt-oauth': 'accessToken',
+};
+
+const PROVIDER_STATUS_EVT = 'classnote-provider-status-changed';
+
+function dispatchProviderStatusChange() {
+    window.dispatchEvent(new CustomEvent(PROVIDER_STATUS_EVT));
+}
+
+function isProviderConfigured(providerId: string): boolean {
+    if (providerId === 'openai') {
+        return (
+            keyStore.has('openai', 'apiKey') ||
+            keyStore.has('chatgpt-oauth', 'accessToken')
+        );
+    }
+    const field = PROVIDER_FIELDS[providerId];
+    return field ? keyStore.has(providerId, field) : false;
+}
+
+function getProviderModeLabel(providerId: string): string {
+    if (providerId === 'openai') {
+        if (keyStore.has('chatgpt-oauth', 'accessToken')) return '已連線 · 訂閱';
+        if (keyStore.has('openai', 'apiKey')) return '已連線 · API key';
+    }
+    return isProviderConfigured(providerId) ? '已連線' : '未設定';
+}
+
+function useProviderStatus(providerId: string) {
+    const [status, setStatus] = useState(() => getProviderModeLabel(providerId));
+    useEffect(() => {
+        const refresh = () => setStatus(getProviderModeLabel(providerId));
+        refresh();
+        window.addEventListener(PROVIDER_STATUS_EVT, refresh);
+        return () => window.removeEventListener(PROVIDER_STATUS_EVT, refresh);
+    }, [providerId]);
+    return status;
+}
 
 /* ────────── primitives ───────── */
 
@@ -614,10 +671,17 @@ interface ProviderInfo {
     auth: string;
     desc: string;
     sub: string;
-    status: string;
     active?: boolean;
+    icon: ReactNode;
+    /** Brand tint for the icon slot. */
+    iconColor: string;
+    /** When true the action button opens a multi-mode setup modal rather than a single button. */
+    multiMode?: boolean;
 }
 
+// v0.7.x: 暫時只留已實作 + 已驗過的 providers (GitHub Models / OpenAI)。
+// Anthropic / Gemini / Azure 之前 UI 雖然在但 backend provider 沒實作，
+// 留著只會誤導使用者；等真的接好再放回來。
 const PROVIDERS: ProviderInfo[] = [
     {
         id: 'github-models',
@@ -625,43 +689,25 @@ const PROVIDERS: ProviderInfo[] = [
         auth: 'PAT (models:read)',
         desc: 'Copilot Pro / Business / Enterprise 訂閱包含額度',
         sub: 'GPT-4.1 / Claude / Llama',
-        status: '未設定',
-    },
-    {
-        id: 'chatgpt-oauth',
-        name: 'ChatGPT 訂閱',
-        auth: '瀏覽器 OAuth',
-        desc: 'ChatGPT Plus / Pro 帳號 (Codex 流程)',
-        sub: 'GPT-5 / o4-mini',
-        status: '未設定',
-    },
-    {
-        id: 'anthropic',
-        name: 'Anthropic API',
-        auth: 'API key',
-        desc: 'Claude Sonnet 4.7 · 自備 key',
-        sub: '最強概念連結',
-        status: '未設定',
+        icon: <GitHubIcon size={26} />,
+        iconColor: 'var(--h18-text)',
     },
     {
         id: 'openai',
-        name: 'OpenAI API',
-        auth: 'API key',
-        desc: 'GPT-5 / GPT-4o · 自備 key',
-        sub: '官方原生 API',
-        status: '未設定',
-    },
-    {
-        id: 'gemini',
-        name: 'Google Gemini',
-        auth: 'API key',
-        desc: 'Gemini 2.5 Pro · 自備 key',
-        sub: '大 context · 便宜',
-        status: '未設定',
+        name: 'OpenAI',
+        auth: 'API key 或 ChatGPT 訂閱',
+        desc: 'GPT-5 / GPT-4o · 自備 key 或登入 ChatGPT Plus/Pro',
+        sub: 'API · 訂閱 雙模式',
+        icon: <OpenAIIcon size={26} />,
+        iconColor: '#10a37f',
+        multiMode: true,
     },
 ];
 
 export function PCloud() {
+    const [setupId, setSetupId] = useState<string | null>(null);
+    const setupProvider = setupId ? PROVIDERS.find((p) => p.id === setupId) ?? null : null;
+
     return (
         <div>
             <PHeader
@@ -672,7 +718,7 @@ export function PCloud() {
             <PHead first>Default Provider</PHead>
             <div className={s.providerGrid}>
                 {PROVIDERS.map((p) => (
-                    <ProviderCard key={p.id} p={p} />
+                    <ProviderCard key={p.id} p={p} onSetup={() => setSetupId(p.id)} />
                 ))}
             </div>
 
@@ -700,14 +746,7 @@ export function PCloud() {
                 right={
                     <PSelect
                         value="auto"
-                        options={[
-                            'auto',
-                            'github-models',
-                            'chatgpt-oauth',
-                            'anthropic',
-                            'openai',
-                            'gemini',
-                        ]}
+                        options={['auto', 'github-models', 'openai']}
                     />
                 }
             />
@@ -722,41 +761,394 @@ export function PCloud() {
                 <UsageStat label="Output" value="—" sub="tokens" />
                 <UsageStat label="估價" value="—" sub="USD · 估算" />
             </div>
+
+            {setupProvider && (
+                <ProviderSetupModal
+                    provider={setupProvider}
+                    onClose={() => setSetupId(null)}
+                />
+            )}
         </div>
     );
 }
 
-function ProviderCard({ p }: { p: ProviderInfo }) {
+function ProviderCard({ p, onSetup }: { p: ProviderInfo; onSetup: () => void }) {
+    const status = useProviderStatus(p.id);
+    const configured = status.startsWith('已連線');
+
+    const actionLabel = !configured
+        ? p.multiMode
+            ? '設定…'
+            : p.auth.includes('OAuth')
+              ? '登入'
+              : '設定'
+        : '管理';
+
     return (
         <div className={`${s.providerCard} ${p.active ? s.providerCardActive : ''}`}>
-            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap' }}>
-                <div className={s.providerName}>{p.name}</div>
-                {p.active && <span className={s.providerDefaultPill}>DEFAULT</span>}
+            <div className={s.providerHead}>
+                <div
+                    className={s.providerIcon}
+                    style={{ color: p.iconColor }}
+                    aria-hidden
+                >
+                    {p.icon}
+                </div>
+                <div className={s.providerHeadText}>
+                    <div className={s.providerName}>
+                        {p.name}
+                        {p.active && <span className={s.providerDefaultPill}>DEFAULT</span>}
+                    </div>
+                    <div className={s.providerSubInline}>{p.sub}</div>
+                </div>
             </div>
             <div className={s.providerDesc}>{p.desc}</div>
             <div className={s.providerMeta}>
-                <span>{p.sub}</span>
                 <span>{p.auth}</span>
             </div>
             <div className={s.providerStatusRow}>
                 <span
                     className={
-                        p.status.startsWith('已連線')
+                        configured
                             ? s.providerStatusGood
                             : s.providerStatusOff
                     }
                 >
-                    {p.status}
+                    {status}
                 </span>
-                <PBtn primary={!p.status.startsWith('已連線')}>
-                    {p.status === '未設定'
-                        ? p.auth.includes('OAuth')
-                            ? '登入'
-                            : '設定'
-                        : p.active
-                          ? '測試'
-                          : '設為 default'}
+                <PBtn primary={!configured} onClick={onSetup}>
+                    {actionLabel}
                 </PBtn>
+            </div>
+        </div>
+    );
+}
+
+/* ────────── ProviderSetupModal ───────── */
+
+function ProviderSetupModal({
+    provider,
+    onClose,
+}: {
+    provider: ProviderInfo;
+    onClose: () => void;
+}) {
+    // Determine starting mode based on what's already configured
+    const initialMode: 'choose' | 'apikey' | 'oauth' = (() => {
+        if (!provider.multiMode) return 'apikey';
+        if (keyStore.has('chatgpt-oauth', 'accessToken')) return 'oauth';
+        if (keyStore.has(provider.id, 'apiKey')) return 'apikey';
+        return 'choose';
+    })();
+
+    const [mode, setMode] = useState<'choose' | 'apikey' | 'oauth'>(initialMode);
+    const [apiKey, setApiKey] = useState(() => {
+        const field = PROVIDER_FIELDS[provider.id] || 'apiKey';
+        return keyStore.get(provider.id, field) || '';
+    });
+    const [endpoint, setEndpoint] = useState(
+        () => keyStore.get('azure', 'endpoint') || '',
+    );
+    const [oauthState, setOauthState] = useState<
+        'idle' | 'pending' | 'error' | 'done'
+    >(keyStore.has('chatgpt-oauth', 'accessToken') ? 'done' : 'idle');
+    const [oauthError, setOauthError] = useState<string | null>(null);
+    const [saveError, setSaveError] = useState<string | null>(null);
+    const oauthProviderRef = useRef<ChatGPTOAuthProvider | null>(null);
+
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && oauthState !== 'pending') onClose();
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [onClose, oauthState]);
+
+    // Cancel any in-flight OAuth on unmount
+    useEffect(() => {
+        return () => {
+            if (oauthState === 'pending') {
+                void oauthProviderRef.current?.cancelSignIn();
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const isAzure = provider.id === 'azure';
+    const apiKeyField = PROVIDER_FIELDS[provider.id] || 'apiKey';
+    const apiKeyConfigured = keyStore.has(provider.id, apiKeyField);
+    const oauthConfigured = keyStore.has('chatgpt-oauth', 'accessToken');
+
+    const handleSaveApiKey = () => {
+        setSaveError(null);
+        try {
+            const trimmed = apiKey.trim();
+            if (!trimmed) {
+                keyStore.clear(provider.id, apiKeyField);
+            } else {
+                keyStore.set(provider.id, apiKeyField, trimmed);
+            }
+            if (isAzure) {
+                const ep = endpoint.trim();
+                if (ep) keyStore.set('azure', 'endpoint', ep);
+                else keyStore.clear('azure', 'endpoint');
+            }
+            dispatchProviderStatusChange();
+            onClose();
+        } catch (err) {
+            console.error('[ProviderSetup] save apiKey failed:', err);
+            setSaveError(
+                (err as Error)?.message || '儲存失敗 — 詳見 console。',
+            );
+        }
+    };
+
+    const handleClearApiKey = () => {
+        keyStore.clear(provider.id, apiKeyField);
+        if (isAzure) keyStore.clear('azure', 'endpoint');
+        setApiKey('');
+        if (isAzure) setEndpoint('');
+        dispatchProviderStatusChange();
+    };
+
+    const handleStartOAuth = async () => {
+        setOauthState('pending');
+        setOauthError(null);
+        const oauthProvider = new ChatGPTOAuthProvider();
+        oauthProviderRef.current = oauthProvider;
+        try {
+            await oauthProvider.signIn();
+            setOauthState('done');
+            dispatchProviderStatusChange();
+        } catch (err) {
+            console.error('[ProviderSetup] OAuth signIn failed:', err);
+            setOauthState('error');
+            setOauthError(
+                (err as Error)?.message || '登入失敗或被取消。',
+            );
+        } finally {
+            oauthProviderRef.current = null;
+        }
+    };
+
+    const handleCancelOAuth = async () => {
+        if (oauthProviderRef.current) {
+            await oauthProviderRef.current.cancelSignIn();
+        }
+        setOauthState('idle');
+        setOauthError('已取消登入。');
+    };
+
+    const handleSignOutOAuth = async () => {
+        const provider = new ChatGPTOAuthProvider();
+        await provider.signOut();
+        setOauthState('idle');
+        dispatchProviderStatusChange();
+    };
+
+    return (
+        <div
+            className={s.modalScrim}
+            onClick={() => {
+                if (oauthState !== 'pending') onClose();
+            }}
+            role="presentation"
+        >
+            <div
+                className={s.modalCard}
+                onClick={(e) => e.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-label={`設定 ${provider.name}`}
+            >
+                <div className={s.modalHead}>
+                    <div
+                        className={s.providerIcon}
+                        style={{ color: provider.iconColor, width: 36, height: 36 }}
+                        aria-hidden
+                    >
+                        {provider.icon || <GenericProviderIcon size={26} />}
+                    </div>
+                    <div className={s.modalHeadText}>
+                        <div className={s.modalTitle}>設定 {provider.name}</div>
+                        <div className={s.modalSub}>{provider.desc}</div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className={s.modalClose}
+                        aria-label="關閉"
+                        disabled={oauthState === 'pending'}
+                    >
+                        ✕
+                    </button>
+                </div>
+
+                {provider.multiMode && mode === 'choose' && (
+                    <div className={s.modalChoiceGrid}>
+                        <button
+                            type="button"
+                            className={s.modalChoiceCard}
+                            onClick={() => setMode('apikey')}
+                        >
+                            <div className={s.modalChoiceTitle}>
+                                使用 API Key
+                                {apiKeyConfigured && (
+                                    <span className={s.modalChoiceBadge}>已設定</span>
+                                )}
+                            </div>
+                            <div className={s.modalChoiceDesc}>
+                                自備 OpenAI Platform key，按 token 計費。適合輕度使用、開發者帳號。
+                            </div>
+                            <div className={s.modalChoicePill}>API · 按用量</div>
+                        </button>
+                        <button
+                            type="button"
+                            className={s.modalChoiceCard}
+                            onClick={() => setMode('oauth')}
+                        >
+                            <div className={s.modalChoiceTitle}>
+                                ChatGPT 訂閱 (OAuth)
+                                {oauthConfigured && (
+                                    <span className={s.modalChoiceBadge}>已登入</span>
+                                )}
+                            </div>
+                            <div className={s.modalChoiceDesc}>
+                                用瀏覽器登入 ChatGPT Plus / Pro 帳號，走 Codex 流程，訂閱方案內額度共用。
+                            </div>
+                            <div className={s.modalChoicePill}>訂閱 · 包月</div>
+                        </button>
+                    </div>
+                )}
+
+                {mode === 'apikey' && (
+                    <div className={s.modalForm}>
+                        {isAzure && (
+                            <label className={s.modalField}>
+                                <span className={s.modalLabel}>Endpoint</span>
+                                <PInput
+                                    placeholder="https://your-resource.openai.azure.com"
+                                    value={endpoint}
+                                    onChange={setEndpoint}
+                                    monospace
+                                    wide
+                                />
+                            </label>
+                        )}
+                        <label className={s.modalField}>
+                            <span className={s.modalLabel}>API Key</span>
+                            <PInput
+                                placeholder={
+                                    provider.id === 'openai'
+                                        ? 'sk-...'
+                                        : provider.id === 'anthropic'
+                                          ? 'sk-ant-...'
+                                          : provider.id === 'gemini'
+                                            ? 'AIza...'
+                                            : provider.id === 'github-models'
+                                              ? 'ghp_...'
+                                              : 'azure key'
+                                }
+                                value={apiKey}
+                                onChange={setApiKey}
+                                monospace
+                                wide
+                            />
+                        </label>
+                        <p className={s.modalHelp}>
+                            Key 只存在本機 (localStorage，namespaced 在 llm.{provider.id}.{apiKeyField})，
+                            不會上傳。可隨時覆寫或清除。
+                        </p>
+                        {saveError && (
+                            <div className={s.modalErrorBox}>⚠ {saveError}</div>
+                        )}
+                        <div className={s.modalActions}>
+                            {provider.multiMode && (
+                                <PBtn onClick={() => setMode('choose')}>← 換個方式</PBtn>
+                            )}
+                            {apiKeyConfigured && (
+                                <PBtn danger onClick={handleClearApiKey}>
+                                    清除已存的 key
+                                </PBtn>
+                            )}
+                            <div style={{ flex: 1 }} />
+                            <PBtn onClick={onClose}>取消</PBtn>
+                            <PBtn
+                                primary
+                                onClick={handleSaveApiKey}
+                                disabled={!apiKey.trim() && !apiKeyConfigured}
+                            >
+                                儲存
+                            </PBtn>
+                        </div>
+                    </div>
+                )}
+
+                {mode === 'oauth' && (
+                    <div className={s.modalForm}>
+                        <div className={s.modalOauthBox}>
+                            <div className={s.modalOauthTitle}>
+                                {oauthState === 'done'
+                                    ? '✓ 已登入 ChatGPT 帳號'
+                                    : '使用 ChatGPT 帳號登入'}
+                            </div>
+                            <div className={s.modalOauthDesc}>
+                                {oauthState === 'pending' ? (
+                                    <>
+                                        瀏覽器已開啟 OpenAI 登入頁。請在那邊完成授權，這個視窗會自動繼續。
+                                        <br />
+                                        授權超時 5 分鐘會自動失敗。
+                                    </>
+                                ) : oauthState === 'done' ? (
+                                    <>
+                                        ChatGPT access token 已存在本機。摘要 / Q&A 會走訂閱方案額度。
+                                        如果要換帳號或斷開，按下方「登出」。
+                                    </>
+                                ) : (
+                                    <>
+                                        按下「開啟登入」會在預設瀏覽器開啟 OpenAI 的 OAuth 頁，授權後
+                                        ClassNote 會收到 access token，接著就能用訂閱方案的額度。
+                                    </>
+                                )}
+                            </div>
+                            <div className={s.modalOauthHint}>
+                                {oauthState === 'pending'
+                                    ? '⟳ 等待瀏覽器完成…'
+                                    : '需要 ChatGPT Plus 或 Pro 帳號 · 不會看到密碼'}
+                            </div>
+                        </div>
+                        {oauthError && (
+                            <div className={s.modalErrorBox}>⚠ {oauthError}</div>
+                        )}
+                        <div className={s.modalActions}>
+                            {provider.multiMode && oauthState !== 'pending' && (
+                                <PBtn onClick={() => setMode('choose')}>← 換個方式</PBtn>
+                            )}
+                            {oauthState === 'done' && (
+                                <PBtn danger onClick={handleSignOutOAuth}>
+                                    登出
+                                </PBtn>
+                            )}
+                            <div style={{ flex: 1 }} />
+                            {oauthState === 'pending' ? (
+                                <PBtn danger onClick={handleCancelOAuth}>
+                                    取消登入
+                                </PBtn>
+                            ) : oauthState === 'done' ? (
+                                <PBtn primary onClick={onClose}>
+                                    完成
+                                </PBtn>
+                            ) : (
+                                <>
+                                    <PBtn onClick={onClose}>取消</PBtn>
+                                    <PBtn primary onClick={handleStartOAuth}>
+                                        開啟登入
+                                    </PBtn>
+                                </>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -1136,6 +1528,163 @@ export function PData() {
                     <PBtn danger>清空…</PBtn>
                 }
             />
+        </div>
+    );
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * PIntegrations — 第三方平台整合 (Canvas 等)
+ * ════════════════════════════════════════════════════════════════ */
+
+export function PIntegrations() {
+    const { settings, update } = useAppSettings();
+    const calendarRss =
+        settings?.integrations?.canvas?.calendar_rss ?? '';
+    const integrations = settings?.integrations || {};
+    const canvas = integrations.canvas || {};
+    const ignoredCourseIds = canvas.ignored_course_ids || [];
+
+    const [pairingState, setPairingState] = useState<{
+        canvasCourses: { canvasCourseId: string; fullTitle: string }[];
+        localCourses: Course[];
+    } | null>(null);
+    const [pairingError, setPairingError] = useState<string | null>(null);
+    const [pairingBusy, setPairingBusy] = useState(false);
+
+    const handleOpenPairing = async () => {
+        if (!calendarRss.trim()) {
+            setPairingError('請先填 Calendar URL。');
+            return;
+        }
+        setPairingBusy(true);
+        setPairingError(null);
+        try {
+            const feed = await fetchCalendarFeed(calendarRss.trim());
+            saveCanvasCache('calendar:global', feed);
+            const localCourses = await storageService.listCourses();
+            setPairingState({
+                canvasCourses: feed.courses,
+                localCourses,
+            });
+        } catch (err) {
+            console.error('[PIntegrations] fetch calendar failed:', err);
+            setPairingError(
+                (err as Error)?.message || '抓 Canvas 行事曆失敗 — 確認 URL 跟網路。',
+            );
+        } finally {
+            setPairingBusy(false);
+        }
+    };
+
+    const handleCommit = async (changes: PairingChanges) => {
+        // 1. Pair existing local courses → write canvas_course_id
+        for (const p of changes.pairExisting) {
+            const c = pairingState?.localCourses.find((x) => x.id === p.localCourseId);
+            if (!c) continue;
+            await storageService.saveCourse({
+                ...c,
+                canvas_course_id: p.canvasCourseId,
+                updated_at: new Date().toISOString(),
+            });
+        }
+        // 2. Create new local courses (light — just title + canvas_course_id)
+        for (const n of changes.createNew) {
+            const id = crypto.randomUUID();
+            const now = new Date().toISOString();
+            await storageService.saveCourse({
+                id,
+                user_id: '',
+                title: n.title,
+                canvas_course_id: n.canvasCourseId,
+                created_at: now,
+                updated_at: now,
+            });
+        }
+        // 3. Append to ignored list
+        if (changes.ignore.length > 0) {
+            const merged = [...new Set([...ignoredCourseIds, ...changes.ignore])];
+            await update({
+                integrations: {
+                    ...integrations,
+                    canvas: { ...canvas, ignored_course_ids: merged },
+                },
+            });
+        }
+    };
+
+    return (
+        <div>
+            <PHeader
+                title="整合"
+                hint="把 Canvas 等 LMS 平台的 feed 接進來，App 會在課程預覽顯示提醒。"
+            />
+
+            <PHead first>Canvas</PHead>
+            <PRow
+                label="Calendar RSS (全域)"
+                hint={
+                    <>
+                        Canvas 帳號底下**所有課程**的事件 / 截止日，是 per-user 一條 URL。
+                        <br />
+                        到 Canvas → Calendar 頁右下角點「Calendar Feed」即可取得。
+                        <br />
+                        填好後按右側「⇄ 配對課程」配對 Canvas 課程到本機。
+                    </>
+                }
+                right={
+                    <PInput
+                        placeholder="https://canvas.example.edu/feeds/calendars/user_xxx.ics"
+                        value={calendarRss}
+                        onChange={(v) =>
+                            update({
+                                integrations: {
+                                    ...integrations,
+                                    canvas: { ...canvas, calendar_rss: v.trim() || undefined },
+                                },
+                            })
+                        }
+                        monospace
+                        wide
+                    />
+                }
+            />
+            <PRow
+                label="配對 Canvas 課程"
+                hint={
+                    pairingError ? (
+                        <span style={{ color: 'var(--h18-hot)' }}>⚠ {pairingError}</span>
+                    ) : ignoredCourseIds.length > 0 ? (
+                        `已忽略 ${ignoredCourseIds.length} 門課；重新配對可在 wizard 裡取消忽略。`
+                    ) : (
+                        '抓一次行事曆，列出所有 Canvas 課讓你決定要對應、新建還是忽略。'
+                    )
+                }
+                right={
+                    <PBtn
+                        primary
+                        disabled={!calendarRss.trim() || pairingBusy}
+                        onClick={handleOpenPairing}
+                    >
+                        {pairingBusy ? '抓取中…' : '⇄ 配對課程'}
+                    </PBtn>
+                }
+            />
+
+            <PHead>每門課的設定</PHead>
+            <p style={{ fontSize: 11, color: 'var(--h18-text-dim)', lineHeight: 1.7, marginTop: 6 }}>
+                Canvas 的「課程公告 RSS」是 per-course 的，每門課自己的 announcements feed 不一樣。
+                請到該課程的「課程編輯」頁底下「Canvas 公告」卡片填入。
+            </p>
+
+            {pairingState && (
+                <CanvasPairingWizard
+                    canvasCourses={pairingState.canvasCourses}
+                    localCourses={pairingState.localCourses}
+                    ignoredCourseIds={ignoredCourseIds}
+                    onClose={() => setPairingState(null)}
+                    onCommit={handleCommit}
+                />
+            )}
         </div>
     );
 }

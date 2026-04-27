@@ -13,8 +13,10 @@
  * onSubmit signature 跟 legacy 完全一樣，方便 H18DeepApp 直接接。
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { selectPDFFile } from '../../services/fileService';
+import type { AgentResult } from '../../services/courseUrlAgent';
+import CourseUrlAgentPanel from './CourseUrlAgentPanel';
 import s from './AddCourseDialog.module.css';
 
 export type AddCourseSubmit = (
@@ -22,12 +24,27 @@ export type AddCourseSubmit = (
     keywords: string,
     pdfData?: ArrayBuffer,
     description?: string,
+    canvasCourseId?: string,
+    agentResult?: AgentResult,
 ) => Promise<string | void | undefined>;
+
+export interface AddCoursePrefill {
+    /** 預填的課程名（從 Canvas 抓的全名）。使用者可改。 */
+    title?: string;
+    /** Canvas course_id（隱藏值，跟著 submit 走進 course.canvas_course_id）。 */
+    canvasCourseId?: string;
+}
 
 export interface AddCourseDialogProps {
     isOpen: boolean;
     onClose: () => void;
     onSubmit: AddCourseSubmit;
+    /**
+     * 從「未配對虛擬課程」chip 進來時帶的預填值。
+     * - title 直接帶到 input（仍可改，e.g. 改成縮寫）
+     * - canvasCourseId 不顯示，submit 時自動帶到 course.canvas_course_id
+     */
+    prefill?: AddCoursePrefill;
 }
 
 type SrcMode = 'text' | 'file' | 'url';
@@ -43,14 +60,34 @@ function shortFileName(path: string): string {
     return seg[seg.length - 1] || path;
 }
 
-export default function AddCourseDialog({ isOpen, onClose, onSubmit }: AddCourseDialogProps) {
+export default function AddCourseDialog({ isOpen, onClose, onSubmit, prefill }: AddCourseDialogProps) {
     const [src, setSrc] = useState<SrcMode>('text');
     const [title, setTitle] = useState('');
     const [keywords, setKeywords] = useState<string[]>([]);
     const [kwDraft, setKwDraft] = useState('');
     const [description, setDescription] = useState('');
     const [pdfFile, setPdfFile] = useState<{ path: string; data: ArrayBuffer } | null>(null);
+    const [agentResult, setAgentResult] = useState<AgentResult | null>(null);
     const [busy, setBusy] = useState(false);
+
+    // Reset all dialog state to a clean baseline every time isOpen flips
+    // from false → true, then apply prefill. We deliberately wipe form
+    // state here — early-return-when-closed kept stale values across
+    // re-opens (clicking a different virtual course chip shows the
+    // previous course's title). No long-running edit lives in this dialog
+    // so destroying state on close is safe.
+    useEffect(() => {
+        if (!isOpen) return;
+        setSrc('text');
+        setTitle(prefill?.title?.trim() || '');
+        setKeywords([]);
+        setKwDraft('');
+        setDescription('');
+        setPdfFile(null);
+        setAgentResult(null);
+        setBusy(false);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen]);
 
     if (!isOpen) return null;
 
@@ -76,7 +113,11 @@ export default function AddCourseDialog({ isOpen, onClose, onSubmit }: AddCourse
         }
     };
 
-    const canSubmit = title.trim().length > 0 && !busy;
+    const canSubmit =
+        title.trim().length > 0 &&
+        !busy &&
+        // URL mode: must have a successful agent result before building
+        (src !== 'url' || !!agentResult);
 
     const handleSubmit = async () => {
         if (!canSubmit) return;
@@ -85,7 +126,15 @@ export default function AddCourseDialog({ isOpen, onClose, onSubmit }: AddCourse
             const kwStr = keywords.join(', ');
             const pdfData = src === 'file' ? pdfFile?.data : undefined;
             const desc = src === 'text' ? description : undefined;
-            await onSubmit(title.trim(), kwStr, pdfData, desc);
+            const agent = src === 'url' ? agentResult ?? undefined : undefined;
+            await onSubmit(
+                title.trim(),
+                kwStr,
+                pdfData,
+                desc,
+                prefill?.canvasCourseId,
+                agent,
+            );
         } catch (err) {
             console.error('[AddCourseDialog] submit failed:', err);
         } finally {
@@ -102,10 +151,22 @@ export default function AddCourseDialog({ isOpen, onClose, onSubmit }: AddCourse
                 aria-label="新增課程"
             >
                 <div className={s.body}>
-                    <h2 className={s.title}>新增課程</h2>
+                    <h2 className={s.title}>
+                        {prefill?.canvasCourseId ? '配對 Canvas 課程' : '新增課程'}
+                    </h2>
                     <div className={s.hint}>
-                        先選個起點 — AI 會從這裡推論課程名稱、大綱與關鍵字
+                        {prefill?.canvasCourseId
+                            ? '從 Canvas 行事曆找到的課。確認名稱（可改成你慣用的縮寫，如 HCI）並送出，App 會自動把後續的公告 / 作業綁到這門課。'
+                            : '先選個起點 — AI 會從這裡推論課程名稱、大綱與關鍵字'}
                     </div>
+                    {prefill?.canvasCourseId && (
+                        <div className={s.canvasPairingBadge}>
+                            <span>✦</span>
+                            <span>
+                                Canvas course_id <code>{prefill.canvasCourseId}</code> 已自動配對，建立後不用再回頭設定。
+                            </span>
+                        </div>
+                    )}
 
                     <div className={s.srcRow}>
                         {SRC_OPTS.map((o) => (
@@ -153,17 +214,24 @@ export default function AddCourseDialog({ isOpen, onClose, onSubmit }: AddCourse
                             </>
                         )}
                         {src === 'url' && (
-                            <>
-                                <input
-                                    className={s.urlInput}
-                                    placeholder="https://www.csie.ntu.edu.tw/~.../syllabus.html"
-                                    disabled
-                                />
-                                <div className={s.urlNote}>
-                                    AI 會抓頁面 → 解析大綱 → 抽關鍵字。
-                                    <em> P6.x · 留白</em> — 後端 web crawler 還沒接。
-                                </div>
-                            </>
+                            <CourseUrlAgentPanel
+                                titleHint={title}
+                                onResult={(r) => {
+                                    setAgentResult(r);
+                                    // 預填 form：使用者沒手動改的話，title / keywords 自動帶
+                                    if (!title.trim()) setTitle(r.title);
+                                    if (keywords.length === 0 && r.syllabus.topic) {
+                                        // 沒給 keywords 就用 topic 拆關鍵字（保守，3 個逗號為止）
+                                        const kw = (r.syllabus.topic || '')
+                                            .split(/[,，、/]/)
+                                            .map((s) => s.trim())
+                                            .filter(Boolean)
+                                            .slice(0, 3);
+                                        if (kw.length > 0) setKeywords(kw);
+                                    }
+                                }}
+                                onClear={() => setAgentResult(null)}
+                            />
                         )}
                     </div>
 
@@ -224,7 +292,8 @@ export default function AddCourseDialog({ isOpen, onClose, onSubmit }: AddCourse
                         <span className={s.actionsHint}>
                             {src === 'text' && description.trim() && '提交後 AI 從說明文字生成課綱'}
                             {src === 'file' && pdfFile && '提交後 AI 從 PDF 生成課綱'}
-                            {src === 'url' && '此來源 P6.x 後接'}
+                            {src === 'url' && agentResult && '✓ 解析完成 — 確認後即可建立'}
+                            {src === 'url' && !agentResult && '先在上方貼網址、按解析'}
                         </span>
                         <button type="button" onClick={onClose} className={s.btnGhost}>
                             取消

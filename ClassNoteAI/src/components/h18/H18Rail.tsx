@@ -12,28 +12,52 @@
  * yet (per "留白" rule).
  */
 
+import { useState } from 'react';
 import { Home, BookText, Sparkles } from 'lucide-react';
 import type { Course } from '../../types';
 import type { H18ActiveNav } from '../../types/h18Nav';
 import { courseColor, courseShort } from './courseColor';
+import CourseRailContextMenu, {
+    type CourseRailAction,
+} from './CourseRailContextMenu';
 import s from './H18Rail.module.css';
 
 export interface H18RailProps {
     activeNav: H18ActiveNav;
     onNav: (target: H18ActiveNav | 'add') => void;
     courses: Course[];
+    /**
+     * 來自 Canvas 行事曆但本機尚未建立 / 配對的課程，會在 rail 上以
+     * dashed 半透明 chip 顯示，提示使用者「這幾門課我知道存在但你還沒設」。
+     * 點下去呼叫 onPickVirtualCourse → 父元件開 AddCourseDialog 預填。
+     */
+    virtualCourses?: { canvasCourseId: string; fullTitle: string }[];
+    onPickVirtualCourse?: (canvasCourseId: string, fullTitle: string) => void;
     /** First letter of user display name for avatar (P6.7 will wire). */
     avatarInitial?: string;
+    /** 右鍵 course chip 觸發。父元件處理 navigation / DB ops。 */
+    onCourseAction?: (courseId: string, action: CourseRailAction) => void;
+}
+
+interface MenuState {
+    courseId: string;
+    x: number;
+    y: number;
 }
 
 export default function H18Rail({
     activeNav,
     onNav,
     courses,
+    virtualCourses = [],
+    onPickVirtualCourse,
     avatarInitial = 'U',
+    onCourseAction,
 }: H18RailProps) {
+    const [menu, setMenu] = useState<MenuState | null>(null);
     const isActive = (key: string) => activeNav === key;
     const isCourseActive = (id: string) => activeNav === `course:${id}`;
+    const menuCourse = menu ? courses.find((c) => c.id === menu.courseId) : null;
 
     return (
         <nav className={s.rail} aria-label="主導覽">
@@ -68,7 +92,12 @@ export default function H18Rail({
                         type="button"
                         key={c.id}
                         onClick={() => onNav(`course:${c.id}`)}
-                        title={c.title}
+                        onContextMenu={(e) => {
+                            if (!onCourseAction) return;
+                            e.preventDefault();
+                            setMenu({ courseId: c.id, x: e.clientX, y: e.clientY });
+                        }}
+                        title={`${c.title}（右鍵更多操作）`}
                         aria-label={c.title}
                         className={`${s.courseChip} ${active ? s.courseChipActive : ''}`}
                         style={{
@@ -82,6 +111,30 @@ export default function H18Rail({
                     </button>
                 );
             })}
+
+            {virtualCourses.length > 0 && (
+                <>
+                    <div className={s.dividerSoft} />
+                    {virtualCourses.map((v) => {
+                        const initials = canvasInitials(v.fullTitle);
+                        return (
+                            <button
+                                type="button"
+                                key={`virtual-${v.canvasCourseId}`}
+                                onClick={() =>
+                                    onPickVirtualCourse?.(v.canvasCourseId, v.fullTitle)
+                                }
+                                title={`${v.fullTitle}（從 Canvas 找到，尚未建立本機課；點此建立）`}
+                                aria-label={`未配對 Canvas 課程：${v.fullTitle}`}
+                                className={s.virtualChip}
+                            >
+                                {initials}
+                                <span className={s.virtualBadge}>?</span>
+                            </button>
+                        );
+                    })}
+                </>
+            )}
 
             <button
                 type="button"
@@ -113,6 +166,30 @@ export default function H18Rail({
             >
                 {avatarInitial}
             </button>
+
+            {menu && menuCourse && onCourseAction && (
+                <CourseRailContextMenu
+                    course={menuCourse}
+                    x={menu.x}
+                    y={menu.y}
+                    onAction={(action) => onCourseAction(menuCourse.id, action)}
+                    onClose={() => setMenu(null)}
+                />
+            )}
         </nav>
     );
+}
+
+/**
+ * 從 Canvas 全名抽 2 字縮寫給虛擬 chip 用。
+ * "HUMAN-COMPUTER INTERACTION (CS_565_001_S2026)" → "HC"
+ * 中文不另外處理 (本來就是 sub-string 取前 2 字)，先去掉 (...) 部分。
+ */
+function canvasInitials(fullTitle: string): string {
+    const stripped = fullTitle.replace(/\s*\(.*?\)\s*$/, '').trim();
+    const words = stripped.split(/[\s\-_/]+/).filter(Boolean);
+    if (words.length >= 2) {
+        return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return stripped.slice(0, 2).toUpperCase();
 }

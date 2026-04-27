@@ -6,20 +6,78 @@ export interface Course {
   description?: string;
   keywords?: string; // 全域關鍵詞
   syllabus_info?: SyllabusInfo; // 結構化課程大綱
+  /**
+   * Canvas LMS 課程 ID（純數字字串，如 `"2042524"`，**不含** `course_` 前綴）。
+   * Pairing wizard 寫入這欄位後，後續抓 RSS 不再做模糊匹配，所有 Canvas
+   * 來源的 announcements / calendar events 一律靠這個 ID 路由。
+   * 沒配對過的課程此欄為 undefined。
+   */
+  canvas_course_id?: string;
   created_at: string;
   updated_at?: string;
   is_deleted?: boolean; // Soft Delete
 }
 
+/**
+ * 教學人員 — 老師或助教共用 schema。
+ * v0.7.0 新增；舊 syllabus_info 仍可只用 instructor / teaching_assistants 字串。
+ */
+export interface TeachingPerson {
+  name: string;
+  email?: string;
+  /** 個人 office hours（可跟 syllabus 的 instructor/ta_office_hours 重複，個別覆寫優先）。 */
+  office_hours?: string;
+}
+
 export interface SyllabusInfo {
-  topic?: string; // 課程主題
-  time?: string; // 上課時間
-  instructor?: string; // 講師
-  office_hours?: string; // 辦公時間
-  teaching_assistants?: string; // 助教
+  topic?: string; // 課程主題（一句話）
+  /** 2-3 句話的課程簡介 (AI 生成)。 */
+  overview?: string;
+  /**
+   * 上課時間。為了 weekParse / Home 排堂能消費，請用 24 小時
+   * HH:MM-HH:MM 格式 + 中文週幾或英文 Mon/Tue 縮寫。
+   * 例如：「週一、週三 14:00-15:50」、"Mon, Wed 14:00-15:50"。
+   */
+  time?: string;
   location?: string; // 地點
+  /** 課程開始日期 (ISO YYYY-MM-DD)。AI 抓得到再填，不亂猜；給前端自動產生 Lecture 1/2/3 用。 */
+  start_date?: string;
+  /** 課程結束日期 (ISO YYYY-MM-DD)。 */
+  end_date?: string;
+
+  /** Legacy: 講師姓名字串。新欄位 instructor_person 優先。 */
+  instructor?: string;
+  instructor_email?: string;
+  /** 老師的 office hours（與 TA 分開）。 */
+  instructor_office_hours?: string;
+
+  /** Legacy: 老師的辦公時間（v0.6 之前的欄位）。新版用 instructor_office_hours。 */
+  office_hours?: string;
+
+  /** Legacy: 助教名稱（逗號 / 頓號 / "/" 分隔字串）。 */
+  teaching_assistants?: string;
+  /** v0.7：結構化助教清單，每位含名稱 / Email / 個人 office hours。 */
+  teaching_assistant_list?: TeachingPerson[];
+  /** TA 共用 office hours（沒填的 TA 沿用這個）。 */
+  ta_office_hours?: string;
+
+  /**
+   * Canvas 公告 RSS feed URL（**per-course**）。
+   *
+   * 注意：Canvas 的 Calendar RSS 是 **per-user 全域**（一個 URL 包含
+   * 所有課程的事件 / 截止日），那條存在 `AppSettings.integrations.canvas.calendar_rss`。
+   * 本欄只放這門課自己的 announcements feed。
+   */
+  canvas_announcements_rss?: string;
+
   grading?: { item: string; percentage: string }[]; // 評分標準 (結構化)
-  schedule?: string[]; // 每週進度
+
+  /**
+   * 每堂課的主題列表 (Lecture 1, Lecture 2, …)。
+   * v0.6 命名為「每週進度」，v0.7 起改稱「Lecture」— 因為一週可能多堂或無堂。
+   * 欄位名為相容 DB 維持 schedule。
+   */
+  schedule?: string[];
 }
 
 // 課程相關類型
@@ -286,6 +344,31 @@ export interface AppSettings {
    */
   updates?: {
     channel?: 'stable' | 'beta' | 'alpha';
+  };
+  /**
+   * 第三方平台整合（v0.7.x+）。
+   * Canvas 等 LMS 整合的全域設定放這裡，跟個別 course 綁的（例如某課
+   * 的公告 RSS）區隔開。
+   */
+  integrations?: {
+    canvas?: {
+      /**
+       * Canvas Calendar RSS feed URL（**per-user 全域**，一條 URL 含
+       * 帳號底下所有課程的事件 / 截止日）。Canvas → Calendar 右下角
+       * 「Calendar Feed」可取得。
+       *
+       * App 抓回來後依 calendar event 的 context_code / 課程標題比對
+       * 各 course，分到對應課程的「待辦 / 提醒」區塊。
+       */
+      calendar_rss?: string;
+      /**
+       * 配對 wizard 內被使用者標記「忽略此課」的 Canvas course_id 清單。
+       * - 不會出現在 rail 的虛擬課程占位
+       * - 不會在 wizard 重跑時又跳出來要求配對
+       * 整合頁可顯示已忽略列表 + 取消忽略按鈕。
+       */
+      ignored_course_ids?: string[];
+    };
   };
 }
 

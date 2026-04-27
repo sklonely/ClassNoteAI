@@ -44,6 +44,7 @@ type WizardStep =
     | 'ai-provider'   // v0.5.2: pick GitHub Models vs ChatGPT (or skip)
     | 'ai-config'     // v0.5.2: configure the chosen provider (PAT / OAuth)
     | 'recording-consent'
+    | 'canvas-integration' // v0.7.x: optional Canvas LMS calendar integration
     | 'checking'
     | 'gpu-check'     // v0.6.1: detect NVIDIA/Vulkan/Metal + save preference
     | 'review'
@@ -93,6 +94,12 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
 
     // v0.6.1: GPU backend detection state for the `gpu-check` step.
     const [gpuDetection, setGpuDetection] = useState<GpuDetection | null>(null);
+
+    // v0.7.x: Canvas Calendar RSS URL captured on the optional
+    // `canvas-integration` step. Saved into AppSettings on transition.
+    const [canvasCalendarRssDraft, setCanvasCalendarRssDraft] = useState('');
+    const [canvasIntegrationError, setCanvasIntegrationError] = useState<string | null>(null);
+    const [canvasIntegrationBusy, setCanvasIntegrationBusy] = useState(false);
 
     // Check requirements when entering checking step. v0.6.1: after
     // the env check we insert `gpu-check` so users see their hardware
@@ -586,12 +593,160 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                             return;
                         }
                         await consentService.acknowledgeRecordingConsent();
-                        await checkRequirements();
+                        setStep('canvas-integration');
                     }}
                 >
                     繼續 <ArrowRight className="w-5 h-5" />
                 </button>
             </div>
+        </div>
+    );
+
+    // v0.7.x: Render Canvas integration step (optional)
+    const saveCanvasCalendarRssAndContinue = async (skipped: boolean) => {
+        setCanvasIntegrationBusy(true);
+        setCanvasIntegrationError(null);
+        try {
+            if (!skipped && canvasCalendarRssDraft.trim()) {
+                // Save URL into AppSettings.integrations.canvas.calendar_rss
+                const { storageService } = await import('../services/storageService');
+                const cur = (await storageService.getAppSettings()) || {
+                    server: { url: '', port: 0, enabled: false },
+                    audio: { sample_rate: 48000, chunk_duration: 5 },
+                    subtitle: {
+                        font_size: 16,
+                        font_color: '#fff',
+                        background_opacity: 0.6,
+                        position: 'bottom',
+                        display_mode: 'en',
+                    },
+                    theme: 'light',
+                };
+                const next = {
+                    ...cur,
+                    integrations: {
+                        ...(cur.integrations || {}),
+                        canvas: {
+                            ...(cur.integrations?.canvas || {}),
+                            calendar_rss: canvasCalendarRssDraft.trim(),
+                        },
+                    },
+                };
+                await storageService.saveAppSettings(next as any);
+                window.dispatchEvent(new CustomEvent('classnote-settings-changed'));
+            }
+            await checkRequirements();
+        } catch (err) {
+            console.error('[SetupWizard] save canvas integration failed:', err);
+            setCanvasIntegrationError(
+                (err as Error)?.message || '儲存失敗 — 請查看 console。',
+            );
+            setCanvasIntegrationBusy(false);
+        }
+    };
+
+    const renderCanvasIntegration = () => (
+        <div className="setup-step welcome-step">
+            <h2 className="setup-subtitle">整合 Canvas (可選)</h2>
+            <p className="setup-description">
+                如果學校用 Canvas LMS 上課，貼一條 Calendar RSS 進來，
+                ClassNote 會自動把作業到期、考試日期顯示在每堂課的提醒區。
+                <br />
+                這一步可以跳過，之後在「個人頁 → 整合」也能設定。
+            </p>
+
+            <div style={{ marginTop: 18, width: '100%', maxWidth: 480 }}>
+                <label
+                    style={{
+                        fontSize: 11,
+                        letterSpacing: '0.08em',
+                        fontWeight: 700,
+                        color: 'rgba(255,255,255,0.7)',
+                        fontFamily: 'monospace',
+                        textTransform: 'uppercase',
+                        display: 'block',
+                        marginBottom: 6,
+                    }}
+                >
+                    Calendar RSS URL (全域，per-user)
+                </label>
+                <input
+                    type="url"
+                    value={canvasCalendarRssDraft}
+                    onChange={(e) => setCanvasCalendarRssDraft(e.target.value)}
+                    placeholder="https://canvas.example.edu/feeds/calendars/user_xxx.ics"
+                    style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 6,
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        background: 'rgba(0,0,0,0.3)',
+                        color: '#fff',
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                    }}
+                />
+                <p
+                    style={{
+                        marginTop: 8,
+                        fontSize: 11,
+                        color: 'rgba(255,255,255,0.55)',
+                        lineHeight: 1.55,
+                    }}
+                >
+                    Canvas 取得方式：登入 Canvas → Calendar 頁面 → 右下角「Calendar Feed」點擊複製連結。
+                    這條 URL 含你帳號底下所有課程的事件，按一次抓就能幫所有課程建提醒。
+                </p>
+                {canvasIntegrationError && (
+                    <div
+                        style={{
+                            marginTop: 10,
+                            padding: '8px 12px',
+                            background: 'rgba(220, 38, 38, 0.15)',
+                            border: '1px solid rgba(220, 38, 38, 0.4)',
+                            borderRadius: 6,
+                            color: '#fca5a5',
+                            fontSize: 12,
+                        }}
+                    >
+                        ⚠ {canvasIntegrationError}
+                    </div>
+                )}
+            </div>
+
+            <div className="setup-actions" style={{ marginTop: 24 }}>
+                <button
+                    className="setup-button"
+                    onClick={() => saveCanvasCalendarRssAndContinue(true)}
+                    disabled={canvasIntegrationBusy}
+                >
+                    略過
+                </button>
+                <button
+                    className="setup-button primary"
+                    onClick={() => saveCanvasCalendarRssAndContinue(false)}
+                    disabled={canvasIntegrationBusy}
+                >
+                    {canvasIntegrationBusy
+                        ? '儲存中…'
+                        : canvasCalendarRssDraft.trim()
+                          ? '儲存並繼續'
+                          : '繼續 (空白)'}
+                    {!canvasIntegrationBusy && <ArrowRight className="w-5 h-5" />}
+                </button>
+            </div>
+
+            <p
+                style={{
+                    marginTop: 18,
+                    fontSize: 10.5,
+                    color: 'rgba(255,255,255,0.5)',
+                }}
+            >
+                跳過了？沒關係 — 之後到「個人頁 → 整合」可隨時設定 + 配對課程。
+            </p>
         </div>
     );
 
@@ -988,6 +1143,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 {step === 'ai-provider' && renderAIProvider()}
                 {step === 'ai-config' && renderAIConfig()}
                 {step === 'recording-consent' && renderRecordingConsent()}
+                {step === 'canvas-integration' && renderCanvasIntegration()}
                 {step === 'checking' && renderChecking()}
                 {step === 'gpu-check' && renderGpuCheck()}
                 {step === 'review' && renderReview()}
