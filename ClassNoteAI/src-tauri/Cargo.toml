@@ -1,6 +1,6 @@
 [package]
 name = "classnoteai"
-version = "0.6.5-alpha.1"
+version = "0.6.5-alpha.2"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -150,6 +150,7 @@ tauri-plugin-process = "2"
 # exactly 2.0.0-rc.12 and pre-release semver doesn't allow rc.9 →
 # rc.12 promotion automatically).
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+libloading = "0.8"
 ndarray = "0.15"
 # Phase 3 of speech-pipeline-v0.6.5 (#53): compression-ratio guard
 # against Whisper repetition-loop hallucinations. Already transitive
