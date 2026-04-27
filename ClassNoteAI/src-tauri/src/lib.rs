@@ -2777,6 +2777,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             close_devtools,
+            agent_bridge::agent_bridge_update_ui_state,
+            agent_bridge::agent_bridge_complete_ui_action,
             read_recent_log,
             open_log_folder,
             export_diagnostic_package,

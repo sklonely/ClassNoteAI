@@ -222,7 +222,10 @@ export default function MainWindow() {
   ];
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100 relative">
+    <div
+      data-agent-id="app.main"
+      className="flex flex-col h-screen bg-white dark:bg-slate-900 text-gray-900 dark:text-gray-100 relative"
+    >
       {/* 頂部導航欄。z-[60] 高於 Settings/Profile/Trash overlay 的 z-50，
           讓 TaskIndicator 等向下展開的氣泡（它繼承 header 的 stacking
           context）能蓋在全螢幕 overlay 上面而不被截斷。 */}
@@ -241,6 +244,7 @@ export default function MainWindow() {
             return (
               <button
                 key={item.id}
+                data-agent-id={`nav.${item.id}`}
                 onClick={item.action}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${isActive
                   ? "bg-blue-500 text-white"
@@ -257,6 +261,7 @@ export default function MainWindow() {
         <div className="flex items-center gap-2">
           <TaskIndicator />
           <button
+            data-agent-id="nav.profile"
             onClick={() => setIsProfileOpen(true)}
             className={`p-2 rounded-lg transition-colors ${isProfileOpen ? "bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
             aria-label="個人中心"
@@ -264,7 +269,7 @@ export default function MainWindow() {
             <User size={20} />
           </button>
           <button
-
+            data-agent-id="nav.theme"
             onClick={toggleTheme}
             className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
             aria-label="切換主題"
@@ -302,14 +307,14 @@ export default function MainWindow() {
 
         {/* 1. Home View (Course List) */}
         {activeView === 'home' && !isSettingsOpen && !isProfileOpen && (
-          <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+          <div data-agent-id="view.home" className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
             <CourseListView onSelectCourse={handleSelectCourse} />
           </div>
         )}
 
         {/* 2. Course Detail View */}
         {activeView === 'course' && activeCourseId && !isSettingsOpen && !isProfileOpen && (
-          <div className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
+          <div data-agent-id="view.course" className="absolute inset-0 overflow-auto bg-gray-50 dark:bg-gray-900">
             <CourseDetailView
               courseId={activeCourseId}
               onBack={handleBackToCourses}
@@ -322,6 +327,7 @@ export default function MainWindow() {
         {/* 3. Lecture View (NotesView) - KEEP ALIVE */}
         {/* 始終渲染，但通過 CSS 控制顯示/隱藏 */}
         <div
+          data-agent-id="view.lecture"
           className="absolute inset-0 bg-white dark:bg-slate-900"
           style={{
             display: (activeView === 'lecture' && !isSettingsOpen && !isProfileOpen) ? 'block' : 'none',
@@ -343,21 +349,21 @@ export default function MainWindow() {
 
         {/* 4. Settings Overlay */}
         {isSettingsOpen && (
-          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div data-agent-id="view.settings" className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
             <SettingsView onClose={() => setIsSettingsOpen(false)} />
           </div>
         )}
 
         {/* 5. Profile Overlay */}
         {isProfileOpen && (
-          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div data-agent-id="view.profile" className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
             <ProfileView onClose={() => setIsProfileOpen(false)} />
           </div>
         )}
 
         {/* 6. Trash Bin Overlay */}
         {showTrashView && (
-          <div className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div data-agent-id="view.trash" className="absolute inset-0 z-50 bg-white dark:bg-slate-900 animate-in fade-in slide-in-from-bottom-4 duration-200">
             <TrashView onBack={() => setShowTrashView(false)} />
           </div>
         )}

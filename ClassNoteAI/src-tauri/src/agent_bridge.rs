@@ -1,20 +1,25 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
+use uuid::Uuid;
 
 const API_VERSION: u32 = 1;
 const DEFAULT_PORT: u16 = 4317;
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const EVENT_RING_CAPACITY: usize = 128;
+const UI_ACTION_TIMEOUT_MS: u64 = 30_000;
+
+static BRIDGE_STATE: OnceLock<Arc<BridgeState>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,6 +50,8 @@ struct BridgeState {
     started_at: String,
     events: Mutex<VecDeque<BridgeEvent>>,
     next_event_id: Mutex<u64>,
+    ui_state: Mutex<Option<Value>>,
+    pending_ui_actions: Mutex<HashMap<String, oneshot::Sender<Value>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +124,10 @@ async fn run_server(app: AppHandle, requested_port: u16, token: String) -> Resul
         started_at: created_at,
         events: Mutex::new(VecDeque::with_capacity(EVENT_RING_CAPACITY)),
         next_event_id: Mutex::new(1),
+        ui_state: Mutex::new(None),
+        pending_ui_actions: Mutex::new(HashMap::new()),
     });
+    let _ = BRIDGE_STATE.set(state.clone());
 
     push_event(
         &state,
@@ -161,6 +171,35 @@ async fn push_event(state: &Arc<BridgeState>, event_type: &str, payload: Value) 
     events.push_back(event);
 }
 
+#[tauri::command]
+pub async fn agent_bridge_update_ui_state(state: Value) -> Result<(), String> {
+    let Some(bridge_state) = BRIDGE_STATE.get() else {
+        return Ok(());
+    };
+    let mut slot = bridge_state.ui_state.lock().await;
+    *slot = Some(state);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn agent_bridge_complete_ui_action(
+    action_id: String,
+    result: Value,
+) -> Result<(), String> {
+    let Some(bridge_state) = BRIDGE_STATE.get() else {
+        return Ok(());
+    };
+    let sender = bridge_state
+        .pending_ui_actions
+        .lock()
+        .await
+        .remove(&action_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(result);
+    }
+    Ok(())
+}
+
 fn write_attach_file(app: &AppHandle, attach: &AttachFile) -> Result<(), String> {
     let path = attach_file_path(app)?;
     if let Some(parent) = path.parent() {
@@ -200,6 +239,7 @@ async fn handle_connection(mut stream: TcpStream, state: Arc<BridgeState>) -> Re
 async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut buffer = Vec::with_capacity(4096);
     let mut temp = [0_u8; 1024];
+    let mut header_end = None;
     loop {
         let read = stream
             .read(&mut temp)
@@ -209,9 +249,25 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
             break;
         }
         buffer.extend_from_slice(&temp[..read]);
-        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+        if let Some(split) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            header_end = Some(split + 4);
             break;
         }
+        if buffer.len() > MAX_REQUEST_BYTES {
+            return Err("request too large".to_string());
+        }
+    }
+    let header_end = header_end.ok_or_else(|| "missing header terminator".to_string())?;
+    let content_length = parse_content_length(&buffer[..header_end])?;
+    while buffer.len() < header_end + content_length {
+        let read = stream
+            .read(&mut temp)
+            .await
+            .map_err(|e| format!("read request body: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..read]);
         if buffer.len() > MAX_REQUEST_BYTES {
             return Err("request too large".to_string());
         }
@@ -252,8 +308,13 @@ async fn route_request(request: HttpRequest, state: Arc<BridgeState>) -> Vec<u8>
         ("POST", "/v1/workflow/ocr-index") => unsupported_response("workflow.ocr-index"),
         ("POST", "/v1/workflow/summarize") => unsupported_response("workflow.summarize"),
         ("POST", "/v1/workflow/chat") => unsupported_response("workflow.chat"),
-        ("GET", "/v1/ui/snapshot") => unsupported_response("ui.snapshot"),
-        ("GET", "/v1/ui/tree") => json_response(200, ui_tree_payload(&state)),
+        ("GET", "/v1/ui/snapshot") => json_response(200, ui_snapshot_payload(&state).await),
+        ("GET", "/v1/ui/tree") => json_response(200, ui_tree_payload(&state).await),
+        ("POST", "/v1/ui/click") => ui_action_response(&state, "click", &request).await,
+        ("POST", "/v1/ui/type") => ui_action_response(&state, "type", &request).await,
+        ("POST", "/v1/ui/key") => ui_action_response(&state, "key", &request).await,
+        ("POST", "/v1/ui/navigate") => ui_action_response(&state, "navigate", &request).await,
+        ("POST", "/v1/ui/wait-for") => ui_action_response(&state, "wait-for", &request).await,
         _ => json_response(
             404,
             json!({
@@ -295,8 +356,13 @@ fn handshake_payload(state: &BridgeState) -> Value {
             {"id": "workflow.ocr-index", "stability": "planned"},
             {"id": "workflow.summarize", "stability": "planned"},
             {"id": "workflow.chat", "stability": "planned"},
-            {"id": "ui.snapshot", "stability": "planned"},
-            {"id": "ui.tree", "stability": "planned"}
+            {"id": "ui.snapshot", "stability": "experimental"},
+            {"id": "ui.tree", "stability": "experimental"},
+            {"id": "ui.click", "stability": "experimental"},
+            {"id": "ui.type", "stability": "experimental"},
+            {"id": "ui.key", "stability": "experimental"},
+            {"id": "ui.navigate", "stability": "experimental"},
+            {"id": "ui.wait-for", "stability": "experimental"}
         ],
     })
 }
@@ -479,7 +545,19 @@ async fn raw_command_response(state: &Arc<BridgeState>, request: &HttpRequest) -
     )
 }
 
-fn ui_tree_payload(state: &Arc<BridgeState>) -> Value {
+async fn ui_tree_payload(state: &Arc<BridgeState>) -> Value {
+    if let Some(renderer_state) = state.ui_state.lock().await.clone() {
+        return json!({
+            "schemaVersion": 1,
+            "type": "ui_tree",
+            "status": "ok",
+            "source": "renderer-dom",
+            "state": renderer_state,
+            "tree": renderer_state.get("tree").cloned().unwrap_or_else(|| json!(null)),
+            "elements": renderer_state.get("elements").cloned().unwrap_or_else(|| json!([])),
+        });
+    }
+
     let windows = state
         .app
         .webview_windows()
@@ -505,6 +583,140 @@ fn ui_tree_payload(state: &Arc<BridgeState>) -> Value {
             "children": windows,
         }
     })
+}
+
+async fn ui_snapshot_payload(state: &Arc<BridgeState>) -> Value {
+    if let Some(renderer_state) = state.ui_state.lock().await.clone() {
+        return json!({
+            "schemaVersion": 1,
+            "type": "ui_snapshot",
+            "status": "ok",
+            "source": "renderer-dom",
+            "note": "Semantic snapshot only; pixel capture is reserved for a later bridge phase.",
+            "state": renderer_state,
+        });
+    }
+
+    json!({
+        "schemaVersion": 1,
+        "type": "ui_snapshot",
+        "status": "ok",
+        "source": "tauri-window-inventory",
+        "note": "Renderer DOM state has not registered yet; pixel capture is reserved for a later bridge phase.",
+        "state": ui_tree_payload(state).await,
+    })
+}
+
+async fn ui_action_response(
+    state: &Arc<BridgeState>,
+    kind: &str,
+    request: &HttpRequest,
+) -> Vec<u8> {
+    let mut payload: Value = serde_json::from_slice(&request.body).unwrap_or_else(|_| json!({}));
+    let action_id = Uuid::new_v4().to_string();
+    payload["actionId"] = json!(action_id);
+    payload["kind"] = json!(kind);
+
+    let Some(window) = state.app.get_webview_window("main") else {
+        return json_response(
+            500,
+            json!({
+                "schemaVersion": 1,
+                "type": "ui_action",
+                "status": "failed",
+                "kind": kind,
+                "message": "main webview window is not available",
+            }),
+        );
+    };
+
+    let (sender, receiver) = oneshot::channel();
+    state
+        .pending_ui_actions
+        .lock()
+        .await
+        .insert(action_id.clone(), sender);
+
+    push_event(
+        state,
+        "ui.action.started",
+        json!({
+            "actionId": action_id,
+            "kind": kind,
+        }),
+    )
+    .await;
+
+    if let Err(error) = window.emit("agent-bridge-ui-action", payload.clone()) {
+        let _ = state.pending_ui_actions.lock().await.remove(&action_id);
+        return json_response(
+            500,
+            json!({
+                "schemaVersion": 1,
+                "type": "ui_action",
+                "status": "failed",
+                "kind": kind,
+                "actionId": action_id,
+                "message": format!("emit ui action: {error}"),
+            }),
+        );
+    }
+
+    match tokio::time::timeout(Duration::from_millis(UI_ACTION_TIMEOUT_MS), receiver).await {
+        Ok(Ok(result)) => {
+            push_event(
+                state,
+                "ui.action.completed",
+                json!({
+                    "actionId": action_id,
+                    "kind": kind,
+                    "result": result,
+                }),
+            )
+            .await;
+            let ok = result
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|status| status == "ok")
+                .unwrap_or(false);
+            json_response(
+                if ok { 200 } else { 500 },
+                json!({
+                    "schemaVersion": 1,
+                    "type": "ui_action",
+                    "status": if ok { "ok" } else { "failed" },
+                    "kind": kind,
+                    "actionId": action_id,
+                    "result": result,
+                }),
+            )
+        }
+        Ok(Err(_)) => json_response(
+            500,
+            json!({
+                "schemaVersion": 1,
+                "type": "ui_action",
+                "status": "failed",
+                "kind": kind,
+                "actionId": action_id,
+                "message": "renderer dropped ui action response",
+            }),
+        ),
+        Err(_) => {
+            let _ = state.pending_ui_actions.lock().await.remove(&action_id);
+            json_response(
+                504,
+                json!({
+                    "schemaVersion": 1,
+                    "type": "ui_action",
+                    "status": "timeout",
+                    "kind": kind,
+                    "actionId": action_id,
+                    "message": "renderer did not complete ui action before timeout",
+                }),
+            )
+        }
+    }
 }
 
 fn unsupported_response(capability: &str) -> Vec<u8> {
@@ -580,6 +792,23 @@ fn parse_http_request(bytes: &[u8]) -> Result<HttpRequest, String> {
     })
 }
 
+fn parse_content_length(header_bytes: &[u8]) -> Result<usize, String> {
+    let header_text = std::str::from_utf8(header_bytes)
+        .map_err(|e| format!("request headers are not utf8: {e}"))?;
+    for line in header_text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("content-length") {
+            return value
+                .trim()
+                .parse::<usize>()
+                .map_err(|e| format!("invalid content-length: {e}"));
+        }
+    }
+    Ok(0)
+}
+
 fn parse_target(target: &str) -> (String, HashMap<String, String>) {
     let Some((path, query_text)) = target.split_once('?') else {
         return (target.to_string(), HashMap::new());
@@ -636,6 +865,7 @@ fn reason(status: u16) -> &'static str {
         204 => "No Content",
         401 => "Unauthorized",
         404 => "Not Found",
+        504 => "Gateway Timeout",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         _ => "OK",
@@ -661,6 +891,23 @@ mod tests {
         assert_eq!(request.path, "/v1/logs");
         assert_eq!(request.query.get("lines").unwrap(), "50");
         assert_eq!(request.headers.get("authorization").unwrap(), "Bearer abc");
+    }
+
+    #[test]
+    fn parses_post_request_body() {
+        let request = parse_http_request(
+            b"POST /v1/ui/click HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 25\r\n\r\n{\"target\":\"nav.settings\"}",
+        )
+        .unwrap();
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/ui/click");
+        assert_eq!(request.body, br#"{"target":"nav.settings"}"#);
+        assert_eq!(
+            parse_content_length(b"POST /v1/ui/click HTTP/1.1\r\nContent-Length: 25\r\n\r\n")
+                .unwrap(),
+            25
+        );
     }
 
     #[test]
