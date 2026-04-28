@@ -118,6 +118,26 @@ export interface SummarizeParams {
   title?: string;
   /** Optional override of the model id exposed by the provider. */
   model?: string;
+  /**
+   * Optional `AbortSignal` for cancellation. When fired the streaming
+   * generator throws a `DOMException('Aborted', 'AbortError')` and the
+   * underlying fetch is cancelled (passed through to provider.complete /
+   * provider.stream → openai-compat fetch).
+   *
+   * TODO Sprint 3 W8 caller adoption: ReviewPage retry / regen 應 new
+   *   AbortController() on click cancel + pass `signal: ac.signal` 給
+   *   `summarizeStream`. Same for `chatStream` from the AI 助教 panel.
+   */
+  signal?: AbortSignal;
+}
+
+/** Throw the standard AbortError when a signal has fired. Centralises the
+ *  shape so callers (and tests) can branch on `err.name === 'AbortError'`
+ *  consistently. Mirrors what the WHATWG fetch / DOM spec emit on abort. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
 }
 
 /** Character threshold above which `summarize` switches from single-
@@ -228,13 +248,29 @@ export async function summarize(params: SummarizeParams): Promise<string> {
 
 /** Progress event shape for `summarizeStream`. Callers subscribe to
  *  `delta` for streaming markdown output; `phase` changes let the UI
- *  show "producing section 3/5" style progress. */
+ *  show "producing section 3/5" style progress.
+ *
+ *  W7 (Phase 7): when a per-section map call fails, the generator now
+ *  yields a `partial-failure` event in addition to the existing inline
+ *  placeholder. UI can use this to surface "1/6 段失敗" without parsing
+ *  the markdown body. */
 export interface SummarizeStreamEvent {
-  phase: 'map-start' | 'map-section-done' | 'reduce-start' | 'reduce-delta' | 'done';
+  phase:
+    | 'map-start'
+    | 'map-section-done'
+    | 'partial-failure'
+    | 'reduce-start'
+    | 'reduce-delta'
+    | 'done';
   /** Total number of map sections (emitted on map-start). */
   sectionCount?: number;
   /** 1-based index of the section just completed (map-section-done). */
   sectionIndex?: number;
+  /** 0-based index of the section that failed (partial-failure). */
+  failedSectionIndex?: number;
+  /** Human-readable error message for the failed section
+   *  (partial-failure). */
+  error?: string;
   /** Token delta to append to the running output (reduce-delta). */
   delta?: string;
   /** Full assembled text (emitted on done — useful for callers that
@@ -255,9 +291,16 @@ export interface SummarizeStreamEvent {
 export async function* summarizeStream(
   params: SummarizeParams,
 ): AsyncGenerator<SummarizeStreamEvent, void, void> {
+  // Cancel-before-start: if the caller already aborted (e.g. user
+  // mashed cancel before the first network round-trip), surface that
+  // immediately rather than burning a model lookup.
+  throwIfAborted(params.signal);
+
   const { provider, model: defaultModel, providerId } = await activeProviderAndModel();
   const model = params.model ?? defaultModel;
   const system = buildSummarizeSystemPrompt(params.language);
+
+  throwIfAborted(params.signal);
 
   // Short path: single streaming call, no map step.
   if (params.content.length <= SUMMARIZE_MAP_REDUCE_THRESHOLD) {
@@ -280,7 +323,13 @@ export async function* summarizeStream(
       messages,
       temperature: 0.3,
       maxTokens: 4096,
+      signal: params.signal,
     })) {
+      // Mid-stream abort check: even if fetch's own AbortController
+      // cancels the underlying connection, a stream chunk that's
+      // already buffered may still be delivered to us by the SSE
+      // parser. Drop it on the floor and exit cleanly.
+      throwIfAborted(params.signal);
       if (chunk.delta) {
         fullText += chunk.delta;
         yield { phase: 'reduce-delta', delta: chunk.delta };
@@ -301,7 +350,21 @@ export async function* summarizeStream(
   // provider rate limits on long lectures (previously: unbounded
   // Promise.all would fire 25+ concurrent requests for a 2-hour class
   // and 429 on the first one to queue).
+  //
+  // W7 (Phase 7): each per-section call is wrapped in try/catch and
+  // failures collapse to a placeholder + a `failures[]` entry. We yield
+  // a `partial-failure` event for each failed section AFTER the
+  // concurrency-limited fan-in completes (yielding from inside
+  // runWithConcurrency would interleave with parallel work in
+  // surprising ways — easier to reason about a flat post-fan-in
+  // emission).
+  const failures: Array<{ index: number; error: string }> = [];
   const sectionSummaries = await runWithConcurrency(sections, MAP_PHASE_CONCURRENCY, async (section, i) => {
+    // Per-section abort check — bail out of in-flight sections without
+    // burning more LLM calls. The throw bubbles through Promise.all
+    // and out of runWithConcurrency.
+    throwIfAborted(params.signal);
+
     const sectionMessages: LLMMessage[] = [
       {
         role: 'system',
@@ -322,26 +385,44 @@ export async function* summarizeStream(
         messages: sectionMessages,
         temperature: 0.2,
         maxTokens: 1024,
+        signal: params.signal,
       });
       trackUsage(providerId, model, 'summarize', res.usage);
       return res.content;
     } catch (err) {
+      // Aborts must propagate, not collapse to placeholders — the
+      // user explicitly asked us to stop, so don't keep going on
+      // their other sections and don't pretend the call "failed".
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      if (err instanceof Error && err.name === 'AbortError') throw err;
       // Section-level failures must NOT blow up the whole summarisation.
       // Returning a placeholder lets the reduce step continue with
       // whatever succeeded — better to have a slightly patchy summary
       // than zero summary for the user.
+      const errMsg = err instanceof Error ? err.message : String(err);
       console.warn(`[summarizeStream] Section ${i + 1} failed, continuing without it:`, err);
-      return `_[此段落摘要失敗：${err instanceof Error ? err.message : String(err)}]_`;
+      failures.push({ index: i, error: errMsg });
+      return `_[此段摘要失敗 · ${errMsg}]_`;
     }
   });
 
-  // Report progress after concurrent map fan-in completes. The earlier
-  // serial version emitted per-section progress; the concurrency-limited
-  // version can't easily preserve original order without extra
-  // bookkeeping, so we emit one batch-done event instead.
+  // After fan-in: emit per-section progress in deterministic order
+  // (the concurrency limiter doesn't preserve issue order otherwise),
+  // and surface every map-phase failure as its own event so callers
+  // can render "1/N 段失敗" without scanning the markdown body.
   for (let i = 1; i <= sections.length; i++) {
     yield { phase: 'map-section-done', sectionIndex: i, sectionCount: sections.length };
   }
+  for (const failure of failures) {
+    yield {
+      phase: 'partial-failure',
+      failedSectionIndex: failure.index,
+      sectionCount: sections.length,
+      error: failure.error,
+    };
+  }
+
+  throwIfAborted(params.signal);
 
   // REDUCE phase — stitch section summaries into a coherent study note,
   // streamed so the UI can render tokens as they arrive.
@@ -380,7 +461,9 @@ export async function* summarizeStream(
       messages: reduceMessages,
       temperature: 0.3,
       maxTokens: 4096,
+      signal: params.signal,
     })) {
+      throwIfAborted(params.signal);
       if (chunk.delta) {
         fullText += chunk.delta;
         yield { phase: 'reduce-delta', delta: chunk.delta };
@@ -388,6 +471,11 @@ export async function* summarizeStream(
       if (chunk.done && chunk.usage) finalUsage = chunk.usage;
     }
   } catch (err) {
+    // Aborts win over the graceful-fallback path — a user who pressed
+    // cancel does not want us to dump 4000 chars of concatenated
+    // section summaries into their note.
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    if (err instanceof Error && err.name === 'AbortError') throw err;
     console.warn('[summarizeStream] Reduce failed, falling back to concatenated section summaries:', err);
     const header = params.language === 'zh'
       ? `> ⚠ 整合步驟失敗，以下為分段摘要直接串接（原因：${err instanceof Error ? err.message : String(err)}）\n\n`
@@ -692,13 +780,23 @@ function normaliseSyllabus(s: SyllabusInfo, existing?: SyllabusInfo): SyllabusIn
   return out;
 }
 
-export async function chat(messages: LLMMessage[]): Promise<string> {
+export async function chat(
+  messages: LLMMessage[],
+  options: { signal?: AbortSignal } = {},
+): Promise<string> {
+  // TODO Sprint 3 W8 caller adoption: callers (AI 助教 panel, etc.) 應
+  //   new AbortController() on mount + pass `signal: ac.signal` so a
+  //   user navigating away mid-request actually cancels HTTP, not just
+  //   hides the spinner.
+  throwIfAborted(options.signal);
   const { provider, model } = await activeProviderAndModel();
+  throwIfAborted(options.signal);
   const res = await provider!.complete({
     model,
     messages,
     temperature: 0.3,
     maxTokens: 2048,
+    signal: options.signal,
   });
   trackUsage(provider!.descriptor.id, model, 'chat', res.usage);
   return res.content;
@@ -834,16 +932,29 @@ export async function refineTranscripts(batch: RoughSegment[]): Promise<FineRefi
   return [];
 }
 
-/** Stream a chat response token-by-token. Caller receives incremental deltas. */
-export async function* chatStream(messages: LLMMessage[]): AsyncGenerator<string, void, void> {
+/** Stream a chat response token-by-token. Caller receives incremental deltas.
+ *
+ * TODO Sprint 3 W8 caller adoption: ReviewPage retry / regen 應 new
+ *   AbortController() on click cancel + pass `signal: ac.signal` 給
+ *   `chatStream`. The AI 助教 chat panel should do the same on
+ *   navigation-away.
+ */
+export async function* chatStream(
+  messages: LLMMessage[],
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<string, void, void> {
+  throwIfAborted(options.signal);
   const { provider, model } = await activeProviderAndModel();
+  throwIfAborted(options.signal);
   let finalUsage: { inputTokens?: number; outputTokens?: number } | undefined;
   for await (const chunk of provider!.stream({
     model,
     messages,
     temperature: 0.3,
     maxTokens: 2048,
+    signal: options.signal,
   })) {
+    throwIfAborted(options.signal);
     if (chunk.delta) yield chunk.delta;
     if (chunk.done && chunk.usage) {
       finalUsage = chunk.usage;

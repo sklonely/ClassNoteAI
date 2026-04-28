@@ -24,6 +24,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { recordingSessionService } from '../recordingSessionService';
+import * as toastModule from '../toastService';
 import {
     RECORDING_CHANGE_EVENT,
     type RecordingChangeDetail,
@@ -703,5 +704,98 @@ describe('stop() · edge cases', () => {
         await new Promise((r) => setTimeout(r, 60));
         const after = recordingSessionService.getState().elapsed;
         expect(after).toBe(before);
+    });
+});
+
+// ─── W17 · coalesced toast at end of stop() ─────────────────────────────
+
+describe('stop() · W17 toast coalescing', () => {
+    beforeEach(() => {
+        // Module-level vi.mock above already replaced toastService's
+        // methods with vi.fn(); just clear them between tests so call
+        // counts don't bleed across cases.
+        (toastModule.toastService.success as ReturnType<typeof vi.fn>).mockClear();
+        (toastModule.toastService.warning as ReturnType<typeof vi.fn>).mockClear();
+        (toastModule.toastService.error as ReturnType<typeof vi.fn>).mockClear();
+        (toastModule.toastService.info as ReturnType<typeof vi.fn>).mockClear();
+    });
+
+    it('全 6 step OK → 結尾發 1 個 toast.success「錄音已儲存」', async () => {
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        // Wait a microtask so the awaited toast emit has fully landed.
+        await Promise.resolve();
+        expect(toastModule.toastService.success).toHaveBeenCalledTimes(1);
+        const [message, detail] = (
+            toastModule.toastService.success as ReturnType<typeof vi.fn>
+        ).mock.calls[0];
+        expect(message).toMatch(/錄音已儲存/);
+        expect(detail).toMatch(/背景/);
+        expect(toastModule.toastService.warning).not.toHaveBeenCalled();
+        expect(toastModule.toastService.error).not.toHaveBeenCalled();
+    });
+
+    it('step 2 (segment) 失敗 → 1 個 toast.warning + state.stopPhase=failed', async () => {
+        mockRecorderInstance.finalizeToDisk = vi.fn(async () => {
+            throw new Error('disk full');
+        });
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        await Promise.resolve();
+        expect(recordingSessionService.getState().stopPhase).toBe('failed');
+        expect(toastModule.toastService.warning).toHaveBeenCalledTimes(1);
+        expect(toastModule.toastService.success).not.toHaveBeenCalled();
+        const [message] = (
+            toastModule.toastService.warning as ReturnType<typeof vi.fn>
+        ).mock.calls[0];
+        expect(message).toMatch(/錄音儲存發生問題/);
+    });
+
+    it('step 3 (subtitles save) 失敗 → 1 個 toast.warning + state.stopPhase=failed', async () => {
+        storageMockState.saveSubtitlesShouldThrow = true;
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        await Promise.resolve();
+        expect(recordingSessionService.getState().stopPhase).toBe('failed');
+        expect(toastModule.toastService.warning).toHaveBeenCalledTimes(1);
+        expect(toastModule.toastService.success).not.toHaveBeenCalled();
+        const [, detail] = (
+            toastModule.toastService.warning as ReturnType<typeof vi.fn>
+        ).mock.calls[0];
+        // Step 3 fails *before* segmentSaved flips, so the detail must
+        // reflect "partial" rather than "fully" persisted.
+        expect(detail).toMatch(/部分/);
+        expect(detail).toMatch(/subtitles save/);
+    });
+
+    it('step 4-5 background 失敗 → stop() 不發 toast (tracker 自己 fail() 處理)', async () => {
+        // Force background paths to fail. Stop pipeline status should
+        // still flip to done and ONLY the success toast fires.
+        const longSentence =
+            'lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua';
+        storageMockState.subsForLecture = [
+            {
+                id: 'sub-x-0',
+                lecture_id: 'lecture-1',
+                timestamp: 0,
+                text_en: longSentence,
+                text_zh: '夠長的中文翻譯內容夠長的中文翻譯內容',
+                type: 'rough',
+                created_at: new Date().toISOString(),
+            },
+        ];
+        summarizeShouldThrow = true;
+        ragShouldThrow = true;
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        // Let background tasks settle so any (incorrect) extra toasts
+        // would have a chance to fire.
+        await new Promise((r) => setTimeout(r, 30));
+        expect(recordingSessionService.getState().stopPhase).toBe('done');
+        // Exactly one toast — the coalesced success bar — and nothing
+        // from the background failures.
+        expect(toastModule.toastService.success).toHaveBeenCalledTimes(1);
+        expect(toastModule.toastService.warning).not.toHaveBeenCalled();
+        expect(toastModule.toastService.error).not.toHaveBeenCalled();
     });
 });

@@ -39,6 +39,11 @@ import {
     subscribeExamMarks,
     type ExamMark,
 } from '../../services/examMarksStore';
+import {
+    taskTrackerService,
+    type TaskTrackerEntry,
+} from '../../services/taskTrackerService';
+import { recordingSessionService } from '../../services/recordingSessionService';
 import s from './H18ReviewPage.module.css';
 
 export interface H18ReviewPageProps {
@@ -133,14 +138,58 @@ export default function H18ReviewPage({
     const [examMarks, setExamMarks] = useState<ExamMark[]>(() =>
         getExamMarks(lectureId),
     );
-    const [summarizing, setSummarizing] = useState(false);
     const [summarizeError, setSummarizeError] = useState<string | null>(null);
+
+    // Phase 7 Sprint 2 (S2.4) — subscribe to taskTracker for the
+    // streaming summary task that may have been kicked off by the stop
+    // pipeline (or by a prior retry click). We track the most recent
+    // summarize-task entry for *this* lectureId so the summary tab can
+    // show progress / error / retry inline. `null` = no recent task.
+    const [summaryTask, setSummaryTask] = useState<TaskTrackerEntry | null>(
+        null,
+    );
 
     useEffect(() => {
         setExamMarks(getExamMarks(lectureId));
         const off = subscribeExamMarks(lectureId, (next) =>
             setExamMarks(next),
         );
+        return off;
+    }, [lectureId]);
+
+    // Subscribe to taskTracker — pick the most-recent summarize task for
+    // this lecture (running OR failed). When it transitions to `done`,
+    // refetch the note so the new summary text re-renders.
+    useEffect(() => {
+        const off = taskTrackerService.subscribe((tasks) => {
+            // pick the most recent (largest startedAt) summarize task for
+            // this lecture, regardless of status — UI needs to see
+            // running / failed / done.
+            let pick: TaskTrackerEntry | null = null;
+            for (const t of tasks) {
+                if (t.kind !== 'summarize') continue;
+                if (t.lectureId !== lectureId) continue;
+                if (!pick || t.startedAt > pick.startedAt) pick = t;
+            }
+            setSummaryTask((prev) => {
+                // On done transition, refetch note so summary tab re-renders.
+                if (
+                    prev &&
+                    prev.status !== 'done' &&
+                    pick &&
+                    pick.status === 'done' &&
+                    pick.id === prev.id
+                ) {
+                    storageService
+                        .getNote(lectureId)
+                        .then((n) => setNote(n))
+                        .catch(() => {
+                            /* swallow — keep previous note */
+                        });
+                }
+                return pick;
+            });
+        });
         return off;
     }, [lectureId]);
 
@@ -351,52 +400,66 @@ export default function H18ReviewPage({
         }
     };
 
-    const handleRegenerateSummary = async () => {
-        if (subs.length === 0 || summarizing) return;
-        setSummarizing(true);
+    // Phase 7 Sprint 2 (S2.7) — cancel-on-regen. Click 「✦ 重新生成」 →
+    // cancel any active summarize task for this lecture (running or
+    // queued), then start a new tracked task and run summarize inline so
+    // the user gets streaming progress in the same tab.
+    const handleRegenerateSummary = () => {
+        if (subs.length === 0) return;
         setSummarizeError(null);
-        try {
-            const { summarize } = await import('../../services/llm/tasks');
-            const text = subs
-                .slice()
-                .sort((a, b) => a.timestamp - b.timestamp)
-                .map((sub) => sub.text_zh || sub.text_en || '')
-                .filter(Boolean)
-                .join('\n');
-            // Pick output language based on the user's translation target.
-            // 'zh-*' → 'zh', anything else → 'en'.
-            let lang: 'zh' | 'en' = 'zh';
-            try {
-                const settingsCur = await storageService.getAppSettings();
-                const tgt = settingsCur?.translation?.target_language || 'zh-TW';
-                lang = tgt.startsWith('zh') ? 'zh' : 'en';
-            } catch {
-                /* default zh */
+        // 1. cancel existing summarize tasks (running OR failed) for this
+        //    lecture so we don't leave stale rows in the tasks tray.
+        taskTrackerService.getActive().forEach((t) => {
+            if (t.kind === 'summarize' && t.lectureId === lectureId) {
+                taskTrackerService.cancel(t.id);
             }
-            const summary = await summarize({
-                content: text,
-                language: lang,
-                title: lecture?.title,
-            });
-            const nextNote: Note = note
-                ? { ...note, summary, generated_at: new Date().toISOString() }
-                : {
-                      lecture_id: lectureId,
-                      title: lecture?.title || '新課堂',
-                      summary,
-                      sections: [],
-                      qa_records: [],
-                      generated_at: new Date().toISOString(),
-                  };
-            await storageService.saveNote(nextNote);
-            setNote(nextNote);
-        } catch (err) {
-            console.error('[H18ReviewPage] summarize failed:', err);
-            setSummarizeError(
-                (err as Error)?.message || '生成失敗 — 確認雲端 AI provider 已設好',
+        });
+        // 2. start a new tracked task and inline-run summarize.
+        const newTaskId = taskTrackerService.start({
+            kind: 'summarize',
+            label: '重新生成摘要',
+            lectureId,
+        });
+        void runSummary(newTaskId, lectureId, lecture?.title);
+    };
+
+    // Phase 7 Sprint 2 (S2.6) — retry button on failed task.
+    // Cancels the existing failed task (so the tasks tray drops it) and
+    // starts a fresh summarize task using the same inline runner.
+    const handleRetrySummary = () => {
+        if (!summaryTask) return;
+        setSummarizeError(null);
+        taskTrackerService.cancel(summaryTask.id);
+        const newTaskId = taskTrackerService.start({
+            kind: 'summarize',
+            label: '重試摘要',
+            lectureId,
+        });
+        void runSummary(newTaskId, lectureId, lecture?.title);
+    };
+
+    // Phase 7 Sprint 2 (S2.10) — retry the stop-pipeline finalize when a
+    // lecture is in `failed` status (audio + subtitles best-effort
+    // preserved but summary / index didn't finish). Falls back to a
+    // mustFinalizeSync drain.
+    const handleRetryFinalize = () => {
+        // Best-effort: kick off a fresh summarize task; the singleton's
+        // mustFinalizeSync handles the lower-level pipeline retry.
+        void recordingSessionService.mustFinalizeSync().catch((err) => {
+            console.warn(
+                '[H18ReviewPage] mustFinalizeSync retry failed:',
+                err,
             );
-        } finally {
-            setSummarizing(false);
+        });
+        // Also kick a fresh summarize task — that's the most user-visible
+        // missing piece.
+        if (subs.length > 0) {
+            const newTaskId = taskTrackerService.start({
+                kind: 'summarize',
+                label: '重試摘要',
+                lectureId,
+            });
+            void runSummary(newTaskId, lectureId, lecture?.title);
         }
     };
 
@@ -494,7 +557,21 @@ export default function H18ReviewPage({
         recMatchesLecture &&
         (recState.status === 'recording' || recState.status === 'paused');
     const showStopProgressHint =
-        recMatchesLecture && recState.status === 'stopping';
+        (recMatchesLecture && recState.status === 'stopping') ||
+        lecture.status === 'stopping';
+
+    // Phase 7 S2.4 — derived from the live summarize task entry.
+    const summaryTaskRunning =
+        summaryTask?.status === 'running' || summaryTask?.status === 'queued';
+    const summaryProgressPct = Math.max(
+        0,
+        Math.min(100, Math.round((summaryTask?.progress ?? 0) * 100)),
+    );
+
+    // Phase 7 S2.10 — show the failed-finalize banner when the lecture
+    // row itself was persisted with `status='failed'` (stop pipeline
+    // crashed mid-way). Independent of the recording singleton's state.
+    const showFailedBanner = lecture.status === 'failed';
 
     return (
         <div className={s.page}>
@@ -553,6 +630,38 @@ export default function H18ReviewPage({
                         <span aria-hidden>⟳</span>
                         正在儲存課堂…
                         {recState.stopPhase ? ` · ${recState.stopPhase}` : ''}
+                    </div>
+                )}
+                {/* Phase 7 S2.10 — lecture.status='failed' banner.
+                    Stop pipeline crashed; audio + subtitles best-effort
+                    preserved but summary / index may need a manual retry. */}
+                {showFailedBanner && (
+                    <div
+                        role="alert"
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: 'var(--h18-space-3) var(--h18-space-5)',
+                            marginBottom: 'var(--h18-space-5, 12px)',
+                            borderRadius: 'var(--h18-radius-md, 6px)',
+                            background: 'var(--h18-hot-bg)',
+                            borderLeft: '3px solid var(--h18-hot)',
+                            color: 'var(--h18-hot)',
+                            fontSize: 12,
+                        }}
+                    >
+                        <span style={{ flex: 1 }}>
+                            ⚠ 此堂課儲存時發生錯誤。錄音已盡力保留，部分摘要 /
+                            索引可能需手動重試。
+                        </span>
+                        <button
+                            type="button"
+                            onClick={handleRetryFinalize}
+                            className={s.editBtn}
+                        >
+                            重試
+                        </button>
                     </div>
                 )}
                 <div className={s.heroTopRow}>
@@ -929,7 +1038,7 @@ export default function H18ReviewPage({
                             <div className={s.tabHead}>
                                 <span className={s.tabHeadEyebrow}>
                                     AI 自動摘要
-                                    {summarizing && (
+                                    {summaryTaskRunning && (
                                         <span className={s.tabHeadStatus}>
                                             {' · 生成中…'}
                                         </span>
@@ -938,23 +1047,99 @@ export default function H18ReviewPage({
                                 <button
                                     type="button"
                                     onClick={handleRegenerateSummary}
-                                    disabled={summarizing || subs.length === 0}
+                                    disabled={subs.length === 0}
                                     className={s.editBtn}
                                     title={
                                         subs.length === 0
                                             ? '沒有逐字稿，沒得摘要'
-                                            : note?.summary
-                                              ? '用最新逐字稿重新生成'
-                                              : '從目前逐字稿生成摘要'
+                                            : summaryTaskRunning
+                                              ? '取消當前摘要並重新生成'
+                                              : note?.summary
+                                                ? '用最新逐字稿重新生成'
+                                                : '從目前逐字稿生成摘要'
                                     }
                                 >
-                                    {summarizing
-                                        ? '⟳ …'
+                                    {summaryTaskRunning
+                                        ? '✦ 重新生成'
                                         : note?.summary
                                           ? '✦ 重新生成'
                                           : '✦ 生成摘要'}
                                 </button>
                             </div>
+                            {/* Phase 7 S2.4 — streaming progress hint when
+                                a summarize task is active for this lecture. */}
+                            {summaryTaskRunning && (
+                                <div
+                                    role="status"
+                                    aria-live="polite"
+                                    style={{
+                                        padding: '8px 10px',
+                                        margin: '8px 0',
+                                        borderRadius: 6,
+                                        border: '1px dashed var(--h18-border)',
+                                        background:
+                                            'var(--h18-surface-alt, var(--h18-surface))',
+                                        color: 'var(--h18-text-mid)',
+                                        fontSize: 11,
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 6,
+                                    }}
+                                >
+                                    <span>
+                                        ✦ 摘要生成中 · 約 {summaryProgressPct}%
+                                    </span>
+                                    <div
+                                        aria-hidden
+                                        style={{
+                                            height: 3,
+                                            borderRadius: 2,
+                                            background: 'var(--h18-border-soft)',
+                                            overflow: 'hidden',
+                                        }}
+                                    >
+                                        <div
+                                            style={{
+                                                width: `${summaryProgressPct}%`,
+                                                height: '100%',
+                                                background: 'var(--h18-accent)',
+                                                transition: 'width 200ms linear',
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                            {/* Phase 7 S2.6 — failed task → red banner +
+                                retry button. */}
+                            {summaryTask?.status === 'failed' && (
+                                <div
+                                    role="alert"
+                                    style={{
+                                        padding: '8px 10px',
+                                        margin: '8px 0',
+                                        borderRadius: 6,
+                                        border: '1px solid var(--h18-hot)',
+                                        background: 'var(--h18-hot-bg)',
+                                        color: 'var(--h18-hot)',
+                                        fontSize: 11,
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: 8,
+                                    }}
+                                >
+                                    <span style={{ flex: 1 }}>
+                                        ✦ 摘要生成失敗：
+                                        {summaryTask.error || 'unknown'}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={handleRetrySummary}
+                                        className={s.editBtn}
+                                    >
+                                        重試
+                                    </button>
+                                </div>
+                            )}
                             {summarizeError && (
                                 <div
                                     style={{
@@ -1099,6 +1284,90 @@ export default function H18ReviewPage({
             )}
         </div>
     );
+}
+
+/**
+ * Phase 7 Sprint 2 R3 (S2.6 / S2.7) — inline summarize runner.
+ *
+ * Lives at module scope (not inside the component) so it can be invoked
+ * from both the regenerate and retry click handlers without re-binding
+ * to component-instance state. Mirrors the stop-pipeline pattern in
+ * `recordingSessionService.runBackgroundSummary` (Sprint 2 Round 2)
+ * intentionally — duplication is the cost of staying inside the
+ * Sprint-2-R3 whitelist (we can't refactor the singleton). A future
+ * sprint can lift this into `services/summarizeRunner.ts`.
+ *
+ * Reports progress + terminal status via the taskTracker; storage write
+ * happens before `complete()` so subscribers reloading the note row see
+ * the new summary text by the time they react to the `done` transition.
+ */
+async function runSummary(
+    taskId: string,
+    lectureId: string,
+    title?: string,
+): Promise<void> {
+    try {
+        const subs = await storageService.getSubtitles(lectureId).catch(
+            () => [] as Subtitle[],
+        );
+        const text = subs
+            .map((s) => s.text_zh || s.text_en || '')
+            .filter(Boolean)
+            .join('\n');
+        if (text.trim().length < 100) {
+            // Not enough content to bother — short-circuit to done so
+            // the tracker row clears.
+            taskTrackerService.complete(taskId);
+            return;
+        }
+        taskTrackerService.update(taskId, { status: 'running' });
+
+        // Pick output language from the user's translation target.
+        let lang: 'zh' | 'en' = 'zh';
+        try {
+            const settings = await storageService.getAppSettings();
+            const tgt = settings?.translation?.target_language || 'zh-TW';
+            lang = tgt.startsWith('zh') ? 'zh' : 'en';
+        } catch {
+            /* default zh */
+        }
+
+        const { summarizeStream } = await import('../../services/llm/tasks');
+        let full = '';
+        let chunkCount = 0;
+        for await (const event of summarizeStream({
+            content: text,
+            language: lang,
+            title,
+        })) {
+            if (event.phase === 'reduce-delta' && event.delta) {
+                full += event.delta;
+                chunkCount += 1;
+                taskTrackerService.update(taskId, {
+                    progress: Math.min(0.95, chunkCount * 0.05),
+                    status: 'running',
+                });
+            } else if (event.phase === 'done' && event.fullText) {
+                full = event.fullText;
+            }
+        }
+
+        const existing = await storageService.getNote(lectureId).catch(
+            () => null,
+        );
+        await storageService.saveNote({
+            lecture_id: lectureId,
+            title: existing?.title ?? title ?? '',
+            summary: full,
+            sections: existing?.sections ?? [],
+            qa_records: existing?.qa_records ?? [],
+            generated_at: new Date().toISOString(),
+        });
+        taskTrackerService.complete(taskId);
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        taskTrackerService.fail(taskId, msg);
+    }
 }
 
 function CourseContextStrip({ course }: { course: Course }) {

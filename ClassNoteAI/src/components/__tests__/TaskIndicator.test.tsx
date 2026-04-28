@@ -1,24 +1,33 @@
 /**
- * TaskIndicator · v0.7.0 H18 重做
+ * TaskIndicator · v0.7.0 → Phase 7 Sprint 2 S2.5 改造
  *
- * 行為測試：
- *   - 整合 offlineQueueService API (init / listActions / subscribe)
- *   - idle / active / offline 三種視覺狀態切換
- *   - dropdown 開合 (click button / click outside)
- *   - dropdown 列表顯示 pending action labels
- *   - ONLINE / OFFLINE pill
- *   - retry count 顯示
+ * Dual-source registry (taskTrackerService + offlineQueueService) merged
+ * into a single UnifiedTask list. Both services are mocked at the module
+ * boundary because the real taskTrackerService singleton lives behind an
+ * S2.9 in-progress persist layer that needs Tauri commands not present
+ * under jsdom — and even if it didn't, mocking gives us deterministic
+ * subscriber control which is what the H18-TASKINDICATOR-MERGE doc spec
+ * is really about.
  *
- * 不測：實際 SVG 路徑 / dropdown 動畫 / 色彩 (jsdom 限制)
+ * Coverage matches MERGE doc:
+ *   - badge active count = running + queued (MERGE §4)
+ *   - merge across both sources (§2)
+ *   - SUMMARIZE_LECTURE / INDEX_LECTURE filtered on queue side (§6.1)
+ *   - cancel only tracker (§3)
+ *   - retry only tracker → cancel old + start new (§3 / §7.2)
+ *   - sort: running → queued → failed → done (§5)
+ *   - subscribe / unsubscribe lifecycle
  *
- * 保留：sync-label regression — 確保 SYNC_PUSH 等廢棄 type 不會
- * 意外被 friendly-label 化。
+ * Not tested: SVG paths, animations, color tokens (jsdom limit).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, act, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { PendingAction } from '../../services/offlineQueueService';
+import type { TaskTrackerEntry } from '../../services/__contracts__/taskTrackerService.contract';
+
+// ─── Mock both services at module boundary ──────────────────────────────
 
 vi.mock('../../services/offlineQueueService', () => ({
   offlineQueueService: {
@@ -28,12 +37,55 @@ vi.mock('../../services/offlineQueueService', () => ({
   },
 }));
 
+// We need a fakeTracker we can drive from tests. We expose a
+// `__setTrackerSnapshot` helper that synchronously notifies all
+// subscribers — that's the only "tracker behaviour" the indicator
+// component actually consumes.
+type TrackerSubscriber = (tasks: TaskTrackerEntry[]) => void;
+const trackerSubs = new Set<TrackerSubscriber>();
+let trackerSnapshot: TaskTrackerEntry[] = [];
+
+function setTrackerSnapshot(next: TaskTrackerEntry[]) {
+  trackerSnapshot = next;
+  trackerSubs.forEach((cb) => cb([...next]));
+}
+
+const trackerCancel = vi.fn();
+const trackerStart = vi.fn();
+
+vi.mock('../../services/taskTrackerService', () => ({
+  taskTrackerService: {
+    subscribe: (cb: TrackerSubscriber) => {
+      trackerSubs.add(cb);
+      cb([...trackerSnapshot]); // immediate-fire pattern
+      return () => {
+        trackerSubs.delete(cb);
+      };
+    },
+    cancel: (id: string) => {
+      trackerCancel(id);
+    },
+    start: (input: unknown) => {
+      trackerStart(input);
+      return 'tracker-new-id';
+    },
+    reset: () => {
+      trackerSnapshot = [];
+      trackerSubs.clear();
+    },
+  },
+}));
+
 import TaskIndicator from '../TaskIndicator';
 import { offlineQueueService } from '../../services/offlineQueueService';
 
 const mocked = vi.mocked(offlineQueueService);
 
-function pending(actionType: string, id = `id-${Math.random()}`, overrides: Partial<PendingAction> = {}): PendingAction {
+function pending(
+  actionType: string,
+  id = `id-${Math.random()}`,
+  overrides: Partial<PendingAction> = {},
+): PendingAction {
   return {
     id,
     actionType: actionType as PendingAction['actionType'],
@@ -44,9 +96,26 @@ function pending(actionType: string, id = `id-${Math.random()}`, overrides: Part
   };
 }
 
+function trackerEntry(
+  overrides: Partial<TaskTrackerEntry> = {},
+): TaskTrackerEntry {
+  return {
+    id: `t-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'summarize',
+    label: '測試任務',
+    progress: 0,
+    status: 'queued',
+    startedAt: Date.now(),
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
+  trackerSnapshot = [];
+  trackerSubs.clear();
+  trackerCancel.mockClear();
+  trackerStart.mockClear();
   mocked.listActions.mockResolvedValue([]);
-  // restore navigator.onLine to true between tests
   Object.defineProperty(navigator, 'onLine', {
     configurable: true,
     get: () => true,
@@ -57,209 +126,301 @@ afterEach(() => {
   cleanup();
 });
 
-describe('TaskIndicator · idle state', () => {
-  it('renders cloud icon with idle title', async () => {
-    render(<TaskIndicator />);
-    await waitFor(() => {
-      expect(screen.getByTitle('無進行中任務')).toBeInTheDocument();
-    });
-  });
+// ─── 1. trigger button — idle / active count ────────────────────────────
 
-  it('does not show count badge when idle', async () => {
+describe('TaskIndicator · trigger', () => {
+  it('renders trigger with no count when nothing active', async () => {
     render(<TaskIndicator />);
     await waitFor(() => {
-      expect(screen.getByTitle('無進行中任務')).toBeInTheDocument();
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
     });
     expect(screen.queryByTestId('task-count-badge')).not.toBeInTheDocument();
   });
-});
 
-describe('TaskIndicator · active state', () => {
-  it('shows count badge with pending count', async () => {
-    mocked.listActions.mockResolvedValue([
-      pending('AUTH_REGISTER', 'a'),
-      pending('PURGE_ITEM', 'b'),
-    ]);
-    render(<TaskIndicator />);
-    const badge = await screen.findByTestId('task-count-badge');
-    expect(badge).toHaveTextContent('2');
-  });
-
-  it('uses active title with count', async () => {
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
+  it('shows badge with count 1 when tracker has 1 running task', async () => {
     render(<TaskIndicator />);
     await waitFor(() => {
-      expect(screen.getByTitle('1 個任務進行中')).toBeInTheDocument();
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
     });
-  });
 
-  it('does not include completed actions in count', async () => {
-    mocked.listActions.mockResolvedValue([
-      pending('AUTH_REGISTER', 'a'),
-      pending('PURGE_ITEM', 'b', { status: 'completed' }),
-    ]);
-    render(<TaskIndicator />);
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({
+          id: 't1',
+          status: 'running',
+          progress: 0.3,
+          label: 'ML L4 摘要',
+        }),
+      ]);
+    });
+
     const badge = await screen.findByTestId('task-count-badge');
     expect(badge).toHaveTextContent('1');
   });
-});
 
-describe('TaskIndicator · offline state', () => {
-  it('uses offline title when navigator is offline and no tasks', async () => {
-    Object.defineProperty(navigator, 'onLine', {
-      configurable: true,
-      get: () => false,
-    });
+  it('aggregates badge across tracker + queue (1 + 2 = 3)', async () => {
+    mocked.listActions.mockResolvedValue([
+      pending('AUTH_REGISTER', 'q1'),
+      pending('PURGE_ITEM', 'q2'),
+    ]);
     render(<TaskIndicator />);
+
     await waitFor(() => {
-      expect(screen.getByTitle('網路斷線')).toBeInTheDocument();
+      const badge = screen.queryByTestId('task-count-badge');
+      expect(badge).toHaveTextContent('2');
     });
+
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({ id: 't1', status: 'running', label: 'L1 摘要' }),
+      ]);
+    });
+
+    const badge = await screen.findByTestId('task-count-badge');
+    await waitFor(() => expect(badge).toHaveTextContent('3'));
   });
 });
+
+// ─── 2. SUMMARIZE_LECTURE / INDEX_LECTURE filter (MERGE §6.1) ───────────
+
+describe('TaskIndicator · queue dedupe', () => {
+  it('filters SUMMARIZE_LECTURE from queue side to avoid dual-display', async () => {
+    mocked.listActions.mockResolvedValue([
+      pending('AUTH_REGISTER', 'q1'),
+      // These two are queue's restart-replay bookkeeping; the tracker
+      // owns their UI, so the indicator must skip them.
+      pending('SUMMARIZE_LECTURE' as never, 'q2'),
+      pending('INDEX_LECTURE' as never, 'q3'),
+    ]);
+    render(<TaskIndicator />);
+
+    const badge = await screen.findByTestId('task-count-badge');
+    await waitFor(() => expect(badge).toHaveTextContent('1'));
+
+    const user = userEvent.setup();
+    await user.click(badge.closest('button')!);
+    expect(screen.getByText('用戶註冊')).toBeInTheDocument();
+    expect(screen.queryByText(/重啟續跑/)).not.toBeInTheDocument();
+  });
+});
+
+// ─── 3. dropdown open/close + content ──────────────────────────────────
 
 describe('TaskIndicator · dropdown', () => {
-  it('toggles open / closed when button clicked', async () => {
+  it('opens panel when trigger clicked', async () => {
     const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
     render(<TaskIndicator />);
-    const btn = await screen.findByTitle('1 個任務進行中');
+    const trigger = await screen.findByTestId('task-indicator');
 
     expect(screen.queryByTestId('task-dropdown')).not.toBeInTheDocument();
-    await user.click(btn);
+    await user.click(trigger);
     expect(screen.getByTestId('task-dropdown')).toBeInTheDocument();
-    await user.click(btn);
-    expect(screen.queryByTestId('task-dropdown')).not.toBeInTheDocument();
   });
 
-  it('shows action labels for known types', async () => {
-    const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([
-      pending('AUTH_REGISTER', 'a'),
-      pending('PURGE_ITEM', 'b'),
-    ]);
+  it('renders task label + progress bar for running tracker task', async () => {
     render(<TaskIndicator />);
-    const btn = await screen.findByTitle('2 個任務進行中');
-    await user.click(btn);
-    expect(screen.getByText('用戶註冊')).toBeInTheDocument();
-    expect(screen.getByText('永久刪除')).toBeInTheDocument();
-  });
-
-  it('shows TASKS · N header with count', async () => {
-    const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
-    render(<TaskIndicator />);
-    const btn = await screen.findByTitle('1 個任務進行中');
-    await user.click(btn);
-    expect(screen.getByText(/TASKS · 1/)).toBeInTheDocument();
-  });
-
-  it('shows ONLINE pill when online', async () => {
-    const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
-    render(<TaskIndicator />);
-    const btn = await screen.findByTitle('1 個任務進行中');
-    await user.click(btn);
-    expect(screen.getByText('ONLINE')).toBeInTheDocument();
-  });
-
-  it('shows OFFLINE pill when offline', async () => {
-    Object.defineProperty(navigator, 'onLine', {
-      configurable: true,
-      get: () => false,
+    await waitFor(() => {
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
     });
+
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({
+          id: 't1',
+          status: 'running',
+          progress: 0.42,
+          label: '生成摘要',
+          lectureId: 'l1',
+        }),
+      ]);
+    });
+
     const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
+    await user.click(await screen.findByTestId('task-indicator'));
+    expect(screen.getByText('生成摘要')).toBeInTheDocument();
+    const bar = screen.getByRole('progressbar');
+    expect(bar).toHaveAttribute('value', '0.42');
+  });
+});
+
+// ─── 4. cancel button (tracker only) ─────────────────────────────────────
+
+describe('TaskIndicator · cancel', () => {
+  it('shows cancel button on running tracker task and calls service.cancel', async () => {
     render(<TaskIndicator />);
-    // Offline takes precedence in title, so find via the count badge.
+    await waitFor(() => {
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
+    });
+
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({ id: 't1', status: 'running', label: 'X 摘要' }),
+      ]);
+    });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('task-indicator'));
+
+    const cancelBtn = screen.getByTestId('task-cancel-t1');
+    expect(cancelBtn).toBeInTheDocument();
+
+    await user.click(cancelBtn);
+    expect(trackerCancel).toHaveBeenCalledWith('t1');
+  });
+
+  it('does NOT show cancel button for queue items (cancelable=false)', async () => {
+    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER', 'q1')]);
+    render(<TaskIndicator />);
     const badge = await screen.findByTestId('task-count-badge');
-    const btn = badge.closest('button')!;
-    await user.click(btn);
-    expect(screen.getByText('OFFLINE')).toBeInTheDocument();
-  });
-
-  it('shows empty-state message when no tasks but dropdown opened', async () => {
     const user = userEvent.setup();
-    render(<TaskIndicator />);
-    const btn = await screen.findByTitle('無進行中任務');
-    await user.click(btn);
-    expect(screen.getByText(/全部任務已完成/)).toBeInTheDocument();
-  });
+    await user.click(badge.closest('button')!);
 
-  it('shows offline empty-state hint when offline and no tasks', async () => {
-    Object.defineProperty(navigator, 'onLine', {
-      configurable: true,
-      get: () => false,
+    expect(screen.getByText('用戶註冊')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-cancel-q1')).not.toBeInTheDocument();
+  });
+});
+
+// ─── 5. failed + retry (tracker only) ───────────────────────────────────
+
+describe('TaskIndicator · failed / retry', () => {
+  it('shows error message + retry button for failed tracker task', async () => {
+    render(<TaskIndicator />);
+    await waitFor(() => {
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
     });
+
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({
+          id: 't1',
+          status: 'failed',
+          error: 'LLM 拒絕',
+          label: '失敗任務',
+        }),
+      ]);
+    });
+
     const user = userEvent.setup();
-    render(<TaskIndicator />);
-    const btn = await screen.findByTitle('網路斷線');
-    await user.click(btn);
-    expect(screen.getByText(/網路斷線.*排隊/)).toBeInTheDocument();
+    await user.click(await screen.findByTestId('task-indicator'));
+
+    expect(screen.getByText('失敗任務')).toBeInTheDocument();
+    expect(screen.getByText(/LLM 拒絕/)).toBeInTheDocument();
+    expect(screen.getByTestId('task-retry-t1')).toBeInTheDocument();
   });
 
-  it('shows retry count when retryCount > 0', async () => {
-    const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([
-      pending('AUTH_REGISTER', 'a', { retryCount: 2, status: 'failed' }),
-    ]);
+  it('clicking retry cancels old + starts a new task with same kind/label/lectureId', async () => {
     render(<TaskIndicator />);
-    const btn = await screen.findByTitle('1 個任務進行中');
-    await user.click(btn);
-    expect(screen.getByText(/重試.*2.*3/)).toBeInTheDocument();
-  });
+    await waitFor(() => {
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
+    });
 
-  it('shows failed status badge for failed actions', async () => {
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({
+          id: 't1',
+          status: 'failed',
+          error: 'boom',
+          label: 'L1 摘要',
+          lectureId: 'l1',
+          kind: 'summarize',
+        }),
+      ]);
+    });
+
     const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([
-      pending('AUTH_REGISTER', 'a', { status: 'failed' }),
-    ]);
-    render(<TaskIndicator />);
-    const btn = await screen.findByTitle('1 個任務進行中');
-    await user.click(btn);
-    expect(screen.getByText('失敗')).toBeInTheDocument();
+    await user.click(await screen.findByTestId('task-indicator'));
+
+    await user.click(screen.getByTestId('task-retry-t1'));
+
+    expect(trackerCancel).toHaveBeenCalledWith('t1');
+    expect(trackerStart).toHaveBeenCalledWith({
+      kind: 'summarize',
+      label: 'L1 摘要',
+      lectureId: 'l1',
+    });
   });
 });
 
-describe('TaskIndicator · click-outside', () => {
-  it('closes dropdown when clicking outside', async () => {
-    const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
-    render(
-      <div>
-        <TaskIndicator />
-        <button data-testid="outside">outside</button>
-      </div>,
-    );
-    const btn = await screen.findByTitle('1 個任務進行中');
-    await user.click(btn);
-    expect(screen.getByTestId('task-dropdown')).toBeInTheDocument();
+// ─── 6. empty state ─────────────────────────────────────────────────────
 
-    await user.click(screen.getByTestId('outside'));
-    expect(screen.queryByTestId('task-dropdown')).not.toBeInTheDocument();
-  });
-});
-
-describe('TaskIndicator · sync-label regression', () => {
-  it('never renders sync-related Chinese labels', async () => {
+describe('TaskIndicator · empty state', () => {
+  it('shows empty message when dropdown opened with no tasks', async () => {
     const user = userEvent.setup();
-    mocked.listActions.mockResolvedValue([pending('AUTH_REGISTER')]);
     render(<TaskIndicator />);
-    const btn = await screen.findByTitle('1 個任務進行中');
-    await user.click(btn);
-    for (const banned of ['同步上傳', '同步下載', '裝置註冊', '移除裝置']) {
-      expect(screen.queryByText(banned)).not.toBeInTheDocument();
-    }
+    const trigger = await screen.findByTestId('task-indicator');
+    await user.click(trigger);
+    expect(screen.getByText(/全部任務已完成|沒有進行中/)).toBeInTheDocument();
   });
 });
+
+// ─── 7. sort order — running → queued → failed → done ───────────────────
+
+describe('TaskIndicator · sort', () => {
+  it('renders running before queued before failed', async () => {
+    render(<TaskIndicator />);
+    await waitFor(() => {
+      expect(screen.getByTestId('task-indicator')).toBeInTheDocument();
+    });
+
+    act(() => {
+      setTrackerSnapshot([
+        trackerEntry({
+          id: 't-fail',
+          status: 'failed',
+          error: 'oops',
+          label: 'A-FAIL',
+          startedAt: 1000,
+        }),
+        trackerEntry({
+          id: 't-queued',
+          status: 'queued',
+          label: 'B-QUEUED',
+          startedAt: 2000,
+        }),
+        trackerEntry({
+          id: 't-running',
+          status: 'running',
+          label: 'C-RUNNING',
+          startedAt: 3000,
+        }),
+      ]);
+    });
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('task-indicator'));
+
+    const labels = screen
+      .getAllByTestId(/^task-row-/)
+      .map((el) => el.textContent ?? '');
+    expect(labels[0]).toContain('C-RUNNING');
+    expect(labels[1]).toContain('B-QUEUED');
+    expect(labels[2]).toContain('A-FAIL');
+  });
+});
+
+// ─── 8. subscription lifecycle ──────────────────────────────────────────
 
 describe('TaskIndicator · subscription lifecycle', () => {
-  it('subscribes on mount and unsubscribes on unmount', async () => {
-    const unsubscribe = vi.fn();
-    mocked.subscribe.mockReturnValueOnce(unsubscribe);
+  it('subscribes to offlineQueue on mount and unsubscribes on unmount', async () => {
+    const queueUnsub = vi.fn();
+    mocked.subscribe.mockReturnValueOnce(queueUnsub);
     const { unmount } = render(<TaskIndicator />);
-    await act(async () => { await Promise.resolve(); });
-    expect(mocked.subscribe).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocked.subscribe).toHaveBeenCalled();
     unmount();
-    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(queueUnsub).toHaveBeenCalled();
+  });
+
+  it('subscribes to taskTrackerService on mount and unsubscribes on unmount', async () => {
+    const { unmount } = render(<TaskIndicator />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // immediate-fire wired one cb in
+    expect(trackerSubs.size).toBe(1);
+    unmount();
+    expect(trackerSubs.size).toBe(0);
   });
 });

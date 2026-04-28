@@ -89,7 +89,24 @@ export interface Lecture {
   duration: number; // 秒
   pdf_path?: string;
   keywords?: string; // 領域關鍵詞
-  status: "recording" | "completed";
+  /**
+   * v0.7.0 Phase 7 Sprint 2 (V14) — extended with `'stopping'` and
+   * `'failed'` so the stop pipeline can publish intermediate / error
+   * states without falsely flipping back to `'recording'` or claiming
+   * `'completed'` when finalize fell over.
+   *
+   *   - `recording` — actively capturing (singleton owns mic + ASR)
+   *   - `stopping`  — finalize 6-step pipeline in progress (sync drain
+   *                   + audio finalize + subtitles save phase)
+   *   - `completed` — pipeline finished cleanly; review is safe to open
+   *   - `failed`    — pipeline crashed mid-way; recording was best-
+   *                   effort preserved but summary / index may need a
+   *                   manual retry. ReviewPage shows a hero banner.
+   *
+   * Existing `'recording'` and `'completed'` checks stay valid; adding
+   * to the union doesn't narrow them.
+   */
+  status: "recording" | "stopping" | "completed" | "failed";
   created_at: string; // ISO 8601 - 必需字段
   updated_at: string; // ISO 8601 - 必需字段
   audio_path?: string;

@@ -1,251 +1,301 @@
 /* ============================================================
- * H18 TaskIndicator · v0.7.0
+ * H18 TaskIndicator · Phase 7 Sprint 2 S2.5
  *
- * 28×28 icon button + 320px dropdown panel。Idle 顯示 ☁ cloud
- * icon，active 顯示 spinner + count badge。Offline 切 wifi-off
- * icon (T.hot 紅)。
+ * 28×28 trigger + 320px dropdown panel. Token-only — no
+ * hardcoded colors / spacing / radius / font-size / z-index
+ * (per H18-TASKINDICATOR-MERGE.md §11.5).
  *
- * Dropdown header 顯示「TASKS · N」mono 標題 + ONLINE/OFFLINE
- * pill。每行 task 用 grid (status glyph / label+detail / dismiss)。
+ * Idle: ☁ cloud icon (text-dim).
+ * Active: spinner + badge.
+ * Offline: wifi-off icon (hot 紅).
+ *
+ * Rows are decorated by status:
+ *   .status-running  · accent left-border
+ *   .status-failed   · hot left-border + hot text on errorMsg
+ *   .status-queued   · neutral
+ *   .status-done     · faded (auto-removed soon)
  * ============================================================ */
 
 .wrap {
-  position: relative;
-  display: inline-flex;
+    position: relative;
+    display: inline-flex;
 }
 
 /* ─── Trigger button ─────────────────────────────────────── */
 .trigger {
-  position: relative;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  background: transparent;
-  border: 1px solid transparent;
-  color: var(--h18-text-dim);
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  font-family: inherit;
-  transition: background 160ms var(--h18-ease-spring),
-              border-color 160ms var(--h18-ease-spring),
-              color 160ms var(--h18-ease-spring);
-  flex-shrink: 0;
+    position: relative;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--h18-radius-md);
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--h18-text-dim);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    font-family: inherit;
+    transition: background var(--h18-duration-fast) var(--h18-ease-spring),
+        border-color var(--h18-duration-fast) var(--h18-ease-spring),
+        color var(--h18-duration-fast) var(--h18-ease-spring);
+    flex-shrink: 0;
 }
 
 .trigger:hover {
-  background: var(--h18-surface2);
-  border-color: var(--h18-border-soft);
+    background: var(--h18-surface2);
+    border-color: var(--h18-border-soft);
 }
 
 .triggerActive {
-  background: var(--h18-surface2);
-  border-color: var(--h18-border);
-  color: var(--h18-accent);
+    background: var(--h18-surface2);
+    border-color: var(--h18-border);
+    color: var(--h18-accent);
 }
 
 .triggerOpen {
-  background: var(--h18-chip-bg);
-  border-color: var(--h18-border);
+    background: var(--h18-chip-bg);
+    border-color: var(--h18-border);
 }
 
 .triggerOffline {
-  color: var(--h18-hot);
+    color: var(--h18-hot);
 }
 
 .spinner {
-  animation: tiSpin 900ms linear infinite;
+    animation: tiSpin 900ms linear infinite;
 }
 
 .badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 14px;
-  height: 14px;
-  border-radius: 7px;
-  padding: 0 3px;
-  background: var(--h18-accent);
-  color: #fff;
-  font-size: 9px;
-  font-weight: 800;
-  font-family: var(--h18-font-mono);
-  display: grid;
-  place-items: center;
-  border: 1.5px solid var(--h18-topbar);
-  letter-spacing: -0.02em;
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 14px;
+    height: 14px;
+    border-radius: var(--h18-radius-full);
+    padding: 0 var(--h18-space-1);
+    background: var(--h18-accent);
+    color: #fff;
+    font-size: var(--h18-text-xs);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    display: grid;
+    place-items: center;
+    border: 1.5px solid var(--h18-topbar);
+    letter-spacing: -0.02em;
 }
 
 /* ─── Dropdown panel ─────────────────────────────────────── */
 .dropdown {
-  position: absolute;
-  top: 36px;
-  right: 0;
-  width: 320px;
-  background: var(--h18-surface);
-  color: var(--h18-text);
-  border: 1px solid var(--h18-border);
-  border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
-  z-index: 1000;
-  font-family: var(--h18-font-sans);
-  overflow: hidden;
-  animation: tiDropIn 200ms var(--h18-ease-spring);
-}
-
-:root.dark .dropdown {
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5),
-              0 0 0 0.5px rgba(255, 255, 255, 0.06) inset;
+    position: absolute;
+    top: calc(var(--h18-button-height) + var(--h18-space-1));
+    right: 0;
+    width: 320px;
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-lg);
+    box-shadow: var(--h18-shadow-lg);
+    z-index: var(--h18-z-dropdown);
+    font-family: var(--h18-font-sans);
+    overflow: hidden;
+    animation: tiDropIn var(--h18-duration-base) var(--h18-ease-spring);
 }
 
 .header {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--h18-border);
-  background: var(--h18-surface2);
-  display: flex;
-  align-items: center;
-  gap: 10px;
+    padding: var(--h18-space-4) var(--h18-space-6);
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-4);
 }
 
 .headerTitle {
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  color: var(--h18-text-dim);
-  font-weight: 800;
-  font-family: var(--h18-font-mono);
+    font-size: var(--h18-text-sm);
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
 }
 
 .headerSpacer {
-  flex: 1;
+    flex: 1;
 }
 
 .connPill {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-family: var(--h18-font-mono);
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--h18-chip-bg);
-  color: #22c55e;
+    font-size: var(--h18-text-sm);
+    padding: 2px var(--h18-space-2);
+    border-radius: var(--h18-radius-full);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-1);
+    background: var(--h18-chip-bg);
+    color: #22c55e;
 }
 
 .connPill.offline {
-  background: rgba(232, 65, 46, 0.13);
-  color: var(--h18-hot);
+    background: var(--h18-hot-bg);
+    color: var(--h18-hot);
 }
 
 .connDot {
-  width: 5px;
-  height: 5px;
-  border-radius: 3px;
-  background: #22c55e;
+    width: 5px;
+    height: 5px;
+    border-radius: var(--h18-radius-full);
+    background: #22c55e;
 }
 
 .connPill.offline .connDot {
-  background: var(--h18-hot);
+    background: var(--h18-hot);
 }
 
 /* ─── Task list ──────────────────────────────────────────── */
 .list {
-  max-height: 280px;
-  overflow: auto;
+    max-height: 280px;
+    overflow: auto;
 }
 
 .empty {
-  padding: 28px 16px;
-  text-align: center;
-  color: var(--h18-text-faint);
-  font-size: 12px;
-  line-height: 1.7;
+    padding: var(--h18-space-16) var(--h18-space-8);
+    text-align: center;
+    color: var(--h18-text-faint);
+    font-size: var(--h18-text-base);
+    line-height: var(--h18-leading-loose);
 }
 
 .row {
-  display: grid;
-  grid-template-columns: 14px 1fr auto;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--h18-border-soft);
-  font-size: 12px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--h18-space-4);
+    align-items: center;
+    padding: var(--h18-space-3) var(--h18-space-6);
+    border-bottom: 1px solid var(--h18-border-soft);
+    border-left: 3px solid transparent;
+    font-size: var(--h18-text-base);
 }
 
 .row:last-child {
-  border-bottom: none;
+    border-bottom: none;
 }
 
-.statusGlyph {
-  font-weight: 700;
-  font-family: var(--h18-font-mono);
-  text-align: center;
-  color: var(--h18-text-dim);
+.row.status-running {
+    border-left-color: var(--h18-accent);
 }
 
-.statusGlyph.processing {
-  color: var(--h18-accent);
-  animation: tiPulse 1.4s ease-in-out infinite;
+.row.status-queued {
+    border-left-color: var(--h18-text-faint);
 }
 
-.statusGlyph.failed {
-  color: var(--h18-hot);
+.row.status-failed {
+    border-left-color: var(--h18-hot);
 }
 
-.statusGlyph.done {
-  color: #22c55e;
+.row.status-done {
+    opacity: 0.6;
 }
 
 .rowMain {
-  min-width: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--h18-space-1);
 }
 
 .rowLabel {
-  color: var(--h18-text);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+    color: var(--h18-text);
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
-.rowMeta {
-  font-size: 10px;
-  color: var(--h18-text-dim);
-  margin-top: 2px;
-  font-family: var(--h18-font-mono);
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.progress {
+    width: 100%;
+    height: 4px;
+    appearance: none;
+    border: none;
+    border-radius: var(--h18-radius-full);
+    overflow: hidden;
+    background: var(--h18-border-soft);
 }
 
-.rowStatusBadge {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-family: var(--h18-font-mono);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  background: var(--h18-chip-bg);
-  color: var(--h18-text-mid);
+.progress::-webkit-progress-bar {
+    background: var(--h18-border-soft);
+    border-radius: var(--h18-radius-full);
 }
 
-.rowStatusBadge.failed {
-  background: rgba(232, 65, 46, 0.13);
-  color: var(--h18-hot);
+.progress::-webkit-progress-value {
+    background: var(--h18-accent);
+    border-radius: var(--h18-radius-full);
+    transition: width var(--h18-duration-base) var(--h18-ease-spring);
+}
+
+.progress::-moz-progress-bar {
+    background: var(--h18-accent);
+    border-radius: var(--h18-radius-full);
+}
+
+.errorMsg {
+    font-size: var(--h18-text-sm);
+    color: var(--h18-hot);
+    font-family: var(--h18-font-mono);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rowActions {
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-2);
+}
+
+.actionBtn {
+    height: 22px;
+    min-width: 22px;
+    padding: 0 var(--h18-space-2);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-sm);
+    background: var(--h18-surface);
+    color: var(--h18-text-mid);
+    font-size: var(--h18-text-sm);
+    font-family: var(--h18-font-mono);
+    cursor: pointer;
+    transition: background var(--h18-duration-fast) var(--h18-ease-spring),
+        color var(--h18-duration-fast) var(--h18-ease-spring),
+        border-color var(--h18-duration-fast) var(--h18-ease-spring);
+}
+
+.actionBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+    border-color: var(--h18-text-dim);
+}
+
+.row.status-failed .actionBtn:hover {
+    background: var(--h18-hot-bg);
+    color: var(--h18-hot);
+    border-color: var(--h18-hot);
 }
 
 @keyframes tiSpin {
-  from { transform: rotate(0); }
-  to   { transform: rotate(360deg); }
-}
-
-@keyframes tiPulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.4; }
+    from {
+        transform: rotate(0);
+    }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 @keyframes tiDropIn {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }

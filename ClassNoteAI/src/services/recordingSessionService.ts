@@ -50,6 +50,7 @@ import { taskTrackerService } from './taskTrackerService';
 import { translationPipeline } from './streaming/translationPipeline';
 import { summarizeStream } from './llm/tasks';
 import { buildDeviceChangeWarning, type RecordingInputSnapshot } from './recordingDeviceMonitor';
+import { toRelativeSeconds } from '../utils/subtitleTimestamp';
 
 // NOTE: `storageService` stays behind the existing dynamic-import
 // `storage()` helper. Static-importing it here makes it visible to the
@@ -343,12 +344,20 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                 error: 'no active lecture',
             });
             this.dispatch('stop');
+            await this.emitFinalStopToast(/* segmentSaved */ false);
             return;
         }
 
         // Stop the elapsed-timer regardless of which step we end up on.
         this.stopElapsedTimer();
         this.setState({ status: 'stopping', stopPhase: 'transcribe' });
+
+        // W17 · track step-by-step persistence outcomes so the final
+        // coalesced toast at the bottom of stop() can describe what
+        // actually got saved. We treat "subtitles persisted" as the
+        // user-visible success bar — if step 3 succeeds the user can
+        // still find their session even when step 2/6 had hiccups.
+        let segmentSaved = false;
 
         // ──────────────────────────────────────────────────────────────
         // Step 1 · transcribe — flush ASR + drain pending translations
@@ -426,6 +435,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                         : 'audio finalize failed',
             });
             this.dispatch('stop');
+            await this.emitFinalStopToast(segmentSaved);
             return;
         }
 
@@ -442,15 +452,18 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             // Map SubtitleSegment → Subtitle for DB persistence.
             // We use 'rough' for `type` because Sprint 3 'live' enum
             // expansion (V11) hasn't shipped yet — fixture S0.2 also
-            // uses 'rough'. timestamps stored as **seconds** (DB schema)
-            // computed against sessionStartMs so they're session-relative.
+            // uses 'rough'. timestamps stored as **relative seconds (float)**
+            // since lecture start, per V12 schema (PHASE-7-PLAN §8.1 / S2.11).
+            // `toRelativeSeconds` is idempotent against already-relative input
+            // and clamps any clock-skew negatives to 0.
             const sessionStart = this.state.sessionStartMs ?? 0;
             const subtitles = segments.map((seg, i) => {
+                const relSec = toRelativeSeconds(seg.startTime, sessionStart);
                 const startMs = Math.max(0, seg.startTime - sessionStart);
                 return {
                     id: `sub-${lectureId}-${i}`,
                     lecture_id: lectureId,
-                    timestamp: Math.max(0, Math.floor(startMs / 1000)),
+                    timestamp: relSec,
                     text_en:
                         seg.fineText ?? seg.roughText ?? seg.displayText ?? '',
                     text_zh: seg.fineTranslation ?? seg.roughTranslation,
@@ -463,6 +476,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             });
 
             await storage.saveSubtitles(subtitles);
+            segmentSaved = true;
 
             // N4 · keep global search index in sync. The service builds
             // its own index from storageService on next search; we just
@@ -496,6 +510,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                         : 'subtitles save failed',
             });
             this.dispatch('stop');
+            await this.emitFinalStopToast(segmentSaved);
             return;
         }
 
@@ -585,6 +600,43 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         this.cleanupListeners();
         this.setState({ status: 'stopped', stopPhase: 'done' });
         this.dispatch('stop');
+        await this.emitFinalStopToast(segmentSaved);
+    }
+
+    /**
+     * W17 · Emit a single coalesced toast at the end of stop(). Each
+     * step-level handler stays toast-free (just console.error +
+     * setState({error})) so the user sees one summary toast instead of
+     * a parade of red bars when something goes wrong mid-pipeline.
+     *
+     * Background tasks (step 4 summary, step 5 RAG index) own their own
+     * tracker.fail() bookkeeping — they intentionally do NOT route
+     * through this helper, since they fire long after stop() resolves.
+     */
+    private async emitFinalStopToast(segmentSaved: boolean): Promise<void> {
+        const { stopPhase, error } = this.state;
+        // Only emit once we've reached a terminal stopPhase. Anything
+        // else is a programming error in stop()'s control flow.
+        if (stopPhase !== 'failed' && stopPhase !== 'done') return;
+        try {
+            const toast = await this.toast();
+            if (stopPhase === 'failed') {
+                toast.warning(
+                    '錄音儲存發生問題',
+                    `字幕${segmentSaved ? '已' : '部分'}保留。${error ?? ''}`.trim(),
+                );
+            } else {
+                toast.success(
+                    '✓ 錄音已儲存',
+                    '字幕入庫；摘要與索引在背景生成中。',
+                );
+            }
+        } catch (err) {
+            console.warn(
+                '[recordingSession.stop] final toast emit failed:',
+                err,
+            );
+        }
     }
 
     /**
@@ -818,14 +870,16 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             }
 
             // 3. Persist subtitles. Build minimal Subtitle rows from the
-            // live segment buffer.
+            // live segment buffer. `s.startMs` is already session-relative
+            // ms (see attachSubtitleSubscriber); divide by 1000 to land on
+            // the V12 spec format of relative-seconds-float (S2.11).
             const storage = await this.storage();
             const segments = this.state.segments;
             if (segments.length > 0) {
                 const subtitleRows = segments.map((s) => ({
                     id: s.id,
                     lecture_id: lectureId,
-                    timestamp: Math.max(0, Math.floor(s.startMs / 1000)),
+                    timestamp: Math.max(0, s.startMs / 1000),
                     text_en: s.textEn || '',
                     text_zh: s.textZh,
                     type: 'rough' as const,

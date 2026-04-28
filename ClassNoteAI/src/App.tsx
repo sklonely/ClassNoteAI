@@ -17,6 +17,7 @@ import { buildInterruptedRecordingNotice } from "./services/recordingInterruptio
 import { audioDeviceService } from "./services/audioDeviceService";
 import { recordingSessionService } from "./services/recordingSessionService";
 import type { RecordingSessionState } from "./services/recordingSessionService";
+import { taskTrackerService } from "./services/taskTrackerService";
 import { useAuth } from "./contexts/AuthContext";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -362,6 +363,20 @@ function App() {
     };
     // Fire after initial render settles so we don't block first paint.
     const t = setTimeout(checkRecordingRecovery, 1500);
+    return () => clearTimeout(t);
+  }, [appState]);
+
+  // S2.9 — restore persisted LLM tasks (summarize / index) from localStorage
+  // on launch. If the previous session was killed mid-flight, this puts a
+  // 'queued' row back in the tracker tray and fires a single info toast so
+  // the user knows the work wasn't lost. Delayed 2s so other boot effects
+  // (theme, audio device init, recovery scan) get to run first and the
+  // restore toast doesn't pile on top of the migration / interruption ones.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    const t = setTimeout(() => {
+      void taskTrackerService.restoreFromPersistence();
+    }, 2000);
     return () => clearTimeout(t);
   }, [appState]);
 

@@ -6,16 +6,14 @@
  * themselves here so the H18 "Tasks" tray can render real progress
  * and so logout / app-close flows can cancel them deterministically.
  *
- * Sprint 2 surface (this commit ships):
+ * Sprint 2 surface:
  *   - start / update / complete / fail / cancel
  *   - getActive / getById
  *   - subscribe (immediate fire pattern, mirrors recordingSessionService)
  *   - reset (TEST-ONLY)
  *   - cancelAll (logout R-1 path)
- *
- * Out of scope (future Sprint 2 / W18 rounds):
- *   - pending_actions persistence (S2.9)
- *   - sticky toast on completion (W18)
+ *   - restoreFromPersistence (S2.9 — called by App.tsx on boot)
+ *   - W18 sticky completion toast (summarize / index only)
  *
  * Why a singleton (not a hook):
  *   - background tasks live across page navigation. A hook owning the
@@ -54,6 +52,39 @@ const MAX_ENTRIES = 100;
  *  tasks are left around so the user can hit retry. */
 const AUTO_REMOVE_DELAY_MS = 5_000;
 
+/**
+ * S2.9 · localStorage persistence (退階方案).
+ *
+ * PHASE-7-PLAN §8.3 + §12 v3 audit S2.9 specifies that LLM tasks
+ * (SUMMARIZE_LECTURE / INDEX_LECTURE) should persist via the existing
+ * `pending_actions` SQLite table so an unexpected app close still
+ * resumes the work on next launch. The proper implementation needs new
+ * Tauri commands on the Rust side (`upsert_pending_action`,
+ * `list_pending_actions_by_types`, `delete_pending_action`) which are
+ * out of scope for this round.
+ *
+ * This commit ships the退階 path: persist LLM tasks to localStorage with
+ * a `classnote-task-tracker:` key prefix. On launch, App.tsx calls
+ * `restoreFromPersistence()` which rehydrates queued entries and emits
+ * a single info toast. When the Rust commands land, swap the body of
+ * `persistTask` / `removePersisted` / `restoreFromPersistence` to
+ * invoke them — the call-sites and the contract are stable.
+ *
+ * Only `summarize` and `index` kinds are persisted. `export` is fully
+ * synchronous from the user's perspective and isn't worth resuming
+ * after an unclean shutdown — the underlying file artefact may not
+ * even still be valid.
+ */
+const PERSIST_KEY_PREFIX = 'classnote-task-tracker:';
+
+interface PersistedTaskRow {
+    id: string;
+    kind: TaskKind;
+    label: string;
+    lectureId?: string;
+    startedAt: number;
+}
+
 class TaskTrackerServiceImpl implements TaskTrackerService {
     private tasks = new Map<string, TaskTrackerEntry>();
     private subscribers = new Set<(tasks: TaskTrackerEntry[]) => void>();
@@ -61,6 +92,15 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
      *  to produce unique ids even if two start() calls land in the
      *  same millisecond. */
     private nextId = 1;
+    /**
+     * S2.9 — in-memory mirror of every key we've written to localStorage
+     * under PERSIST_KEY_PREFIX. We keep it as a fallback discovery path
+     * for `restoreFromPersistence`: the canonical Web Storage iteration
+     * (`length` + `key(i)`) works in real browsers + jsdom but the
+     * minimal localStorage mock in test/setup.ts doesn't implement it.
+     * Same pattern as services/llm/keyStore.ts `knownKeys`.
+     */
+    private persistedKeys = new Set<string>();
 
     // ─── Public API ─────────────────────────────────────────────────────
 
@@ -81,6 +121,10 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
             this.gc();
         }
         this.notify();
+        // S2.9: persist LLM tasks so an unclean shutdown doesn't lose
+        // the work. Wrapped in a guard inside persistTask so this is a
+        // safe no-op for export kind.
+        this.persistTask(id);
         return id;
     }
 
@@ -116,6 +160,29 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
         }
         this.tasks.set(taskId, { ...e, status: 'done', progress: 1 });
         this.notify();
+        // S2.9: drop the persisted row — task succeeded, no resume needed.
+        this.removePersisted(taskId);
+        // W18: sticky success toast for LLM task completion. Per
+        // H18-TASKINDICATOR-MERGE.md §6, only the tracker side fires this
+        // — the underlying pipeline does NOT also fire its own toast,
+        // otherwise the user sees double notifications. Export tasks are
+        // intentionally excluded; they're synchronous-feeling enough that
+        // a sticky toast after every save dialog would be noise.
+        if (e.kind === 'summarize') {
+            void import('./toastService').then(({ toastService }) => {
+                toastService.success(
+                    '✦ 摘要已完成',
+                    `課堂「${e.label}」摘要生成完畢`,
+                );
+            });
+        } else if (e.kind === 'index') {
+            void import('./toastService').then(({ toastService }) => {
+                toastService.success(
+                    '✦ 索引已建立',
+                    `課堂「${e.label}」可開始 RAG 對話`,
+                );
+            });
+        }
         // Auto-remove after AUTO_REMOVE_DELAY_MS so the UI gets a
         // brief checkmark fade before the row disappears.
         setTimeout(() => {
@@ -135,6 +202,11 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
         if (e.status === 'done' || e.status === 'cancelled') return;
         this.tasks.set(taskId, { ...e, status: 'failed', error: err });
         this.notify();
+        // S2.9 (v3 audit choice): drop persistence for failed tasks too.
+        // Keeping the row would mean the next launch infinitely retries
+        // a permanently-broken job. The user can rerun manually if they
+        // want — that path opens a fresh task and a fresh persisted row.
+        this.removePersisted(taskId);
         // Failed tasks are NOT auto-removed — the UI shows a retry
         // button until the user dismisses or retries.
     }
@@ -147,6 +219,9 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
         if (e.status !== 'queued' && e.status !== 'running') return;
         this.tasks.set(taskId, { ...e, status: 'cancelled' });
         this.notify();
+        // S2.9: cancelled tasks are explicitly user-rejected — don't
+        // resurrect them on next launch.
+        this.removePersisted(taskId);
         // Auto-remove like complete().
         setTimeout(() => {
             const cur = this.tasks.get(taskId);
@@ -263,6 +338,147 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
      */
     getState(): TaskTrackerEntry[] {
         return this.snapshot();
+    }
+
+    // ─── S2.9 persistence ──────────────────────────────────────────────
+
+    /**
+     * Persist a single LLM task to localStorage. Called from `start()`
+     * for `summarize` / `index` kinds; no-op otherwise.
+     *
+     * NOTE: This is the退階 implementation. The proper path goes through
+     * the `pending_actions` SQLite table via Tauri commands and survives
+     * across user accounts / devices. See PERSIST_KEY_PREFIX comment.
+     *
+     * Failures (quota exceeded, storage disabled in private browsing,
+     * etc.) are swallowed with a warn — task tracking is non-critical
+     * and we'd rather drop persistence than crash the start() call site.
+     */
+    private persistTask(taskId: string): void {
+        const t = this.tasks.get(taskId);
+        if (!t) return;
+        if (t.kind !== 'summarize' && t.kind !== 'index') return;
+        const row: PersistedTaskRow = {
+            id: t.id,
+            kind: t.kind,
+            label: t.label,
+            lectureId: t.lectureId,
+            startedAt: t.startedAt,
+        };
+        const key = `${PERSIST_KEY_PREFIX}${t.id}`;
+        try {
+            localStorage.setItem(key, JSON.stringify(row));
+            this.persistedKeys.add(key);
+        } catch (err) {
+            console.warn('[taskTracker] persistTask failed:', err);
+        }
+    }
+
+    /**
+     * Drop a task's persisted row. Called from complete / fail / cancel.
+     * Always safe to call — missing rows are a no-op and storage errors
+     * are swallowed.
+     */
+    private removePersisted(taskId: string): void {
+        const key = `${PERSIST_KEY_PREFIX}${taskId}`;
+        try {
+            localStorage.removeItem(key);
+        } catch {
+            // Best-effort; nothing to do if storage is unavailable.
+        }
+        this.persistedKeys.delete(key);
+    }
+
+    /**
+     * Hydrate the in-memory task Map from persisted rows. Called once
+     * by App.tsx ~2s after the app reaches `ready` (gives other boot
+     * effects a moment to run first).
+     *
+     * Restored tasks land in `status: 'queued'` — actual re-execution
+     * is the caller's job (the post-recording pipeline / RAG indexer
+     * picks them up by kind + lectureId on its next run). For now, the
+     * surface here is "the Task indicator shows the work didn't get
+     * lost", which is what the toast advertises.
+     *
+     * Async because the toast import is lazy (avoids a top-level cycle
+     * with toastService).
+     */
+    async restoreFromPersistence(): Promise<void> {
+        try {
+            const keys = new Set<string>();
+            // Source 1: Web Storage API enumeration (production / jsdom).
+            // Wrapped in a defensive guard because the minimal localStorage
+            // mock in test/setup.ts doesn't implement length / key().
+            try {
+                const len = (localStorage as Storage).length;
+                if (typeof len === 'number') {
+                    for (let i = 0; i < len; i++) {
+                        const k = (localStorage as Storage).key(i);
+                        if (k && k.startsWith(PERSIST_KEY_PREFIX)) {
+                            keys.add(k);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.warn(
+                    '[taskTracker] storage enumeration failed',
+                    err,
+                );
+            }
+            // Source 2: in-memory mirror — needed for tests that seed via
+            // localStorage.setItem directly (no Web Storage iteration
+            // available on the mock). In production this is a strict
+            // subset of Source 1 and adds nothing.
+            for (const k of this.persistedKeys) keys.add(k);
+            let restored = 0;
+            for (const k of keys) {
+                try {
+                    const raw = localStorage.getItem(k);
+                    if (!raw) continue;
+                    const data = JSON.parse(raw) as PersistedTaskRow;
+                    if (
+                        !data ||
+                        typeof data.id !== 'string' ||
+                        (data.kind !== 'summarize' && data.kind !== 'index')
+                    ) {
+                        continue;
+                    }
+                    this.tasks.set(data.id, {
+                        id: data.id,
+                        kind: data.kind,
+                        label: data.label || `恢復 ${data.kind} 任務`,
+                        lectureId: data.lectureId,
+                        progress: 0,
+                        status: 'queued',
+                        startedAt:
+                            typeof data.startedAt === 'number'
+                                ? data.startedAt
+                                : Date.now(),
+                    });
+                    restored++;
+                } catch (err) {
+                    console.warn(
+                        '[taskTracker] restore parse failed for',
+                        k,
+                        err,
+                    );
+                }
+            }
+            if (restored > 0) {
+                this.notify();
+                try {
+                    const { toastService } = await import('./toastService');
+                    toastService.info(
+                        `${restored} 個任務恢復執行`,
+                        '從上次未完成的工作繼續',
+                    );
+                } catch (err) {
+                    console.warn('[taskTracker] restore toast failed:', err);
+                }
+            }
+        } catch (err) {
+            console.warn('[taskTracker] restoreFromPersistence failed:', err);
+        }
     }
 }
 
