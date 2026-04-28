@@ -1,0 +1,64 @@
+/* ============================================================
+ * RecoveryHintBanner · v0.7.0 H18 (Phase 7 Sprint 1, S1.9)
+ *
+ * 配色用 sel-bg / sel-border (淡黃 + 琥珀邊) — 跟 day "today" highlight
+ * 同 token 家族，視覺定位是「需注意但非錯誤」。
+ *
+ * 不可 hardcode 任何 color / spacing / radius / z-index — 全用 var(--h18-*)。
+ * ============================================================ */
+
+.banner {
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-3);
+    padding: var(--h18-space-3) var(--h18-space-5);
+    background: var(--h18-sel-bg);
+    border: 1px solid var(--h18-sel-border);
+    border-radius: var(--h18-radius-md);
+    color: var(--h18-text);
+    font-family: var(--h18-font-sans);
+    font-size: var(--h18-text-sm);
+    z-index: var(--h18-z-banner);
+    margin-bottom: var(--h18-space-5);
+    animation: slideIn var(--h18-duration-base) var(--h18-ease-out);
+}
+
+.icon {
+    font-size: var(--h18-text-md);
+    color: var(--h18-hot);
+    flex-shrink: 0;
+    line-height: 1;
+}
+
+.text {
+    flex: 1;
+    line-height: var(--h18-leading-base);
+}
+
+.dismissBtn {
+    padding: var(--h18-space-2) var(--h18-space-4);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-sm);
+    color: var(--h18-text);
+    font-family: inherit;
+    font-size: var(--h18-text-sm);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.dismissBtn:hover {
+    background: var(--h18-row-hover);
+}
+
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}

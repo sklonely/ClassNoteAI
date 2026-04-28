@@ -362,6 +362,31 @@ export interface AppSettings {
     autoInstall?: boolean;
   };
   /**
+   * v0.7.0 Phase 7 Sprint 1 (S1.0) — 全域鍵盤快捷鍵綁定。
+   * 每個值是 H18 自家 combo 字串（`Mod` token = ⌘ on macOS / Ctrl on
+   * Windows+Linux；其他 modifier 用 `Shift` / `Alt`；末段是 key 名）。
+   *
+   * 任何欄位省略 → 落回 keymapService 的 default：
+   *   search:        Mod+K
+   *   toggleAiDock:  Mod+J
+   *   newCourse:     Mod+N
+   *   goHome:        Mod+H
+   *   goProfile:     Mod+Comma
+   *   toggleTheme:   Mod+Backslash
+   *   floatingNotes: Mod+Shift+N
+   *
+   * 使用者透過 PKeyboard sub-pane 改寫此欄；Sprint 3 會接這個 wiring。
+   */
+  shortcuts?: Partial<{
+    search: string;
+    toggleAiDock: string;
+    newCourse: string;
+    goHome: string;
+    goProfile: string;
+    toggleTheme: string;
+    floatingNotes: string;
+  }>;
+  /**
    * 第三方平台整合（v0.7.x+）。
    * Canvas 等 LMS 整合的全域設定放這裡，跟個別 course 綁的（例如某課
    * 的公告 RSS）區隔開。
