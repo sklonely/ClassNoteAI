@@ -135,6 +135,44 @@ function App() {
     };
   }, [appState, user]);
 
+  // App-level Gemma sidecar 自動啟動。Provider=gemma 時錄音中要靠
+  // llama-server 翻譯，但 H18 移植過程把舊 SettingsTranslation 的
+  // 「啟動 sidecar」按鈕拿掉（PTranslate 沒接進去）→ 使用者沒地方按
+  // → 字幕只有英文沒中文。改在啟動時自動 spawn：
+  //  - 如果 model 不存在 → no-op（使用者去設定頁下載）
+  //  - 如果 sidecar 已在跑 → idempotent (已 already_running)
+  //  - 如果 spawn 失敗 → 安靜（toast 不打擾，只 console warn）
+  // 真要 stop / restart 還是去 PTranslate 操作。
+  useEffect(() => {
+    if (appState !== 'ready' || !user) return;
+    const t = setTimeout(async () => {
+      try {
+        const settings = await storageService.getAppSettings();
+        const provider = settings?.translation?.provider || 'gemma';
+        if (provider !== 'gemma') return;
+        const { invoke } = await import('@tauri-apps/api/core');
+        const status = await invoke<{
+          model_present: boolean;
+          model_path: string;
+          sidecar_running: boolean;
+        }>('get_gemma_status').catch(() => null);
+        if (!status?.model_present) {
+          console.log('[App] Gemma model not downloaded — sidecar autostart skipped');
+          return;
+        }
+        if (status.sidecar_running) return;
+        const result = await invoke<string>('start_gemma_sidecar', {
+          modelPath: status.model_path,
+          port: null,
+        }).catch((err) => `error:${err}`);
+        console.log('[App] Gemma sidecar autostart:', result);
+      } catch (err) {
+        console.warn('[App] Gemma sidecar autostart failed (non-fatal):', err);
+      }
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [appState, user]);
+
   // v0.5.2 audit follow-up: surface migration notices to the user.
   // The DB init runs migrations eagerly (e.g. dropping stale embedding
   // vectors on model swaps). Previously those only hit stdout, so users

@@ -341,16 +341,29 @@ export function POverview({
                 </div>
             </div>
 
-            <PHead first>連結</PHead>
-            <PRow
-                label="加入 Discord 社群"
-                hint="ClassNoteAI 使用者交流、回報問題、提案功能"
-                right={<PBtn>前往</PBtn>}
-            />
+            <PHead>連結</PHead>
             <PRow
                 label="GitHub"
                 hint="原始碼、issue、release notes"
-                right={<PBtn>前往</PBtn>}
+                right={
+                    <PBtn
+                        onClick={async () => {
+                            const { openUrl } = await import(
+                                '@tauri-apps/plugin-opener'
+                            );
+                            await openUrl(
+                                'https://github.com/sklonely/ClassNoteAI',
+                            );
+                        }}
+                    >
+                        前往
+                    </PBtn>
+                }
+            />
+            <PRow
+                label="加入 Discord 社群"
+                hint="尚未開放 — 邀請連結就緒後在 PAbout 「使用者指南」一併放出"
+                right={<PBtn disabled>留白</PBtn>}
             />
         </div>
     );
@@ -361,7 +374,58 @@ export function POverview({
  * PTranscribe — 本地轉錄
  * ════════════════════════════════════════════════════════════════ */
 
+const ASR_BACKEND_LABEL: Record<NonNullable<NonNullable<AppSettingsExperimental>['asrBackend']>, string> = {
+    auto: 'Auto',
+    cuda: 'CUDA',
+    metal: 'Metal',
+    vulkan: 'Vulkan',
+    cpu: 'CPU',
+};
+
+type AppSettingsExperimental = NonNullable<
+    import('../../types').AppSettings['experimental']
+>;
+
+interface BuildFeaturesShape {
+    nmt_local: boolean;
+    gpu_cuda: boolean;
+    gpu_metal: boolean;
+    gpu_vulkan: boolean;
+}
+
 export function PTranscribe() {
+    const { settings, update } = useAppSettings();
+    const exp = settings?.experimental || {};
+    const variant: 'int8' | 'fp32' = exp.parakeetVariant || 'int8';
+    const backend = exp.asrBackend || 'auto';
+    const logLevel = exp.logLevel || 'info';
+
+    const [features, setFeatures] = useState<BuildFeaturesShape | null>(null);
+    const [featuresErr, setFeaturesErr] = useState<string | null>(null);
+    const [redetecting, setRedetecting] = useState(false);
+
+    const loadFeatures = async (force = false) => {
+        try {
+            setFeaturesErr(null);
+            const mod = await import('../../services/buildFeaturesService');
+            if (force) mod._resetBuildFeaturesCache();
+            const f = (await mod.getBuildFeatures()) as BuildFeaturesShape;
+            setFeatures(f);
+        } catch (err) {
+            setFeaturesErr(
+                (err as Error)?.message || 'get_build_features 失敗',
+            );
+            setFeatures(null);
+        }
+    };
+
+    useEffect(() => {
+        void loadFeatures(false);
+    }, []);
+
+    const setVariant = (next: 'int8' | 'fp32') =>
+        update({ experimental: { ...exp, parakeetVariant: next } });
+
     return (
         <div>
             <PHeader
@@ -371,19 +435,9 @@ export function PTranscribe() {
 
             <PHead first>模型</PHead>
             <PRow
-                label="目前使用"
-                hint="點選即切換；未下載的會提示先下載"
-                right={
-                    <PSelect
-                        value="Parakeet · INT8 (推薦, 已載入)"
-                        options={[
-                            'Parakeet · INT8 (推薦, 已載入)',
-                            'Parakeet · FP32 (進階)',
-                        ]}
-                    />
-                }
-            />
-            <PRow label="模型管理" hint="已下載 1 / 2 · 佔用 852 MB">
+                label="模型管理"
+                hint="點卡片即切換；未下載的會提示先下載。已下載 1 / 2 · 佔用 852 MB"
+            >
                 <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <ModelCard
                         name="parakeet-int8"
@@ -391,6 +445,8 @@ export function PTranscribe() {
                         wer="WER 8.01%"
                         hint="8-bit 量化 · 推薦：精度差距在誤差內，下載快 3×"
                         loaded
+                        active={variant === 'int8'}
+                        onSelect={() => setVariant('int8')}
                     />
                     <ModelCard
                         name="parakeet-fp32"
@@ -398,6 +454,8 @@ export function PTranscribe() {
                         wer="WER 8.03%"
                         hint="原版浮點 · 對精度有極致要求 / A/B 比較的進階使用者"
                         actionLabel="下載"
+                        active={variant === 'fp32'}
+                        onSelect={() => setVariant('fp32')}
                     />
                 </div>
             </PRow>
@@ -408,32 +466,148 @@ export function PTranscribe() {
                 hint="Auto 會在偵測到的後端中選最佳。"
                 right={
                     <PSelect
-                        value="Auto"
-                        options={['Auto', 'CUDA', 'Metal', 'Vulkan', 'CPU']}
+                        value={ASR_BACKEND_LABEL[backend]}
+                        options={Object.values(ASR_BACKEND_LABEL)}
+                        onChange={(label) => {
+                            const entry = (
+                                Object.entries(ASR_BACKEND_LABEL) as [
+                                    keyof typeof ASR_BACKEND_LABEL,
+                                    string,
+                                ][]
+                            ).find(([, l]) => l === label);
+                            if (!entry) return;
+                            update({
+                                experimental: {
+                                    ...exp,
+                                    asrBackend: entry[0],
+                                },
+                            });
+                        }}
                     />
                 }
             />
             <PRow
                 label="GPU 偵測結果"
-                hint={
-                    <span style={{ fontFamily: 'var(--h18-font-mono)', color: 'var(--h18-accent)' }}>
-                        後端偵測由 buildFeaturesService 報告。實機才看得到具體 backend / VRAM。
-                    </span>
+                hint={renderFeaturesHint(features, featuresErr, redetecting)}
+                right={
+                    <PBtn
+                        disabled={redetecting}
+                        onClick={async () => {
+                            setRedetecting(true);
+                            await loadFeatures(true);
+                            setRedetecting(false);
+                        }}
+                    >
+                        {redetecting ? '偵測中…' : '重新偵測'}
+                    </PBtn>
                 }
-                right={<PBtn>重新偵測</PBtn>}
             />
 
             <PHead>進階</PHead>
             <PRow
                 label="Log 等級"
+                hint="info 是預設；debug / trace 會在 console 出更多訊息（log.* 自身需另行串接 Rust tracing）"
                 right={
                     <PSelect
-                        value="info"
+                        value={logLevel}
                         options={['error', 'warn', 'info', 'debug', 'trace']}
+                        onChange={(v) =>
+                            update({
+                                experimental: {
+                                    ...exp,
+                                    logLevel: v as
+                                        | 'error'
+                                        | 'warn'
+                                        | 'info'
+                                        | 'debug'
+                                        | 'trace',
+                                },
+                            })
+                        }
                     />
                 }
             />
         </div>
+    );
+}
+
+/**
+ * Render the GPU detection PRow's left-side hint.
+ *
+ * Cases:
+ *  - features 還沒載 → 「偵測中…」
+ *  - get_build_features 報錯 → 紅字訊息
+ *  - 沒任何 GPU feature 開 → 「CPU only · 這個 build 沒帶 GPU 後端」
+ *  - 有 → 列出 ✓ CUDA / ✓ Metal / ✓ Vulkan + dev/release 提示
+ *
+ * Why dev build 看不到 CUDA：本地 `tauri:dev` 用
+ *   `cargo run --no-default-features --features candle-embed,speaker-diarization`
+ * 沒帶 `gpu-cuda`。要看到 CUDA 必須安裝 release 的 *_x64-cuda-setup.exe。
+ */
+function renderFeaturesHint(
+    features: BuildFeaturesShape | null,
+    err: string | null,
+    redetecting: boolean,
+): ReactNode {
+    if (err) {
+        return (
+            <span style={{ color: 'var(--h18-hot)', fontSize: 11 }}>
+                ⚠ {err}
+            </span>
+        );
+    }
+    if (!features) {
+        return (
+            <span style={{ color: 'var(--h18-text-dim)', fontSize: 11 }}>
+                {redetecting ? '偵測中…' : '載入中…'}
+            </span>
+        );
+    }
+    const enabledGpus: string[] = [];
+    if (features.gpu_cuda) enabledGpus.push('CUDA');
+    if (features.gpu_metal) enabledGpus.push('Metal');
+    if (features.gpu_vulkan) enabledGpus.push('Vulkan');
+
+    if (enabledGpus.length === 0) {
+        return (
+            <span style={{ fontSize: 11, lineHeight: 1.55 }}>
+                <span style={{ fontFamily: 'var(--h18-font-mono)', color: 'var(--h18-text-mid)' }}>
+                    CPU only
+                </span>{' '}
+                — 這個 build 沒帶 GPU 後端。Dev 模式預設只 compile{' '}
+                <span style={{ fontFamily: 'var(--h18-font-mono)' }}>
+                    candle-embed,speaker-diarization
+                </span>
+                ；要 CUDA 請裝 release 的{' '}
+                <span style={{ fontFamily: 'var(--h18-font-mono)' }}>x64-cuda-setup.exe</span>。
+            </span>
+        );
+    }
+    return (
+        <span style={{ fontSize: 11, lineHeight: 1.55 }}>
+            {enabledGpus.map((g, i) => (
+                <span
+                    key={g}
+                    style={{
+                        marginRight: 8,
+                        color: 'var(--h18-accent)',
+                        fontFamily: 'var(--h18-font-mono)',
+                        fontWeight: 600,
+                    }}
+                >
+                    ✓ {g}
+                    {i < enabledGpus.length - 1 ? '' : ''}
+                </span>
+            ))}
+            <span style={{ color: 'var(--h18-text-dim)' }}>
+                · 本地翻譯 NMT{' '}
+                {features.nmt_local ? (
+                    <span style={{ color: 'var(--h18-accent)' }}>已啟用</span>
+                ) : (
+                    <span>未啟用</span>
+                )}
+            </span>
+        </span>
     );
 }
 
@@ -444,6 +618,8 @@ function ModelCard({
     hint,
     loaded,
     actionLabel,
+    active,
+    onSelect,
 }: {
     name: string;
     size: string;
@@ -451,18 +627,38 @@ function ModelCard({
     hint: string;
     loaded?: boolean;
     actionLabel?: string;
+    /** True when this is the user's currently selected variant. */
+    active?: boolean;
+    /** Click handler for switching to this variant. */
+    onSelect?: () => void;
 }) {
+    const interactive = !!loaded && !!onSelect;
+    const handleClick = () => {
+        if (!interactive || active) return;
+        onSelect?.();
+    };
     return (
         <div
+            role={interactive ? 'button' : undefined}
+            tabIndex={interactive ? 0 : undefined}
+            onClick={handleClick}
+            onKeyDown={(e) => {
+                if (!interactive) return;
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleClick();
+                }
+            }}
             style={{
                 padding: '10px 12px',
                 borderRadius: 6,
-                border: `1px solid ${loaded ? 'var(--h18-accent)' : 'var(--h18-border-soft)'}`,
-                background: loaded ? 'var(--h18-chip-bg)' : 'var(--h18-surface2)',
+                border: `1px solid ${active ? 'var(--h18-accent)' : 'var(--h18-border-soft)'}`,
+                background: active ? 'var(--h18-chip-bg)' : 'var(--h18-surface2)',
                 display: 'grid',
                 gridTemplateColumns: '140px 80px 80px 1fr auto',
                 gap: 10,
                 alignItems: 'center',
+                cursor: interactive ? 'pointer' : 'default',
             }}
         >
             <div style={{ fontSize: 12, fontWeight: 600, fontFamily: 'var(--h18-font-mono)' }}>
@@ -477,7 +673,9 @@ function ModelCard({
             <div style={{ fontSize: 10, color: 'var(--h18-text-mid)', lineHeight: 1.4 }}>
                 {hint}
             </div>
-            <PBtn>{loaded ? '已載入' : actionLabel || '下載'}</PBtn>
+            <PBtn>
+                {active ? '使用中' : loaded ? '切換' : actionLabel || '下載'}
+            </PBtn>
         </div>
     );
 }
@@ -512,6 +710,30 @@ function valueOf(opts: { label: string; value: string }[], label: string): strin
     return opts.find((o) => o.label === label)?.value || opts[0].value;
 }
 
+interface GemmaSidecarStatus {
+    binary_path: string | null;
+    model_path: string;
+    model_present: boolean;
+    model_size_bytes: number;
+    model_url: string;
+    sidecar_running: boolean;
+}
+
+type SidecarBringUp =
+    | 'already_running'
+    | 'spawned'
+    | 'timeout'
+    | 'binary_not_found'
+    | 'spawn_error';
+
+const SIDECAR_BRING_UP_LABEL: Record<SidecarBringUp, string> = {
+    already_running: 'sidecar 已在執行',
+    spawned: 'sidecar 已啟動',
+    timeout: '/health 在 30 秒內沒回應 — GPU 可能滿了',
+    binary_not_found: '找不到 llama-server 二進位檔',
+    spawn_error: 'spawn 失敗（權限 / 缺 DLL？）',
+};
+
 export function PTranslate() {
     const { settings, update } = useAppSettings();
     const t = settings?.translation;
@@ -521,6 +743,74 @@ export function PTranslate() {
     const srcLabel = labelOf(SRC_LANG_OPTIONS, t?.source_language);
     const tgtLabel = labelOf(TGT_LANG_OPTIONS, t?.target_language);
     const bilingual = sub?.display_mode === 'both';
+
+    // Gemma sidecar lifecycle (移植自 legacy SettingsTranslation —
+    // 沒這個 UI 使用者就沒地方手動啟動 / 重啟 llama-server。
+    // App.tsx 有 boot-time autostart 但不 cover「下載完成後立刻想用」
+    // 或「sidecar crashed 想重啟」的場景)。
+    const [gemmaStatus, setGemmaStatus] = useState<GemmaSidecarStatus | null>(
+        null,
+    );
+    const [sidecarBusy, setSidecarBusy] = useState<'idle' | 'starting' | 'stopping'>(
+        'idle',
+    );
+    const [sidecarMsg, setSidecarMsg] = useState<string | null>(null);
+
+    const refreshGemmaStatus = async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const s = await invoke<GemmaSidecarStatus>('get_gemma_status');
+            setGemmaStatus(s);
+        } catch (err) {
+            console.warn('[PTranslate] get_gemma_status failed:', err);
+        }
+    };
+
+    useEffect(() => {
+        void refreshGemmaStatus();
+        // Poll every 5s while this pane is mounted so the indicator
+        // reflects real state (sidecar can crash / be killed externally).
+        const id = setInterval(refreshGemmaStatus, 5_000);
+        return () => clearInterval(id);
+    }, []);
+
+    const handleStartSidecar = async () => {
+        if (!gemmaStatus?.model_present) return;
+        setSidecarBusy('starting');
+        setSidecarMsg(null);
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const result = await invoke<SidecarBringUp>('start_gemma_sidecar', {
+                modelPath: gemmaStatus.model_path,
+                port: null,
+            });
+            setSidecarMsg(SIDECAR_BRING_UP_LABEL[result] || result);
+            await refreshGemmaStatus();
+        } catch (err) {
+            setSidecarMsg(
+                (err as Error)?.message || String(err) || '啟動失敗',
+            );
+        } finally {
+            setSidecarBusy('idle');
+        }
+    };
+
+    const handleStopSidecar = async () => {
+        setSidecarBusy('stopping');
+        setSidecarMsg(null);
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('stop_gemma_sidecar');
+            setSidecarMsg('sidecar 已停止');
+            await refreshGemmaStatus();
+        } catch (err) {
+            setSidecarMsg(
+                (err as Error)?.message || String(err) || '停止失敗',
+            );
+        } finally {
+            setSidecarBusy('idle');
+        }
+    };
 
     return (
         <div>
@@ -554,7 +844,62 @@ export function PTranslate() {
             <PRow
                 label="模型"
                 hint="TranslateGemma 4B Q4_K_M · 4-bit 量化 · 繁中品質明顯優於 M2M100"
-                right={<span className={s.statusOK}>✓ 已下載 · 2.40 GB</span>}
+                right={
+                    gemmaStatus?.model_present ? (
+                        <span className={s.statusOK}>
+                            ✓ 已下載 ·{' '}
+                            {(gemmaStatus.model_size_bytes / 1_000_000_000).toFixed(2)} GB
+                        </span>
+                    ) : (
+                        <span style={{ color: 'var(--h18-hot)', fontSize: 11 }}>
+                            ✗ 模型尚未下載（需在舊 SettingsTranslation 完成 — 留白）
+                        </span>
+                    )
+                }
+            />
+            <PRow
+                label="llama-server sidecar"
+                hint={
+                    sidecarMsg ? (
+                        <span
+                            style={{
+                                color: gemmaStatus?.sidecar_running
+                                    ? 'var(--h18-accent)'
+                                    : 'var(--h18-text-mid)',
+                            }}
+                        >
+                            {sidecarMsg}
+                        </span>
+                    ) : gemmaStatus?.sidecar_running ? (
+                        <span style={{ color: 'var(--h18-accent)' }}>
+                            ● 執行中（埠 {(t?.gemma_endpoint || 'http://127.0.0.1:8080').match(/:(\d+)/)?.[1] || '8080'}）
+                        </span>
+                    ) : (
+                        '未啟動 — 字幕翻譯會走 Google fallback，無 API key 時則保持英文。'
+                    )
+                }
+                right={
+                    gemmaStatus?.sidecar_running ? (
+                        <PBtn
+                            danger
+                            onClick={handleStopSidecar}
+                            disabled={sidecarBusy !== 'idle'}
+                        >
+                            {sidecarBusy === 'stopping' ? '停止中…' : '停止'}
+                        </PBtn>
+                    ) : (
+                        <PBtn
+                            primary
+                            onClick={handleStartSidecar}
+                            disabled={
+                                !gemmaStatus?.model_present ||
+                                sidecarBusy !== 'idle'
+                            }
+                        >
+                            {sidecarBusy === 'starting' ? '啟動中…' : '啟動'}
+                        </PBtn>
+                    )
+                }
             />
             <PRow
                 label="endpoint"
@@ -704,7 +1049,29 @@ const PROVIDERS: ProviderInfo[] = [
     },
 ];
 
+const OCR_LABEL: Record<'auto' | 'remote' | 'off', string> = {
+    auto: 'auto (推薦)',
+    remote: 'remote',
+    off: 'off',
+};
+
+const REFINE_LABEL: Record<'off' | 'light' | 'deep', string> = {
+    off: '關閉',
+    light: '輕 (預設)',
+    deep: '深',
+};
+
+const REFINE_PROVIDER_OPTIONS: NonNullable<
+    NonNullable<import('../../types').AppSettings['experimental']>['refineProvider']
+>[] = ['auto', 'github-models', 'chatgpt-oauth'];
+
 export function PCloud() {
+    const { settings, update } = useAppSettings();
+    const ocrMode = settings?.ocr?.mode || 'auto';
+    const exp = settings?.experimental || {};
+    const refineIntensity = exp.refineIntensity || 'light';
+    const refineProvider = exp.refineProvider || 'auto';
+
     const [setupId, setSetupId] = useState<string | null>(null);
     const setupProvider = setupId ? PROVIDERS.find((p) => p.id === setupId) ?? null : null;
 
@@ -728,8 +1095,20 @@ export function PCloud() {
                 hint="auto = 優先用雲端 LLM vision，沒設定 fallback PDF 文字層 / remote = 只用雲端 / off = 跳過 OCR"
                 right={
                     <PSelect
-                        value="auto (推薦)"
-                        options={['auto (推薦)', 'remote', 'off']}
+                        value={OCR_LABEL[ocrMode]}
+                        options={Object.values(OCR_LABEL)}
+                        onChange={(label) => {
+                            const entry = (
+                                Object.entries(OCR_LABEL) as [
+                                    'auto' | 'remote' | 'off',
+                                    string,
+                                ][]
+                            ).find(([, l]) => l === label);
+                            if (!entry) return;
+                            update({
+                                ocr: { mode: entry[0] },
+                            });
+                        }}
                     />
                 }
             />
@@ -738,15 +1117,43 @@ export function PCloud() {
             <PRow
                 label="精修強度"
                 hint="輕 = 補標點 / 糾正術語。深 = 全段重寫順暢度。"
-                right={<PSelect value="輕 (預設)" options={['關閉', '輕 (預設)', '深']} />}
+                right={
+                    <PSelect
+                        value={REFINE_LABEL[refineIntensity]}
+                        options={Object.values(REFINE_LABEL)}
+                        onChange={(label) => {
+                            const entry = (
+                                Object.entries(REFINE_LABEL) as [
+                                    'off' | 'light' | 'deep',
+                                    string,
+                                ][]
+                            ).find(([, l]) => l === label);
+                            if (!entry) return;
+                            update({
+                                experimental: {
+                                    ...exp,
+                                    refineIntensity: entry[0],
+                                },
+                            });
+                        }}
+                    />
+                }
             />
             <PRow
                 label="精修 Provider 覆寫"
                 hint="字幕精修可單獨指定 provider，避免吃掉 default 的訂閱額度"
                 right={
                     <PSelect
-                        value="auto"
-                        options={['auto', 'github-models', 'openai']}
+                        value={refineProvider}
+                        options={REFINE_PROVIDER_OPTIONS as unknown as string[]}
+                        onChange={(v) =>
+                            update({
+                                experimental: {
+                                    ...exp,
+                                    refineProvider: v as typeof refineProvider,
+                                },
+                            })
+                        }
                     />
                 }
             />
@@ -1174,6 +1581,12 @@ const HOME_LAYOUT_OPTS: { v: Variant; t: string; d: string }[] = [
     { v: 'C', t: '行事曆為主', d: '大週曆主視，右側 Inbox' },
 ];
 
+const FONT_SIZE_OPTS: { value: 'small' | 'normal' | 'large'; label: string }[] = [
+    { value: 'small', label: '緊湊' },
+    { value: 'normal', label: '標準' },
+    { value: 'large', label: '大' },
+];
+
 export function PAppearance({
     effectiveTheme,
     onToggleTheme,
@@ -1183,9 +1596,15 @@ export function PAppearance({
     applyTheme: (t: 'light' | 'dark') => void;
 }) {
     const { settings, update } = useAppSettings();
-    const homeLayout: Variant = (settings?.appearance?.layout as Variant) || 'A';
+    const appearance = settings?.appearance || {};
+    const homeLayout: Variant = (appearance.layout as Variant) || 'A';
     const homeOpt =
         HOME_LAYOUT_OPTS.find((o) => o.v === homeLayout) || HOME_LAYOUT_OPTS[0];
+    const followSystem = appearance.themeMode === 'system';
+    const fontSize = appearance.fontSize || 'normal';
+    const fontSizeLabel =
+        FONT_SIZE_OPTS.find((o) => o.value === fontSize)?.label || '標準';
+    const compact = appearance.density === 'compact';
 
     return (
         <div>
@@ -1265,19 +1684,61 @@ export function PAppearance({
             />
             <PRow
                 label="跟隨系統"
-                hint="開啟後依系統 prefers-color-scheme 自動切換 (留白：尚未掛 OS listener)"
-                right={<PToggle on={false} />}
+                hint="開啟後依系統 prefers-color-scheme 自動切換（appearance.themeMode = 'system'）"
+                right={
+                    <PToggle
+                        on={followSystem}
+                        onChange={(v) =>
+                            update({
+                                appearance: {
+                                    ...appearance,
+                                    themeMode: v ? 'system' : effectiveTheme,
+                                },
+                            })
+                        }
+                    />
+                }
             />
 
             <PHead>字級 / 密度</PHead>
             <PRow
                 label="基準字級"
-                right={<PSelect value="標準" options={['緊湊', '標準', '大']} />}
+                hint="影響 TopBar / Rail / 列表內容（preview 仍走 prose 自身字級）"
+                right={
+                    <PSelect
+                        value={fontSizeLabel}
+                        options={FONT_SIZE_OPTS.map((o) => o.label)}
+                        onChange={(label) => {
+                            const sel = FONT_SIZE_OPTS.find(
+                                (o) => o.label === label,
+                            );
+                            if (!sel) return;
+                            update({
+                                appearance: {
+                                    ...appearance,
+                                    fontSize: sel.value,
+                                },
+                            });
+                        }}
+                    />
+                }
             />
             <PRow
                 label="緊湊模式"
                 hint="開啟後 TopBar 跟列表 padding 縮一階，適合 13 吋螢幕"
-                right={<PToggle on={false} />}
+                right={
+                    <PToggle
+                        on={compact}
+                        onChange={(v) =>
+                            update({
+                                appearance: {
+                                    ...appearance,
+                                    density: v ? 'compact' : 'comfortable',
+                                },
+                            })
+                        }
+                    />
+                }
             />
         </div>
     );
@@ -1369,8 +1830,23 @@ export function PAudio() {
             />
             <PRow
                 label="自動切換偵測"
-                hint="移除耳機 / 關靜音時提示再次選裝置（留白：實裝接 recordingDeviceMonitor 開關）"
-                right={<PToggle on />}
+                hint="移除耳機 / 關靜音時提示再次選裝置 (recordingDeviceMonitor 開關)"
+                right={
+                    <PToggle
+                        on={audioCfg?.auto_switch_detection !== false}
+                        onChange={(v) =>
+                            update({
+                                audio: {
+                                    sample_rate: audioCfg?.sample_rate ?? 48000,
+                                    chunk_duration:
+                                        audioCfg?.chunk_duration ?? 5,
+                                    device_id: audioCfg?.device_id,
+                                    auto_switch_detection: v,
+                                },
+                            })
+                        }
+                    />
+                }
             />
 
             <PHead>字幕外觀</PHead>
@@ -1468,6 +1944,31 @@ export function PData() {
         }
     };
 
+    const handleNotImplemented = async (label: string) => {
+        const { toastService } = await import('../../services/toastService');
+        toastService.show({
+            message: `${label} 功能後端尚未實作`,
+            detail:
+                '前端 UI 已就緒，等對應 Tauri command (export/import/wipe) 寫好後 1 行接上。',
+            type: 'warning',
+        });
+    };
+
+    const handleDangerWipe = async () => {
+        const { confirmService } = await import(
+            '../../services/confirmService'
+        );
+        const ok = await confirmService.ask({
+            title: '清空全部本機資料？',
+            message:
+                '這會刪除所有課程、課堂、字幕、筆記、AI 索引、設定。不可逆。\n\n（後端 wipe command 尚未實作，按下「確定」會出 toast 提示而非真清除。）',
+            confirmLabel: '我了解，繼續',
+            variant: 'danger',
+        });
+        if (!ok) return;
+        await handleNotImplemented('清空全部');
+    };
+
     return (
         <div>
             <PHeader
@@ -1478,13 +1979,21 @@ export function PData() {
             <PHead first>匯入 / 匯出</PHead>
             <PRow
                 label="匯出整體 backup"
-                hint="把所有 course / lecture / note 打包成一個 .zip"
-                right={<PBtn>匯出</PBtn>}
+                hint="把所有 course / lecture / note 打包成一個 .zip（後端命令尚未實作）"
+                right={
+                    <PBtn onClick={() => handleNotImplemented('匯出 backup')}>
+                        匯出
+                    </PBtn>
+                }
             />
             <PRow
                 label="匯入 backup"
-                hint="從 .zip 還原。會 merge 現有資料，重複 id 跳過"
-                right={<PBtn>選擇檔案</PBtn>}
+                hint="從 .zip 還原，merge 現有資料，重複 id 跳過（後端命令尚未實作）"
+                right={
+                    <PBtn onClick={() => handleNotImplemented('匯入 backup')}>
+                        選擇檔案
+                    </PBtn>
+                }
             />
 
             <PHead>回收桶</PHead>
@@ -1525,7 +2034,9 @@ export function PData() {
                 label="清空全部本機資料"
                 hint="刪除所有 course / lecture / note / 字幕 / RAG index / 設定。不可逆。"
                 right={
-                    <PBtn danger>清空…</PBtn>
+                    <PBtn danger onClick={handleDangerWipe}>
+                        清空…
+                    </PBtn>
                 }
             />
         </div>
@@ -1694,6 +2205,8 @@ export function PIntegrations() {
  * ════════════════════════════════════════════════════════════════ */
 
 export function PAbout() {
+    const { settings, update } = useAppSettings();
+    const updates = settings?.updates;
     const [version, setVersion] = useState<string>('—');
     const [systemInfo, setSystemInfo] = useState<string>('—');
     const [updateState, setUpdateState] = useState<{
@@ -1773,6 +2286,45 @@ export function PAbout() {
         }
     };
 
+    const handleResetSetup = async () => {
+        const { confirmService } = await import(
+            '../../services/confirmService'
+        );
+        const ok = await confirmService.ask({
+            title: '重新執行 Setup Wizard？',
+            message:
+                '這會清掉「setup 已完成」的標記，下次啟動時會重新跑環境檢查 + 模型下載精靈。已下載的模型不會被刪除。',
+            confirmLabel: '重置並關閉',
+            variant: 'danger',
+        });
+        if (!ok) return;
+        try {
+            const { setupService } = await import(
+                '../../services/setupService'
+            );
+            await setupService.resetStatus();
+            const { toastService } = await import(
+                '../../services/toastService'
+            );
+            toastService.show({
+                message: 'Setup 標記已清除',
+                detail: '請手動關閉並重新開啟 App，會自動進入 Setup Wizard。',
+                type: 'success',
+                durationMs: 0,
+            });
+        } catch (err) {
+            console.warn('[PAbout] resetStatus failed:', err);
+            const { toastService } = await import(
+                '../../services/toastService'
+            );
+            toastService.show({
+                message: '重置失敗',
+                detail: (err as Error)?.message || '未知錯誤',
+                type: 'error',
+            });
+        }
+    };
+
     return (
         <div>
             <PHeader title="關於與更新" />
@@ -1835,23 +2387,49 @@ export function PAbout() {
             <PHead>更新</PHead>
             <PRow
                 label="更新通道"
-                hint="Beta 每週更新，可能遇到 bug 但早享新功能 (留白：channel switch 沒接)"
+                hint="Beta 每週更新；Alpha 含 prerelease。切換後下次「檢查更新」會用新通道。"
                 right={
                     <PSelect
-                        value="stable"
+                        value={updates?.channel || 'stable'}
                         options={['stable', 'beta', 'alpha']}
+                        onChange={(v) =>
+                            update({
+                                updates: {
+                                    ...(updates || {}),
+                                    channel: v as 'stable' | 'beta' | 'alpha',
+                                },
+                            })
+                        }
                     />
                 }
             />
             <PRow
                 label="自動下載更新"
                 hint="背景下載，準備好後在這裡通知"
-                right={<PToggle on />}
+                right={
+                    <PToggle
+                        on={updates?.autoDownload !== false}
+                        onChange={(v) =>
+                            update({
+                                updates: { ...(updates || {}), autoDownload: v },
+                            })
+                        }
+                    />
+                }
             />
             <PRow
                 label="自動安裝（重啟時）"
                 hint="關閉 app 時自動安裝下載好的更新"
-                right={<PToggle on={false} />}
+                right={
+                    <PToggle
+                        on={updates?.autoInstall === true}
+                        onChange={(v) =>
+                            update({
+                                updates: { ...(updates || {}), autoInstall: v },
+                            })
+                        }
+                    />
+                }
             />
 
             <PHead>診斷</PHead>
@@ -1867,8 +2445,12 @@ export function PAbout() {
             />
             <PRow
                 label="重新執行 Setup Wizard"
-                hint="重新走一次首次啟動的環境檢查與模型下載流程 (留白：實裝接 setupService.reset)"
-                right={<PBtn>重置</PBtn>}
+                hint="重新走一次首次啟動的環境檢查與模型下載流程"
+                right={
+                    <PBtn danger onClick={handleResetSetup}>
+                        重置
+                    </PBtn>
+                }
             />
 
             <PHead>連結</PHead>
@@ -1879,8 +2461,8 @@ export function PAbout() {
             />
             <PRow
                 label="使用者指南"
-                hint="基本操作 / FAQ / 鍵盤快捷鍵 (留白：尚無 docs URL)"
-                right={<PBtn>前往</PBtn>}
+                hint="基本操作 / FAQ / 鍵盤快捷鍵 — 尚無 docs URL，等網站上線後接"
+                right={<PBtn disabled>留白</PBtn>}
             />
         </div>
     );

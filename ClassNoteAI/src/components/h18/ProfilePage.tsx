@@ -22,6 +22,7 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { applyTheme } from '../../utils/theme';
+import { confirmService } from '../../services/confirmService';
 import s from './ProfilePage.module.css';
 import {
     POverview,
@@ -96,13 +97,15 @@ export default function ProfilePage({
     const username = user?.username || 'Unknown';
     const initial = username.charAt(0).toUpperCase();
 
-    const handleLogout = () => {
-        const ok = window.confirm(
-            '確定要登出？\n登出後需重新輸入用戶名才能繼續使用。本機資料不會被刪除，下次登入相同名稱即可繼續。',
-        );
-        if (ok) {
-            logout();
-        }
+    const handleLogout = async () => {
+        const ok = await confirmService.ask({
+            title: '確定要登出？',
+            message:
+                '登出後需重新輸入用戶名才能繼續使用。本機資料不會被刪除，下次登入相同名稱即可繼續。',
+            confirmLabel: '登出',
+            variant: 'danger',
+        });
+        if (ok) logout();
     };
 
     return (

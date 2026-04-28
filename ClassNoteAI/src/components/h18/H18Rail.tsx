@@ -7,9 +7,9 @@
  * 對應 docs/design/h18-deep/h18-parts.jsx L106-161.
  *
  * Course chips are dynamic from storageService.listCourses(). Color
- * is hashed from course id (we don't store color column). Unread
- * badge currently always 0 — wires to a backend that doesn't exist
- * yet (per "留白" rule).
+ * is hashed from course id (we don't store color column). Per-course
+ * urgent badge is fed from H18DeepApp's aggregated Canvas inbox
+ * (urgent = due today/tomorrow OR announcement <24h, pending state).
  */
 
 import { useState } from 'react';
@@ -37,6 +37,9 @@ export interface H18RailProps {
     avatarInitial?: string;
     /** 右鍵 course chip 觸發。父元件處理 navigation / DB ops。 */
     onCourseAction?: (courseId: string, action: CourseRailAction) => void;
+    /** Per-course urgent badge count (e.g. due today/tomorrow). Empty
+     *  / missing entries render no badge. */
+    urgentByCourseId?: Map<string, number> | Record<string, number>;
 }
 
 interface MenuState {
@@ -53,11 +56,17 @@ export default function H18Rail({
     onPickVirtualCourse,
     avatarInitial = 'U',
     onCourseAction,
+    urgentByCourseId,
 }: H18RailProps) {
     const [menu, setMenu] = useState<MenuState | null>(null);
     const isActive = (key: string) => activeNav === key;
     const isCourseActive = (id: string) => activeNav === `course:${id}`;
     const menuCourse = menu ? courses.find((c) => c.id === menu.courseId) : null;
+    const urgentLookup = (id: string): number => {
+        if (!urgentByCourseId) return 0;
+        if (urgentByCourseId instanceof Map) return urgentByCourseId.get(id) ?? 0;
+        return urgentByCourseId[id] ?? 0;
+    };
 
     return (
         <nav className={s.rail} aria-label="主導覽">
@@ -86,7 +95,7 @@ export default function H18Rail({
                 const color = courseColor(c.id);
                 const short = courseShort(c.title, c.keywords);
                 const active = isCourseActive(c.id);
-                const unread = 0; // 留白：reminders schema 沒做，固定 0
+                const unread = urgentLookup(c.id);
                 return (
                     <button
                         type="button"

@@ -11,6 +11,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { chatStream as llmChatStream } from '../../services/llm';
 import type { LLMMessage } from '../../services/llm/types';
+import { ragService } from '../../services/ragService';
+
+export interface AIContext {
+    kind: 'lecture' | 'course' | 'global';
+    /** Required for kind === 'lecture'; otherwise ignored. */
+    lectureId?: string;
+    /** Required for kind === 'course'; otherwise ignored. */
+    courseId?: string;
+    /** Display label, e.g. "ML · L13". */
+    label?: string;
+}
 
 export interface AIMsg {
     role: 'user' | 'ai';
@@ -86,7 +97,7 @@ export function useAIHistory() {
     }, []);
 
     const send = useCallback(
-        async (text: string) => {
+        async (text: string, ctx?: AIContext) => {
             const trimmed = text.trim();
             if (!trimmed || streaming) return;
 
@@ -102,10 +113,48 @@ export function useAIHistory() {
                 text: '',
                 streaming: true,
             };
+
+            // RAG: if the caller pinned a lecture/course context, retrieve
+            // top-K chunks and prepend them to the system prompt as
+            // grounding. Kept best-effort — if RAG fails (no index built,
+            // embedding provider missing) we still send the question.
+            let ragGrounding = '';
+            const cites: { l: string }[] = [];
+            try {
+                if (ctx?.kind === 'lecture' && ctx.lectureId) {
+                    const rc = await ragService.retrieveContext(
+                        trimmed,
+                        ctx.lectureId,
+                        5,
+                    );
+                    if (rc.formattedContext) {
+                        ragGrounding = rc.formattedContext;
+                        for (const r of rc.chunks.slice(0, 3)) {
+                            const id = (r as { chunk?: { id?: string }; chunkId?: string }).chunk?.id
+                                ?? (r as { chunkId?: string }).chunkId
+                                ?? '';
+                            if (id) cites.push({ l: id.slice(0, 8) });
+                        }
+                    }
+                } else if (ctx?.kind === 'course' && ctx.courseId) {
+                    const rc = await ragService.retrieveCourseContext(
+                        trimmed,
+                        ctx.courseId,
+                        5,
+                    );
+                    if (rc.formattedContext) ragGrounding = rc.formattedContext;
+                }
+            } catch (err) {
+                console.warn('[useAIHistory] RAG retrieval failed (non-fatal):', err);
+            }
+
             // Build LLM messages (history without intro hint)
             const history = [...msgs, userMsg];
+            const systemContent = ragGrounding
+                ? `${SYSTEM_PROMPT}\n\n以下是${ctx?.label ? `「${ctx.label}」` : '相關'}的課堂資料節錄，回答時請以這些為依據（沒寫到的就說沒有）：\n\n${ragGrounding}`
+                : SYSTEM_PROMPT;
             const llmMsgs: LLMMessage[] = [
-                { role: 'system', content: SYSTEM_PROMPT },
+                { role: 'system', content: systemContent },
                 ...history
                     .filter((m) => !m.hint)
                     .map<LLMMessage>((m) => ({
@@ -113,6 +162,7 @@ export function useAIHistory() {
                         content: m.text,
                     })),
             ];
+            if (cites.length > 0) aiMsg.cites = cites;
             setMsgs([...msgs, userMsg, aiMsg]);
             setStreaming(true);
 

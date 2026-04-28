@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useAIHistory, type AIMsg } from './useAIHistory';
+import { useAIHistory, type AIMsg, type AIContext } from './useAIHistory';
 import s from './H18AIDock.module.css';
 
 const QUICK_QUESTIONS = [
@@ -22,6 +22,9 @@ export interface H18AIDockProps {
     onExpand: () => void;
     /** Display-only context label, e.g. "ML · L13" */
     contextHint?: string;
+    /** RAG grounding context — when provided, the dock pulls top-K
+     *  chunks for each query and prepends them to the system prompt. */
+    aiContext?: AIContext;
 }
 
 export default function H18AIDock({
@@ -29,6 +32,7 @@ export default function H18AIDock({
     onClose,
     onExpand,
     contextHint,
+    aiContext,
 }: H18AIDockProps) {
     const { msgs, streaming, send } = useAIHistory();
     const [input, setInput] = useState('');
@@ -55,7 +59,7 @@ export default function H18AIDock({
         if (!input.trim() || streaming) return;
         const t = input;
         setInput('');
-        void send(t);
+        void send(t, aiContext);
     };
 
     return (

@@ -37,6 +37,12 @@ import {
 import H18TopBar from './H18TopBar';
 import H18Rail from './H18Rail';
 import { courseColor, courseShort } from './courseColor';
+import { RECORDING_CHANGE_EVENT } from './useRecordingSession';
+import { useAggregatedCanvasInbox } from './useAggregatedCanvasInbox';
+import {
+    getInboxState,
+    subscribeInboxStates,
+} from '../../services/inboxStateService';
 import HomeLayout from './HomeLayout';
 import CourseDetailPage from './CourseDetailPage';
 import CourseEditPage from './CourseEditPage';
@@ -179,11 +185,19 @@ export default function H18DeepApp() {
                 const rec = all.find((l) => l.status === 'recording');
                 if (cancelled) return;
                 if (rec) {
-                    const startedAtMs = new Date(rec.updated_at || rec.created_at).getTime();
-                    setActiveRecLecture({
-                        lectureId: rec.id,
-                        courseId: rec.course_id,
-                        startedAtMs,
+                    setActiveRecLecture((cur) => {
+                        // Same lecture still recording → keep the original
+                        // startedAtMs. Otherwise the elapsed timer would
+                        // reset every time the user edits the lecture
+                        // title (which bumps updated_at).
+                        if (cur && cur.lectureId === rec.id) return cur;
+                        return {
+                            lectureId: rec.id,
+                            courseId: rec.course_id,
+                            startedAtMs: new Date(
+                                rec.updated_at || rec.created_at,
+                            ).getTime(),
+                        };
                     });
                 } else {
                     setActiveRecLecture(null);
@@ -193,10 +207,19 @@ export default function H18DeepApp() {
             }
         };
         probe();
-        const id = setInterval(probe, 4000);
+        // Slow safety-net poll — useRecordingSession dispatches
+        // RECORDING_CHANGE_EVENT on start/stop, so we usually re-probe
+        // immediately. The interval catches edge cases (recovery on
+        // launch, external DB writes, status flipped from another tab).
+        const id = setInterval(probe, 30_000);
+        const onChange = () => {
+            void probe();
+        };
+        window.addEventListener(RECORDING_CHANGE_EVENT, onChange);
         return () => {
             cancelled = true;
             clearInterval(id);
+            window.removeEventListener(RECORDING_CHANGE_EVENT, onChange);
         };
     }, []);
 
@@ -214,6 +237,38 @@ export default function H18DeepApp() {
         tick();
         const id = setInterval(tick, 1000);
         return () => clearInterval(id);
+    }, [activeRecLecture]);
+
+    // Compute "L#" — 1-based index of the active recording within its
+    // course's lecture list (sorted by created_at ASC). Re-loads when
+    // the active recording changes; null while loading or unresolvable.
+    const [activeRecLectureNumber, setActiveRecLectureNumber] = useState<number | null>(null);
+    useEffect(() => {
+        if (!activeRecLecture) {
+            setActiveRecLectureNumber(null);
+            return;
+        }
+        let cancelled = false;
+        storageService
+            .listLecturesByCourse(activeRecLecture.courseId)
+            .then((list) => {
+                if (cancelled) return;
+                const sorted = [...list].sort(
+                    (a, b) =>
+                        new Date(a.created_at).getTime() -
+                        new Date(b.created_at).getTime(),
+                );
+                const idx = sorted.findIndex(
+                    (l) => l.id === activeRecLecture.lectureId,
+                );
+                setActiveRecLectureNumber(idx >= 0 ? idx + 1 : null);
+            })
+            .catch(() => {
+                if (!cancelled) setActiveRecLectureNumber(null);
+            });
+        return () => {
+            cancelled = true;
+        };
     }, [activeRecLecture]);
 
 
@@ -251,6 +306,37 @@ export default function H18DeepApp() {
 
     const startNewLectureFor = useCallback(async (courseId: string) => {
         try {
+            // Same-day collision check: if the course already has a lecture
+            // dated today, ask whether to open it or create a fresh blank
+            // one. Avoids the «每按一次「下一堂課」就生一個空白» pile-up
+            // that happens when the user opens the home page repeatedly.
+            const existingList = await storageService
+                .listLecturesByCourse(courseId)
+                .catch(() => [] as Awaited<ReturnType<typeof storageService.listLecturesByCourse>>);
+            const todayKey = new Date().toISOString().slice(0, 10);
+            const sameDay = existingList.find((l) => {
+                if (!l.date) return false;
+                return l.date.slice(0, 10) === todayKey;
+            });
+            if (sameDay) {
+                const { confirmService } = await import(
+                    '../../services/confirmService'
+                );
+                // Yes → open existing, No → create blank.
+                const openExisting = await confirmService.ask({
+                    title: '今天已有一堂課',
+                    message: `課堂「${sameDay.title}」(${sameDay.status === 'completed' ? '已完成' : sameDay.status === 'recording' ? '錄音中' : '待錄音'}) 已存在。\n\n要開啟這堂繼續，還是另外新增一堂空白課堂？`,
+                    confirmLabel: '開啟現有的',
+                    cancelLabel: '新增空白',
+                });
+                if (openExisting) {
+                    setSelectedCourseId(courseId);
+                    setActiveNav(`review:${courseId}:${sameDay.id}`);
+                    return;
+                }
+                // Fall through to create a new blank lecture.
+            }
+
             const id = crypto.randomUUID();
             const now = new Date().toISOString();
             await storageService.saveLecture({
@@ -362,33 +448,47 @@ export default function H18DeepApp() {
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             const meta = e.metaKey || e.ctrlKey;
-            if (meta && e.key === '\\') {
+            // Don't hijack shortcuts while user is typing — ⌘N in a textarea
+            // should insert "n", not open the new-course dialog. Esc still
+            // works (closes overlays/dialogs) since editors typically don't
+            // bind Esc themselves.
+            const target = e.target as HTMLElement | null;
+            const tag = target?.tagName;
+            const inEditor =
+                tag === 'INPUT' ||
+                tag === 'TEXTAREA' ||
+                tag === 'SELECT' ||
+                target?.isContentEditable === true;
+
+            if (meta && e.key === '\\' && !inEditor) {
                 e.preventDefault();
                 void toggleTheme();
                 return;
             }
             if (meta && e.key.toLowerCase() === 'k') {
+                // ⌘K we still allow in editors — palette is the universal
+                // escape hatch and shouldn't be eaten by an input.
                 e.preventDefault();
                 setOverlayNav('search');
                 return;
             }
-            if (meta && (e.key.toLowerCase() === 'j' || e.key === '/')) {
+            if (meta && (e.key.toLowerCase() === 'j' || e.key === '/') && !inEditor) {
                 e.preventDefault();
                 setAiDockOpen((v) => !v);
                 return;
             }
-            if (meta && e.key.toLowerCase() === 'n') {
+            if (meta && e.key.toLowerCase() === 'n' && !inEditor) {
                 e.preventDefault();
                 setIsCourseDialogOpen(true);
                 return;
             }
-            if (meta && e.key.toLowerCase() === 'h') {
+            if (meta && e.key.toLowerCase() === 'h' && !inEditor) {
                 e.preventDefault();
                 setActiveNav('home');
                 setOverlayNav(null);
                 return;
             }
-            if (meta && e.key === ',') {
+            if (meta && e.key === ',' && !inEditor) {
                 e.preventDefault();
                 setActiveNav('profile');
                 setOverlayNav(null);
@@ -405,6 +505,43 @@ export default function H18DeepApp() {
     }, [toggleTheme, overlayNav, isCourseDialogOpen, aiDockOpen]);
 
     const parsed = useMemo(() => parseNav(activeNav), [activeNav]);
+
+    // ─── inbox aggregation for TopBar count + Rail per-course badge ──
+    // We re-run useAggregatedCanvasInbox here (H18Inbox uses it too —
+    // both share the canvasCache so the second hook is essentially free).
+    const { items: inboxItems } = useAggregatedCanvasInbox(courses);
+
+    // Re-render whenever any inbox state (snoozed/done) flips.
+    const [inboxStateTick, setInboxStateTick] = useState(0);
+    useEffect(() => {
+        const off = subscribeInboxStates(() => setInboxStateTick((n) => n + 1));
+        // Lazy-expire snoozes once a minute.
+        const interval = setInterval(() => setInboxStateTick((n) => n + 1), 60_000);
+        return () => {
+            off();
+            clearInterval(interval);
+        };
+    }, []);
+
+    const { inboxTotal, urgentByCourse } = useMemo(() => {
+        const now = Date.now();
+        let total = 0;
+        const byCourse = new Map<string, number>();
+        for (const it of inboxItems) {
+            const st = getInboxState(it.id, now);
+            if (st.state !== 'pending') continue;
+            total += 1;
+            if (it.urgent && it.courseId) {
+                byCourse.set(
+                    it.courseId,
+                    (byCourse.get(it.courseId) ?? 0) + 1,
+                );
+            }
+        }
+        return { inboxTotal: total, urgentByCourse: byCourse };
+        // inboxStateTick intentionally a dep so we recompute on state change
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [inboxItems, inboxStateTick]);
 
     // Read HomeLayout variant from AppSettings.appearance.layout;
     // settings is loaded async, default to 'A' until it arrives.
@@ -509,18 +646,20 @@ export default function H18DeepApp() {
         activeRecLecture != null &&
         parsed.lectureId === activeRecLecture.lectureId;
 
-    // Build active recording payload for TopBar island
+    // Build active recording payload for TopBar island.
+    // 當使用者已經在錄音頁就不要再顯示 TopBar 的 island — 否則畫面會
+    // 同時看到上方膠囊跟下方 transport bar 兩個 elapsed 計時器。
     const activeRecCourse = activeRecLecture
         ? courses.find((c) => c.id === activeRecLecture.courseId)
         : null;
-    const activeRecording = activeRecLecture && activeRecCourse
+    const activeRecording = activeRecLecture && activeRecCourse && !isOnRecordingPage
         ? {
               courseShort: courseShort(
                   activeRecCourse.title,
                   activeRecCourse.keywords,
               ),
               courseColor: courseColor(activeRecCourse.id),
-              lectureNumber: '—',
+              lectureNumber: activeRecLectureNumber ?? '—',
               elapsedSec: recElapsedSec,
               onClick: () =>
                   setActiveNav(
@@ -536,7 +675,7 @@ export default function H18DeepApp() {
                 onOpenSearch={() => setOverlayNav('search')}
                 effectiveTheme={theme}
                 onToggleTheme={() => void toggleTheme()}
-                inboxCount={0}
+                inboxCount={inboxTotal}
                 onOpenInbox={() => setActiveNav('home')}
                 activeRecording={activeRecording}
             />
@@ -552,6 +691,7 @@ export default function H18DeepApp() {
                     }}
                     avatarInitial="U"
                     onCourseAction={handleCourseAction}
+                    urgentByCourseId={urgentByCourse}
                 />
                 <main className={s.main}>{renderMain()}</main>
             </div>
@@ -579,6 +719,28 @@ export default function H18DeepApp() {
                         : parsed.kind === 'review' || parsed.kind === 'recording'
                           ? courses.find((c) => c.id === parsed.courseId)?.title
                           : undefined
+                }
+                aiContext={
+                    parsed.kind === 'review'
+                        ? {
+                              kind: 'lecture',
+                              lectureId: parsed.lectureId,
+                              courseId: parsed.courseId,
+                              label:
+                                  courses.find((c) => c.id === parsed.courseId)
+                                      ?.title || undefined,
+                          }
+                        : parsed.kind === 'course' ||
+                            parsed.kind === 'course-edit'
+                          ? {
+                                kind: 'course',
+                                courseId: parsed.courseId,
+                                label:
+                                    courses.find(
+                                        (c) => c.id === parsed.courseId,
+                                    )?.title || undefined,
+                            }
+                          : { kind: 'global' }
                 }
             />
 

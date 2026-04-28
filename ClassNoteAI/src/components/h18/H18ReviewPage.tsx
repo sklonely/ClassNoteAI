@@ -32,6 +32,11 @@ import {
     saveUserNotes,
     subscribeUserNotes,
 } from './userNotesStore';
+import {
+    getExamMarks,
+    subscribeExamMarks,
+    type ExamMark,
+} from '../../services/examMarksStore';
 import s from './H18ReviewPage.module.css';
 
 export interface H18ReviewPageProps {
@@ -122,6 +127,20 @@ export default function H18ReviewPage({
     const [notesSavedAt, setNotesSavedAt] = useState<number | null>(null);
     const [notesDirty, setNotesDirty] = useState(false);
     const notesSaveTimerRef = useRef<number | null>(null);
+
+    const [examMarks, setExamMarks] = useState<ExamMark[]>(() =>
+        getExamMarks(lectureId),
+    );
+    const [summarizing, setSummarizing] = useState(false);
+    const [summarizeError, setSummarizeError] = useState<string | null>(null);
+
+    useEffect(() => {
+        setExamMarks(getExamMarks(lectureId));
+        const off = subscribeExamMarks(lectureId, (next) =>
+            setExamMarks(next),
+        );
+        return off;
+    }, [lectureId]);
 
     const [audioOpen, setAudioOpen] = useState(false);
     const [audioSrc, setAudioSrc] = useState<string | null>(null);
@@ -325,6 +344,55 @@ export default function H18ReviewPage({
         }
     };
 
+    const handleRegenerateSummary = async () => {
+        if (subs.length === 0 || summarizing) return;
+        setSummarizing(true);
+        setSummarizeError(null);
+        try {
+            const { summarize } = await import('../../services/llm/tasks');
+            const text = subs
+                .slice()
+                .sort((a, b) => a.timestamp - b.timestamp)
+                .map((sub) => sub.text_zh || sub.text_en || '')
+                .filter(Boolean)
+                .join('\n');
+            // Pick output language based on the user's translation target.
+            // 'zh-*' → 'zh', anything else → 'en'.
+            let lang: 'zh' | 'en' = 'zh';
+            try {
+                const settingsCur = await storageService.getAppSettings();
+                const tgt = settingsCur?.translation?.target_language || 'zh-TW';
+                lang = tgt.startsWith('zh') ? 'zh' : 'en';
+            } catch {
+                /* default zh */
+            }
+            const summary = await summarize({
+                content: text,
+                language: lang,
+                title: lecture?.title,
+            });
+            const nextNote: Note = note
+                ? { ...note, summary, generated_at: new Date().toISOString() }
+                : {
+                      lecture_id: lectureId,
+                      title: lecture?.title || '新課堂',
+                      summary,
+                      sections: [],
+                      qa_records: [],
+                      generated_at: new Date().toISOString(),
+                  };
+            await storageService.saveNote(nextNote);
+            setNote(nextNote);
+        } catch (err) {
+            console.error('[H18ReviewPage] summarize failed:', err);
+            setSummarizeError(
+                (err as Error)?.message || '生成失敗 — 確認雲端 AI provider 已設好',
+            );
+        } finally {
+            setSummarizing(false);
+        }
+    };
+
     const handleSeedFromAi = () => {
         if (!note) return;
         const md = renderNoteAsMarkdown(note);
@@ -405,7 +473,7 @@ export default function H18ReviewPage({
     const courseAccent = courseColor(courseId);
     const sectionsForToc = note?.sections || [];
 
-    const examCount = note?.qa_records?.length ?? 0;
+    const examCount = (note?.qa_records?.length ?? 0) + examMarks.length;
 
     const startSeek = (sec: number) => {
         setSeekTo(sec);
@@ -788,16 +856,59 @@ export default function H18ReviewPage({
                     {tab === 'summary' && (
                         <div className={s.tabPane}>
                             <div className={s.tabHead}>
-                                <span className={s.tabHeadEyebrow}>AI 自動摘要</span>
+                                <span className={s.tabHeadEyebrow}>
+                                    AI 自動摘要
+                                    {summarizing && (
+                                        <span className={s.tabHeadStatus}>
+                                            {' · 生成中…'}
+                                        </span>
+                                    )}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={handleRegenerateSummary}
+                                    disabled={summarizing || subs.length === 0}
+                                    className={s.editBtn}
+                                    title={
+                                        subs.length === 0
+                                            ? '沒有逐字稿，沒得摘要'
+                                            : note?.summary
+                                              ? '用最新逐字稿重新生成'
+                                              : '從目前逐字稿生成摘要'
+                                    }
+                                >
+                                    {summarizing
+                                        ? '⟳ …'
+                                        : note?.summary
+                                          ? '✦ 重新生成'
+                                          : '✦ 生成摘要'}
+                                </button>
                             </div>
+                            {summarizeError && (
+                                <div
+                                    style={{
+                                        padding: '8px 10px',
+                                        margin: '8px 0',
+                                        borderRadius: 6,
+                                        border: '1px solid var(--h18-hot)',
+                                        background: 'var(--h18-hot-bg)',
+                                        color: 'var(--h18-hot)',
+                                        fontSize: 11,
+                                    }}
+                                >
+                                    ⚠ {summarizeError}
+                                </div>
+                            )}
                             {note?.summary ? (
                                 <div className={s.summaryBox}>{note.summary}</div>
                             ) : (
                                 <div className={s.tabEmpty}>
                                     尚未生成 AI 摘要。
                                     <br />
-                                    從筆記頁觸發摘要，或等錄音結束自動跑。
-                                    <div className={s.tabEmptyTag}>P6.4 · 待 trigger</div>
+                                    按右上角「✦ 生成摘要」用目前逐字稿即時跑。
+                                    <div className={s.tabEmptyTag}>
+                                        llm.summarize · 走當前 default provider
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -810,24 +921,97 @@ export default function H18ReviewPage({
                                     Q&A · {examCount}
                                 </span>
                             </div>
-                            {note?.qa_records && note.qa_records.length > 0 ? (
-                                note.qa_records.map((qa, i) => (
-                                    <div key={i} className={s.qaRow}>
-                                        <div className={s.qaQuestion}>Q · {fmtTime(qa.timestamp)}</div>
-                                        <div className={s.qaAnswer}>{qa.question}</div>
-                                        <div className={s.qaAnswer} style={{ marginTop: 6, color: 'var(--h18-text-mid)' }}>
-                                            {qa.answer}
-                                        </div>
+
+                            {examMarks.length > 0 && (
+                                <>
+                                    <div
+                                        style={{
+                                            fontSize: 11,
+                                            fontWeight: 600,
+                                            letterSpacing: '0.06em',
+                                            color: 'var(--h18-text-dim)',
+                                            margin: '8px 0 6px',
+                                            textTransform: 'uppercase',
+                                        }}
+                                    >
+                                        ⚑ 錄音時標記的考點 · {examMarks.length}
                                     </div>
-                                ))
-                            ) : (
+                                    {examMarks.map((m) => (
+                                        <button
+                                            key={`${m.elapsedSec}-${m.markedAtMs}`}
+                                            type="button"
+                                            onClick={() => startSeek(m.elapsedSec)}
+                                            className={s.qaRow}
+                                            style={{
+                                                textAlign: 'left',
+                                                width: '100%',
+                                                cursor: 'pointer',
+                                                background: 'transparent',
+                                                border: '1px dashed var(--h18-border-soft)',
+                                            }}
+                                            title="跳到這個時間點"
+                                        >
+                                            <div className={s.qaQuestion}>
+                                                ⚑ {fmtTime(m.elapsedSec)}
+                                                {m.label ? ` · ${m.label}` : ''}
+                                            </div>
+                                            {m.text && (
+                                                <div
+                                                    className={s.qaAnswer}
+                                                    style={{ color: 'var(--h18-text-mid)' }}
+                                                >
+                                                    {m.text}
+                                                </div>
+                                            )}
+                                        </button>
+                                    ))}
+                                </>
+                            )}
+
+                            {note?.qa_records && note.qa_records.length > 0 ? (
+                                <>
+                                    {examMarks.length > 0 && (
+                                        <div
+                                            style={{
+                                                fontSize: 11,
+                                                fontWeight: 600,
+                                                letterSpacing: '0.06em',
+                                                color: 'var(--h18-text-dim)',
+                                                margin: '12px 0 6px',
+                                                textTransform: 'uppercase',
+                                            }}
+                                        >
+                                            AI 整理的 Q&A · {note.qa_records.length}
+                                        </div>
+                                    )}
+                                    {note.qa_records.map((qa, i) => (
+                                        <div key={i} className={s.qaRow}>
+                                            <div className={s.qaQuestion}>
+                                                Q · {fmtTime(qa.timestamp)}
+                                            </div>
+                                            <div className={s.qaAnswer}>{qa.question}</div>
+                                            <div
+                                                className={s.qaAnswer}
+                                                style={{
+                                                    marginTop: 6,
+                                                    color: 'var(--h18-text-mid)',
+                                                }}
+                                            >
+                                                {qa.answer}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </>
+                            ) : examMarks.length === 0 ? (
                                 <div className={s.tabEmpty}>
                                     沒有 Q&A 紀錄。
                                     <br />
-                                    錄音時的「老師強調」段落 + AI 摘要的考點會在這裡。
-                                    <div className={s.tabEmptyTag}>P6.4 · 待 concept extraction</div>
+                                    錄音時按 ⚑ 標記考點，或等 AI 摘要產出 Q&A。
+                                    <div className={s.tabEmptyTag}>
+                                        P6.4 · 待 concept extraction
+                                    </div>
                                 </div>
-                            )}
+                            ) : null}
                         </div>
                     )}
                 </div>

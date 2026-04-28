@@ -128,6 +128,10 @@ export default function SearchOverlay({ open, onClose, onAction }: SearchOverlay
         } else if (e.key === 'Enter') {
             e.preventDefault();
             fire(sel);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            onClose();
         }
     };
 

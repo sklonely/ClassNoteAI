@@ -22,7 +22,7 @@
  *  - drag-drop 教材匯入：沒接
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FileText, BookOpen } from 'lucide-react';
 import type { Course, Lecture } from '../../types';
 import { storageService } from '../../services/storageService';
@@ -33,6 +33,9 @@ import {
 } from './useRecordingSession';
 import { courseColor } from './courseColor';
 import FloatingNotesPanel from './FloatingNotesPanel';
+import { useAppSettings } from './useAppSettings';
+import { addExamMark, getExamMarks } from '../../services/examMarksStore';
+import { selectPDFFile } from '../../services/fileService';
 import s from './H18RecordingPage.module.css';
 
 export interface H18RecordingPageProps {
@@ -44,14 +47,14 @@ export interface H18RecordingPageProps {
 type RecLayout = 'A' | 'B' | 'C';
 
 const FINISH_STEPS = [
-    { key: 'transcribe', label: '轉錄收尾', hint: '把最後幾段未提交的句子寫進 DB' },
-    { key: 'segment', label: '段落切分', hint: '依停頓 / 主題切章節' },
-    { key: 'summary', label: '生成摘要', hint: 'AI 抽重點 + Q&A' },
-    { key: 'index', label: '建立索引', hint: 'RAG embedding + 全域搜尋' },
-    { key: 'done', label: '完成', hint: '跳到 Review' },
+    { key: 'transcribe', label: '轉錄收尾', hint: '停止 ASR，flush 字幕尾段' },
+    { key: 'segment', label: '寫入錄音檔', hint: '把 .pcm 整理成 .wav 落到磁碟' },
+    { key: 'summary', label: '保存課堂', hint: '更新 lecture 狀態為 completed' },
+    { key: 'index', label: '建立索引', hint: 'RAG embedding 由背景服務處理' },
+    { key: 'done', label: '完成', hint: '可以回到 Review' },
 ] as const;
 
-const FINISH_STEP_MS = 720;
+type FinishStepKey = (typeof FINISH_STEPS)[number]['key'];
 
 export default function H18RecordingPage({
     courseId,
@@ -60,15 +63,45 @@ export default function H18RecordingPage({
 }: H18RecordingPageProps) {
     const [lecture, setLecture] = useState<Lecture | null>(null);
     const [course, setCourse] = useState<Course | null>(null);
-    const [layout, setLayout] = useState<RecLayout>('A');
+    const { settings, update: updateSettings } = useAppSettings();
+    const persistedLayout = settings?.appearance?.recordingLayout;
+    const [layout, setLayoutState] = useState<RecLayout>('A');
+    // Sync local state with persisted value once it loads. We mirror to
+    // local state so the switcher feels instant; persistence catches up
+    // on next render.
+    useEffect(() => {
+        if (persistedLayout && persistedLayout !== layout) {
+            setLayoutState(persistedLayout);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [persistedLayout]);
+    const setLayout = (next: RecLayout) => {
+        setLayoutState(next);
+        void updateSettings({
+            appearance: {
+                ...(settings?.appearance || {}),
+                recordingLayout: next,
+            },
+        });
+    };
     const [followMode, setFollowMode] = useState(true);
     const [notesOpen, setNotesOpen] = useState(false);
 
     const session = useRecordingSession({ courseId, lectureId });
 
     const [finishOpen, setFinishOpen] = useState(false);
-    const [finishStep, setFinishStep] = useState(0);
-    const [finishedDone, setFinishedDone] = useState(false);
+
+    // Map session.stopPhase → step index. While the user is on the
+    // overlay we read the real phase from useRecordingSession instead
+    // of running a dummy timer. The 'idle' phase (before stop ran) maps
+    // to step 0; 'done' maps to the last step.
+    const finishStep = useMemo<number>(() => {
+        const idx = FINISH_STEPS.findIndex(
+            (s) => s.key === (session.stopPhase as FinishStepKey),
+        );
+        return idx >= 0 ? idx : 0;
+    }, [session.stopPhase]);
+    const finishedDone = session.stopPhase === 'done';
 
     // Load lecture + course meta
     useEffect(() => {
@@ -104,21 +137,8 @@ export default function H18RecordingPage({
         return () => window.removeEventListener('keydown', onKey);
     }, []);
 
-    // 5-step finishing overlay simulation
-    useEffect(() => {
-        if (!finishOpen) return;
-        if (finishStep >= FINISH_STEPS.length - 1) {
-            setFinishedDone(true);
-            return;
-        }
-        const t = setTimeout(() => setFinishStep((s) => s + 1), FINISH_STEP_MS);
-        return () => clearTimeout(t);
-    }, [finishOpen, finishStep]);
-
     const handleStop = async () => {
         setFinishOpen(true);
-        setFinishStep(0);
-        setFinishedDone(false);
         await session.stop();
     };
 
@@ -133,14 +153,39 @@ export default function H18RecordingPage({
     };
 
     const handleAddMark = () => {
+        addExamMark(lectureId, {
+            elapsedSec: session.elapsed,
+            text: session.currentText || '',
+            markedAtMs: Date.now(),
+        });
+        const total = getExamMarks(lectureId).length;
         toastService.info(
             '已標記考點',
-            `${fmtElapsed(session.elapsed)} · 留白：subtitle.exam flag schema 待加`,
+            `${fmtElapsed(session.elapsed)} · 共 ${total} 個標記（review 頁面會看到）`,
         );
     };
 
-    const handleImport = () => {
-        toastService.info('教材匯入', '留白：drag-drop / file picker P6.x 後接');
+    const handleImport = async () => {
+        if (!lecture) return;
+        try {
+            const picked = await selectPDFFile();
+            if (!picked) return;
+            // Persist binary: use Tauri raw command (storageService doesn't
+            // own slide files). For now, just attach pdf_path on the lecture
+            // — the actual byte payload is already on disk at picked.path.
+            await storageService.saveLecture({
+                ...lecture,
+                pdf_path: picked.path,
+                updated_at: new Date().toISOString(),
+            });
+            toastService.success(
+                '教材已綁定',
+                `${picked.path.split(/[\\/]/).pop()} · 之後 review 頁可開啟`,
+            );
+        } catch (err) {
+            console.warn('[H18RecordingPage] import failed:', err);
+            toastService.error('匯入失敗', (err as Error)?.message || '未知錯誤');
+        }
     };
 
     const isRunning = session.status === 'recording' || session.status === 'paused';
@@ -414,12 +459,19 @@ export default function H18RecordingPage({
                         </div>
                         <div className={s.finishSteps}>
                             {FINISH_STEPS.map((step, i) => {
-                                const state =
-                                    i < finishStep
-                                        ? 'done'
-                                        : i === finishStep
-                                          ? 'active'
-                                          : 'pending';
+                                // When the whole pipeline is finished
+                                // (stopPhase === 'done'), every step gets
+                                // the ✓ — including the last one ('完成')
+                                // itself. Otherwise the last row stays
+                                // stuck on the spinner / number icon even
+                                // after everything's done.
+                                const state = finishedDone
+                                    ? 'done'
+                                    : i < finishStep
+                                      ? 'done'
+                                      : i === finishStep
+                                        ? 'active'
+                                        : 'pending';
                                 return (
                                     <div
                                         key={step.key}
@@ -501,22 +553,26 @@ function SubPane({ session, focus, mini }: SubPaneProps) {
                         開始錄音後 Parakeet 會即時轉錄。
                     </div>
                 )}
-                {session.segments.map((seg) => (
-                    <div key={seg.id} className={s.subRow}>
-                        <div className={s.subTime}>
-                            {fmtElapsed(
-                                Math.max(
-                                    0,
-                                    Math.floor(seg.startTime / 1000),
-                                ),
-                            ) || '—'}
+                {session.segments.map((seg) => {
+                    // seg.startTime 是 epoch ms（subtitleService 直接收的）
+                    // — 必須減 sessionStartMs 才會得到真正的 elapsed。
+                    // 沒減的話顯示成 493706:38:19（≈ 56 年 = epoch 至今）。
+                    const baseMs = session.sessionStartMs || 0;
+                    const elapsedSec = baseMs > 0
+                        ? Math.max(0, Math.floor((seg.startTime - baseMs) / 1000))
+                        : 0;
+                    return (
+                        <div key={seg.id} className={s.subRow}>
+                            <div className={s.subTime}>
+                                {fmtElapsed(elapsedSec) || '—'}
+                            </div>
+                            <div className={s.subEn}>{seg.displayText || seg.text}</div>
+                            {seg.displayTranslation && !mini && (
+                                <div className={s.subZh}>{seg.displayTranslation}</div>
+                            )}
                         </div>
-                        <div className={s.subEn}>{seg.displayText || seg.text}</div>
-                        {seg.displayTranslation && !mini && (
-                            <div className={s.subZh}>{seg.displayTranslation}</div>
-                        )}
-                    </div>
-                ))}
+                    );
+                })}
                 {session.currentText && (
                     <div className={s.subCurrent}>
                         <div className={s.subCurrentEyebrow}>● 即時轉錄</div>

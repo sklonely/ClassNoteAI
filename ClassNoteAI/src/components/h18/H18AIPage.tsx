@@ -11,14 +11,17 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { storageService } from '../../services/storageService';
-import { useAIHistory, type AIMsg } from './useAIHistory';
+import { useAIHistory, type AIMsg, type AIContext } from './useAIHistory';
 import s from './H18AIPage.module.css';
 
 export interface H18AIPageProps {
     onBack: () => void;
+    /** Optional RAG grounding context — when provided, queries pull
+     *  top-K chunks from the lecture/course index. */
+    aiContext?: AIContext;
 }
 
-export default function H18AIPage({ onBack }: H18AIPageProps) {
+export default function H18AIPage({ onBack, aiContext }: H18AIPageProps) {
     const { msgs, streaming, send, clear } = useAIHistory();
     const [input, setInput] = useState('');
     const [lectureCount, setLectureCount] = useState(0);
@@ -55,7 +58,7 @@ export default function H18AIPage({ onBack }: H18AIPageProps) {
         if (!input.trim() || streaming) return;
         const t = input;
         setInput('');
-        void send(t);
+        void send(t, aiContext);
     };
 
     const userMsgCount = msgs.filter((m) => m.role === 'user' && !m.hint).length;
@@ -79,7 +82,20 @@ export default function H18AIPage({ onBack }: H18AIPageProps) {
                 </button>
                 <button
                     type="button"
-                    onClick={() => {
+                    onClick={async () => {
+                        if (msgs.length > 1) {
+                            const { confirmService } = await import(
+                                '../../services/confirmService'
+                            );
+                            const ok = await confirmService.ask({
+                                title: '清空目前對話？',
+                                message:
+                                    'AIPage 跟 ⌘J 浮動 dock 共用同一條 history。\n清空後無法復原（多 session 還沒做）。',
+                                confirmLabel: '清空並開始新對話',
+                                variant: 'danger',
+                            });
+                            if (!ok) return;
+                        }
                         clear();
                         setInput('');
                     }}

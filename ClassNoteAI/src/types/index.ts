@@ -164,6 +164,10 @@ export interface AppSettings {
     device_id?: string;
     sample_rate: number;
     chunk_duration: number;
+    /** Watch for unplugged headset / muted device mid-recording and
+     *  prompt user to re-pick. Default true. Off = recordingDeviceMonitor
+     *  doesn't subscribe. */
+    auto_switch_detection?: boolean;
   };
   recording?: {
     consentAcknowledgedAt?: string;
@@ -197,6 +201,8 @@ export interface AppSettings {
     /** 主頁佈局: A=預設 (週曆+inbox+preview三欄) / B=Inbox 為主 /
      *  C=行事曆為主 */
     layout?: 'A' | 'B' | 'C';
+    /** 錄音頁佈局: A=雙欄 (slide+subtitle) / B=字幕專注 / C=影片. */
+    recordingLayout?: 'A' | 'B' | 'C';
     /** Toast 風格: card=卡片 (預設) / typewriter=打字機 mono 風 */
     toastStyle?: 'card' | 'typewriter';
   };
@@ -324,6 +330,12 @@ export interface AppSettings {
      *  specific backend. Ignored in Phase 1 builds where no GPU features
      *  are compiled in. */
     asrBackend?: 'auto' | 'cuda' | 'metal' | 'vulkan' | 'cpu';
+    /** Local transcription model variant — Parakeet INT8 (default,
+     *  smaller / faster) vs FP32 (more accurate, larger). */
+    parakeetVariant?: 'int8' | 'fp32';
+    /** Frontend logging verbosity. Echoes `console.*` and (if Tauri
+     *  exposes a setter later) the Rust tracing subscriber level. */
+    logLevel?: 'error' | 'warn' | 'info' | 'debug' | 'trace';
   };
   /**
    * Release channel preference for the updater.
@@ -344,6 +356,10 @@ export interface AppSettings {
    */
   updates?: {
     channel?: 'stable' | 'beta' | 'alpha';
+    /** Auto-download new versions in background (default true on first run). */
+    autoDownload?: boolean;
+    /** Install downloaded update automatically on app close (default false). */
+    autoInstall?: boolean;
   };
   /**
    * 第三方平台整合（v0.7.x+）。

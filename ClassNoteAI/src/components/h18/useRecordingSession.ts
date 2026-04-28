@@ -32,6 +32,20 @@ import type { SubtitleSegment } from '../../types/subtitle';
 
 export type RecordingStatus = AudioRecorderStatus | 'stopping';
 
+export type StopPhase =
+    | 'idle'
+    | 'transcribe' // flush transcription tail
+    | 'segment'    // .pcm → .wav finalize
+    | 'summary'    // (留白) AI summary trigger
+    | 'index'      // (留白) RAG embedding
+    | 'done';
+
+/** Event dispatched on `window` whenever a lecture's recording status
+ *  toggles (start/stop). H18DeepApp listens for this so it can refresh
+ *  the active recording island instantly instead of waiting on the 4s
+ *  poll. */
+export const RECORDING_CHANGE_EVENT = 'classnote-lecture-recording-changed';
+
 export interface UseRecordingSessionOpts {
     courseId: string;
     lectureId: string;
@@ -43,6 +57,12 @@ export interface RecordingSession {
     segments: SubtitleSegment[];
     currentText: string;
     error: string | null;
+    /** Current finalize phase while `status === 'stopping'`. */
+    stopPhase: StopPhase;
+    /** Wall-clock epoch ms when `start()` was called, or 0 before that.
+     *  Subtract from `segment.startTime` (also epoch ms during live
+     *  recording) to get a relative offset for display. */
+    sessionStartMs: number;
     /** Start a fresh recording session (sets lecture status='recording'). */
     start: () => Promise<void>;
     pause: () => Promise<void>;
@@ -62,6 +82,7 @@ export function useRecordingSession({
     const [segments, setSegments] = useState<SubtitleSegment[]>([]);
     const [currentText, setCurrentText] = useState('');
     const [error, setError] = useState<string | null>(null);
+    const [stopPhase, setStopPhase] = useState<StopPhase>('idle');
     const startTimeRef = useRef<number>(0);
 
     // Lazy-create AudioRecorder
@@ -155,6 +176,16 @@ export function useRecordingSession({
 
             await transcriptionService.start();
 
+            // ⚠ wire mic → ASR. Without this the audio never reaches
+            // Parakeet and the subtitle stream stays empty even though
+            // the recorder is happily flushing PCM to disk.
+            // Legacy NotesView had this; the H18 hook lost it during
+            // P6.5 extraction (silent regression — caught only when the
+            // user noticed «雙語字幕» pane stayed blank during recording).
+            recorder.onChunk((chunk) => {
+                transcriptionService.addAudioChunk(chunk);
+            });
+
             // Crash-safe persistence
             try {
                 recorder.enablePersistence(lectureId);
@@ -166,6 +197,11 @@ export function useRecordingSession({
             startTimeRef.current = Date.now();
             setElapsed(0);
             setStatus('recording');
+            window.dispatchEvent(
+                new CustomEvent(RECORDING_CHANGE_EVENT, {
+                    detail: { lectureId, courseId, kind: 'start' },
+                }),
+            );
         } catch (err) {
             console.error('[useRecordingSession] start failed:', err);
             setError(
@@ -201,7 +237,9 @@ export function useRecordingSession({
         const recorder = recorderRef.current;
         if (!recorder) return;
         setStatus('stopping');
+        setStopPhase('transcribe');
         try {
+            // Phase 1: stop transcription, drain in-memory tail
             transcriptionService.stop();
 
             // Snapshot in-memory WAV (NOT fatal if empty — .pcm on disk has it)
@@ -214,12 +252,14 @@ export function useRecordingSession({
 
             await recorder.stop();
 
+            // Phase 2: finalize .pcm → .wav (this is the real "segment" /
+            // disk-write phase, not text segmentation per se)
+            setStopPhase('segment');
             const audioDir = await invoke<string>('get_audio_dir');
             const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
             const fullPath = `${audioDir}${sep}lecture_${lectureId}_${Date.now()}.wav`;
 
             let audioPath: string | null = null;
-            // Step A: finalize persisted .pcm → .wav (preferred — full session)
             try {
                 const finalized = await recorder.finalizeToDisk(fullPath);
                 if (finalized) audioPath = finalized;
@@ -227,7 +267,7 @@ export function useRecordingSession({
                 console.warn('[useRecordingSession] finalizeToDisk failed:', err);
             }
 
-            // Step B: in-memory WAV fallback
+            // In-memory fallback
             if (!audioPath && wav) {
                 try {
                     await invoke('write_binary_file', {
@@ -240,7 +280,11 @@ export function useRecordingSession({
                 }
             }
 
-            // Step C: persist lecture row regardless
+            // Phase 3: persist lecture row → completed
+            // (Real AI summary + RAG indexing live downstream — when those
+            //  are wired this is where we'd `setStopPhase('summary')` and
+            //  await llm.generateSummary, then 'index' for embedding.)
+            setStopPhase('summary');
             const lecture = await storageService.getLecture(lectureId);
             const final: Lecture = {
                 ...(lecture || {
@@ -263,15 +307,44 @@ export function useRecordingSession({
             };
             await storageService.saveLecture(final);
 
+            setStopPhase('index');
+            // No real RAG re-index in this hook — leaving the phase as
+            // visual signal only. (App-level RAG service handles it
+            // separately when summary/note tasks fire.)
+
+            setStopPhase('done');
             setStatus('stopped');
+            window.dispatchEvent(
+                new CustomEvent(RECORDING_CHANGE_EVENT, {
+                    detail: { lectureId, courseId, kind: 'stop' },
+                }),
+            );
         } catch (err) {
             console.error('[useRecordingSession] stop failed:', err);
             setError(err instanceof Error ? err.message : String(err) || '結束失敗');
             setStatus('stopped');
+            setStopPhase('done');
+            window.dispatchEvent(
+                new CustomEvent(RECORDING_CHANGE_EVENT, {
+                    detail: { lectureId, courseId, kind: 'stop' },
+                }),
+            );
         }
     }, [courseId, elapsed, lectureId]);
 
-    return { status, elapsed, segments, currentText, error, start, pause, resume, stop };
+    return {
+        status,
+        elapsed,
+        segments,
+        currentText,
+        error,
+        stopPhase,
+        sessionStartMs: startTimeRef.current,
+        start,
+        pause,
+        resume,
+        stop,
+    };
 }
 
 export function fmtElapsed(seconds: number): string {
