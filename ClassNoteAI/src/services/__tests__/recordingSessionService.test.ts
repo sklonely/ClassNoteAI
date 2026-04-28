@@ -53,6 +53,10 @@ const mockRecorderInstance = {
         sampleRate: 48_000,
     })),
     flushPersistenceNow: vi.fn(async () => true),
+    // Sprint 2 (S2.3) stop pipeline calls finalizeToDisk in step 2 to
+    // wrap PCM → WAV. Default returns the path unchanged so step 6 has
+    // an audio_path to persist.
+    finalizeToDisk: vi.fn(async (path: string) => path),
     mediaStream: null as unknown,
 };
 
@@ -282,16 +286,19 @@ describe('recordingSessionService — state machine', () => {
         expect(recordingSessionService.getState().status).toBe('stopped');
     });
 
-    it('stop() failure flips stopPhase=failed but still status=stopped', async () => {
-        const { transcriptionService } = await import('../transcriptionService');
-        (transcriptionService.stop as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-            new Error('asr drain failed'),
-        );
+    it('stop() fatal-step failure flips stopPhase=failed but still status=stopped', async () => {
+        // Sprint 2 (S2.3): transcribe failure is non-fatal — the new
+        // 6-step pipeline only flips `failed` when audio finalize or
+        // subtitle persistence fails. We force a saveSubtitles error
+        // (step 3 fatal) to exercise the failure-state code path.
+        storageMockState.saveSubtitlesShouldThrow = true;
         await recordingSessionService.start('c', 'l');
         await recordingSessionService.stop();
         expect(recordingSessionService.getState().status).toBe('stopped');
         expect(recordingSessionService.getState().stopPhase).toBe('failed');
-        expect(recordingSessionService.getState().error).toMatch(/asr drain/i);
+        expect(recordingSessionService.getState().error).toMatch(
+            /subtitles save failed/i,
+        );
     });
 });
 
@@ -419,10 +426,10 @@ describe('recordingSessionService — RECORDING_CHANGE_EVENT', () => {
 
     it('stop() failure still dispatches kind:stop', async () => {
         const events = captureRecordingChangeEvents();
-        const { transcriptionService } = await import('../transcriptionService');
-        (transcriptionService.stop as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-            new Error('boom'),
-        );
+        // S2.3: trip a fatal step (saveSubtitles) so the pipeline takes
+        // its early-return failure branch — that branch must still
+        // dispatch kind:stop so listeners (TopBar pulse, etc.) clear.
+        storageMockState.saveSubtitlesShouldThrow = true;
         await recordingSessionService.start('c', 'l');
         await recordingSessionService.stop();
         expect(events.map((e) => e.kind)).toContain('stop');

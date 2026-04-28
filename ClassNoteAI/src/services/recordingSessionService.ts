@@ -46,7 +46,25 @@ import {
 import { AudioRecorder } from './audioRecorder';
 import { transcriptionService } from './transcriptionService';
 import { subtitleService } from './subtitleService';
+import { taskTrackerService } from './taskTrackerService';
+import { translationPipeline } from './streaming/translationPipeline';
+import { summarizeStream } from './llm/tasks';
 import { buildDeviceChangeWarning, type RecordingInputSnapshot } from './recordingDeviceMonitor';
+
+// NOTE: `storageService` stays behind the existing dynamic-import
+// `storage()` helper. Static-importing it here makes it visible to the
+// downstream test boundary (H18DeepApp.test.tsx mocks it via a factory
+// referencing test-scope `mockStorage`) BEFORE the test's top-level
+// consts have finished evaluating, which trips a Cannot-access-before-
+// init ReferenceError. Lazy import preserves that test's contract.
+//
+// `taskTrackerService`, `summarizeStream`, `globalSearchService`, and
+// `translationPipeline` are NOT subject to that constraint — no test
+// downstream uses the same factory-with-closure-var pattern for them.
+// Static-importing them avoids a different bug we hit in S2.3: vitest's
+// dynamic-import mock cache occasionally returned the *real* module
+// instead of the mocked one when the same `await import()` was issued
+// concurrently from multiple call sites in stop() (steps 4/5 race).
 
 // Re-export contract symbols so callers don't have to know we live
 // behind a contract dir. Same pattern subtitleService et al. follow.
@@ -113,8 +131,19 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         return m.toastService;
     }
 
+    /**
+     * Lazy-imported handle to storageService. Cached per-instance after
+     * first import so we don't pay the dynamic-import roundtrip on every
+     * step of the stop pipeline. Caching also dodges a vitest quirk
+     * we hit in S2.3 where repeated `await import()` of the same module
+     * occasionally resolved to the *real* module instead of the mocked
+     * one when the imports overlapped in time.
+     */
+    private storageCache: typeof import('./storageService').storageService | null = null;
     private async storage() {
+        if (this.storageCache) return this.storageCache;
         const m = await import('./storageService');
+        this.storageCache = m.storageService;
         return m.storageService;
     }
 
@@ -300,30 +329,417 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             // idempotence can call without checking.
             return;
         }
-        // Capture identifiers BEFORE we wipe state — `dispatch('stop')`
-        // needs them and the setState({ status: 'stopped' }) we do at
-        // the end will leave them set, so we don't need to copy here.
-        this.stopElapsedTimer();
-        this.setState({ status: 'stopping', stopPhase: 'transcribe' });
 
-        // Sprint 1 stub: minimum-viable stop. Sprint 2 (S2.3) replaces
-        // the body of this try with the real 6-step pipeline.
-        try {
-            await transcriptionService.stop();
-            await this.recorder?.stop();
-            this.cleanupListeners();
-            this.setState({ status: 'stopped', stopPhase: 'done' });
-            this.dispatch('stop');
-        } catch (err) {
+        const lectureId = this.state.lectureId;
+        const courseId = this.state.courseId;
+        if (!lectureId || !courseId) {
+            // Defensive — start() always sets both. If we somehow got
+            // here without identifiers we cannot run the pipeline at all.
+            this.stopElapsedTimer();
             this.cleanupListeners();
             this.setState({
                 status: 'stopped',
                 stopPhase: 'failed',
-                error: err instanceof Error ? err.message : String(err),
+                error: 'no active lecture',
             });
-            // Still dispatch stop — listeners (TopBar pulse etc.) need
-            // to know the recording ended even if it ended badly.
             this.dispatch('stop');
+            return;
+        }
+
+        // Stop the elapsed-timer regardless of which step we end up on.
+        this.stopElapsedTimer();
+        this.setState({ status: 'stopping', stopPhase: 'transcribe' });
+
+        // ──────────────────────────────────────────────────────────────
+        // Step 1 · transcribe — flush ASR + drain pending translations
+        // Failure here is NOT fatal; we lose the very last sentence's
+        // zh translation in the worst case, but the user still has
+        // everything that was already committed by step-2 onward.
+        // ──────────────────────────────────────────────────────────────
+        try {
+            await transcriptionService.stop();
+        } catch (err) {
+            console.error(
+                '[recordingSession.stop] step 1 (transcribe) failed:',
+                err,
+            );
+            // not fatal — keep going
+        }
+        try {
+            await translationPipeline.awaitDrain();
+        } catch (err) {
+            console.error(
+                '[recordingSession.stop] step 1 (translation drain) failed:',
+                err,
+            );
+            // not fatal
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // Step 2 · segment — wrap PCM → WAV on disk via the Rust side.
+        // Audio is the user's source-of-truth; if this fails we abort
+        // the pipeline and surface a failure so the user knows their
+        // recording wasn't saved.
+        // ──────────────────────────────────────────────────────────────
+        this.setState({ stopPhase: 'segment' });
+        let finalAudioPath: string | null = null;
+        try {
+            // Build the canonical audio path the same way the recovery
+            // service does (recordingRecoveryService.recover) so the
+            // app's audio-path conventions stay consistent.
+            const { invoke } = await import('@tauri-apps/api/core');
+            const audioDir = await invoke<string>('get_audio_dir');
+            const sep =
+                typeof navigator !== 'undefined' &&
+                navigator.userAgent.includes('Windows')
+                    ? '\\'
+                    : '/';
+            const finalPath = `${audioDir}${sep}lecture_${lectureId}_${Date.now()}.wav`;
+            const written = await this.recorder?.finalizeToDisk(finalPath);
+            // finalizeToDisk returns null when persistence wasn't enabled
+            // (test paths, mostly). Still treat it as "non-fatal but no
+            // audio saved" — the JS-side WAV fallback is gone after the
+            // recorder was destroyed. Down-stream lecture row simply
+            // won't have audio_path, the rest of the pipeline still runs.
+            finalAudioPath = written ?? null;
+            // Also stop the recorder's audio graph if it's still running.
+            try {
+                await this.recorder?.stop();
+            } catch (err) {
+                console.warn(
+                    '[recordingSession.stop] recorder.stop after finalize failed:',
+                    err,
+                );
+            }
+        } catch (err) {
+            console.error(
+                '[recordingSession.stop] step 2 (segment) failed:',
+                err,
+            );
+            this.cleanupListeners();
+            this.setState({
+                status: 'stopped',
+                stopPhase: 'failed',
+                error:
+                    err instanceof Error
+                        ? `audio finalize failed: ${err.message}`
+                        : 'audio finalize failed',
+            });
+            this.dispatch('stop');
+            return;
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // Step 3 · index — saveSubtitles + invalidate global search
+        // Subtitles are the user's other source-of-truth (search /
+        // review). Failure here is fatal for the pipeline.
+        // ──────────────────────────────────────────────────────────────
+        this.setState({ stopPhase: 'index' });
+        try {
+            const storage = await this.storage();
+            const segments = subtitleService.getSegments();
+
+            // Map SubtitleSegment → Subtitle for DB persistence.
+            // We use 'rough' for `type` because Sprint 3 'live' enum
+            // expansion (V11) hasn't shipped yet — fixture S0.2 also
+            // uses 'rough'. timestamps stored as **seconds** (DB schema)
+            // computed against sessionStartMs so they're session-relative.
+            const sessionStart = this.state.sessionStartMs ?? 0;
+            const subtitles = segments.map((seg, i) => {
+                const startMs = Math.max(0, seg.startTime - sessionStart);
+                return {
+                    id: `sub-${lectureId}-${i}`,
+                    lecture_id: lectureId,
+                    timestamp: Math.max(0, Math.floor(startMs / 1000)),
+                    text_en:
+                        seg.fineText ?? seg.roughText ?? seg.displayText ?? '',
+                    text_zh: seg.fineTranslation ?? seg.roughTranslation,
+                    type: 'rough' as const,
+                    confidence: seg.fineConfidence ?? seg.roughConfidence,
+                    created_at: new Date(
+                        (this.state.sessionStartMs ?? Date.now()) + startMs,
+                    ).toISOString(),
+                };
+            });
+
+            await storage.saveSubtitles(subtitles);
+
+            // N4 · keep global search index in sync. The service builds
+            // its own index from storageService on next search; we just
+            // need to invalidate so the *next* ⌘K query rebuilds with
+            // the new lecture's data included. Dynamic import to keep
+            // globalSearchService (which statically imports storageService)
+            // out of the H18DeepApp.test.tsx mock-hoist hot path.
+            try {
+                const { globalSearchService } = await import('./globalSearchService');
+                globalSearchService.invalidate();
+            } catch (err) {
+                console.warn(
+                    '[recordingSession.stop] global search invalidate failed:',
+                    err,
+                );
+                // not fatal — search will still rebuild from
+                // classnote-courses-changed when the lecture row flips.
+            }
+        } catch (err) {
+            console.error(
+                '[recordingSession.stop] step 3 (index) failed:',
+                err,
+            );
+            this.cleanupListeners();
+            this.setState({
+                status: 'stopped',
+                stopPhase: 'failed',
+                error:
+                    err instanceof Error
+                        ? `subtitles save failed: ${err.message}`
+                        : 'subtitles save failed',
+            });
+            this.dispatch('stop');
+            return;
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // Step 4 · summary — kick off background task. We do NOT await
+        // — stop() should return to the user in seconds, not the 30-60s
+        // a long lecture's reduce phase takes.
+        // ──────────────────────────────────────────────────────────────
+        this.setState({ stopPhase: 'summary' });
+        try {
+            const summaryTaskId = taskTrackerService.start({
+                kind: 'summarize',
+                label: '生成課堂摘要',
+                lectureId,
+            });
+            // Fire-and-forget. runBackgroundSummary handles its own
+            // tracker complete/fail bookkeeping.
+            void this.runBackgroundSummary(summaryTaskId, lectureId);
+        } catch (err) {
+            console.warn(
+                '[recordingSession.stop] step 4 (summary kick-off) failed:',
+                err,
+            );
+            // not fatal — review page can manually retry from the regen
+            // button.
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // Step 5 · index lecture — RAG embeddings. Same fire-and-forget
+        // pattern as step 4.
+        // ──────────────────────────────────────────────────────────────
+        try {
+            const indexTaskId = taskTrackerService.start({
+                kind: 'index',
+                label: '建立 RAG 索引',
+                lectureId,
+            });
+            void this.runBackgroundIndex(indexTaskId, lectureId);
+        } catch (err) {
+            console.warn(
+                '[recordingSession.stop] step 5 (index kick-off) failed:',
+                err,
+            );
+            // not fatal — RAG retrieval will fall back to BM25 only.
+        }
+
+        // ──────────────────────────────────────────────────────────────
+        // Step 6 · done — flip the lecture row to 'completed', wire in
+        // the audio_path we got from step 2, dispatch the event.
+        // ──────────────────────────────────────────────────────────────
+        try {
+            const storage = await this.storage();
+            const lecture = await storage.getLecture(lectureId);
+            if (lecture) {
+                await storage.saveLecture({
+                    ...lecture,
+                    status: 'completed',
+                    audio_path: finalAudioPath ?? lecture.audio_path,
+                    updated_at: new Date().toISOString(),
+                });
+            } else {
+                // No row yet — happens in tests that never created one.
+                // Do a minimal upsert with the canonical shape. Cast
+                // because Lecture type requires fields we don't have
+                // here; the Rust side rejects truly invalid rows.
+                await storage.saveLecture({
+                    id: lectureId,
+                    course_id: courseId,
+                    title: '',
+                    date: new Date().toISOString(),
+                    duration: 0,
+                    status: 'completed',
+                    audio_path: finalAudioPath ?? undefined,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                } as unknown as Parameters<typeof storage.saveLecture>[0]);
+            }
+        } catch (err) {
+            console.error(
+                '[recordingSession.stop] step 6 (lecture status) failed:',
+                err,
+            );
+            // not fatal — we still flip our own state to stopped/done
+            // and dispatch so the UI advances to review.
+        }
+
+        this.cleanupListeners();
+        this.setState({ status: 'stopped', stopPhase: 'done' });
+        this.dispatch('stop');
+    }
+
+    /**
+     * Step 4 background task — pull subtitles from storage, run them
+     * through `summarizeStream`, persist the resulting note, and update
+     * the task tracker with progress along the way.
+     *
+     * Failure is captured in the tracker only — `stop()` already
+     * resolved by the time we get here. ReviewPage's note tab is
+     * responsible for surfacing retry UI to the user.
+     */
+    private async runBackgroundSummary(
+        taskId: string,
+        lectureId: string,
+    ): Promise<void> {
+        try {
+            const storage = await this.storage();
+            const subs = await storage
+                .getSubtitles(lectureId)
+                .catch(() => [] as Awaited<ReturnType<typeof storage.getSubtitles>>);
+            // Build the source text. Prefer English (richer transcript);
+            // fall back to zh per-row when text_en is empty so we still
+            // produce *something* for the user.
+            const text = subs
+                .map((s) => s.text_en || s.text_zh || '')
+                .filter(Boolean)
+                .join('\n');
+
+            // Don't waste an LLM call on a 5-second test ping.
+            // 100 chars ≈ one short paragraph, which matches the
+            // PHASE-7-PLAN §S2.3 minimum.
+            if (text.trim().length < 100) {
+                taskTrackerService.complete(taskId);
+                return;
+            }
+
+            taskTrackerService.update(taskId, { status: 'running' });
+
+            let fullSummary = '';
+            let chunkCount = 0;
+
+            for await (const event of summarizeStream({
+                content: text,
+                language: 'zh',
+            })) {
+                if (
+                    event.phase === 'reduce-delta' &&
+                    typeof event.delta === 'string'
+                ) {
+                    fullSummary += event.delta;
+                    chunkCount += 1;
+                    // Cap progress at 0.95 — we still need to do the DB
+                    // write before we can call it done.
+                    taskTrackerService.update(taskId, {
+                        progress: Math.min(0.95, chunkCount * 0.05),
+                        status: 'running',
+                    });
+                } else if (
+                    event.phase === 'done' &&
+                    typeof event.fullText === 'string'
+                ) {
+                    fullSummary = event.fullText;
+                }
+            }
+
+            // Persist into the note row. Merge with whatever's already
+            // there (qa_records, sections from a prior run) so we don't
+            // wipe user work when re-summarising.
+            try {
+                const existing = await storage.getNote(lectureId);
+                const now = new Date().toISOString();
+                await storage.saveNote({
+                    lecture_id: lectureId,
+                    title: existing?.title ?? '',
+                    summary: fullSummary,
+                    sections: existing?.sections ?? [],
+                    qa_records: existing?.qa_records ?? [],
+                    generated_at: now,
+                });
+            } catch (err) {
+                console.error(
+                    '[recordingSession.runBackgroundSummary] saveNote failed:',
+                    err,
+                );
+                // Surface as a failed task — but the summary text is
+                // gone unless we also store it elsewhere; today we don't.
+                taskTrackerService.fail(
+                    taskId,
+                    err instanceof Error
+                        ? err.message
+                        : '保存筆記失敗',
+                );
+                return;
+            }
+
+            taskTrackerService.complete(taskId);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            taskTrackerService.fail(taskId, msg);
+        }
+    }
+
+    /**
+     * Step 5 background task — run RAG indexing for the lecture, with
+     * progress reported into the task tracker. Failure is non-fatal:
+     * RAG falls back to BM25-only retrieval if there are no embeddings.
+     */
+    private async runBackgroundIndex(
+        taskId: string,
+        lectureId: string,
+    ): Promise<void> {
+        try {
+            taskTrackerService.update(taskId, { status: 'running' });
+
+            // ragService pulls in pdfjs-dist which crashes when loaded
+            // at module-eval time in jsdom (`DOMMatrix is not defined`).
+            // Lazy-load it here so it stays out of recordingSessionService's
+            // import graph.
+            const { ragService } = await import('./ragService');
+
+            // Build transcriptText from the just-saved subtitles. PDF
+            // text is a separate import flow; we don't have one yet
+            // for live recordings, so pass null.
+            const storage = await this.storage();
+            const subs = await storage
+                .getSubtitles(lectureId)
+                .catch(() => [] as Awaited<ReturnType<typeof storage.getSubtitles>>);
+            const transcriptText = subs
+                .map((s) => s.text_en || s.text_zh || '')
+                .filter(Boolean)
+                .join('\n');
+
+            await ragService.indexLecture(
+                lectureId,
+                /* pdfText */ null,
+                transcriptText.length > 0 ? transcriptText : null,
+                (progress) => {
+                    // IndexingProgress.{stage,current,total}; map to 0..1.
+                    if (progress.total > 0) {
+                        const p = Math.min(
+                            0.99,
+                            progress.current / progress.total,
+                        );
+                        taskTrackerService.update(taskId, {
+                            progress: p,
+                            status: 'running',
+                        });
+                    }
+                },
+            );
+
+            taskTrackerService.complete(taskId);
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            taskTrackerService.fail(taskId, msg);
         }
     }
 
@@ -364,6 +780,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         this.lastInputSnapshot = null;
         this.visibilityHidden = false;
         this.visibilityHiddenAt = null;
+        this.storageCache = null;
         this.state = { ...INITIAL_STATE, segments: [] };
         // NOTE: subscribers Set is intentionally NOT cleared. Tests
         // that subscribe register their own cleanup; clearing here
