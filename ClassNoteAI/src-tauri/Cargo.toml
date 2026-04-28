@@ -126,7 +126,7 @@ urlencoding = "2.1"
 # TranslateGemma sidecar (llama-server, see `crate::translation::gemma`).
 # File system utilities
 walkdir = "2"
-dirs = "5"
+dirs = "6"
 # Tiny TOML parser for `dev_flags.rs` — experimental toggles read
 # before Tauri / SQLite init (so they can't live in the main DB).
 toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
