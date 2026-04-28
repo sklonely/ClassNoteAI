@@ -1,0 +1,80 @@
+/*
+ * H18EmptyState · Phase 7 Sprint 3 Round 3 (W13)
+ *
+ * Token-only — 不准 hardcode 顏色 / spacing / radius / font-size / z-index。
+ * 對應 docs/design/h18-deep/H18-DESIGN-SYSTEM.md §6 (Iconography)
+ *      + §4.1 spacing + §3 typography.
+ */
+
+.empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--h18-space-3);
+    padding: var(--h18-space-12) var(--h18-space-8);
+    text-align: center;
+    color: var(--h18-text-mid);
+}
+
+.icon {
+    font-size: var(--h18-icon-xl);
+    line-height: 1;
+    color: var(--h18-text-dim);
+    margin-bottom: var(--h18-space-2);
+    /* lucide icons render via SVG width/height props but inherit currentColor */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.heading {
+    font-size: var(--h18-text-md);
+    font-weight: 500;
+    color: var(--h18-text);
+    line-height: var(--h18-leading-tight);
+}
+
+.description {
+    font-size: var(--h18-text-sm);
+    color: var(--h18-text-dim);
+    line-height: var(--h18-leading-base);
+    max-width: 320px;
+    white-space: pre-line;
+}
+
+.cta {
+    margin-top: var(--h18-space-3);
+    padding: var(--h18-space-3) var(--h18-space-8);
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border-radius: var(--h18-radius-md);
+    cursor: pointer;
+    font-size: var(--h18-text-sm);
+    font-family: inherit;
+    transition:
+        background var(--h18-duration-fast) var(--h18-ease-out),
+        border-color var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.cta:hover {
+    background: var(--h18-row-hover);
+}
+
+.cta:focus-visible {
+    outline: 2px solid var(--h18-accent);
+    outline-offset: 2px;
+}
+
+.cta.primary {
+    background: var(--h18-accent);
+    color: white;
+    border: 1px solid transparent;
+}
+
+.cta.primary:hover {
+    /* keep accent — token system has no accent-hover variant; rely on
+     * subtle opacity instead of off-token color */
+    opacity: 0.9;
+}

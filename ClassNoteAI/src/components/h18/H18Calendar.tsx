@@ -15,9 +15,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Calendar } from 'lucide-react';
 import type { Course } from '../../types';
 import { courseColor } from './courseColor';
 import { deriveWeekEvents, type WeekRange } from './weekParse';
+import { H18EmptyState } from './H18EmptyState';
 import s from './H18Calendar.module.css';
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -306,9 +308,19 @@ export default function H18Calendar({
                 })}
                 {events.length === 0 && (
                     <div className={s.emptyHint}>
-                        {weekOffset === 0
-                            ? '沒有從 syllabus 推到時間 — 在課程編輯加上「上課時間」(例如「週一 14:00-15:30」) 即會顯示。'
-                            : '這週沒有排到課（或所有課都已過 / 還沒開始）。'}
+                        <H18EmptyState
+                            icon={<Calendar size={24} />}
+                            heading={
+                                weekOffset === 0
+                                    ? '本週沒有課程'
+                                    : '這週沒有排到課'
+                            }
+                            description={
+                                weekOffset === 0
+                                    ? '在課程編輯加上「上課時間」(例如「週一 14:00-15:30」) 即會顯示。或從個人資料 → 整合 → Canvas 連結你的學校行事曆。'
+                                    : '所有課都已過、還沒開始，或這週沒有對應 syllabus 時間。'
+                            }
+                        />
                     </div>
                 )}
             </div>

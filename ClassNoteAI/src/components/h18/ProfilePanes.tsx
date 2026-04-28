@@ -14,9 +14,12 @@
  *  - PData 回收桶列表 → 顯示真資料 (storageService.listTrashed*)
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { storageService } from '../../services/storageService';
-import type { Course } from '../../types';
+import { confirmService } from '../../services/confirmService';
+import { toastService } from '../../services/toastService';
+import type { Course, Lecture } from '../../types';
 import { useAppSettings } from './useAppSettings';
 import LayoutPreviewSVG, { type Variant } from './LayoutPreviewSVG';
 import {
@@ -2139,50 +2142,268 @@ export function PAudio() {
 }
 
 /* ════════════════════════════════════════════════════════════════
- * PData — 匯入匯出 + 回收桶
+ * PData — 匯入匯出 + 回收桶 (Phase 7 Sprint 3 R3 / S3f)
+ *
+ * 垃圾桶改成階層樹：
+ *   - 同一 course 底下被 cascade 軟刪的 lectures group 在一起。
+ *   - 課程本身也在垃圾桶 → 顯示「已刪課程」標籤 + course-level 還原鈕。
+ *   - lecture 的 parent course 還活著 → 點 lecture 還原會直接 restore_lecture。
+ *   - lecture 的 parent course 也在垃圾桶 → 點 lecture 還原前先 confirm
+ *     「需要連同課程一起回復」，OK 才呼 restore_course (cascade)。
+ *   - bulk: checkbox + 全選 / 還原選取 / 永久刪除選取 (後者目前不支援
+ *     by-id，只能等 30 天清掃 — 標 TODO toast)。
+ *
+ * 對應後端 commands (cp73.0 後)：
+ *   list_trashed_lectures(userId: null), list_deleted_courses(userId),
+ *   restore_lecture(id), restore_course(id) → number,
+ *   hard_delete_trashed_older_than(days)。
+ *
+ * 注意：cp73.0 沒新增 list_trashed_courses；繼續用既有的
+ * list_deleted_courses(user_id) — 兩者語意一樣。先嘗試 list_trashed_courses
+ * (萬一未來補上)，失敗再 fallback 到 list_deleted_courses。
  * ════════════════════════════════════════════════════════════════ */
 
-interface TrashedCourse {
-    id: string;
-    title: string;
-    deleted_at?: string;
+interface CourseGroup {
+    /** course 在垃圾桶 → Course；course 還活著 → null。 */
+    course: Course | null;
+    /** 為了顯示 fallback 標題用。 */
+    courseId: string;
+    lectures: Lecture[];
 }
 
 export function PData() {
-    const [trashed, setTrashed] = useState<TrashedCourse[]>([]);
+    const [trashedLectures, setTrashedLectures] = useState<Lecture[]>([]);
+    const [trashedCourses, setTrashedCourses] = useState<Course[]>([]);
+    const [selected, setSelected] = useState<Set<string>>(new Set());
+    const [busy, setBusy] = useState(false);
+
+    const loadTrash = async () => {
+        const lectures = await invoke<Lecture[]>('list_trashed_lectures', {
+            userId: null,
+        }).catch((err) => {
+            console.warn('[PData] list_trashed_lectures failed:', err);
+            return [] as Lecture[];
+        });
+
+        // cp73.0 沒新增 list_trashed_courses；既有 list_deleted_courses(user_id)
+        // 同義。先嘗試新名稱（未來可能補），失敗再 fallback。
+        const courses = await (async () => {
+            try {
+                return await invoke<Course[]>('list_trashed_courses', {
+                    userId: null,
+                });
+            } catch {
+                try {
+                    return await invoke<Course[]>('list_deleted_courses', {
+                        userId: 'default_user',
+                    });
+                } catch (err) {
+                    console.warn('[PData] list_deleted_courses failed:', err);
+                    return [] as Course[];
+                }
+            }
+        })();
+
+        setTrashedLectures(lectures || []);
+        setTrashedCourses(courses || []);
+    };
 
     useEffect(() => {
-        let cancelled = false;
-        // listTrashedCourses might not exist as a method; use raw invoke
-        import('@tauri-apps/api/core')
-            .then(async ({ invoke }) => {
-                try {
-                    const lst = await invoke<TrashedCourse[]>('list_trashed_courses', {
-                        userId: '',
-                    });
-                    if (!cancelled) setTrashed(lst || []);
-                } catch (err) {
-                    console.warn('[PData] list_trashed_courses failed:', err);
-                }
-            })
-            .catch(() => {});
-        return () => {
-            cancelled = true;
-        };
+        void loadTrash();
     }, []);
 
-    const handleRestore = async (id: string) => {
+    /** group lectures by course_id, attach trashed-course meta if any. */
+    const groupedView = useMemo<CourseGroup[]>(() => {
+        const byCourse = new Map<string, CourseGroup>();
+        for (const lec of trashedLectures) {
+            const key = lec.course_id;
+            let g = byCourse.get(key);
+            if (!g) {
+                const trashedCourse =
+                    trashedCourses.find((c) => c.id === key) || null;
+                g = { course: trashedCourse, courseId: key, lectures: [] };
+                byCourse.set(key, g);
+            }
+            g.lectures.push(lec);
+        }
+        // courses that are themselves trashed but had no trashed lectures
+        for (const c of trashedCourses) {
+            if (!byCourse.has(c.id)) {
+                byCourse.set(c.id, {
+                    course: c,
+                    courseId: c.id,
+                    lectures: [],
+                });
+            }
+        }
+        return Array.from(byCourse.values());
+    }, [trashedLectures, trashedCourses]);
+
+    const totalCount = trashedLectures.length + trashedCourses.length;
+
+    const allIds = useMemo(() => {
+        const ids = new Set<string>();
+        trashedLectures.forEach((l) => ids.add(l.id));
+        trashedCourses.forEach((c) => ids.add(c.id));
+        return ids;
+    }, [trashedLectures, trashedCourses]);
+
+    const toggleSelect = (id: string) => {
+        setSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const handleSelectAll = () => {
+        // toggle: 已全選 → 清空；否則全選
+        setSelected((prev) =>
+            prev.size === allIds.size && allIds.size > 0
+                ? new Set()
+                : new Set(allIds),
+        );
+    };
+
+    const handleRestoreLecture = async (lecture: Lecture) => {
+        if (busy) return;
+        const isCourseDead = trashedCourses.some(
+            (c) => c.id === lecture.course_id,
+        );
+
+        if (isCourseDead) {
+            const ok = await confirmService.ask({
+                title: '需要連同課程一起回復',
+                message: `「${lecture.title}」屬於已刪課程。要把整個課程跟所有課堂都救回嗎？`,
+                confirmLabel: '一起回復',
+                cancelLabel: '取消',
+            });
+            if (!ok) return;
+
+            setBusy(true);
+            try {
+                const count = await invoke<number>('restore_course', {
+                    id: lecture.course_id,
+                });
+                await loadTrash();
+                toastService.success(
+                    '已還原',
+                    `課程與 ${count ?? 0} 個課堂已還原`,
+                );
+                window.dispatchEvent(
+                    new CustomEvent('classnote-courses-changed'),
+                );
+            } catch (err) {
+                toastService.error('還原失敗', String(err));
+            } finally {
+                setBusy(false);
+            }
+            return;
+        }
+
+        setBusy(true);
         try {
-            await storageService.restoreCourse(id);
-            setTrashed((cur) => cur.filter((c) => c.id !== id));
-            window.dispatchEvent(new CustomEvent('classnote-courses-changed'));
+            await invoke('restore_lecture', { id: lecture.id });
+            await loadTrash();
+            toastService.success('已還原', `「${lecture.title}」已還原`);
         } catch (err) {
-            console.warn('[PData] restoreCourse failed:', err);
+            toastService.error('還原失敗', String(err));
+        } finally {
+            setBusy(false);
         }
     };
 
-    const handleNotImplemented = async (label: string) => {
-        const { toastService } = await import('../../services/toastService');
+    const handleRestoreCourse = async (course: Course) => {
+        if (busy) return;
+        setBusy(true);
+        try {
+            const count = await invoke<number>('restore_course', {
+                id: course.id,
+            });
+            await loadTrash();
+            toastService.success(
+                '已還原',
+                `課程「${course.title}」與 ${count ?? 0} 個課堂已還原`,
+            );
+            window.dispatchEvent(new CustomEvent('classnote-courses-changed'));
+        } catch (err) {
+            toastService.error('還原失敗', String(err));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleBulkRestore = async () => {
+        if (busy || selected.size === 0) return;
+        setBusy(true);
+        const initialSize = selected.size;
+        try {
+            // Step 1: courses 先 — 它們會 cascade 把自己底下的 lectures 帶回，
+            // 之後 lectures 那一步就只剩 parent-course-alive 那批。
+            const courseIds = trashedCourses
+                .map((c) => c.id)
+                .filter((id) => selected.has(id));
+            const restoredViaCourse = new Set<string>();
+            for (const cid of courseIds) {
+                try {
+                    await invoke<number>('restore_course', { id: cid });
+                    restoredViaCourse.add(cid);
+                    // lectures whose course was just restored are now alive again
+                    for (const lec of trashedLectures) {
+                        if (lec.course_id === cid) {
+                            restoredViaCourse.add(lec.id);
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[PData] restore_course ${cid} failed:`, err);
+                }
+            }
+
+            // Step 2: lectures 還沒被 cascade 帶回的 (parent course alive)。
+            const lectureIds = trashedLectures
+                .map((l) => l.id)
+                .filter(
+                    (id) => selected.has(id) && !restoredViaCourse.has(id),
+                );
+            for (const lid of lectureIds) {
+                try {
+                    await invoke('restore_lecture', { id: lid });
+                } catch (err) {
+                    console.warn(`[PData] restore_lecture ${lid} failed:`, err);
+                }
+            }
+
+            await loadTrash();
+            setSelected(new Set());
+            toastService.success(
+                '批次還原完成',
+                `${initialSize} 個項目已處理`,
+            );
+            window.dispatchEvent(new CustomEvent('classnote-courses-changed'));
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const handleBulkPermanentDelete = async () => {
+        // V14 backend 沒提供 single-id hard delete；只有 30 天 sweep。
+        // 標 TODO，給 user 清楚預期。
+        const ok = await confirmService.ask({
+            title: '永久刪除選取',
+            message: `選取的 ${selected.size} 個項目將被永久刪除，無法回復。\n\n（後端目前只支援 30 天自動清掃，沒提供逐一強制刪。按下確認只會出提示。）`,
+            confirmLabel: '我了解',
+            cancelLabel: '取消',
+            variant: 'danger',
+        });
+        if (!ok) return;
+        toastService.warning(
+            '永久刪除尚未實作',
+            '目前只支援還原或等 30 天自動清掃；如需立刻清空，請等下個版本。',
+        );
+    };
+
+    const handleNotImplemented = (label: string) => {
         toastService.show({
             message: `${label} 功能後端尚未實作`,
             detail:
@@ -2192,9 +2413,6 @@ export function PData() {
     };
 
     const handleDangerWipe = async () => {
-        const { confirmService } = await import(
-            '../../services/confirmService'
-        );
         const ok = await confirmService.ask({
             title: '清空全部本機資料？',
             message:
@@ -2203,7 +2421,7 @@ export function PData() {
             variant: 'danger',
         });
         if (!ok) return;
-        await handleNotImplemented('清空全部');
+        handleNotImplemented('清空全部');
     };
 
     return (
@@ -2235,10 +2453,10 @@ export function PData() {
 
             <PHead>回收桶</PHead>
             <PRow
-                label={`已刪除課程 · ${trashed.length}`}
-                hint="刪除後的課程暫存於此，30 天後自動清空"
+                label={`垃圾桶 · ${totalCount}`}
+                hint="刪除後的課程與課堂暫存於此，30 天後自動清空。已刪課程底下的課堂會一起列出，可以選擇單獨救回課堂或連課程一起回復。"
             >
-                {trashed.length === 0 ? (
+                {totalCount === 0 ? (
                     <div
                         style={{
                             marginTop: 8,
@@ -2254,15 +2472,201 @@ export function PData() {
                         回收桶空空。
                     </div>
                 ) : (
-                    <div className={s.trashList}>
-                        {trashed.map((c) => (
-                            <div key={c.id} className={s.trashRow}>
-                                <span className={s.trashTitle}>{c.title}</span>
-                                <span className={s.trashMeta}>{c.deleted_at?.slice(0, 10) || '—'}</span>
-                                <PBtn onClick={() => handleRestore(c.id)}>還原</PBtn>
-                            </div>
-                        ))}
-                    </div>
+                    <>
+                        {/* bulk action bar */}
+                        <div
+                            style={{
+                                marginTop: 8,
+                                display: 'flex',
+                                gap: 8,
+                                alignItems: 'center',
+                                flexWrap: 'wrap',
+                            }}
+                        >
+                            <PBtn onClick={handleSelectAll}>
+                                {selected.size > 0
+                                    ? `已選 ${selected.size} / ${allIds.size}`
+                                    : '全選'}
+                            </PBtn>
+                            {selected.size > 0 && (
+                                <>
+                                    <PBtn
+                                        primary
+                                        disabled={busy}
+                                        onClick={handleBulkRestore}
+                                    >
+                                        還原選取
+                                    </PBtn>
+                                    <PBtn
+                                        danger
+                                        disabled={busy}
+                                        onClick={handleBulkPermanentDelete}
+                                    >
+                                        永久刪除選取
+                                    </PBtn>
+                                </>
+                            )}
+                        </div>
+
+                        <div
+                            className={s.trashList}
+                            style={{ marginTop: 10, gap: 8 }}
+                        >
+                            {groupedView.map((g) => (
+                                <div
+                                    key={g.courseId}
+                                    style={{
+                                        border: '1px solid var(--h18-border-soft)',
+                                        borderRadius: 8,
+                                        padding: 8,
+                                        background: 'var(--h18-surface2)',
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        gap: 4,
+                                    }}
+                                >
+                                    {/* course header row */}
+                                    {g.course ? (
+                                        <div
+                                            style={{
+                                                display: 'grid',
+                                                gridTemplateColumns:
+                                                    'auto 1fr auto auto',
+                                                gap: 10,
+                                                alignItems: 'center',
+                                                fontSize: 12,
+                                                padding: '4px 6px',
+                                            }}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={selected.has(g.course.id)}
+                                                onChange={() =>
+                                                    toggleSelect(g.course!.id)
+                                                }
+                                                aria-label={`選取課程 ${g.course.title}`}
+                                            />
+                                            <span
+                                                style={{
+                                                    color: 'var(--h18-text)',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}
+                                            >
+                                                {g.course.title}
+                                            </span>
+                                            <span
+                                                style={{
+                                                    fontSize: 10,
+                                                    padding: '2px 6px',
+                                                    borderRadius: 999,
+                                                    background:
+                                                        'var(--h18-hot-bg, rgba(255,80,80,0.15))',
+                                                    color: 'var(--h18-hot, #ff8080)',
+                                                }}
+                                            >
+                                                已刪課程
+                                            </span>
+                                            <PBtn
+                                                disabled={busy}
+                                                onClick={() =>
+                                                    handleRestoreCourse(
+                                                        g.course!,
+                                                    )
+                                                }
+                                            >
+                                                還原
+                                            </PBtn>
+                                        </div>
+                                    ) : (
+                                        <div
+                                            style={{
+                                                display: 'grid',
+                                                gridTemplateColumns:
+                                                    '1fr auto',
+                                                gap: 10,
+                                                alignItems: 'center',
+                                                fontSize: 11,
+                                                color: 'var(--h18-text-dim)',
+                                                padding: '2px 6px',
+                                            }}
+                                        >
+                                            <span
+                                                style={{
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}
+                                            >
+                                                課程：{g.courseId}
+                                            </span>
+                                            <span
+                                                style={{
+                                                    fontSize: 10,
+                                                    padding: '2px 6px',
+                                                    borderRadius: 999,
+                                                    background:
+                                                        'var(--h18-surface3, rgba(255,255,255,0.04))',
+                                                    color: 'var(--h18-text-dim)',
+                                                }}
+                                            >
+                                                課程仍存活
+                                            </span>
+                                        </div>
+                                    )}
+
+                                    {/* lecture children */}
+                                    {g.lectures.map((lec) => (
+                                        <div
+                                            key={lec.id}
+                                            style={{
+                                                display: 'grid',
+                                                gridTemplateColumns:
+                                                    'auto 1fr auto auto',
+                                                gap: 10,
+                                                alignItems: 'center',
+                                                fontSize: 12,
+                                                padding: '4px 6px 4px 22px',
+                                                borderTop:
+                                                    '1px dashed var(--h18-border-soft)',
+                                            }}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={selected.has(lec.id)}
+                                                onChange={() =>
+                                                    toggleSelect(lec.id)
+                                                }
+                                                aria-label={`選取課堂 ${lec.title}`}
+                                            />
+                                            <span
+                                                className={s.trashTitle}
+                                                style={{
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                }}
+                                            >
+                                                {lec.title}
+                                            </span>
+                                            <span className={s.trashMeta}>
+                                                {lec.date?.slice(0, 10) || '—'}
+                                            </span>
+                                            <PBtn
+                                                disabled={busy}
+                                                onClick={() =>
+                                                    handleRestoreLecture(lec)
+                                                }
+                                            >
+                                                還原
+                                            </PBtn>
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                    </>
                 )}
             </PRow>
 

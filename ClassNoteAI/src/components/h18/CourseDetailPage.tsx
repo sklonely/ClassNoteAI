@@ -21,13 +21,17 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { storageService } from '../../services/storageService';
+import { toastService } from '../../services/toastService';
 import type { Course, Lecture } from '../../types';
 import { courseColor } from './courseColor';
 import CanvasRemindersPanel from './CanvasRemindersPanel';
 import CanvasItemPreviewModal, {
     type CanvasPreviewItem,
 } from './CanvasItemPreviewModal';
+import { LectureContextMenu } from './LectureContextMenu';
+import { LectureEditDialog } from './LectureEditDialog';
 import s from './CourseDetailPage.module.css';
 
 export interface CourseDetailPageProps {
@@ -105,8 +109,24 @@ export default function CourseDetailPage({
 }: CourseDetailPageProps) {
     const [course, setCourse] = useState<Course | null>(null);
     const [lectures, setLectures] = useState<Lecture[]>([]);
+    const [allCourses, setAllCourses] = useState<Course[]>([]);
     const [canvasPreview, setCanvasPreview] = useState<CanvasPreviewItem | null>(null);
     const [loading, setLoading] = useState(true);
+
+    /* ────────── S3d: lecture right-click menu state ──────────
+     * `menuState` drives the LectureContextMenu (right-click menu) and
+     * `editingLecture` opens the LectureEditDialog when the user picks
+     * 「編輯」 from that menu. Both clear back to null after the action
+     * resolves. `refreshTick` forces the lectures useEffect to re-fetch
+     * after a destructive op (delete / move) without us holding stale
+     * lists locally — the backend remains the source of truth. */
+    const [menuState, setMenuState] = useState<{
+        x: number;
+        y: number;
+        lecture: Lecture;
+    } | null>(null);
+    const [editingLecture, setEditingLecture] = useState<Lecture | null>(null);
+    const [refreshTick, setRefreshTick] = useState(0);
 
     useEffect(() => {
         let cancelled = false;
@@ -114,11 +134,16 @@ export default function CourseDetailPage({
         Promise.all([
             storageService.getCourse(courseId),
             storageService.listLecturesByCourse(courseId).catch(() => []),
+            // Pull every course so the lecture context-menu's
+            // 「移動到其他課程」 submenu has a complete list. Failure
+            // here shouldn't break the page — fall back to []。
+            storageService.listCourses().catch(() => []),
         ])
-            .then(([c, lst]) => {
+            .then(([c, lst, all]) => {
                 if (cancelled) return;
                 setCourse(c);
                 setLectures(lst);
+                setAllCourses(all);
             })
             .catch((err) => {
                 console.warn('[CourseDetailPage] load failed:', err);
@@ -129,7 +154,75 @@ export default function CourseDetailPage({
         return () => {
             cancelled = true;
         };
-    }, [courseId]);
+    }, [courseId, refreshTick]);
+
+    /* ────────── S3d: handlers ──────────
+     * Caller-side responsibilities for LectureContextMenu:
+     *   - move : persist new course_id + bump refreshTick (lecture leaves
+     *            this page when it moves to another course)
+     *   - delete: invoke Rust 'delete_lecture' + bump refreshTick
+     *   - edit  : open LectureEditDialog (handled in JSX state)
+     *   - rename: stubbed for now — inline rename UX is a follow-up
+     */
+    const handleContextMenu = (
+        e: React.MouseEvent,
+        lecture: Lecture,
+    ) => {
+        e.preventDefault();
+        // Stop propagation so H18DeepApp's global text-context-menu listener
+        // doesn't ALSO fire on top of our lecture menu.
+        e.stopPropagation();
+        setMenuState({ x: e.clientX, y: e.clientY, lecture });
+    };
+
+    const handleMoveToCourse = async (newCourseId: string) => {
+        if (!menuState) return;
+        const lec = menuState.lecture;
+        // saveLecture demands a full Lecture row; spread + override course_id
+        // and updated_at so the backend timestamp reflects the move.
+        await storageService.saveLecture({
+            ...lec,
+            course_id: newCourseId,
+            updated_at: new Date().toISOString(),
+        });
+        // Lecture is no longer in this course's list — refetch the list.
+        setRefreshTick((v) => v + 1);
+        setMenuState(null);
+    };
+
+    const handleDelete = async () => {
+        if (!menuState) return;
+        try {
+            await invoke('delete_lecture', { id: menuState.lecture.id });
+            setRefreshTick((v) => v + 1);
+            toastService.success(
+                '已刪除',
+                `「${menuState.lecture.title}」已移到垃圾桶`,
+            );
+        } catch (err) {
+            toastService.error('刪除失敗', String(err));
+        } finally {
+            setMenuState(null);
+        }
+    };
+
+    const handleEditSubmit = async (updates: {
+        title: string;
+        date: string;
+        course_id: string;
+        keywords: string[];
+    }) => {
+        if (!editingLecture) return;
+        await storageService.saveLecture({
+            ...editingLecture,
+            title: updates.title,
+            date: updates.date,
+            course_id: updates.course_id,
+            keywords: updates.keywords.join(', '),
+            updated_at: new Date().toISOString(),
+        });
+        setRefreshTick((v) => v + 1);
+    };
 
     const color = courseColor(courseId);
     const gradient = `linear-gradient(135deg, ${color}, ${color}dd)`;
@@ -488,6 +581,7 @@ export default function CourseDetailPage({
                                             key={lec.id}
                                             className={s.lectureRow}
                                             onClick={() => onSelectLecture(lec.id)}
+                                            onContextMenu={(e) => handleContextMenu(e, lec)}
                                             title={lec.title}
                                         >
                                             <span
@@ -728,6 +822,39 @@ export default function CourseDetailPage({
                     accent={color}
                     courseTitle={course.title}
                     onClose={() => setCanvasPreview(null)}
+                />
+            )}
+
+            {/* S3d: lecture right-click menu */}
+            {menuState && (
+                <LectureContextMenu
+                    lecture={menuState.lecture}
+                    courses={allCourses}
+                    x={menuState.x}
+                    y={menuState.y}
+                    onClose={() => setMenuState(null)}
+                    onEdit={() => {
+                        setEditingLecture(menuState.lecture);
+                        setMenuState(null);
+                    }}
+                    onRename={() => {
+                        // Inline rename UX is a follow-up — use 編輯 dialog
+                        // for now so the menu hand-off is still useful.
+                        setEditingLecture(menuState.lecture);
+                        setMenuState(null);
+                    }}
+                    onMoveToCourse={handleMoveToCourse}
+                    onDelete={handleDelete}
+                />
+            )}
+
+            {editingLecture && (
+                <LectureEditDialog
+                    isOpen={!!editingLecture}
+                    lecture={editingLecture}
+                    courses={allCourses.length > 0 ? allCourses : [course]}
+                    onClose={() => setEditingLecture(null)}
+                    onSubmit={handleEditSubmit}
                 />
             )}
         </div>

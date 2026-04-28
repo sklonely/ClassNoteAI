@@ -19,6 +19,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { Inbox } from 'lucide-react';
 import type { Course } from '../../types';
 import {
     useAggregatedCanvasInbox,
@@ -27,6 +28,7 @@ import {
 } from './useAggregatedCanvasInbox';
 import { courseColor } from './courseColor';
 import InboxRow from './InboxRow';
+import { H18EmptyState } from './H18EmptyState';
 import {
     clearInboxState,
     getInboxState,
@@ -459,29 +461,22 @@ export default function H18Inbox({
                 )}
 
                 {filtered.length === 0 && !isFetching && (
-                    <div className={s.empty}>
-                        <span className={s.emptyIcon}>✉</span>
-                        {filter === 'all' && !hasAnyConfigured ? (
-                            <>
-                                <p className={s.emptyTitle}>
-                                    還沒設好 Canvas 整合
-                                </p>
-                                <p className={s.emptyHint}>
-                                    去「個人頁 → 整合」貼 Calendar URL，
-                                    然後配對課程才會看到公告 / 作業到期。
-                                </p>
-                            </>
-                        ) : (
-                            <>
-                                <p className={s.emptyTitle}>
-                                    {activeFilterDef.emptyTitle}
-                                </p>
-                                <p className={s.emptyHint}>
-                                    {activeFilterDef.emptyHint}
-                                </p>
-                            </>
-                        )}
-                    </div>
+                    filter === 'all' && !hasAnyConfigured ? (
+                        <H18EmptyState
+                            icon={<Inbox size={24} />}
+                            heading="還沒設好 Canvas 整合"
+                            description={
+                                '去「個人頁 → 整合」貼 Calendar URL，\n' +
+                                '然後配對課程才會看到公告 / 作業到期。'
+                            }
+                        />
+                    ) : (
+                        <H18EmptyState
+                            icon={<Inbox size={24} />}
+                            heading={activeFilterDef.emptyTitle}
+                            description={activeFilterDef.emptyHint}
+                        />
+                    )
                 )}
 
                 {/* Active filters — grouped by group bucket */}

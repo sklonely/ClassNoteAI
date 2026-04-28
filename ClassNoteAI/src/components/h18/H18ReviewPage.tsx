@@ -20,6 +20,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { FileText } from 'lucide-react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { storageService } from '../../services/storageService';
 import { resolveOrRecoverAudioPath } from '../../services/audioPathService';
@@ -45,6 +46,7 @@ import {
     type TaskTrackerEntry,
 } from '../../services/taskTrackerService';
 import { recordingSessionService } from '../../services/recordingSessionService';
+import { H18EmptyState } from './H18EmptyState';
 import s from './H18ReviewPage.module.css';
 
 export interface H18ReviewPageProps {
@@ -901,9 +903,16 @@ export default function H18ReviewPage({
 
                     {subs.length === 0 ? (
                         <div className={s.transcriptEmpty}>
-                            這堂課還沒有逐字稿。
-                            <br />
-                            錄音 + 轉錄完成後會出現在這裡。
+                            <H18EmptyState
+                                icon={<FileText size={24} />}
+                                heading="這堂課還沒有內容"
+                                description="可以匯入投影片 / 影片，或開始錄音。錄音 + 轉錄完成後會自動出現在這裡。"
+                                cta={{
+                                    label: '匯入材料',
+                                    onClick: () => setEditOpen(true),
+                                    variant: 'primary',
+                                }}
+                            />
                         </div>
                     ) : grouping === 'para' ? (
                         paragraphs.map((p, i) => (

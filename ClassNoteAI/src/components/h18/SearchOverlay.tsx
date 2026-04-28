@@ -12,12 +12,14 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Search } from 'lucide-react';
 import {
     globalSearchService,
     type SearchItem,
 } from '../../services/globalSearchService';
 import { keymapService } from '../../services/keymapService';
 import { SHORTCUTS_CHANGE_EVENT } from '../../services/__contracts__/keymapService.contract';
+import { H18EmptyState } from './H18EmptyState';
 import s from './SearchOverlay.module.css';
 
 export interface SearchOverlayProps {
@@ -164,15 +166,19 @@ export default function SearchOverlay({ open, onClose, onAction }: SearchOverlay
 
                 <div className={s.list} ref={listRef}>
                     {items.length === 0 ? (
-                        <div className={s.empty}>
-                            找不到「{query}」的結果
-                            <div className={s.emptyHint}>
-                                試試課程關鍵字、lecture title，或{' '}
-                                {keymapService.getDisplayLabel('newCourse')} /{' '}
-                                {keymapService.getDisplayLabel('toggleAiDock')} /{' '}
-                                {keymapService.getDisplayLabel('goHome')}
-                            </div>
-                        </div>
+                        <H18EmptyState
+                            icon={<Search size={24} />}
+                            heading={
+                                query
+                                    ? `找不到符合「${query}」的結果`
+                                    : '輸入關鍵字開始搜尋'
+                            }
+                            description={
+                                query
+                                    ? `試試更短的關鍵字、課程標題、lecture title，或 ${keymapService.getDisplayLabel('newCourse')} / ${keymapService.getDisplayLabel('toggleAiDock')} / ${keymapService.getDisplayLabel('goHome')}。`
+                                    : '可搜尋課程、lecture、或常用動作。'
+                            }
+                        />
                     ) : (
                         grouped.map((g) => (
                             <div key={g.group}>

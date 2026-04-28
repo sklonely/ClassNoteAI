@@ -380,6 +380,32 @@ function App() {
     return () => clearTimeout(t);
   }, [appState]);
 
+  // Phase 7 S3.f-FE / W3 — boot-time trash-bin sweep. Hard-delete trashed
+  // rows whose deleted_at is older than 30 days; toast the lecture-id
+  // count so the user sees that "30 天後自動清空" is actually a thing.
+  // Stays silent when nothing was old enough to drop. Delayed 5s so the
+  // boot toast queue (migration / interruption notice) lands first.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    const t = setTimeout(async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const ids = await invoke<string[]>('hard_delete_trashed_older_than', {
+          days: 30,
+        });
+        if (ids && ids.length > 0) {
+          toastService.info(
+            '已永久清除舊資料',
+            `${ids.length} 個 30 天以上的垃圾桶項目已清除`,
+          );
+        }
+      } catch (err) {
+        console.warn('[App] hard_delete_trashed_older_than failed:', err);
+      }
+    }, 5000);
+    return () => clearTimeout(t);
+  }, [appState]);
+
   // 啟動時靜默檢查更新
   useEffect(() => {
     const checkForUpdates = async () => {

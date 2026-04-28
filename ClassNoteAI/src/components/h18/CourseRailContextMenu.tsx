@@ -1,19 +1,46 @@
 /**
- * CourseRailContextMenu · v0.7.0
+ * CourseRailContextMenu · v0.7.0 → Phase 7 Sprint 3 Round 3 (W12)
  *
- * 右鍵 H18Rail 課程 chip 跳出來的小 menu。三個動作：
- *   - 編輯 → 跳 CourseEditPage
- *   - 快速錄音 → 建新 lecture + 跳 recording
- *   - 移除 → 兩段確認（不用 window.confirm）
+ * Right-click on a course chip in H18Rail. As of W12 the menu is unified
+ * to three actions:
  *
- * Position 由父元件給（client coords）。Esc / 點外面 / blur 都會關閉。
+ *   編輯
+ *   新建課堂
+ *   ─
+ *   刪除
+ *
+ * 「快速錄音」 was removed (the rail already exposes a record entry
+ * point — duplicating it inside the menu was confusing). The component
+ * now delegates to the generic H18ContextMenu base (Sprint 3 Round 1)
+ * for keyboard nav, viewport clamping, role wiring and animation.
+ *
+ * Delete confirmation goes through `confirmService` instead of the old
+ * inline two-step view, matching all other destructive flows in H18.
+ *
+ * ## Backward compatibility
+ *
+ * Earlier callers (H18Rail) wire a single `onAction(action)` callback.
+ * That signature is still supported (as `onAction`) so this refactor
+ * doesn't force a same-PR caller migration. Newer callers can pass
+ * `onEdit` / `onCreateLecture` / `onDelete` directly.
+ *
+ * The legacy 'quick-record' action is retained as a type member only so
+ * any caller that switches on the action union still type-checks; it is
+ * never emitted from this menu anymore.
  */
 
-import { useEffect, useRef, useState } from 'react';
 import type { Course } from '../../types';
-import { courseColor } from './courseColor';
-import s from './CourseRailContextMenu.module.css';
+import { confirmService } from '../../services/confirmService';
+import { H18ContextMenu, type H18ContextMenuItem } from './H18ContextMenu';
 
+/**
+ * Legacy action union, retained verbatim so existing callers
+ * (`H18DeepApp.handleCourseAction` etc.) keep type-checking. The
+ * 'quick-record' member is no longer surfaced from the menu but stays
+ * here for callers that still switch on the old shape. The new W12
+ * 「新建課堂」 action does NOT route through this legacy callback —
+ * use the dedicated `onCreateLecture` prop instead.
+ */
 export type CourseRailAction = 'edit' | 'quick-record' | 'delete';
 
 export interface CourseRailContextMenuProps {
@@ -21,135 +48,90 @@ export interface CourseRailContextMenuProps {
     /** Anchor coordinates (clientX / clientY of the contextmenu event). */
     x: number;
     y: number;
-    onAction: (action: CourseRailAction) => void;
     onClose: () => void;
+    /** Preferred (W12+) per-action callbacks. */
+    onEdit?: () => void;
+    onCreateLecture?: () => void;
+    onDelete?: () => void | Promise<void>;
+    /**
+     * Legacy single-callback shape. H18Rail still uses this; kept so
+     * the caller migration can land in a separate PR. New call sites
+     * should prefer the per-action callbacks above.
+     *
+     * @deprecated Wire `onEdit` / `onCreateLecture` / `onDelete` instead.
+     */
+    onAction?: (action: CourseRailAction) => void;
 }
 
-const MENU_WIDTH = 200;
-const MENU_HEIGHT_ESTIMATE = 180; // generous upper bound
-
-export default function CourseRailContextMenu({
+export function CourseRailContextMenu({
     course,
     x,
     y,
-    onAction,
     onClose,
+    onEdit,
+    onCreateLecture,
+    onDelete,
+    onAction,
 }: CourseRailContextMenuProps) {
-    const [confirming, setConfirming] = useState(false);
-    const ref = useRef<HTMLDivElement>(null);
-    const accent = courseColor(course.id);
-
-    // Position — clamp to viewport so the menu doesn't fall off edges
-    const left = Math.min(
-        Math.max(8, x),
-        Math.max(8, window.innerWidth - MENU_WIDTH - 8),
-    );
-    const top = Math.min(
-        Math.max(8, y),
-        Math.max(8, window.innerHeight - MENU_HEIGHT_ESTIMATE - 8),
-    );
-
-    // Esc close + outside-click close
-    useEffect(() => {
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') onClose();
-        };
-        const onDoc = (e: MouseEvent) => {
-            if (!ref.current) return;
-            if (!ref.current.contains(e.target as Node)) onClose();
-        };
-        window.addEventListener('keydown', onKey);
-        // Use capture phase so we beat any other handlers
-        document.addEventListener('mousedown', onDoc, true);
-        document.addEventListener('contextmenu', onDoc, true);
-        return () => {
-            window.removeEventListener('keydown', onKey);
-            document.removeEventListener('mousedown', onDoc, true);
-            document.removeEventListener('contextmenu', onDoc, true);
-        };
-    }, [onClose]);
-
-    const handle = (action: CourseRailAction) => {
-        if (action === 'delete' && !confirming) {
-            setConfirming(true);
-            return;
-        }
-        onAction(action);
-        onClose();
-    };
+    const items: H18ContextMenuItem[] = [
+        {
+            id: 'edit',
+            label: '編輯',
+            onClick: () => {
+                onEdit?.();
+                onAction?.('edit');
+            },
+        },
+        {
+            id: 'new-lecture',
+            label: '新建課堂',
+            onClick: () => {
+                onCreateLecture?.();
+                // Legacy callers don't know about 'new-lecture'; this
+                // action is intentionally not forwarded to onAction.
+            },
+        },
+        {
+            id: 'sep',
+            label: '─',
+            disabled: true,
+        },
+        {
+            id: 'delete',
+            label: '刪除',
+            danger: true,
+            onClick: () => {
+                // Fire-and-forget: H18ContextMenu's onClick is sync.
+                // We close the menu immediately (parent's onClose is
+                // already invoked by the base after this returns) and
+                // then await the user's confirmation.
+                void (async () => {
+                    const ok = await confirmService.ask({
+                        title: '刪除課程？',
+                        message: `「${course.title}」與內含課堂全部會移到垃圾桶。`,
+                        confirmLabel: '刪除',
+                        variant: 'danger',
+                    });
+                    if (!ok) return;
+                    if (onDelete) {
+                        await onDelete();
+                    } else {
+                        onAction?.('delete');
+                    }
+                })();
+            },
+        },
+    ];
 
     return (
-        <div
-            ref={ref}
-            className={s.menu}
-            style={{ left, top, width: MENU_WIDTH }}
-            role="menu"
-        >
-            <div className={s.header}>
-                <span className={s.headerDot} style={{ background: accent }} />
-                <span className={s.headerName} title={course.title}>
-                    {course.title}
-                </span>
-            </div>
-
-            {!confirming ? (
-                <>
-                    <button
-                        type="button"
-                        onClick={() => handle('edit')}
-                        className={s.item}
-                        role="menuitem"
-                    >
-                        <span className={s.itemIcon}>✎</span>
-                        <span>編輯課程</span>
-                    </button>
-                    <button
-                        type="button"
-                        onClick={() => handle('quick-record')}
-                        className={s.item}
-                        role="menuitem"
-                    >
-                        <span className={s.itemIcon} style={{ color: '#c0392b' }}>
-                            ●
-                        </span>
-                        <span>快速錄音</span>
-                        <span className={s.itemHint}>新建 lecture</span>
-                    </button>
-                    <div className={s.divider} />
-                    <button
-                        type="button"
-                        onClick={() => handle('delete')}
-                        className={`${s.item} ${s.itemDanger}`}
-                        role="menuitem"
-                    >
-                        <span className={s.itemIcon}>🗑</span>
-                        <span>移除課程</span>
-                    </button>
-                </>
-            ) : (
-                <div className={s.confirmBox}>
-                    <div className={s.confirmTitle}>確定要移除這門課？</div>
-                    <div className={s.confirmDesc}>
-                        會移到回收桶，30 天內可從「資料管理」還原。
-                    </div>
-                    <div className={s.confirmActions}>
-                        <button
-                            type="button"
-                            onClick={() => setConfirming(false)}
-                            className={s.confirmCancel}
-                        >
-                            取消
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => handle('delete')}
-                            className={s.confirmDelete}
-                        >
-                            移除
-                        </button>
-                    </div>
-                </div>
-            )}
-        </div>
+        <H18ContextMenu
+            items={items}
+            x={x}
+            y={y}
+            onClose={onClose}
+            ariaLabel={`${course.title} 操作`}
+        />
     );
 }
+
+export default CourseRailContextMenu;
