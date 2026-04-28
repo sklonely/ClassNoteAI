@@ -70,6 +70,28 @@ impl Database {
         Ok(db)
     }
 
+    /// Test-only: open an in-memory SQLite DB and run the same
+    /// `init_tables` migration path as production. Used by the
+    /// reusable harness in `storage::database_test` (Phase 7 Sprint 0
+    /// task S0.4) so cascade-delete / restore / hard_delete tests can
+    /// run without touching the filesystem.
+    #[cfg(test)]
+    pub(crate) fn open_in_memory() -> SqlResult<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Database { conn };
+        db.init_tables()?;
+        Ok(db)
+    }
+
+    /// Test-only: borrow the underlying rusqlite connection so the
+    /// harness in a sibling `database_test` module can issue raw
+    /// SELECT/INSERT for assertions and seeding. Production code should
+    /// keep using the public CRUD methods on `Database`.
+    #[cfg(test)]
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// 初始化數據表
     fn init_tables(&self) -> SqlResult<()> {
         // 開啟外鍵約束（SQLite 默認關閉）

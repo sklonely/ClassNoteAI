@@ -57,6 +57,11 @@
   --h18-chip-bg:      #f0ece0;
   --h18-scrim:        rgba(0, 0, 0, 0.04);
   --h18-shadow:       0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+
+  /* Shadow scale (light) */
+  --h18-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --h18-shadow-md: 0 1px 2px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+  --h18-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08), 0 24px 60px rgba(0, 0, 0, 0.12);
 }
 
 :root.dark {
@@ -105,6 +110,11 @@
   --h18-chip-bg:      #2a2834;
   --h18-scrim:        rgba(255, 255, 255, 0.03);
   --h18-shadow:       0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.5);
+
+  /* Shadow scale (dark) */
+  --h18-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --h18-shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 28px rgba(0, 0, 0, 0.5);
+  --h18-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.5), 0 30px 80px rgba(0, 0, 0, 0.7);
 }
 
 /* ============================================================
@@ -118,4 +128,111 @@
 
   /* Animation curve — iOS spring，全 H18 動畫共用 */
   --h18-ease-spring:    cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* ============================================================
+ * Type scale — font-size 由 token 控，line-height 三檔
+ * 用 token 不寫 hardcoded font-size: 11px。
+ * ============================================================ */
+:root {
+  --h18-text-xs:    9px;
+  --h18-text-sm:   11px;
+  --h18-text-base: 12px;
+  --h18-text-md:   13px;
+  --h18-text-lg:   16px;
+  --h18-text-xl:   24px;
+  --h18-text-2xl:  40px;
+
+  --h18-leading-tight: 1.3;
+  --h18-leading-base:  1.55;
+  --h18-leading-loose: 1.75;
+}
+
+/* ============================================================
+ * Spacing scale — 4px base，命名 = 實際 px 對應對照表
+ * 不一定是線性，部分 8/12/16/24 是常用斷點直接命名
+ * ============================================================ */
+:root {
+  --h18-space-1:   4px;
+  --h18-space-2:   6px;
+  --h18-space-3:   8px;
+  --h18-space-4:  10px;
+  --h18-space-5:  12px;
+  --h18-space-6:  14px;
+  --h18-space-8:  16px;
+  --h18-space-12: 20px;
+  --h18-space-16: 24px;
+  --h18-space-24: 32px;
+}
+
+/* ============================================================
+ * Border radius scale — 預設 md (6px)
+ * ============================================================ */
+:root {
+  --h18-radius-sm:    4px;
+  --h18-radius-md:    6px;
+  --h18-radius-lg:    8px;
+  --h18-radius-xl:   12px;
+  --h18-radius-full: 999px;
+}
+
+/* ============================================================
+ * Z-index scale — 解 modal stacking 問題；不分主題
+ * 不可用 hardcoded z-index: 9999，全用 token
+ * ============================================================ */
+:root {
+  --h18-z-base:      1;
+  --h18-z-rail:     10;
+  --h18-z-topbar:   20;
+  --h18-z-banner:   30;
+  --h18-z-fab:      40;
+  --h18-z-dropdown:100;
+  --h18-z-overlay: 200;
+  --h18-z-modal:   210;
+  --h18-z-popover: 220;
+  --h18-z-toast:   300;
+  --h18-z-confirm: 310;
+}
+
+/* ============================================================
+ * Animation duration + easing — 不分主題
+ * --h18-ease-spring 在上方 font tokens block 已宣告
+ * ============================================================ */
+:root {
+  --h18-duration-fast: 120ms;
+  --h18-duration-base: 200ms;
+  --h18-duration-slow: 320ms;
+
+  --h18-ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --h18-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============================================================
+ * Component dimensions — Layout / form / modal / side panel
+ * 不要寫 width: 32px 給 button，用 token + content-driven width
+ * ============================================================ */
+:root {
+  --h18-rail-width:    62px;
+  --h18-topbar-height: 44px;
+  --h18-button-height: 32px;
+  --h18-input-height:  32px;
+  --h18-row-height:    40px;
+  --h18-row-height-tall: 56px;
+  --h18-modal-w-sm: 480px;
+  --h18-modal-w-md: 720px;
+  --h18-modal-w-lg: 960px;
+  --h18-toc-width: 220px;
+  --h18-tab-width: 420px;
+  --h18-preview-width: 380px;
+}
+
+/* ============================================================
+ * Icon size scale — lucide / 手畫 SVG 共用
+ * ============================================================ */
+:root {
+  --h18-icon-xs: 10px;
+  --h18-icon-sm: 12px;
+  --h18-icon-md: 14px;
+  --h18-icon-lg: 16px;
+  --h18-icon-xl: 24px;
 }

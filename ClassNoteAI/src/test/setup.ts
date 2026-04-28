@@ -6,7 +6,8 @@
  */
 
 import '@testing-library/jest-dom/vitest';
-import { vi, beforeEach } from 'vitest';
+import { vi, beforeEach, afterEach } from 'vitest';
+import { cleanup } from '@testing-library/react';
 
 // Mock Tauri's invoke function
 const mockInvokeResults: Record<string, unknown> = {};
@@ -128,9 +129,77 @@ if (elementPrototype && typeof elementPrototype.scrollIntoView !== 'function') {
     elementPrototype.scrollIntoView = vi.fn();
 }
 
+// S0.13 · MockMediaStreamTrack + MediaDevices jsdom mock
+// jsdom doesn't implement MediaStream / MediaStreamTrack / navigator.mediaDevices.
+// Provide a minimal mock so recording-pipeline code can mount under test without
+// crashing. Tests can `import { MockMediaStreamTrack } from '@/test/setup'` to
+// build their own fixtures.
+export class MockMediaStreamTrack {
+    kind: 'audio' | 'video' = 'audio';
+    readyState: 'live' | 'ended' = 'live';
+    enabled = true;
+    label = 'mock-track';
+    private listeners = new Map<string, Set<(e: Event) => void>>();
+    addEventListener(type: string, cb: (e: Event) => void) {
+        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+        this.listeners.get(type)!.add(cb);
+    }
+    removeEventListener(type: string, cb: (e: Event) => void) {
+        this.listeners.get(type)?.delete(cb);
+    }
+    dispatchEvent(event: Event) {
+        this.listeners.get(event.type)?.forEach(cb => cb(event));
+        return true;
+    }
+    stop() {
+        this.readyState = 'ended';
+        this.dispatchEvent(new Event('ended'));
+    }
+    onended: ((e: Event) => void) | null = null;
+}
+
+// Stub the global MediaStreamTrack constructor so `instanceof` checks and
+// `new MediaStreamTrack()` calls in production code work under jsdom.
+(globalThis as unknown as { MediaStreamTrack: typeof MockMediaStreamTrack }).MediaStreamTrack =
+    MockMediaStreamTrack;
+
+// Stub navigator.mediaDevices minimal — just enough for getUserMedia() callers
+// to not throw at mount. Per-test overrides can re-`vi.mock` this.
+if (typeof navigator !== 'undefined') {
+    Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: {
+            getUserMedia: vi.fn(() =>
+                Promise.resolve({
+                    getTracks: () => [new MockMediaStreamTrack()],
+                })
+            ),
+        },
+    });
+}
+
+// S0.14 · Singleton beforeEach reset 自動化
+// Service modules can register a reset callback at module-load time so each
+// test starts from a clean singleton state. The Sprint 1 services will call
+// `registerSingletonReset(this.reset.bind(this))` from their module file.
+const __resetCallbacks: Set<() => void> = new Set();
+
+export function registerSingletonReset(cb: () => void) {
+    __resetCallbacks.add(cb);
+}
+
 // Reset mocks before each test
 beforeEach(() => {
     vi.clearAllMocks();
     clearMockInvokeResults();
     localStorageMock.clear();
+    __resetCallbacks.forEach(cb => cb());
+});
+
+// S0.1 · React Testing Library cleanup after each test
+// React 18 Strict Mode double-mounts components and RTL no longer auto-cleans
+// up between tests in vitest. Without this, listeners + DOM nodes leak across
+// tests, surfacing as flaky "found multiple elements" errors.
+afterEach(() => {
+    cleanup();
 });
