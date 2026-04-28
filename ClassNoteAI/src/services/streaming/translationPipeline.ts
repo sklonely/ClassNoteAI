@@ -62,10 +62,100 @@ class TranslationPipeline {
   private queue: TranslationJob[] = [];
   private processing = false;
 
+  /**
+   * Hard cap on queued (not in-flight) translation jobs. If the
+   * translator stalls (sidecar dies mid-lecture, llama-server hung) we
+   * could otherwise grow `queue` unboundedly with one job per sentence
+   * for the rest of the recording. 5000 is high enough that a healthy
+   * 2-3hr lecture never hits it (typical: 1500-2500 sentences) but low
+   * enough to bound memory at a few MB.
+   *
+   * `private static` rather than a `const` at module scope so tests can
+   * shrink it via {@link __setMaxQueueSizeForTest}.
+   */
+  private static DEFAULT_MAX_QUEUE_SIZE = 5_000;
+  private maxQueueSize: number = TranslationPipeline.DEFAULT_MAX_QUEUE_SIZE;
+
+  /**
+   * Counter of jobs we've dropped since the last `translation_backlog`
+   * event. Reset to 0 each emit. Used so the UI can show "X sentences
+   * lost" rather than re-firing per-job.
+   */
+  private droppedDueToBacklog = 0;
+  /** Wall-clock ms of last `translation_backlog` emit. Throttle = 1s. */
+  private lastBacklogEmit = 0;
+
   /** Push a sentence for async translation. Non-blocking. */
   enqueue(job: TranslationJob): void {
+    if (this.queue.length >= this.maxQueueSize) {
+      this.droppedDueToBacklog += 1;
+      const now = Date.now();
+      // 1s throttle — translator backlog tends to fire in bursts and
+      // we don't want to spam the listener (or the console) per job.
+      if (now - this.lastBacklogEmit > 1_000) {
+        this.lastBacklogEmit = now;
+        const dropped = this.droppedDueToBacklog;
+        this.droppedDueToBacklog = 0;
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+          window.dispatchEvent(
+            new CustomEvent('translation_backlog', {
+              detail: { dropped, queueSize: this.queue.length },
+            }),
+          );
+        }
+      }
+      return; // dropped — never enters the queue
+    }
     this.queue.push(job);
     void this.drain();
+  }
+
+  /**
+   * Resolve once the queue is empty AND no job is currently in flight.
+   * Used by `recordingSessionService.stop()` so we don't flip the
+   * lecture to 'completed' before the final sentence's zh translation
+   * has come back from the translator.
+   *
+   * 50ms polling (per Phase 7 plan) — simpler than threading an
+   * event-emitter through the existing drain loop, and the latency
+   * budget for stop is several hundred ms anyway.
+   */
+  awaitDrain(): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (this.queue.length === 0 && !this.processing) {
+          resolve();
+          return;
+        }
+        setTimeout(check, 50);
+      };
+      check();
+    });
+  }
+
+  /** Test-only: read current queue length. */
+  getQueueLength(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * Test-only escape hatch — pass a number to shrink the cap (so unit
+   * tests don't have to push 5000+ jobs), or `null` to restore the
+   * production default. Prefixed with `__` to discourage callers from
+   * touching it outside tests.
+   *
+   * Also drops any queued (not in-flight) jobs and zeroes the backlog
+   * counters so a previous test's leftovers don't leak into the next.
+   * The currently in-flight job is not cancellable — the next call to
+   * `drain()` will see it through; tests that hold the translator with
+   * a never-resolving promise should accept that single in-flight job
+   * is effectively "lost" for the rest of the run (process will exit).
+   */
+  __setMaxQueueSizeForTest(size: number | null): void {
+    this.maxQueueSize = size ?? TranslationPipeline.DEFAULT_MAX_QUEUE_SIZE;
+    this.queue = [];
+    this.droppedDueToBacklog = 0;
+    this.lastBacklogEmit = 0;
   }
 
   /**
