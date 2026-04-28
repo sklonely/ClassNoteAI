@@ -12,11 +12,118 @@ import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
 import { setupService } from "./services/setupService";
 import { toastService } from "./services/toastService";
+import { confirmService } from "./services/confirmService";
 import { buildInterruptedRecordingNotice } from "./services/recordingInterruptionNotice";
 import { audioDeviceService } from "./services/audioDeviceService";
+import { recordingSessionService } from "./services/recordingSessionService";
+import type { RecordingSessionState } from "./services/recordingSessionService";
 import { useAuth } from "./contexts/AuthContext";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type AppState = 'loading' | 'setup' | 'ready';
+
+/**
+ * S1.10 — App close-request handler dependencies.
+ *
+ * Lifted out of the useEffect into a dependency-injected pure function so
+ * the close flow is unit-testable without spinning up the entire App tree
+ * (login → setup → H18DeepApp → all the boot side-effects). Production
+ * calls fill these in with the real singletons; tests pass mocks.
+ */
+export interface CloseRequestDeps {
+    recordingSession: {
+        getState: () => RecordingSessionState;
+        mustFinalizeSync: () => Promise<boolean>;
+    };
+    confirm: {
+        ask: (req: {
+            title: string;
+            message: string;
+            confirmLabel?: string;
+            cancelLabel?: string;
+            variant?: 'default' | 'danger';
+        }) => Promise<boolean>;
+    };
+    toast: {
+        success: (message: string, detail?: string) => void;
+        warning: (message: string, detail?: string) => void;
+    };
+    win: {
+        close: () => Promise<void>;
+    };
+    /** Injected so tests don't actually wait the 600ms grace period. */
+    sleep: (ms: number) => Promise<void>;
+}
+
+/**
+ * V4 close flow (PHASE-7-PLAN §8.3).
+ *
+ *   - status idle/stopped/etc → 不 preventDefault, 直接放行
+ *   - status recording/paused → confirm + preventDefault
+ *       cancel → 不關
+ *       OK → mustFinalizeSync → toast → window.close()
+ *
+ * The 600 ms `sleep` between toast and close gives the user a beat to
+ * see the toast fire before the window disappears.
+ *
+ * TODO Sprint 2 S2.9: 把 SUMMARIZE_LECTURE / INDEX_LECTURE 任務寫進
+ *   pending_actions 表，下次啟動 taskTrackerService 自動撈起來跑。目前
+ *   mustFinalizeSync 只 drain 字幕跟存 lecture status='completed'，
+ *   summary/index 不跑。
+ */
+export async function handleCloseRequest(
+    event: { preventDefault: () => void },
+    deps: CloseRequestDeps,
+): Promise<void> {
+    const state = deps.recordingSession.getState();
+    const recording =
+        state.status === 'recording' || state.status === 'paused';
+
+    if (!recording) {
+        // Idle / stopping / stopped — nothing to save, let Tauri close
+        // the window normally.
+        return;
+    }
+
+    // Active recording: stop the OS-level close, ask the user, and only
+    // proceed (or not) based on their answer.
+    event.preventDefault();
+
+    const elapsedMin = Math.max(1, Math.round(state.elapsed / 60));
+    const ok = await deps.confirm.ask({
+        title: '正在錄音',
+        message: `課堂錄音 (${elapsedMin} 分鐘) 仍在進行中。要結束並儲存嗎？`,
+        confirmLabel: '結束並關閉',
+        cancelLabel: '取消',
+        variant: 'danger',
+    });
+
+    if (!ok) {
+        // Already preventDefault'd — just bail.
+        return;
+    }
+
+    // Best-effort drain. mustFinalizeSync swallows internal errors and
+    // returns a single bool so we don't have to second-guess what
+    // partially saved.
+    const success = await deps.recordingSession.mustFinalizeSync();
+
+    if (success) {
+        deps.toast.success(
+            '已儲存錄音',
+            '摘要與索引將於下次開啟時於背景生成。',
+        );
+    } else {
+        deps.toast.warning(
+            '部分儲存失敗',
+            '錄音已盡力保留，部分摘要 / 索引可能需手動重試。',
+        );
+    }
+
+    // Let the toast paint before the window evaporates.
+    await deps.sleep(600);
+    await deps.win.close();
+}
 
 function App() {
   const [appState, setAppState] = useState<AppState>('loading');
@@ -283,6 +390,59 @@ function App() {
     return () => clearTimeout(timer);
 
   }, [appState]);
+
+  // S1.10 — Tauri close-request flow (V4). 錄音中按 ✕ 不能直接關，
+  // 否則使用者會丟掉 in-flight 字幕跟還沒 commit 的 lecture row。掛
+  // onCloseRequested 一個 listener，狀態是 recording / paused 才彈
+  // confirm；其餘狀態保持 OS 預設（直接關）。確認後跑 mustFinalizeSync
+  // 把字幕跟 lecture row drain 進 DB，再手動 win.close()。
+  //
+  // 等 appState 'ready' + user 是因為 setup / login 階段沒人有錄音，
+  // 也避免 setup 流程被 confirm dialog 卡住。
+  useEffect(() => {
+    if (appState !== 'ready' || !user) return;
+
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        unlisten = await win.onCloseRequested((event) =>
+          handleCloseRequest(event, {
+            recordingSession: {
+              getState: () => recordingSessionService.getState(),
+              mustFinalizeSync: () =>
+                recordingSessionService.mustFinalizeSync(),
+            },
+            confirm: {
+              ask: (req) => confirmService.ask(req),
+            },
+            toast: {
+              success: (message, detail) => toastService.success(message, detail),
+              warning: (message, detail) => toastService.warning(message, detail),
+            },
+            win: {
+              close: () => win.close(),
+            },
+            sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+          }),
+        );
+        // If we already unmounted while awaiting, drop the listener now.
+        if (cancelled) {
+          unlisten?.();
+          unlisten = null;
+        }
+      } catch (err) {
+        console.warn('[App] onCloseRequested wire-up failed (non-fatal):', err);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [appState, user]);
 
   const handleSetupComplete = () => {
     setAppState('ready');

@@ -42,8 +42,13 @@ export interface HomeLayoutProps {
     onPickCourse: (courseId: string) => void;
     onOpenCourse: (courseId: string) => void;
     onOpenLecture: (courseId: string, lectureId: string) => void;
-    /** Click 「下一堂課」sticky row → 建 lecture + 跳到錄音頁. */
-    onStartNewLecture?: (courseId: string) => void;
+    /** Click 「下一堂課」sticky row → 建 lecture + 跳到錄音頁.
+     *  Phase 7 S1.8 / N1: 第二參數 `scheduledDate` 從 inbox 的
+     *  `nextClass.date` 來，讓父元件用排程上課時間建 lecture。 */
+    onStartNewLecture?: (
+        courseId: string,
+        opts?: { scheduledDate?: Date },
+    ) => void;
 }
 
 function todayLabel(): string {

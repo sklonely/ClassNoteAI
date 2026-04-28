@@ -44,8 +44,14 @@ export interface H18InboxProps {
     onSelectItem?: (item: InboxItem) => void;
     /** Currently focused inbox item id (UI 高亮). */
     selectedItemId?: string;
-    /** Click 「下一堂課」sticky row → 父元件建 lecture + 跳 recording page. */
-    onStartNextLecture?: (courseId: string) => void;
+    /** Click 「下一堂課」sticky row → 父元件建 lecture + 跳 recording page.
+     *  Phase 7 S1.8 / N1: 第二參數 `scheduledDate` 從 `nextClass.date`
+     *  來，讓父元件把這個課堂的 `lecture.date` 設成排程上課時間（而不
+     *  是「使用者點按鈕當下」）。父元件忽略 opts 仍可正常運作。 */
+    onStartNextLecture?: (
+        courseId: string,
+        opts?: { scheduledDate?: Date },
+    ) => void;
 }
 
 /* ────────── next class helper ──────────
@@ -396,7 +402,16 @@ export default function H18Inbox({
                     <button
                         type="button"
                         className={s.nextClass}
-                        onClick={() => onStartNextLecture(nextClass.course.id)}
+                        onClick={() =>
+                            onStartNextLecture(nextClass.course.id, {
+                                // S1.8 / N1 — pass the parsed Canvas
+                                // meeting time so the new lecture row's
+                                // `date` field reflects the schedule
+                                // rather than the wall-clock instant of
+                                // the click.
+                                scheduledDate: nextClass.date,
+                            })
+                        }
                         title="開始這堂課的錄音"
                     >
                         <span className={s.nextClassEyebrow}>下一堂課</span>

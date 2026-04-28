@@ -1,9 +1,9 @@
 # Phase 7 過夜進度
 
-**最後更新**：2026-04-28T17:10Z
-**當前 sprint**：Sprint 1 開工準備中
-**當前 task**：派 Sprint 1 Round 1 (recordingSessionService skeleton + RecoveryHintBanner)
-**總進度**：Sprint 0 16/16 + 2 pre-flight = 18 / 79
+**最後更新**：2026-04-28T18:00Z
+**當前 sprint**：Sprint 2 開工準備中（Sprint 1 完工）
+**當前 task**：派 Sprint 2 Round 1 (taskTrackerService + translationPipeline.awaitDrain)
+**總進度**：Sprint 0 16/16 + Sprint 1 18/18 + 2 pre-flight = 36 / 79（test: 472 → 668，+196 新測試）
 
 ## 已完成 commits（時間倒序）
 

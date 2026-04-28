@@ -37,7 +37,11 @@ import {
 import H18TopBar from './H18TopBar';
 import H18Rail from './H18Rail';
 import { courseColor, courseShort } from './courseColor';
-import { RECORDING_CHANGE_EVENT } from './useRecordingSession';
+import { recordingSessionService } from '../../services/recordingSessionService';
+import type { RecordingSessionState } from '../../services/__contracts__/recordingSessionService.contract';
+import { confirmService } from '../../services/confirmService';
+import { toastService } from '../../services/toastService';
+import { fmtElapsed } from './useRecordingSession';
 import { useAggregatedCanvasInbox } from './useAggregatedCanvasInbox';
 import {
     getInboxState,
@@ -170,6 +174,12 @@ export default function H18DeepApp() {
     }, [recomputeVirtual]);
 
     // ─── active recording detection (TopBar 中央 island) ─────────────
+    // S1.3 — subscribe to recordingSessionService instead of polling
+    // listLectures every 30 s. The singleton is the authoritative source
+    // while a session is live; we keep one slow safety-net DB probe
+    // (90 s) for recovery on launch / external writes / multi-tab edge
+    // cases — but it only fires while the singleton is idle so we don't
+    // fight the in-memory state.
     const [activeRecLecture, setActiveRecLecture] = useState<{
         lectureId: string;
         courseId: string;
@@ -177,19 +187,57 @@ export default function H18DeepApp() {
     } | null>(null);
     const [recElapsedSec, setRecElapsedSec] = useState(0);
 
+    // Singleton subscription — drives both lecture identity and elapsed
+    // counter. Singleton ticks elapsed at 4 Hz internally; floor to whole
+    // seconds for the TopBar pill.
+    useEffect(() => {
+        const apply = (next: RecordingSessionState) => {
+            const live =
+                next.status === 'recording' ||
+                next.status === 'paused' ||
+                next.status === 'stopping';
+            if (live && next.lectureId && next.courseId) {
+                const courseId = next.courseId;
+                const lectureId = next.lectureId;
+                const startedAtMs = next.sessionStartMs ?? Date.now();
+                setActiveRecLecture((cur) => {
+                    if (
+                        cur &&
+                        cur.lectureId === lectureId &&
+                        cur.courseId === courseId
+                    ) {
+                        return cur;
+                    }
+                    return { lectureId, courseId, startedAtMs };
+                });
+                setRecElapsedSec(Math.max(0, Math.floor(next.elapsed)));
+            } else {
+                setActiveRecLecture(null);
+                setRecElapsedSec(0);
+            }
+        };
+        // Push initial snapshot then subscribe — subscribe() also fires
+        // synchronously on register, so this is mostly defensive.
+        apply(recordingSessionService.getState());
+        const unsub = recordingSessionService.subscribe(apply);
+        return unsub;
+    }, []);
+
+    // Recovery probe — finds a lecture row left in status='recording'
+    // from a previous app session (e.g. crash). Runs once at mount, and
+    // then every 90 s as a safety-net while the singleton is idle.
     useEffect(() => {
         let cancelled = false;
         const probe = async () => {
+            // Don't fight the singleton — if a session is live, the
+            // subscription above already owns activeRecLecture.
+            if (recordingSessionService.getState().status !== 'idle') return;
             try {
                 const all = await storageService.listLectures();
                 const rec = all.find((l) => l.status === 'recording');
                 if (cancelled) return;
                 if (rec) {
                     setActiveRecLecture((cur) => {
-                        // Same lecture still recording → keep the original
-                        // startedAtMs. Otherwise the elapsed timer would
-                        // reset every time the user edits the lecture
-                        // title (which bumps updated_at).
                         if (cur && cur.lectureId === rec.id) return cur;
                         return {
                             lectureId: rec.id,
@@ -199,39 +247,34 @@ export default function H18DeepApp() {
                             ).getTime(),
                         };
                     });
-                } else {
-                    setActiveRecLecture(null);
                 }
             } catch {
                 /* swallow */
             }
         };
-        probe();
-        // Slow safety-net poll — useRecordingSession dispatches
-        // RECORDING_CHANGE_EVENT on start/stop, so we usually re-probe
-        // immediately. The interval catches edge cases (recovery on
-        // launch, external DB writes, status flipped from another tab).
-        const id = setInterval(probe, 30_000);
-        const onChange = () => {
-            void probe();
-        };
-        window.addEventListener(RECORDING_CHANGE_EVENT, onChange);
+        void probe();
+        const id = setInterval(probe, 90_000);
         return () => {
             cancelled = true;
             clearInterval(id);
-            window.removeEventListener(RECORDING_CHANGE_EVENT, onChange);
         };
     }, []);
 
-    // tick elapsed once a second while recording
+    // Wall-clock tick for the recovered-from-DB case only. The singleton
+    // pushes elapsed updates on its own; we just need this for the rare
+    // case where a stale 'recording' lecture exists in the DB but no
+    // singleton session is live.
     useEffect(() => {
-        if (!activeRecLecture) {
-            setRecElapsedSec(0);
-            return;
-        }
+        if (!activeRecLecture) return;
+        if (recordingSessionService.getState().status !== 'idle') return;
         const tick = () => {
             setRecElapsedSec(
-                Math.max(0, Math.floor((Date.now() - activeRecLecture.startedAtMs) / 1000)),
+                Math.max(
+                    0,
+                    Math.floor(
+                        (Date.now() - activeRecLecture.startedAtMs) / 1000,
+                    ),
+                ),
             );
         };
         tick();
@@ -304,57 +347,134 @@ export default function H18DeepApp() {
         setOverlayNav(null);
     }, []);
 
-    const startNewLectureFor = useCallback(async (courseId: string) => {
-        try {
-            // Same-day collision check: if the course already has a lecture
-            // dated today, ask whether to open it or create a fresh blank
-            // one. Avoids the «每按一次「下一堂課」就生一個空白» pile-up
-            // that happens when the user opens the home page repeatedly.
-            const existingList = await storageService
-                .listLecturesByCourse(courseId)
-                .catch(() => [] as Awaited<ReturnType<typeof storageService.listLecturesByCourse>>);
-            const todayKey = new Date().toISOString().slice(0, 10);
-            const sameDay = existingList.find((l) => {
-                if (!l.date) return false;
-                return l.date.slice(0, 10) === todayKey;
-            });
-            if (sameDay) {
-                const { confirmService } = await import(
-                    '../../services/confirmService'
-                );
-                // Yes → open existing, No → create blank.
-                const openExisting = await confirmService.ask({
-                    title: '今天已有一堂課',
-                    message: `課堂「${sameDay.title}」(${sameDay.status === 'completed' ? '已完成' : sameDay.status === 'recording' ? '錄音中' : '待錄音'}) 已存在。\n\n要開啟這堂繼續，還是另外新增一堂空白課堂？`,
-                    confirmLabel: '開啟現有的',
-                    cancelLabel: '新增空白',
-                });
-                if (openExisting) {
-                    setSelectedCourseId(courseId);
-                    setActiveNav(`review:${courseId}:${sameDay.id}`);
-                    return;
+    /**
+     * Funnel for creating a new lecture row + navigating to its review
+     * page. The actual recording start happens later on the recording
+     * page itself; this function only:
+     *   1. (S1.7 / W10) Gates against concurrent recording — if the
+     *      singleton is already in `recording` / `paused`, ask the user
+     *      whether to end the live session before opening a new one.
+     *   2. Same-day dedup — if this course already has a lecture dated
+     *      today, offer to open it instead of creating a duplicate.
+     *   3. (S1.8 / N1) Threads `opts.scheduledDate` into the new
+     *      lecture's `date` field — Inbox passes `nextClass.date`, rail
+     *      / chip clicks fall through to "now". The schema column
+     *      `started_at_ms` (V12) lands in Sprint 2.
+     *
+     * All entry points (rail course chip → handleCourseAction, home
+     * `onStartNewLecture`, CourseDetailPage `onCreateLecture`, inbox
+     * 「下一堂課」row) flow through this single helper, so wiring the
+     * confirm gate here is sufficient for W10.
+     */
+    const startNewLectureFor = useCallback(
+        async (
+            courseId: string,
+            opts?: { scheduledDate?: Date },
+        ) => {
+            try {
+                // ─── S1.7 / W10 — concurrent recording gate ────────────
+                const session = recordingSessionService.getState();
+                if (
+                    session.status === 'recording' ||
+                    session.status === 'paused'
+                ) {
+                    // Compose a friendly label for the live session — try
+                    // for the lecture title if we can find it.
+                    let liveLabel = '目前錄音';
+                    try {
+                        if (session.lectureId) {
+                            const live = await storageService.getLecture(
+                                session.lectureId,
+                            );
+                            if (live?.title) liveLabel = `「${live.title}」`;
+                        }
+                    } catch {
+                        /* fall back to default label */
+                    }
+                    const elapsedLabel = fmtElapsed(session.elapsed);
+                    const ok = await confirmService.ask({
+                        title: '已有錄音中',
+                        message:
+                            `${liveLabel}目前正在錄音 (${elapsedLabel})。\n\n` +
+                            '要結束目前錄音再開始新課堂嗎？',
+                        confirmLabel: '結束並開始新課堂',
+                        cancelLabel: '取消',
+                        variant: 'danger',
+                    });
+                    if (!ok) return;
+                    try {
+                        await recordingSessionService.stop();
+                    } catch (err) {
+                        toastService.error(
+                            '結束舊錄音失敗',
+                            err instanceof Error ? err.message : String(err),
+                        );
+                        return;
+                    }
                 }
-                // Fall through to create a new blank lecture.
-            }
 
-            const id = crypto.randomUUID();
-            const now = new Date().toISOString();
-            await storageService.saveLecture({
-                id,
-                course_id: courseId,
-                title: '新課堂',
-                date: now,
-                duration: 0,
-                status: 'recording',
-                created_at: now,
-                updated_at: now,
-            });
-            setSelectedCourseId(courseId);
-            setActiveNav(`review:${courseId}:${id}`);
-        } catch (err) {
-            console.error('[H18DeepApp] create lecture failed:', err);
-        }
-    }, []);
+                // Same-day collision check: if the course already has a
+                // lecture dated today, ask whether to open it or create a
+                // fresh blank one. Avoids the «每按一次「下一堂課」就生
+                // 一個空白» pile-up that happens when the user opens the
+                // home page repeatedly.
+                const existingList = await storageService
+                    .listLecturesByCourse(courseId)
+                    .catch(
+                        () =>
+                            [] as Awaited<
+                                ReturnType<
+                                    typeof storageService.listLecturesByCourse
+                                >
+                            >,
+                    );
+                const targetDate = opts?.scheduledDate ?? new Date();
+                const targetIso = targetDate.toISOString();
+                const targetDayKey = targetIso.slice(0, 10);
+                const sameDay = existingList.find((l) => {
+                    if (!l.date) return false;
+                    return l.date.slice(0, 10) === targetDayKey;
+                });
+                if (sameDay) {
+                    // Yes → open existing, No → create blank.
+                    const openExisting = await confirmService.ask({
+                        title: '已有一堂課',
+                        message: `課堂「${sameDay.title}」(${sameDay.status === 'completed' ? '已完成' : sameDay.status === 'recording' ? '錄音中' : '待錄音'}) 已存在。\n\n要開啟這堂繼續，還是另外新增一堂空白課堂？`,
+                        confirmLabel: '開啟現有的',
+                        cancelLabel: '新增空白',
+                    });
+                    if (openExisting) {
+                        setSelectedCourseId(courseId);
+                        setActiveNav(`review:${courseId}:${sameDay.id}`);
+                        return;
+                    }
+                    // Fall through to create a new blank lecture.
+                }
+
+                const id = crypto.randomUUID();
+                const now = new Date().toISOString();
+                await storageService.saveLecture({
+                    id,
+                    course_id: courseId,
+                    title: '新課堂',
+                    // S1.8 — scheduledDate threads through here. Inbox
+                    // 「下一堂課」passes nextClass.date so the lecture is
+                    // tagged with the Canvas-derived class meeting time;
+                    // rail / quick-record falls through to `new Date()`.
+                    date: targetIso,
+                    duration: 0,
+                    status: 'recording',
+                    created_at: now,
+                    updated_at: now,
+                });
+                setSelectedCourseId(courseId);
+                setActiveNav(`review:${courseId}:${id}`);
+            } catch (err) {
+                console.error('[H18DeepApp] create lecture failed:', err);
+            }
+        },
+        [],
+    );
 
     // v0.7.x: Listen for declarative nav requests dispatched from places
     // that don't have direct access to setActiveNav — e.g. an actionable
@@ -584,8 +704,8 @@ export default function H18DeepApp() {
                         onOpenLecture={(courseId, lectureId) =>
                             setActiveNav(`review:${courseId}:${lectureId}`)
                         }
-                        onStartNewLecture={(courseId) =>
-                            void startNewLectureFor(courseId)
+                        onStartNewLecture={(courseId, opts) =>
+                            void startNewLectureFor(courseId, opts)
                         }
                     />
                 );

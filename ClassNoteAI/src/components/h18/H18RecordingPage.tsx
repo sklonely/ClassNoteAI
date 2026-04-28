@@ -419,7 +419,37 @@ export default function H18RecordingPage({
 
                 <div className={s.transportSpacer} />
 
-                {session.error && (
+                {/* S1.4 — singleton stopPhase progress hint (inline). The
+                 *  5-step finish overlay below renders the same data as a
+                 *  modal; this inline hint catches the case where stopPhase
+                 *  surfaces while the modal is closed (e.g. retry-from-failed
+                 *  shown on next mount). Sprint 2 真實 6-step pipeline 完成後
+                 *  才會看到 transcribe → segment → index 全程；目前最常見的
+                 *  自然觀察是 transcribe → done 跟 failed。 */}
+                {session.stopPhase === 'transcribe' && (
+                    <span className={s.transportStatus}>正在收尾字幕…</span>
+                )}
+                {session.stopPhase === 'segment' && (
+                    <span className={s.transportStatus}>正在儲存錄音…</span>
+                )}
+                {session.stopPhase === 'index' && (
+                    <span className={s.transportStatus}>建立字幕索引…</span>
+                )}
+                {session.stopPhase === 'summary' && (
+                    <span className={s.transportStatus}>
+                        生成摘要中（可離開）…
+                    </span>
+                )}
+                {session.stopPhase === 'failed' && (
+                    <span
+                        className={s.transportError}
+                        style={{ color: 'var(--h18-hot)' }}
+                    >
+                        儲存失敗 · 已嘗試保留現有字幕
+                    </span>
+                )}
+
+                {session.error && session.stopPhase !== 'failed' && (
                     <span className={s.transportError} title={session.error}>
                         ⚠ {session.error}
                     </span>

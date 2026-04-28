@@ -27,6 +27,8 @@ import type { Course, Lecture, Note, Subtitle, Section } from '../../types';
 import { courseColor } from './courseColor';
 import H18AudioPlayer from './H18AudioPlayer';
 import H18RecordingPage from './H18RecordingPage';
+import { RecoveryHintBanner } from './RecoveryHintBanner';
+import { useRecordingSession, fmtElapsed } from './useRecordingSession';
 import {
     loadUserNotes,
     saveUserNotes,
@@ -149,6 +151,11 @@ export default function H18ReviewPage({
     const [seekTo, setSeekTo] = useState<number | null>(null);
     const [autoFollow, setAutoFollow] = useState(true);
     const [activeSubId, setActiveSubId] = useState<string | null>(null);
+
+    // Phase 7 S1.5 — thin reader of the recording singleton. Lets us
+    // overlay an "active recording" badge / "saving…" hint when the
+    // singleton's lectureId matches the lecture currently displayed.
+    const { state: recState } = useRecordingSession();
 
     const transcriptRef = useRef<HTMLDivElement | null>(null);
 
@@ -481,9 +488,73 @@ export default function H18ReviewPage({
         if (audioSrc && !audioOpen) setAudioOpen(true);
     };
 
+    // Phase 7 S1.5 — recording-singleton overlays for this lecture.
+    const recMatchesLecture = recState.lectureId === lecture.id;
+    const showActiveRecBadge =
+        recMatchesLecture &&
+        (recState.status === 'recording' || recState.status === 'paused');
+    const showStopProgressHint =
+        recMatchesLecture && recState.status === 'stopping';
+
     return (
         <div className={s.page}>
+            {/* Phase 7 S1.5 · Goal B — RecoveryHintBanner self-gates on
+                localStorage `_recovery:<lectureId>`; when no flag is
+                present it renders nothing. */}
+            <RecoveryHintBanner lectureId={lecture.id} />
             <div className={s.hero}>
+                {showActiveRecBadge && (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '6px 12px',
+                            marginBottom: 10,
+                            borderRadius: 6,
+                            border: '1px solid var(--h18-hot, #d23)',
+                            background: 'var(--h18-hot-bg, rgba(221,51,51,0.08))',
+                            color: 'var(--h18-hot, #d23)',
+                            fontSize: 11,
+                            fontFamily: 'var(--h18-font-mono)',
+                            letterSpacing: '0.06em',
+                            fontWeight: 700,
+                        }}
+                    >
+                        <span aria-hidden style={{ fontSize: 9 }}>●</span>
+                        {recState.status === 'paused' ? '錄音已暫停' : '錄音中'}
+                        {' · '}
+                        {fmtElapsed(recState.elapsed)}
+                        <span style={{ flex: 1 }} />
+                        <span style={{ opacity: 0.8 }}>切到錄音頁繼續 ↗</span>
+                    </div>
+                )}
+                {showStopProgressHint && (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '6px 12px',
+                            marginBottom: 10,
+                            borderRadius: 6,
+                            border: '1px dashed var(--h18-border)',
+                            background: 'var(--h18-surface-alt, var(--h18-surface))',
+                            color: 'var(--h18-text-mid)',
+                            fontSize: 11,
+                            fontFamily: 'var(--h18-font-mono)',
+                            letterSpacing: '0.06em',
+                        }}
+                    >
+                        <span aria-hidden>⟳</span>
+                        正在儲存課堂…
+                        {recState.stopPhase ? ` · ${recState.stopPhase}` : ''}
+                    </div>
+                )}
                 <div className={s.heroTopRow}>
                     <div className={s.crumb}>
                         <button
