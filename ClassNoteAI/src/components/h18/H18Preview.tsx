@@ -38,6 +38,7 @@ import { useCanvasFeed } from '../../services/canvasCacheService';
 import CanvasItemPreviewModal, {
     type CanvasPreviewItem,
 } from './CanvasItemPreviewModal';
+import { safeHtml } from '../../utils/safeHtml';
 import type { InboxItem } from './useAggregatedCanvasInbox';
 import {
     buildSnoozePresets,
@@ -567,17 +568,6 @@ function formatRelativeTime(iso: string): string {
  * 對 announcement 渲染 HTML，對 calendar event 渲染 description。
  * Click 內嵌 link 走 Tauri openUrl 不會把 webview 跳走。
  */
-
-function safeHtml(html: string): string {
-    return html
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
-        .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
-        .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
-        .replace(/javascript\s*:/gi, '');
-}
 
 function FocusedInboxItemView({
     item,

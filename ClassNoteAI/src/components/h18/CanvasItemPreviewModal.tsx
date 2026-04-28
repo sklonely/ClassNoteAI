@@ -18,6 +18,7 @@ import type {
     CanvasAnnouncement,
     CanvasCalendarEvent,
 } from '../../services/canvasFeedService';
+import { safeHtml } from '../../utils/safeHtml';
 import s from './CanvasItemPreviewModal.module.css';
 
 export type CanvasPreviewItem =
@@ -31,26 +32,6 @@ export interface CanvasItemPreviewModalProps {
     /** 課名（顯示在 eyebrow，給 context；optional）。 */
     courseTitle?: string;
     onClose: () => void;
-}
-
-/* ────────── HTML safety ────────── */
-
-/**
- * Canvas announcement content 是平台 admins / 老師 / TA 寫的 HTML，多半
- * 安全。但既然 dangerouslySetInnerHTML 會把它注進 webview DOM，還是把
- * 顯眼的攻擊面去掉：scripts / iframes / 內聯事件 handler / javascript:
- * scheme。沒走完整 sanitizer 是因為 Tauri webview 已經 sandboxed，且我
- * 們不需要支援使用者填入 HTML，只把上游 LMS 的格式渲染出來就好。
- */
-function safeHtml(html: string): string {
-    return html
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
-        .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
-        .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
-        .replace(/javascript\s*:/gi, '');
 }
 
 /* ────────── time formatting ────────── */
