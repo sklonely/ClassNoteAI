@@ -1,0 +1,108 @@
+/* ============================================================
+ * H18ContextMenu · Phase 7 Sprint 3 Round 1 (S3b-1)
+ *
+ * Token-only — no hardcoded colour / spacing / radius / z-index /
+ * font-size. Aligns with H18-DESIGN-SYSTEM.md §4 + §7 cheat-sheet.
+ *
+ * Z-index: --h18-z-popover (220) — same level as DayPicker so
+ * sub-menus stack via DOM order without bumping numbers.
+ * ============================================================ */
+
+.menu {
+    position: fixed;
+    z-index: var(--h18-z-popover);
+    min-width: 200px;
+    margin: 0;
+    padding: var(--h18-space-2);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-md);
+    box-shadow: var(--h18-shadow-md);
+    list-style: none;
+    font-family: var(--h18-font-sans);
+    font-size: var(--h18-text-sm);
+    color: var(--h18-text);
+    animation: h18-context-menu-fade-in var(--h18-duration-fast)
+        var(--h18-ease-out);
+}
+
+.item {
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-3);
+    padding: var(--h18-space-2) var(--h18-space-4);
+    border-radius: var(--h18-radius-sm);
+    cursor: pointer;
+    transition: background var(--h18-duration-fast) var(--h18-ease-out);
+    user-select: none;
+    position: relative;
+}
+
+.item.active,
+.item:hover {
+    background: var(--h18-row-hover);
+}
+
+.item.disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.item.disabled:hover {
+    background: transparent;
+}
+
+.item.danger {
+    color: var(--h18-hot);
+}
+
+.item.danger:hover,
+.item.danger.active {
+    background: var(--h18-hot-bg);
+}
+
+.icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--h18-text-mid);
+    font-size: var(--h18-icon-md);
+}
+
+.item.danger .icon {
+    color: var(--h18-hot);
+}
+
+.label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.shortcut {
+    font-family: var(--h18-font-mono);
+    font-size: var(--h18-text-xs);
+    color: var(--h18-text-dim);
+    background: var(--h18-chip-bg);
+    padding: 0 var(--h18-space-2);
+    border-radius: var(--h18-radius-sm);
+}
+
+.chevron {
+    color: var(--h18-text-dim);
+    font-size: var(--h18-text-xs);
+    flex-shrink: 0;
+}
+
+@keyframes h18-context-menu-fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(-2px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}

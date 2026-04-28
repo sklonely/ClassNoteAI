@@ -756,6 +756,16 @@ export function PTranslate() {
     );
     const [sidecarMsg, setSidecarMsg] = useState<string | null>(null);
 
+    // S3g — Gemma model download flow. Moved from legacy SettingsTranslation
+    // so that PTranslate is the single source of truth for the model. The
+    // long-running download integrates with taskTrackerService so the global
+    // TopBar TaskIndicator (S2.5) renders the same progress without a second
+    // bar inside this pane.
+    const [downloading, setDownloading] = useState(false);
+    // Tracker id is kept in a ref so the listen() callback can read the
+    // current id without re-creating the closure each render.
+    const downloadTaskIdRef = useRef<string | null>(null);
+
     const refreshGemmaStatus = async () => {
         try {
             const { invoke } = await import('@tauri-apps/api/core');
@@ -773,6 +783,77 @@ export function PTranslate() {
         const id = setInterval(refreshGemmaStatus, 5_000);
         return () => clearInterval(id);
     }, []);
+
+    /**
+     * Handle the 下載 button click.
+     *
+     * Flow:
+     *   1. Open a tracker entry (kind: 'export' — closest to "long file
+     *      operation"; the contract has no 'download' kind and 'summarize'
+     *      / 'index' would surface a misleading W18 success toast).
+     *   2. Subscribe to `gemma-download-progress` (rust emits 0-100 percent;
+     *      we normalise to 0-1 for the tracker).
+     *   3. await `download_gemma_model`. On success: complete + refresh
+     *      status + success toast. On failure: fail + error toast.
+     *   4. Always unlisten the progress channel and clear the busy flag
+     *      in `finally` so a transient error doesn't strand the button
+     *      in 「下載中…」.
+     *
+     * Concurrent clicks are no-ops — guarded by the `downloading` state.
+     */
+    const handleDownload = async () => {
+        if (downloading) return;
+        setDownloading(true);
+
+        const { taskTrackerService } = await import(
+            '../../services/taskTrackerService'
+        );
+        const { toastService } = await import('../../services/toastService');
+        const { invoke } = await import('@tauri-apps/api/core');
+        const { listen } = await import('@tauri-apps/api/event');
+
+        const taskId = taskTrackerService.start({
+            kind: 'export',
+            label: '下載 Gemma 模型',
+        });
+        downloadTaskIdRef.current = taskId;
+
+        let unlisten: (() => void) | null = null;
+        try {
+            unlisten = await listen<{
+                downloaded: number;
+                total: number;
+                percent: number;
+                speed_mbps: number;
+                eta_seconds: number | null;
+            }>('gemma-download-progress', (e) => {
+                const pct = e.payload.total > 0
+                    ? Math.max(0, Math.min(1, e.payload.percent / 100))
+                    : 0;
+                taskTrackerService.update(taskId, {
+                    progress: pct,
+                    status: 'running',
+                });
+            });
+
+            await invoke<string>('download_gemma_model');
+
+            taskTrackerService.complete(taskId);
+            await refreshGemmaStatus();
+            toastService.success(
+                '模型下載完成',
+                '可在 Provider=Gemma 時自動啟動 sidecar',
+            );
+        } catch (err) {
+            const msg = (err as Error)?.message || String(err);
+            taskTrackerService.fail(taskId, msg);
+            toastService.error('模型下載失敗', msg);
+        } finally {
+            if (unlisten) unlisten();
+            downloadTaskIdRef.current = null;
+            setDownloading(false);
+        }
+    };
 
     const handleStartSidecar = async () => {
         if (!gemmaStatus?.model_present) return;
@@ -843,7 +924,11 @@ export function PTranslate() {
             <PHead>TranslateGemma (主引擎)</PHead>
             <PRow
                 label="模型"
-                hint="TranslateGemma 4B Q4_K_M · 4-bit 量化 · 繁中品質明顯優於 M2M100"
+                hint={
+                    gemmaStatus?.model_present
+                        ? 'TranslateGemma 4B Q4_K_M · 4-bit 量化 · 繁中品質明顯優於 M2M100'
+                        : '下載 ≈ 2.5 GB GGUF；progress 同步顯示在頂部 Tasks indicator'
+                }
                 right={
                     gemmaStatus?.model_present ? (
                         <span className={s.statusOK}>
@@ -851,9 +936,29 @@ export function PTranslate() {
                             {(gemmaStatus.model_size_bytes / 1_000_000_000).toFixed(2)} GB
                         </span>
                     ) : (
-                        <span style={{ color: 'var(--h18-hot)', fontSize: 11 }}>
-                            ✗ 模型尚未下載（需在舊 SettingsTranslation 完成 — 留白）
-                        </span>
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                            }}
+                        >
+                            <span
+                                style={{
+                                    color: 'var(--h18-hot)',
+                                    fontSize: 11,
+                                }}
+                            >
+                                ✗ 模型尚未下載
+                            </span>
+                            <PBtn
+                                primary
+                                disabled={downloading}
+                                onClick={handleDownload}
+                            >
+                                {downloading ? '下載中…' : '下載'}
+                            </PBtn>
+                        </div>
                     )
                 }
             />

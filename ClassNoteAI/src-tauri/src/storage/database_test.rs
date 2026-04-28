@@ -145,4 +145,340 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+
+    // ============================================================
+    // Phase 7 S3.f-RS — cascade delete + restore + hard delete +
+    // schema migration. The new column set (cascade_deleted_with,
+    // deleted_at, started_at_ms, summary_status, …) plus the trash-bin
+    // semantics live here. Tests exercise the public `Database` methods
+    // so they cover the same code path the Tauri commands invoke.
+    // ============================================================
+
+    /// Helper: insert a second lecture under the existing seed course.
+    /// Useful for fixtures where we need to distinguish individually-
+    /// trashed lectures from cascade-trashed ones.
+    fn insert_lecture(db: &Database, lecture_id: &str, course_id: &str) {
+        let now = Utc::now().to_rfc3339();
+        db.conn()
+            .execute(
+                "INSERT INTO lectures (id, course_id, title, date, duration, pdf_path, audio_path, \
+                 video_path, status, created_at, updated_at, is_deleted) \
+                 VALUES (?1, ?2, ?3, ?1, 0, NULL, NULL, NULL, 'completed', ?1, ?1, 0)",
+                rusqlite::params![lecture_id, course_id, "Extra Lec"],
+            )
+            .expect("insert_lecture failed");
+        // Set timestamps explicitly via UPDATE because we re-used ?1 as
+        // a sentinel — repair the date/created/updated to match `now`.
+        db.conn()
+            .execute(
+                "UPDATE lectures SET date = ?2, created_at = ?2, updated_at = ?2 WHERE id = ?1",
+                rusqlite::params![lecture_id, now],
+            )
+            .unwrap();
+    }
+
+    fn lecture_is_deleted(db: &Database, id: &str) -> i64 {
+        db.conn()
+            .query_row(
+                "SELECT is_deleted FROM lectures WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    }
+
+    fn lecture_cascade_marker(db: &Database, id: &str) -> Option<String> {
+        db.conn()
+            .query_row(
+                "SELECT cascade_deleted_with FROM lectures WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .unwrap()
+    }
+
+    /// S3.f-RS-2 schema-migration smoke test: every Phase 7 column
+    /// should exist on the empty in-memory DB after `init_tables`. If
+    /// `run_v8_migration` regresses (forgets a column, or guards
+    /// incorrectly so the ALTER never runs) this test detects it
+    /// before any cascade-delete logic is exercised.
+    #[test]
+    fn migration_v8_adds_phase7_columns() {
+        let db = make_test_db();
+
+        // lectures
+        let lec_cols: Vec<String> = db
+            .conn()
+            .prepare("PRAGMA table_info(lectures)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in [
+            "started_at_ms",
+            "summary_status",
+            "summary_provider",
+            "import_source",
+            "cascade_deleted_with",
+            "deleted_at",
+        ] {
+            assert!(
+                lec_cols.iter().any(|c| c == col),
+                "lectures missing column {col}"
+            );
+        }
+
+        // notes
+        let note_cols: Vec<String> = db
+            .conn()
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for col in ["summary", "status", "provider"] {
+            assert!(
+                note_cols.iter().any(|c| c == col),
+                "notes missing column {col}"
+            );
+        }
+
+        // settings
+        let set_cols: Vec<String> = db
+            .conn()
+            .prepare("PRAGMA table_info(settings)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            set_cols.iter().any(|c| c == "user_id"),
+            "settings missing user_id"
+        );
+
+        // courses (Phase 7 added deleted_at for the trash-bin sweep)
+        let course_cols: Vec<String> = db
+            .conn()
+            .prepare("PRAGMA table_info(courses)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            course_cols.iter().any(|c| c == "deleted_at"),
+            "courses missing deleted_at"
+        );
+    }
+
+    /// Idempotency: running `init_tables` twice (which is what every
+    /// new `Connection::open` does in production) must not blow up on
+    /// duplicate ALTER TABLE.
+    #[test]
+    fn migration_v8_is_idempotent() {
+        let db = make_test_db();
+        // The init_tables runs are guarded; explicit re-call to stress
+        // the column-exists detection.
+        db.init_tables().expect("first re-init");
+        db.init_tables().expect("second re-init");
+    }
+
+    /// S3.f-RS-3 cascade delete: deleting a course with two lectures
+    /// soft-deletes both lectures, stamps cascade_deleted_with, and
+    /// stamps deleted_at on every row. Exercises the transaction
+    /// boundary in `delete_course`.
+    #[test]
+    fn delete_course_cascades_lectures() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        db.delete_course("c1").expect("delete_course");
+
+        // Both lectures soft-deleted.
+        assert_eq!(lecture_is_deleted(&db, "l1"), 1);
+        assert_eq!(lecture_is_deleted(&db, "l2"), 1);
+
+        // Both lectures marked with the cascade source.
+        assert_eq!(lecture_cascade_marker(&db, "l1").as_deref(), Some("c1"));
+        assert_eq!(lecture_cascade_marker(&db, "l2").as_deref(), Some("c1"));
+
+        // Course itself is soft-deleted with deleted_at populated.
+        let (course_deleted, course_deleted_at): (i64, Option<i64>) = db
+            .conn()
+            .query_row(
+                "SELECT is_deleted, deleted_at FROM courses WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(course_deleted, 1);
+        assert!(course_deleted_at.is_some(), "course.deleted_at should be set");
+    }
+
+    /// Cascade should NOT touch lectures that were already individually
+    /// trashed BEFORE the course delete — that's the whole point of the
+    /// `cascade_deleted_with` marker. Without this guard, a later
+    /// `restore_course` would silently revive a lecture the user had
+    /// already discarded.
+    #[test]
+    fn delete_course_skips_already_deleted_lectures() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        // Individually delete l1 first (no cascade marker).
+        db.delete_lecture("l1").unwrap();
+        assert_eq!(lecture_cascade_marker(&db, "l1"), None);
+
+        // Now cascade-delete the course.
+        db.delete_course("c1").unwrap();
+
+        // l1 stays without the cascade marker (its trashing pre-dated
+        // the course delete).
+        assert_eq!(lecture_cascade_marker(&db, "l1"), None);
+        // l2 picked up the cascade marker.
+        assert_eq!(lecture_cascade_marker(&db, "l2").as_deref(), Some("c1"));
+    }
+
+    /// S3.f-RS-3: restoring a lecture whose course is alive must
+    /// succeed and clear is_deleted / deleted_at / cascade marker.
+    #[test]
+    fn restore_lecture_when_course_alive_succeeds() {
+        let db = make_test_db();
+        seed_minimal(&db);
+
+        db.delete_lecture("l1").unwrap();
+        assert_eq!(lecture_is_deleted(&db, "l1"), 1);
+
+        db.restore_lecture("l1").expect("restore_lecture");
+
+        assert_eq!(lecture_is_deleted(&db, "l1"), 0);
+        let deleted_at: Option<i64> = db
+            .conn()
+            .query_row(
+                "SELECT deleted_at FROM lectures WHERE id = 'l1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(deleted_at.is_none(), "deleted_at should clear on restore");
+    }
+
+    /// S3.f-RS-3: restoring a lecture whose parent course is itself
+    /// trashed must error. Without this guard the restored lecture
+    /// would be invisible (joined queries filter out lectures whose
+    /// course is_deleted=1) and the user would get a "where did my
+    /// lecture go" silent failure.
+    #[test]
+    fn restore_lecture_when_course_dead_returns_error() {
+        let db = make_test_db();
+        seed_minimal(&db);
+
+        db.delete_course("c1").unwrap(); // cascades to l1
+        let result = db.restore_lecture("l1");
+
+        assert!(result.is_err(), "should refuse to restore orphaned lecture");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("仍在垃圾桶") || msg.to_lowercase().contains("constraint"),
+            "error should mention parent course; got: {msg}"
+        );
+        // l1 should still be soft-deleted.
+        assert_eq!(lecture_is_deleted(&db, "l1"), 1);
+    }
+
+    /// S3.f-RS-3: `restore_course` reverse-cascade brings back ONLY
+    /// lectures that were cascade-deleted with this course, not
+    /// previously-individually-deleted siblings.
+    #[test]
+    fn restore_course_brings_back_cascaded_lectures_only() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        // Trash l1 individually first.
+        db.delete_lecture("l1").unwrap();
+        // Now cascade-delete the course (only l2 picks up marker).
+        db.delete_course("c1").unwrap();
+
+        let restored = db.restore_course("c1").expect("restore_course");
+        // Exactly one lecture (l2) should have been resurrected.
+        assert_eq!(restored, 1);
+
+        // l2 alive, l1 still trashed.
+        assert_eq!(lecture_is_deleted(&db, "l2"), 0);
+        assert_eq!(lecture_is_deleted(&db, "l1"), 1);
+        // Marker cleared on l2.
+        assert_eq!(lecture_cascade_marker(&db, "l2"), None);
+    }
+
+    /// S3.f-RS-3 + §9.5 W3: rows older than `days` get hard-deleted;
+    /// fresher rows survive. Uses raw SQL to backdate `deleted_at`
+    /// because we can't time-travel the test wall clock.
+    #[test]
+    fn hard_delete_trashed_older_than_30_days() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let day_ms: i64 = 86_400_000;
+
+        // l1 deleted 31 days ago — should be purged.
+        db.conn()
+            .execute(
+                "UPDATE lectures SET is_deleted = 1, deleted_at = ?1 WHERE id = 'l1'",
+                rusqlite::params![now_ms - 31 * day_ms],
+            )
+            .unwrap();
+        // l2 deleted 5 days ago — should survive.
+        db.conn()
+            .execute(
+                "UPDATE lectures SET is_deleted = 1, deleted_at = ?1 WHERE id = 'l2'",
+                rusqlite::params![now_ms - 5 * day_ms],
+            )
+            .unwrap();
+
+        let purged = db.hard_delete_trashed_older_than(30).expect("hard_delete");
+
+        assert_eq!(purged, vec!["l1".to_string()]);
+
+        // l1 physically gone, l2 still there.
+        let still_have_l1: bool = db
+            .conn()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = 'l1')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!still_have_l1, "l1 should have been physically deleted");
+        let still_have_l2: bool = db
+            .conn()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = 'l2')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(still_have_l2, "l2 (5 days) should survive");
+    }
+
+    /// `hard_delete_trashed_older_than` should be safe to call on an
+    /// empty trash — App.tsx invokes it on every boot, including the
+    /// first launch.
+    #[test]
+    fn hard_delete_trashed_older_than_empty_trash_is_noop() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        let purged = db.hard_delete_trashed_older_than(30).unwrap();
+        assert!(purged.is_empty());
+    }
 }

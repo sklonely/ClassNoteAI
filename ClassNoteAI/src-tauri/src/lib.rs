@@ -2890,6 +2890,10 @@ pub fn run() {
             restore_lecture,
             purge_course,
             purge_lecture,
+            // Phase 7 S3.f-RS Trash Bin Cascade (cascade delete + 30-day sweep)
+            delete_course_cascade,
+            list_trashed_lectures,
+            hard_delete_trashed_older_than,
             // Sync Extensions (New)
             delete_subtitles_by_lecture,
             get_all_chat_sessions,
@@ -3294,8 +3298,15 @@ async fn list_deleted_lectures(user_id: String) -> Result<Vec<storage::models::L
         .map_err(|e| format!("列出已刪除課堂失敗: {}", e))
 }
 
+/// Restore a course from the trash and reverse-cascade any lectures
+/// that were soft-deleted by the same `delete_course_cascade` call.
+///
+/// Phase 7 S3.f-RS-3 changed the return shape from `()` to the count of
+/// resurrected lectures so the UI can show "還原 1 個課程, 帶回 N 個
+/// 課堂". Frontends that previously ignored the unit return type just
+/// have to accept (and discard) the integer now.
 #[tauri::command]
-async fn restore_course(id: String) -> Result<(), String> {
+async fn restore_course(id: String) -> Result<i64, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -3303,10 +3314,13 @@ async fn restore_course(id: String) -> Result<(), String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.restore_course(&id)
-        .map_err(|e| format!("還原課程失敗: {}", e))?;
-    Ok(())
+        .map_err(|e| format!("還原課程失敗: {}", e))
 }
 
+/// Restore a lecture from the trash. Errors with the
+/// "親屬 course … 仍在垃圾桶" string when the parent course is itself
+/// soft-deleted — the frontend uses that signal to prompt
+/// "需要連同課程一起回復".
 #[tauri::command]
 async fn restore_lecture(id: String) -> Result<(), String> {
     let manager = storage::get_db_manager()
@@ -3344,6 +3358,62 @@ async fn purge_lecture(id: String) -> Result<(), String> {
     db.purge_lecture(&id)
         .map_err(|e| format!("永久刪除課堂失敗: {}", e))?;
     Ok(())
+}
+
+// ========== Phase 7 S3.f-RS Trash Bin Cascade Commands ==========
+
+/// Phase 7 S3.f-RS-3: explicit cascade-delete entry point.
+///
+/// Functionally equivalent to `delete_course` (which Phase 7 already
+/// upgraded to cascade), but exposed under this name so frontend call
+/// sites that mean "delete course AND its lectures" read self-evidently
+/// at the call site. PData uses this; legacy callers that still invoke
+/// `delete_course` get the same behavior.
+#[tauri::command]
+async fn delete_course_cascade(course_id: String) -> Result<(), String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.delete_course(&course_id)
+        .map_err(|e| format!("Cascade 刪除課程失敗: {}", e))?;
+    Ok(())
+}
+
+/// Phase 7 S3.f-RS-3: list every soft-deleted lecture across the user's
+/// courses. Wraps the existing `list_deleted_lectures` with the
+/// per-Phase-7 contract (`user_id` defaults to `default_user`).
+#[tauri::command]
+async fn list_trashed_lectures(
+    user_id: Option<String>,
+) -> Result<Vec<storage::models::Lecture>, String> {
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_deleted_lectures(&user)
+        .map_err(|e| format!("列出垃圾桶課堂失敗: {}", e))
+}
+
+/// Phase 7 §9.5 W3 + S3.f-RS-3: hard-delete trash rows older than
+/// `days`. Returns the lecture ids that were physically removed so the
+/// caller can chain on-disk cleanup (audio / video / pcm sidecars).
+/// App.tsx runs this on boot with `days = 30` and toasts the count.
+#[tauri::command]
+async fn hard_delete_trashed_older_than(days: i64) -> Result<Vec<String>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.hard_delete_trashed_older_than(days)
+        .map_err(|e| format!("永久清除過期垃圾桶失敗: {}", e))
 }
 
 // ========== Sync 相關 Commands ==========

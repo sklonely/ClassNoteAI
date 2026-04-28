@@ -27,6 +27,7 @@ import { FileText, BookOpen } from 'lucide-react';
 import type { Course, Lecture } from '../../types';
 import { storageService } from '../../services/storageService';
 import { toastService } from '../../services/toastService';
+import { confirmService } from '../../services/confirmService';
 import {
     useRecordingSession,
     fmtElapsed,
@@ -138,6 +139,18 @@ export default function H18RecordingPage({
     }, []);
 
     const handleStop = async () => {
+        // S3h: 結束 = 不可逆 (停止 mic + finalize pipeline)，先過 themed
+        // confirm gate。Cancel → 留在錄音中，session 不動。
+        const ok = await confirmService.ask({
+            title: '結束錄音？',
+            message:
+                '字幕跟摘要會自動生成。可在背景繼續，可隨時去其他頁面。',
+            confirmLabel: '結束',
+            cancelLabel: '繼續錄音',
+            variant: 'default',
+        });
+        if (!ok) return;
+
         setFinishOpen(true);
         await session.stop();
     };

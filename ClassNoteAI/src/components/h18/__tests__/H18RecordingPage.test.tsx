@@ -118,6 +118,7 @@ vi.mock('../../../services/examMarksStore', () => ({
 import H18RecordingPage from '../H18RecordingPage';
 import { recordingSessionService } from '../../../services/recordingSessionService';
 import { subtitleService } from '../../../services/subtitleService';
+import { confirmService } from '../../../services/confirmService';
 
 beforeEach(() => {
     recordingSessionService.reset();
@@ -127,6 +128,8 @@ beforeEach(() => {
 
 afterEach(() => {
     recordingSessionService.reset();
+    // Drain any pending confirm so it doesn't bleed into the next test.
+    if (confirmService.current()) confirmService.dismiss();
 });
 
 /** Drain async tasks queued by `useEffect` setState calls so DOM has the
@@ -340,5 +343,94 @@ describe('H18RecordingPage — stopPhase progress hints', () => {
         expect(screen.queryByText(/建立字幕索引/)).toBeNull();
         expect(screen.queryByText(/生成摘要中/)).toBeNull();
         expect(screen.queryByText(/儲存失敗/)).toBeNull();
+    });
+});
+
+describe('H18RecordingPage · S3h — 結束按鈕 confirm gate', () => {
+    it('結束按鈕 → 顯示 confirm dialog (走 confirmService.ask)', async () => {
+        recordingSessionService._setStateForTest({
+            status: 'recording',
+            lectureId: 'L1',
+            courseId: 'C1',
+            elapsed: 60,
+            sessionStartMs: Date.now() - 60_000,
+        });
+        const askSpy = vi.spyOn(confirmService, 'ask');
+
+        render(
+            <H18RecordingPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const stopBtn = screen.getByRole('button', { name: /結束.*儲存/ });
+        stopBtn.click();
+        // Yield once so the ask() lands in confirmService.
+        await Promise.resolve();
+
+        expect(askSpy).toHaveBeenCalledTimes(1);
+        const req = askSpy.mock.calls[0][0];
+        expect(req.title).toBe('結束錄音？');
+        expect(req.confirmLabel).toBe('結束');
+        expect(req.cancelLabel).toBe('繼續錄音');
+    });
+
+    it('confirm cancel → 不呼叫 session.stop（仍在錄音）', async () => {
+        recordingSessionService._setStateForTest({
+            status: 'recording',
+            lectureId: 'L1',
+            courseId: 'C1',
+            elapsed: 60,
+            sessionStartMs: Date.now() - 60_000,
+        });
+        const stopSpy = vi
+            .spyOn(recordingSessionService, 'stop')
+            .mockResolvedValue();
+
+        render(
+            <H18RecordingPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        screen.getByRole('button', { name: /結束.*儲存/ }).click();
+        // Yield so handleStop awaits confirmService.ask().
+        await Promise.resolve();
+        expect(confirmService.current()).not.toBeNull();
+
+        // 使用者按「繼續錄音」 → dismiss → handleStop 短路。
+        confirmService.dismiss();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(stopSpy).not.toHaveBeenCalled();
+    });
+
+    it('confirm OK → 真的 session.stop()', async () => {
+        recordingSessionService._setStateForTest({
+            status: 'recording',
+            lectureId: 'L1',
+            courseId: 'C1',
+            elapsed: 60,
+            sessionStartMs: Date.now() - 60_000,
+        });
+        const stopSpy = vi
+            .spyOn(recordingSessionService, 'stop')
+            .mockResolvedValue();
+
+        render(
+            <H18RecordingPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        screen.getByRole('button', { name: /結束.*儲存/ }).click();
+        await Promise.resolve();
+        expect(confirmService.current()).not.toBeNull();
+
+        // 使用者按「結束」 → accept → handleStop 走完 session.stop()。
+        confirmService.accept();
+        // Two ticks: one for await ask() to resolve, one for await session.stop().
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(stopSpy).toHaveBeenCalledTimes(1);
     });
 });

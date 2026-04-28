@@ -93,7 +93,11 @@ impl Database {
     }
 
     /// 初始化數據表
-    fn init_tables(&self) -> SqlResult<()> {
+    ///
+    /// `pub(crate)` so the sibling `storage::database_test` harness can
+    /// re-invoke the migration to assert idempotency. Production code
+    /// keeps calling it implicitly via `Database::new` / `open_in_memory`.
+    pub(crate) fn init_tables(&self) -> SqlResult<()> {
         // 開啟外鍵約束（SQLite 默認關閉）
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
 
@@ -704,7 +708,177 @@ impl Database {
             ));
         }
 
+        // ===== v0.8.0 (Phase 7 Sprint 3.f-RS-2) schema migration =====
+        // PLAN §8.2: lectures + notes + settings + subtitles 一次到位。
+        //
+        // Why a single TRANSACTION: SQLite ALTER TABLE ADD COLUMN can't
+        // be rolled back partway, but if any of the data-touching steps
+        // (UPDATE notes / UPDATE subtitles) fail we still want to leave
+        // the columns in a consistent state. The transaction wraps the
+        // full batch — `unchecked_transaction` because we're inside an
+        // immutable `&self` method (the connection lives behind a
+        // non-mutable borrow but rusqlite knows it owns the conn).
+        //
+        // Idempotent: every step checks PRAGMA table_info first OR uses
+        // ALTER TABLE inside an `if !has_column` guard. Re-running on a
+        // already-migrated DB is a no-op. This is the same pattern used
+        // by all the prior migration blocks in this function.
+        self.run_v8_migration()?;
+
         Ok(())
+    }
+
+    /// v0.8.0 schema migration — Phase 7 §8.2.
+    ///
+    /// Adds the columns Phase 7 needs across `lectures`, `notes`,
+    /// `settings` and one data fix on `subtitles.type`. Idempotent
+    /// (each ALTER guarded by PRAGMA table_info), safe to call on every
+    /// `init_tables` invocation. Wraps the whole batch in a single
+    /// transaction so a mid-batch failure rolls back the data UPDATEs
+    /// (the schema ALTERs themselves are non-rollbackable in SQLite, but
+    /// guarded by the column-presence check on the next run).
+    fn run_v8_migration(&self) -> SqlResult<()> {
+        // --- Detect which columns are already present ---
+        let lecture_cols = self.column_names("lectures")?;
+        let notes_cols = self.column_names("notes")?;
+        let settings_cols = self.column_names("settings")?;
+
+        let needs_started_at_ms = !lecture_cols.iter().any(|c| c == "started_at_ms");
+        let needs_summary_status = !lecture_cols.iter().any(|c| c == "summary_status");
+        let needs_summary_provider = !lecture_cols.iter().any(|c| c == "summary_provider");
+        let needs_import_source = !lecture_cols.iter().any(|c| c == "import_source");
+        let needs_cascade_deleted_with = !lecture_cols.iter().any(|c| c == "cascade_deleted_with");
+        let needs_lecture_deleted_at = !lecture_cols.iter().any(|c| c == "deleted_at");
+
+        let course_cols = self.column_names("courses")?;
+        let needs_course_deleted_at = !course_cols.iter().any(|c| c == "deleted_at");
+
+        let needs_note_summary = !notes_cols.iter().any(|c| c == "summary");
+        let needs_note_status = !notes_cols.iter().any(|c| c == "status");
+        let needs_note_provider = !notes_cols.iter().any(|c| c == "provider");
+
+        let needs_settings_user_id = !settings_cols.iter().any(|c| c == "user_id");
+
+        // Fast-path: nothing to do.
+        let any_pending = needs_started_at_ms
+            || needs_summary_status
+            || needs_summary_provider
+            || needs_import_source
+            || needs_cascade_deleted_with
+            || needs_lecture_deleted_at
+            || needs_course_deleted_at
+            || needs_note_summary
+            || needs_note_status
+            || needs_note_provider
+            || needs_settings_user_id;
+
+        if !any_pending {
+            // Subtitle type re-label is data-only and cheap, but skip it
+            // when the schema is already done — we already ran it once.
+            return Ok(());
+        }
+
+        println!("[Database] Running v0.8.0 schema migration (Phase 7 §8.2)…");
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        if needs_started_at_ms {
+            tx.execute("ALTER TABLE lectures ADD COLUMN started_at_ms INTEGER", [])?;
+        }
+        if needs_summary_status {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN summary_status TEXT NOT NULL DEFAULT 'pending'",
+                [],
+            )?;
+        }
+        if needs_summary_provider {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN summary_provider TEXT",
+                [],
+            )?;
+        }
+        if needs_import_source {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN import_source TEXT NOT NULL DEFAULT 'live'",
+                [],
+            )?;
+        }
+        if needs_cascade_deleted_with {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN cascade_deleted_with TEXT",
+                [],
+            )?;
+        }
+        // `deleted_at` is INTEGER ms-since-epoch — used by
+        // `hard_delete_trashed_older_than` (Phase 7 S3.f-RS-3) so we can
+        // compare against `now - days*86400000`. Existing soft-deletes
+        // only stamped `updated_at` (RFC3339 text) which is awkward to
+        // compare numerically.
+        if needs_lecture_deleted_at {
+            tx.execute("ALTER TABLE lectures ADD COLUMN deleted_at INTEGER", [])?;
+        }
+        if needs_course_deleted_at {
+            tx.execute("ALTER TABLE courses ADD COLUMN deleted_at INTEGER", [])?;
+        }
+
+        if needs_note_summary {
+            tx.execute("ALTER TABLE notes ADD COLUMN summary TEXT", [])?;
+        }
+        if needs_note_status {
+            tx.execute(
+                "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
+                [],
+            )?;
+        }
+        if needs_note_provider {
+            tx.execute("ALTER TABLE notes ADD COLUMN provider TEXT", [])?;
+        }
+        // One-shot: lift summary out of the legacy `content` JSON blob so
+        // the new `notes.summary` column has data on day one.
+        if needs_note_summary {
+            tx.execute(
+                "UPDATE notes SET summary = json_extract(content, '$.summary') \
+                 WHERE content LIKE '%\"summary\"%'",
+                [],
+            )?;
+        }
+
+        if needs_settings_user_id {
+            tx.execute(
+                "ALTER TABLE settings ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'",
+                [],
+            )?;
+        }
+
+        // Subtitle type re-label: `rough` → `live`. PLAN §8.2 keeps the
+        // column nullable text; we only flip the literal that the new TS
+        // union type rejects. Idempotent — running twice changes 0 rows.
+        tx.execute("UPDATE subtitles SET type = 'live' WHERE type = 'rough'", [])?;
+
+        // Index for the trash bin sweep — `hard_delete_trashed_older_than`
+        // hits this filter every app boot.
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lectures_deleted_at ON lectures(deleted_at)",
+            [],
+        )?;
+
+        tx.commit()?;
+        println!("[Database] v0.8.0 schema migration complete.");
+        Ok(())
+    }
+
+    /// Helper: list column names of a table via `PRAGMA table_info`.
+    /// Used by `run_v8_migration` to keep the ALTER TABLE chain
+    /// idempotent on re-launch.
+    fn column_names(&self, table: &str) -> SqlResult<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info({})", table))?;
+        let cols = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(cols)
     }
 
     // --- Course CRUD ---
@@ -775,13 +949,34 @@ impl Database {
         Ok(courses)
     }
 
-    /// 刪除科目 (軟刪除)
+    /// 刪除科目 (軟刪除 + cascade)
+    ///
+    /// Phase 7 S3.f-RS-3: a single SQLite TRANSACTION soft-deletes the
+    /// course AND all its non-deleted lectures, stamping each lecture's
+    /// `cascade_deleted_with = course_id` so `restore_course` can later
+    /// reverse exactly the rows this call touched (and not accidentally
+    /// pull back lectures that were already individually trashed before
+    /// the parent course was deleted).
     pub fn delete_course(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE courses SET is_deleted = 1, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+        let now_text = Utc::now().to_rfc3339();
+        let now_ms = now_unix_ms();
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "UPDATE courses SET is_deleted = 1, updated_at = ?2, deleted_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, now_text, now_ms],
         )?;
+
+        // Mark only currently-alive lectures so a later restore_course
+        // doesn't resurrect previously-deleted siblings.
+        tx.execute(
+            "UPDATE lectures \
+             SET is_deleted = 1, updated_at = ?2, deleted_at = ?3, cascade_deleted_with = ?1 \
+             WHERE course_id = ?1 AND is_deleted = 0",
+            rusqlite::params![id, now_text, now_ms],
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -907,11 +1102,18 @@ impl Database {
     }
 
     /// 刪除課程 (軟刪除)
+    ///
+    /// Phase 7 S3.f-RS-3: also stamps `deleted_at` (ms epoch) so the
+    /// 30-day trash sweep can compare numerically. Does NOT set
+    /// `cascade_deleted_with` — that's reserved for cascade deletes
+    /// triggered by `delete_course`. Restoring an individually-deleted
+    /// lecture only requires the parent course to be alive.
     pub fn delete_lecture(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
+        let now_text = Utc::now().to_rfc3339();
+        let now_ms = now_unix_ms();
         self.conn.execute(
-            "UPDATE lectures SET is_deleted = 1, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+            "UPDATE lectures SET is_deleted = 1, updated_at = ?2, deleted_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, now_text, now_ms],
         )?;
         Ok(())
     }
@@ -1260,24 +1462,125 @@ impl Database {
         Ok(lectures)
     }
 
-    /// 還原已刪除的課程
-    pub fn restore_course(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
+    /// 還原已刪除的課程 — cascade reverse.
+    ///
+    /// Phase 7 S3.f-RS-3: in a single TRANSACTION, un-deletes the course
+    /// AND any lectures that were soft-deleted by the cascading
+    /// `delete_course` call (i.e. rows where `cascade_deleted_with`
+    /// matches this course id). Lectures that were individually trashed
+    /// before the cascade — `cascade_deleted_with IS NULL` even though
+    /// `is_deleted = 1` — stay in the trash. Returns the count of
+    /// lectures that were resurrected so callers can show "still N
+    /// lectures in this course's trash" if useful.
+    pub fn restore_course(&self, id: &str) -> SqlResult<i64> {
+        let now_text = Utc::now().to_rfc3339();
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "UPDATE courses SET is_deleted = 0, updated_at = ?2, deleted_at = NULL WHERE id = ?1",
+            rusqlite::params![id, now_text],
+        )?;
+
+        let restored = tx.execute(
+            "UPDATE lectures \
+             SET is_deleted = 0, updated_at = ?2, deleted_at = NULL, cascade_deleted_with = NULL \
+             WHERE cascade_deleted_with = ?1 AND is_deleted = 1",
+            rusqlite::params![id, now_text],
+        )?;
+
+        tx.commit()?;
+        Ok(restored as i64)
+    }
+
+    /// 還原已刪除的課堂 — guarded on parent course being alive.
+    ///
+    /// Phase 7 S3.f-RS-3: refuses to restore a lecture whose parent
+    /// course is still soft-deleted, returning a typed error so the
+    /// frontend can prompt "需要連同課程一起回復". Also wipes the
+    /// `cascade_deleted_with` marker if present, so a later
+    /// `delete_course` followed by `restore_course` won't double-restore
+    /// this lecture.
+    pub fn restore_lecture(&self, id: &str) -> SqlResult<()> {
+        // Look up the parent course id.
+        let course_id: String = self.conn.query_row(
+            "SELECT course_id FROM lectures WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+
+        // Course must be alive for an individual restore.
+        let course_deleted: i64 = self
+            .conn
+            .query_row(
+                "SELECT is_deleted FROM courses WHERE id = ?1",
+                rusqlite::params![&course_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        if course_deleted != 0 {
+            // Reuse the SQLite "constraint" error category so the Tauri
+            // command layer can `.map_err` to a stable string. We don't
+            // have a custom error enum in this module yet; falling back
+            // to `Error::SqliteFailure` with a synthetic code keeps the
+            // wire format consistent with other rusqlite errors.
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                    extended_code: 0,
+                },
+                Some(format!(
+                    "親屬 course {} 仍在垃圾桶，請先還原 course",
+                    course_id
+                )),
+            ));
+        }
+
+        let now_text = Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE courses SET is_deleted = 0, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+            "UPDATE lectures \
+             SET is_deleted = 0, updated_at = ?2, deleted_at = NULL, cascade_deleted_with = NULL \
+             WHERE id = ?1",
+            rusqlite::params![id, now_text],
         )?;
         Ok(())
     }
 
-    /// 還原已刪除的課堂
-    pub fn restore_lecture(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE lectures SET is_deleted = 0, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+    /// Hard-delete trash rows older than `days`.
+    ///
+    /// Phase 7 S3.f-RS-3 + §9.5 W3: scans both `lectures` and `courses`
+    /// for `is_deleted = 1 AND deleted_at < cutoff_ms`, deletes them in
+    /// a single transaction, and returns the lecture ids that were
+    /// purged so the caller can chain a filesystem cleanup pass.
+    /// `subtitles`, `notes` and `embeddings` cascade through the FK
+    /// `ON DELETE CASCADE`, so we only DELETE FROM the parent tables.
+    /// Idempotent: a repeat call after the rows are gone returns an
+    /// empty Vec.
+    pub fn hard_delete_trashed_older_than(&self, days: i64) -> SqlResult<Vec<String>> {
+        let cutoff = now_unix_ms() - days.saturating_mul(86_400_000);
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Snapshot the lecture ids first — once DELETE runs the rows are
+        // gone and we can't enumerate them anymore. Done in its own
+        // scope so the prepared statement drops before the next
+        // `tx.execute`.
+        let purged: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT id FROM lectures WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1")?;
+            let rows = stmt.query_map(rusqlite::params![cutoff], |r| r.get::<_, String>(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        tx.execute(
+            "DELETE FROM lectures WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
+            rusqlite::params![cutoff],
         )?;
-        Ok(())
+        tx.execute(
+            "DELETE FROM courses WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
+            rusqlite::params![cutoff],
+        )?;
+
+        tx.commit()?;
+        Ok(purged)
     }
 
     /// 永久刪除課程 (物理刪除)
@@ -1587,6 +1890,17 @@ pub struct EmbeddingRow {
     pub position: i64,
     pub page_number: Option<i64>,
     pub created_at: String,
+}
+
+/// Current unix epoch in milliseconds, saturating to 0 on the
+/// (impossible-in-practice) clock-pre-1970 case. Used by Phase 7
+/// soft-delete `deleted_at` stamping and the trash-bin cutoff math
+/// in `hard_delete_trashed_older_than`.
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn pack_f32_le(vec: &[f32]) -> Vec<u8> {
