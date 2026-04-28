@@ -150,6 +150,10 @@ pub struct Subtitle {
     #[serde(rename = "type")]
     pub subtitle_type: String, // "rough" | "fine" - 序列化為 "type"
     pub confidence: Option<f64>,
+    #[serde(default)]
+    pub speaker_role: Option<String>,
+    #[serde(default)]
+    pub speaker_id: Option<String>,
     pub created_at: String,
 }
 
@@ -170,6 +174,8 @@ impl Subtitle {
             text_zh,
             subtitle_type,
             confidence,
+            speaker_role: None,
+            speaker_id: None,
             created_at: Utc::now().to_rfc3339(),
         }
     }
@@ -188,6 +194,8 @@ impl TryFrom<&Row<'_>> for Subtitle {
             subtitle_type: row.get(5)?,
             confidence: row.get(6)?,
             created_at: row.get(7)?,
+            speaker_role: row.get::<_, Option<String>>(8).unwrap_or(None),
+            speaker_id: row.get::<_, Option<String>>(9).unwrap_or(None),
         })
     }
 }

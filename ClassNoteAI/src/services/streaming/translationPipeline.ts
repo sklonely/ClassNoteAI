@@ -65,6 +65,7 @@ class TranslationPipeline {
   /** Push a sentence for async translation. Non-blocking. */
   enqueue(job: TranslationJob): void {
     this.queue.push(job);
+    this.emitStatus(job.sessionId);
     void this.drain();
   }
 
@@ -83,7 +84,9 @@ class TranslationPipeline {
     try {
       while (this.queue.length > 0) {
         const job = this.queue.shift()!;
+        this.emitStatus(job.sessionId);
         await this.translateOne(job);
+        this.emitStatus(job.sessionId);
       }
     } finally {
       this.processing = false;
@@ -142,6 +145,16 @@ class TranslationPipeline {
       id: job.id,
       sessionId: job.sessionId,
       error: String((lastError as { message?: string })?.message ?? lastError),
+    });
+  }
+
+  private emitStatus(sessionId: string): void {
+    const oldest = this.queue[0];
+    subtitleStream.emit({
+      kind: 'pipeline_status',
+      sessionId,
+      translationQueueDepth: this.queue.length,
+      oldestTranslationAgeMs: oldest ? Math.max(0, Date.now() - oldest.enqueuedAt) : 0,
     });
   }
 }

@@ -32,9 +32,13 @@
 use crate::utils::command::no_window;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+
+const SUPPORTED_MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "m4v", "mkv", "webm", "mov", "avi", "wav", "mp3", "m4a", "aac", "flac", "ogg", "opus",
+];
 
 /// Run ffmpeg to decode a video file into raw 16 kHz mono i16 PCM.
 ///
@@ -130,6 +134,56 @@ fn locate_ffmpeg() -> Option<PathBuf> {
     None
 }
 
+fn lower_extension(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+}
+
+fn supported_media_extension(path: &Path) -> Result<String, String> {
+    let ext = lower_extension(path).ok_or_else(|| {
+        format!(
+            "unsupported media file without extension: {}",
+            path.display()
+        )
+    })?;
+    if SUPPORTED_MEDIA_EXTENSIONS.contains(&ext.as_str()) {
+        Ok(ext)
+    } else {
+        Err(format!(
+            "unsupported media extension .{}; raw .pcm files are internal scratch files, not import media",
+            ext
+        ))
+    }
+}
+
+fn app_temp_pcm_dir() -> Result<PathBuf, String> {
+    Ok(crate::paths::get_app_data_dir()?.join("temp_pcm"))
+}
+
+fn validate_temp_pcm_path(path: &Path, temp_dir: &Path) -> Result<(), String> {
+    if lower_extension(path).as_deref() != Some("pcm") {
+        return Err(format!("expected a .pcm temp file: {}", path.display()));
+    }
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let canonical_temp = temp_dir
+        .canonicalize()
+        .map_err(|e| format!("canonicalize temp_pcm dir {}: {e}", temp_dir.display()))?;
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|e| format!("canonicalize pcm path {}: {e}", path.display()))?;
+    if !canonical_path.starts_with(&canonical_temp) {
+        return Err(format!(
+            "rejected non-temp PCM path: {}",
+            canonical_path.display()
+        ));
+    }
+    Ok(())
+}
+
 // ============================================================
 // Tauri commands
 // ============================================================
@@ -144,23 +198,15 @@ pub async fn import_video_for_lecture(
     use crate::paths;
     let src = PathBuf::from(&src_path);
     if !src.exists() {
-        return Err(format!("source video not found: {src_path}"));
+        return Err(format!("source media not found: {src_path}"));
     }
+    let ext = supported_media_extension(&src)?;
     let video_dir = paths::get_video_dir()?;
-    std::fs::create_dir_all(&video_dir).map_err(|e| format!("mkdir {}: {e}", video_dir.display()))?;
-    let ext = src
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("mp4")
-        .to_string();
+    std::fs::create_dir_all(&video_dir)
+        .map_err(|e| format!("mkdir {}: {e}", video_dir.display()))?;
     let dest = video_dir.join(format!("{lecture_id}.{ext}"));
-    std::fs::copy(&src, &dest).map_err(|e| {
-        format!(
-            "copy video {} -> {}: {e}",
-            src.display(),
-            dest.display()
-        )
-    })?;
+    std::fs::copy(&src, &dest)
+        .map_err(|e| format!("copy video {} -> {}: {e}", src.display(), dest.display()))?;
     Ok(dest.to_string_lossy().to_string())
 }
 
@@ -170,6 +216,7 @@ pub async fn import_video_for_lecture(
 #[tauri::command]
 pub async fn extract_pcm_from_video(video_path: String) -> Result<Vec<i16>, String> {
     let path = PathBuf::from(&video_path);
+    supported_media_extension(&path)?;
     extract_pcm_16k_mono(&path)
 }
 
@@ -189,8 +236,9 @@ pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractR
     use crate::paths;
     let video = PathBuf::from(&video_path);
     if !video.exists() {
-        return Err(format!("video not found: {video_path}"));
+        return Err(format!("media not found: {video_path}"));
     }
+    supported_media_extension(&video)?;
     let ffmpeg = locate_ffmpeg().ok_or_else(|| {
         "ffmpeg not found on PATH. Install via WinGet/Homebrew/apt and retry.".to_string()
     })?;
@@ -234,14 +282,12 @@ pub async fn extract_video_pcm_to_temp(video_path: String) -> Result<PcmExtractR
             }
         });
     }
-    let status = child
-        .wait()
-        .map_err(|e| format!("ffmpeg wait: {e}"))?;
+    let status = child.wait().map_err(|e| format!("ffmpeg wait: {e}"))?;
     if !status.success() {
         return Err(format!("ffmpeg exited {:?}", status.code()));
     }
-    let metadata = std::fs::metadata(&pcm_path)
-        .map_err(|e| format!("stat {}: {e}", pcm_path.display()))?;
+    let metadata =
+        std::fs::metadata(&pcm_path).map_err(|e| format!("stat {}: {e}", pcm_path.display()))?;
     let sample_count = metadata.len() / 2; // i16 = 2 bytes
     let duration_sec = sample_count as f64 / 16000.0;
     Ok(PcmExtractResult {
@@ -262,6 +308,8 @@ pub async fn read_pcm_slice(
     count: u64,
 ) -> Result<Vec<i16>, String> {
     let path = PathBuf::from(&pcm_path);
+    let temp_dir = app_temp_pcm_dir()?;
+    validate_temp_pcm_path(&path, &temp_dir)?;
     let mut file = File::open(&path).map_err(|e| format!("open {pcm_path}: {e}"))?;
     file.seek(SeekFrom::Start(start_sample * 2))
         .map_err(|e| format!("seek: {e}"))?;
@@ -283,6 +331,8 @@ pub async fn read_pcm_slice(
 #[tauri::command]
 pub async fn delete_temp_pcm(pcm_path: String) -> Result<(), String> {
     let path = PathBuf::from(&pcm_path);
+    let temp_dir = app_temp_pcm_dir()?;
+    validate_temp_pcm_path(&path, &temp_dir)?;
     if !path.exists() {
         return Ok(());
     }
@@ -292,4 +342,41 @@ pub async fn delete_temp_pcm(pcm_path: String) -> Result<(), String> {
 /// Helper used by frontend to find existing lecture videos on disk.
 pub fn stage_video_inner(_dir: &Path, _lecture_id: &str) -> Result<Option<PathBuf>, String> {
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn supported_media_extension_accepts_audio_and_video_but_rejects_pcm() {
+        assert_eq!(
+            supported_media_extension(Path::new("lecture.MP4")).unwrap(),
+            "mp4"
+        );
+        assert_eq!(
+            supported_media_extension(Path::new("audio.m4a")).unwrap(),
+            "m4a"
+        );
+        assert!(supported_media_extension(Path::new("scratch.pcm")).is_err());
+        assert!(supported_media_extension(Path::new("slides.pdf")).is_err());
+    }
+
+    #[test]
+    fn temp_pcm_validation_stays_inside_temp_pcm_dir() {
+        let tmp = TempDir::new().unwrap();
+        let temp_pcm = tmp.path().join("temp_pcm");
+        std::fs::create_dir_all(&temp_pcm).unwrap();
+        let good = temp_pcm.join("import.pcm");
+        std::fs::write(&good, [0u8; 4]).unwrap();
+        let outside = tmp.path().join("audio").join("in-progress");
+        std::fs::create_dir_all(&outside).unwrap();
+        let interrupted_recording = outside.join("lecture.pcm");
+        std::fs::write(&interrupted_recording, [0u8; 4]).unwrap();
+
+        assert!(validate_temp_pcm_path(&good, &temp_pcm).is_ok());
+        assert!(validate_temp_pcm_path(&interrupted_recording, &temp_pcm).is_err());
+        assert!(validate_temp_pcm_path(&temp_pcm.join("not-pcm.wav"), &temp_pcm).is_err());
+    }
 }

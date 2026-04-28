@@ -42,6 +42,8 @@ export interface PersistedTranscriptSegment {
   text_en: string;
   text_zh?: string;
   type: 'rough' | 'fine';
+  speaker_role?: 'teacher' | 'student' | 'unknown';
+  speaker_id?: string;
 }
 
 export interface OrphanedLecture {
@@ -215,6 +217,8 @@ class RecordingRecoveryService {
       text_en: seg.text_en,
       text_zh: seg.text_zh ?? null,
       type: seg.type,
+      speaker_role: seg.speaker_role ?? 'unknown',
+      speaker_id: seg.speaker_id,
     }));
     await invoke('save_subtitles', { subtitles });
     return subtitles.length;

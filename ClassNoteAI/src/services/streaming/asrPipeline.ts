@@ -255,6 +255,7 @@ export class AsrPipeline {
       audioEndSec: endSec,
       wallClockMs: Date.now() - this.startedAt,
       textEn: text,
+      speakerRole: 'unknown',
     });
     translationPipeline.enqueue({
       id,

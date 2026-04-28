@@ -14,6 +14,8 @@
  *     for replay / debug.
  */
 
+export type SpeakerRole = 'teacher' | 'student' | 'unknown';
+
 export type SubtitleEvent =
   | {
       kind: 'sentence_committed';
@@ -23,6 +25,8 @@ export type SubtitleEvent =
       audioEndSec: number;
       wallClockMs: number;
       textEn: string;
+      speakerRole: SpeakerRole;
+      speakerId?: string;
     }
   | {
       kind: 'translation_ready';
@@ -54,6 +58,12 @@ export type SubtitleEvent =
       kind: 'session_ended';
       sessionId: string;
       finalWallClockMs: number;
+    }
+  | {
+      kind: 'pipeline_status';
+      sessionId: string;
+      translationQueueDepth: number;
+      oldestTranslationAgeMs: number;
     };
 
 type Listener = (event: SubtitleEvent) => void;
