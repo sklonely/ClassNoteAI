@@ -1,11 +1,13 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { authService, User } from '../services/authService';
+import { recordingSessionService } from '../services/recordingSessionService';
+import { clearAll as clearAllKeys } from '../services/llm/keyStore';
 
 interface AuthContextType {
     user: User | null;
     login: (username: string) => Promise<boolean>;
     register: (username: string) => Promise<void>;
-    logout: () => void;
+    logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -28,8 +30,47 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return authService.register(username);
     };
 
-    const logout = () => {
-        authService.logout();
+    /**
+     * Logout: clears the auth principal AND any user-scoped in-memory
+     * / on-disk state that must not survive a user switch.
+     *
+     * Phase 7 R-1 (Sprint 1): tear down the recording session singleton
+     * (so a stale recorder/mic stream doesn't carry into the next
+     * login) and wipe stored API keys. Errors from each step are
+     * swallowed independently — partial cleanup beats refusing to log
+     * out at all.
+     *
+     * TODO Sprint 2 R-1: also call taskTrackerService.cancelAll() once
+     * that service lands; cancelling pending background tasks is the
+     * remaining piece of the R-1 sweep.
+     */
+    const logout = async () => {
+        // Existing: clear auth principal. Wrap in try/catch — partial
+        // cleanup is better than refusing to log out at all (e.g. if
+        // localStorage write throws under quota / private mode).
+        try {
+            authService.logout();
+        } catch (err) {
+            console.warn('[AuthContext.logout] authService.logout failed', err);
+        }
+
+        // R-1: reset recording singleton — bypasses the stop pipeline,
+        // which is the right call here because the user is leaving the
+        // session entirely.
+        try {
+            recordingSessionService.reset();
+        } catch (err) {
+            console.warn('[AuthContext.logout] recording reset failed', err);
+        }
+
+        // R-1: wipe API keys so the next user can't read them.
+        try {
+            await clearAllKeys();
+        } catch (err) {
+            console.warn('[AuthContext.logout] keyStore clear failed', err);
+        }
+
+        // TODO Sprint 2 R-1: taskTrackerService.cancelAll() once tracker exists.
     };
 
     return (

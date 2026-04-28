@@ -38,6 +38,38 @@ export interface AIMsg {
 
 const STORE_KEY = 'h18-ai-history-v1';
 
+/* ─── Quota-safe localStorage wrapper (W14) ──────────────────────
+ * Long AI conversations bloat history, so we're a likely first
+ * trigger of QuotaExceededError. Wrap save and surface a throttled
+ * warning toast; in-memory state still updates so the active chat
+ * keeps working — the user just loses persistence across reloads.
+ */
+let __lastQuotaToastAt = 0;
+const __TOAST_COOLDOWN_MS = 5_000;
+
+function fireQuotaToast() {
+    const now = Date.now();
+    if (now - __lastQuotaToastAt < __TOAST_COOLDOWN_MS) return;
+    __lastQuotaToastAt = now;
+    void import('../../services/toastService').then(({ toastService }) => {
+        toastService.warning(
+            '本機儲存空間不足',
+            '部分資料無法儲存。請至個人資料 → 資料 → 清除舊資料釋放空間。',
+        );
+    }).catch(() => {/* toast not available — best effort */});
+}
+
+function safeSetItem(k: string, value: string): boolean {
+    try {
+        localStorage.setItem(k, value);
+        return true;
+    } catch (err) {
+        console.warn('[useAIHistory] localStorage write failed', err);
+        fireQuotaToast();
+        return false;
+    }
+}
+
 const SYSTEM_PROMPT = `你是 ClassNoteAI 內建的全域 AI 助教，幫助使用者複習課程、整理筆記、寫作業。回答簡潔、直白、用繁體中文（除非使用者用其他語言）。`;
 
 const DEFAULT_INTRO: AIMsg[] = [
@@ -63,11 +95,7 @@ function loadHistory(): AIMsg[] {
 }
 
 function saveHistory(msgs: AIMsg[]): void {
-    try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(msgs));
-    } catch (err) {
-        console.warn('[useAIHistory] save failed:', err);
-    }
+    safeSetItem(STORE_KEY, JSON.stringify(msgs));
 }
 
 export function useAIHistory() {

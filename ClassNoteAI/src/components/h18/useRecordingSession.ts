@@ -1,345 +1,200 @@
 /**
- * useRecordingSession · v0.7.0 Phase 6.5+
+ * useRecordingSession · Phase 7 Sprint 1 (S1.2) — thin reader hook.
  *
- * 從 NotesView 萃取出來的最小錄音 state machine，給 H18RecordingPage 用。
+ * The recorder lifecycle now lives in the
+ * {@link recordingSessionService} singleton (Sprint 1 Round 2). This
+ * hook is a pure subscriber: it forwards the singleton state through
+ * a manual subscribe/setState bridge and proxies start/pause/resume/
+ * stop straight to the singleton.
  *
- * 接的後端：
- *  - AudioRecorder (本機 instance) — 麥克風 + 16kHz 重採樣 + .pcm flush
- *  - transcriptionService — Parakeet ASR 訂閱
- *  - subtitleService — 字幕 stream 用 subscribe
- *  - storageService — saveLecture (status 翻 completed)
- *  - audioPathService — finalize .pcm → .wav
+ * Note: we deliberately don't use the generic `useService`
+ * (useSyncExternalStore) helper here because the singleton's
+ * `getState()` returns a fresh object on every call (defensive copy);
+ * useSyncExternalStore would loop. The singleton already pushes
+ * snapshots through `subscribe(cb)`, so a plain `useState +
+ * useEffect` does the right thing.
  *
- * 留白（NotesView 有但本 hook 不接 — 等 wiring audit）：
- *  - BatteryMonitor (低電量自動 stop)
- *  - recordingDeviceMonitor (麥克風變更提示)
- *  - recordingRecoveryService 標記 (已由 App.tsx scan)
- *  - alignment banner / unofficial channel warning
- *  - PDF + 投影片對齊
- *  - settings.translation.source/target language 從 storageService 讀
+ * Why thin? Because the previous incarnation of this hook owned the
+ * AudioRecorder via a useRef — switching tabs unmounted the hook,
+ * which tore the recorder down mid-session. Sprint 1 pulls all that
+ * state up to a module-level singleton so the user can navigate
+ * freely while a recording is live; this file is just the React
+ * binding.
+ *
+ * Caller back-compat (Round 3):
+ *   - The legacy call form `useRecordingSession({ courseId, lectureId })`
+ *     remains supported. When opts are provided, the no-arg `start()`
+ *     defers them through to `recordingSessionService.start(...)` so
+ *     callers like H18RecordingPage don't have to change yet.
+ *   - All flat fields the old hook exposed (status / elapsed / segments
+ *     / currentText / stopPhase / error / sessionStartMs) are still
+ *     present at the top of the return shape. `segments` keeps the
+ *     legacy `SubtitleSegment[]` typing — the singleton's
+ *     `RecordingSegment[]` (richer) is exposed via `state.segments`.
+ *     Round 4 lifts callers off the legacy field.
+ *   - {@link RECORDING_CHANGE_EVENT} is re-exported from the contract
+ *     so existing `import { RECORDING_CHANGE_EVENT } from
+ *     './useRecordingSession'` sites (H18DeepApp) keep compiling.
+ *   - {@link fmtElapsed} stays here as a util — used by H18RecordingPage
+ *     for transport-bar formatting.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { AudioRecorder, type AudioRecorderStatus } from '../../services/audioRecorder';
-import { transcriptionService } from '../../services/transcriptionService';
+import { useEffect, useState } from 'react';
+import { recordingSessionService } from '../../services/recordingSessionService';
 import { subtitleService } from '../../services/subtitleService';
-import { audioDeviceService } from '../../services/audioDeviceService';
-import { storageService } from '../../services/storageService';
-import { toRelativeAudioPath } from '../../services/audioPathService';
-import type { Lecture } from '../../types';
+import type {
+    RecordingSessionState,
+    StartRecordingOptions,
+    StopPhase as ContractStopPhase,
+} from '../../services/__contracts__/recordingSessionService.contract';
 import type { SubtitleSegment } from '../../types/subtitle';
 
-export type RecordingStatus = AudioRecorderStatus | 'stopping';
+// Re-export the canonical event name from the contract so existing
+// callers that import it from this module keep working.
+export { RECORDING_CHANGE_EVENT } from '../../services/__contracts__/recordingSessionService.contract';
 
-export type StopPhase =
-    | 'idle'
-    | 'transcribe' // flush transcription tail
-    | 'segment'    // .pcm → .wav finalize
-    | 'summary'    // (留白) AI summary trigger
-    | 'index'      // (留白) RAG embedding
-    | 'done';
+/** Legacy status type alias kept for callers that referenced it. */
+export type RecordingStatus = RecordingSessionState['status'];
 
-/** Event dispatched on `window` whenever a lecture's recording status
- *  toggles (start/stop). H18DeepApp listens for this so it can refresh
- *  the active recording island instantly instead of waiting on the 4s
- *  poll. */
-export const RECORDING_CHANGE_EVENT = 'classnote-lecture-recording-changed';
+/** Legacy stop-phase alias kept for callers; mirrors contract. */
+export type StopPhase = ContractStopPhase | 'idle';
 
 export interface UseRecordingSessionOpts {
     courseId: string;
     lectureId: string;
 }
 
-export interface RecordingSession {
+export interface UseRecordingSessionReturn {
+    /** Canonical singleton state. Round-4 callers should prefer this
+     *  over the flat back-compat fields below. */
+    state: RecordingSessionState;
+
+    // ─── Convenience booleans (deconstructed for caller convenience) ──
+    isRecording: boolean;
+    isPaused: boolean;
+    isStopping: boolean;
+    isIdle: boolean;
+
+    // ─── Flat fields (legacy back-compat) ─────────────────────────────
+    /** Current status string. Mirrors `state.status`. */
     status: RecordingStatus;
+    /** Elapsed seconds since `sessionStartMs`. Mirrors `state.elapsed`. */
     elapsed: number;
+    /** Live subtitle segments. Kept as `SubtitleSegment[]` (richer, with
+     *  fine/rough split) for legacy callers — the singleton's
+     *  `RecordingSegment[]` is on `state.segments`. */
     segments: SubtitleSegment[];
+    /** Live transcription tail (current sentence-in-progress). */
     currentText: string;
+    /** Last error message, or `null` if none. */
     error: string | null;
     /** Current finalize phase while `status === 'stopping'`. */
     stopPhase: StopPhase;
-    /** Wall-clock epoch ms when `start()` was called, or 0 before that.
-     *  Subtract from `segment.startTime` (also epoch ms during live
-     *  recording) to get a relative offset for display. */
+    /** Wall-clock epoch ms when `start()` was called, or `0` before that. */
     sessionStartMs: number;
-    /** Start a fresh recording session (sets lecture status='recording'). */
-    start: () => Promise<void>;
+
+    // ─── Methods (proxy to singleton) ─────────────────────────────────
+    /** Start a session. If hook opts were provided, courseId/lectureId
+     *  default to those; otherwise they must be passed explicitly. */
+    start: (
+        courseId?: string,
+        lectureId?: string,
+        opts?: StartRecordingOptions,
+    ) => Promise<void>;
     pause: () => Promise<void>;
     resume: () => Promise<void>;
-    /** Stop + finalize. Resolves when WAV is on disk and lecture row is
-     *  saved as 'completed'. */
     stop: () => Promise<void>;
 }
 
-export function useRecordingSession({
-    courseId,
-    lectureId,
-}: UseRecordingSessionOpts): RecordingSession {
-    const recorderRef = useRef<AudioRecorder | null>(null);
-    const [status, setStatus] = useState<RecordingStatus>('idle');
-    const [elapsed, setElapsed] = useState(0);
-    const [segments, setSegments] = useState<SubtitleSegment[]>([]);
-    const [currentText, setCurrentText] = useState('');
-    const [error, setError] = useState<string | null>(null);
-    const [stopPhase, setStopPhase] = useState<StopPhase>('idle');
-    const startTimeRef = useRef<number>(0);
+export function useRecordingSession(
+    opts?: UseRecordingSessionOpts,
+): UseRecordingSessionReturn {
+    // We can't use the generic `useService` (useSyncExternalStore)
+    // helper here because the singleton's `getState()` returns a fresh
+    // object on every call (defensive copy). useSyncExternalStore would
+    // see that as a change-on-every-render and infinite-loop. Instead
+    // we subscribe manually and store the snapshot in component state —
+    // identical end result, no tearing because singleton.subscribe()
+    // pushes the snapshot synchronously when state mutates.
+    const [state, setState] = useState<RecordingSessionState>(() =>
+        recordingSessionService.getState(),
+    );
 
-    // Lazy-create AudioRecorder
-    const ensureRecorder = useCallback(() => {
-        if (!recorderRef.current) {
-            recorderRef.current = new AudioRecorder({});
-        }
-        return recorderRef.current;
-    }, []);
-
-    // Subscribe to subtitleService for live segments + currentText
     useEffect(() => {
-        // initial state
-        setSegments(subtitleService.getSegments());
-        setCurrentText(subtitleService.getCurrentText());
-        const unsub = subtitleService.subscribe((state) => {
-            setSegments([...state.segments]);
-            setCurrentText(state.currentText);
+        // Push the latest snapshot in case state changed between
+        // `useState` initial-call and effect mount.
+        setState(recordingSessionService.getState());
+        const unsub = recordingSessionService.subscribe((next) => {
+            setState(next);
         });
         return unsub;
     }, []);
 
-    // Tick when recording
+    // Legacy `segments` exposes SubtitleSegment[] for back-compat with
+    // H18RecordingPage's SubPane (reads seg.startTime / seg.displayText /
+    // seg.displayTranslation). The singleton remaps these into
+    // RecordingSegment[] on state.segments — Round 4 will lift the
+    // caller off this field.
+    const [legacySegments, setLegacySegments] = useState<SubtitleSegment[]>(
+        () => subtitleService.getSegments(),
+    );
+    const [legacyCurrentText, setLegacyCurrentText] = useState<string>(
+        () => subtitleService.getCurrentText(),
+    );
+
     useEffect(() => {
-        if (status !== 'recording') return;
-        const id = setInterval(() => {
-            const t0 = startTimeRef.current;
-            if (t0 > 0) setElapsed(Math.floor((Date.now() - t0) / 1000));
-        }, 1000);
-        return () => clearInterval(id);
-    }, [status]);
-
-    // Cleanup on unmount: stop recorder if still running so we don't leak mic
-    useEffect(() => {
-        return () => {
-            const r = recorderRef.current;
-            if (r) {
-                try {
-                    r.stop().catch(() => {});
-                } catch {
-                    /* swallow */
-                }
-            }
-            try {
-                transcriptionService.stop();
-            } catch {
-                /* swallow */
-            }
-        };
+        // Push initial snapshot in case it changed between render and
+        // effect-mount (concurrent React).
+        setLegacySegments(subtitleService.getSegments());
+        setLegacyCurrentText(subtitleService.getCurrentText());
+        const unsub = subtitleService.subscribe((sub) => {
+            setLegacySegments([...sub.segments]);
+            setLegacyCurrentText(sub.currentText);
+        });
+        return unsub;
     }, []);
 
-    const start = useCallback(async () => {
-        try {
-            setError(null);
-            const recorder = ensureRecorder();
-
-            // Mark lecture as recording (idempotent re-save)
-            const lecture = await storageService.getLecture(lectureId);
-            if (!lecture) throw new Error('找不到 lecture');
-            if (lecture.status !== 'recording') {
-                await storageService.saveLecture({
-                    ...lecture,
-                    status: 'recording',
-                    updated_at: new Date().toISOString(),
-                });
-            }
-
-            // Pick preferred input device
-            try {
-                const deviceId =
-                    await audioDeviceService.preparePreferredInputDeviceForRecording();
-                recorder.updateConfig({ deviceId });
-            } catch (err) {
-                console.warn('[useRecordingSession] pick device failed:', err);
-            }
-
-            // Reset subtitle stream
-            subtitleService.clear();
-
-            // Wire transcription
-            transcriptionService.clear();
-            transcriptionService.setLectureId(lectureId);
-            try {
-                const settings = await storageService.getAppSettings();
-                const src = settings?.translation?.source_language || 'auto';
-                const tgt = settings?.translation?.target_language || 'zh-TW';
-                transcriptionService.setLanguages(src, tgt);
-            } catch {
-                transcriptionService.setLanguages('auto', 'zh-TW');
-            }
-
-            await transcriptionService.start();
-
-            // ⚠ wire mic → ASR. Without this the audio never reaches
-            // Parakeet and the subtitle stream stays empty even though
-            // the recorder is happily flushing PCM to disk.
-            // Legacy NotesView had this; the H18 hook lost it during
-            // P6.5 extraction (silent regression — caught only when the
-            // user noticed «雙語字幕» pane stayed blank during recording).
-            recorder.onChunk((chunk) => {
-                transcriptionService.addAudioChunk(chunk);
-            });
-
-            // Crash-safe persistence
-            try {
-                recorder.enablePersistence(lectureId);
-            } catch (err) {
-                console.warn('[useRecordingSession] enablePersistence failed:', err);
-            }
-
-            await recorder.start();
-            startTimeRef.current = Date.now();
-            setElapsed(0);
-            setStatus('recording');
-            window.dispatchEvent(
-                new CustomEvent(RECORDING_CHANGE_EVENT, {
-                    detail: { lectureId, courseId, kind: 'start' },
-                }),
-            );
-        } catch (err) {
-            console.error('[useRecordingSession] start failed:', err);
-            setError(
-                err instanceof Error ? err.message : String(err) || '錄音啟動失敗',
-            );
-            setStatus('error');
-        }
-    }, [ensureRecorder, lectureId]);
-
-    const pause = useCallback(async () => {
-        const recorder = recorderRef.current;
-        if (!recorder) return;
-        try {
-            await recorder.pause();
-            setStatus('paused');
-        } catch (err) {
-            console.warn('[useRecordingSession] pause failed:', err);
-        }
-    }, []);
-
-    const resume = useCallback(async () => {
-        const recorder = recorderRef.current;
-        if (!recorder) return;
-        try {
-            await recorder.resume();
-            setStatus('recording');
-        } catch (err) {
-            console.warn('[useRecordingSession] resume failed:', err);
-        }
-    }, []);
-
-    const stop = useCallback(async () => {
-        const recorder = recorderRef.current;
-        if (!recorder) return;
-        setStatus('stopping');
-        setStopPhase('transcribe');
-        try {
-            // Phase 1: stop transcription, drain in-memory tail
-            transcriptionService.stop();
-
-            // Snapshot in-memory WAV (NOT fatal if empty — .pcm on disk has it)
-            let wav: ArrayBuffer | null = null;
-            try {
-                wav = await recorder.getWavData();
-            } catch {
-                /* okay */
-            }
-
-            await recorder.stop();
-
-            // Phase 2: finalize .pcm → .wav (this is the real "segment" /
-            // disk-write phase, not text segmentation per se)
-            setStopPhase('segment');
-            const audioDir = await invoke<string>('get_audio_dir');
-            const sep = navigator.userAgent.includes('Windows') ? '\\' : '/';
-            const fullPath = `${audioDir}${sep}lecture_${lectureId}_${Date.now()}.wav`;
-
-            let audioPath: string | null = null;
-            try {
-                const finalized = await recorder.finalizeToDisk(fullPath);
-                if (finalized) audioPath = finalized;
-            } catch (err) {
-                console.warn('[useRecordingSession] finalizeToDisk failed:', err);
-            }
-
-            // In-memory fallback
-            if (!audioPath && wav) {
-                try {
-                    await invoke('write_binary_file', {
-                        path: fullPath,
-                        data: Array.from(new Uint8Array(wav)),
-                    });
-                    audioPath = fullPath;
-                } catch (err) {
-                    console.warn('[useRecordingSession] in-memory fallback failed:', err);
-                }
-            }
-
-            // Phase 3: persist lecture row → completed
-            // (Real AI summary + RAG indexing live downstream — when those
-            //  are wired this is where we'd `setStopPhase('summary')` and
-            //  await llm.generateSummary, then 'index' for embedding.)
-            setStopPhase('summary');
-            const lecture = await storageService.getLecture(lectureId);
-            const final: Lecture = {
-                ...(lecture || {
-                    id: lectureId,
-                    course_id: courseId,
-                    title: '新課堂',
-                    date: new Date().toISOString(),
-                    duration: 0,
-                    status: 'completed',
-                    created_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                    is_deleted: false,
-                }),
-                duration: Math.max(elapsed, lecture?.duration || 0),
-                status: 'completed',
-                audio_path: audioPath
-                    ? toRelativeAudioPath(audioDir, audioPath)
-                    : lecture?.audio_path,
-                updated_at: new Date().toISOString(),
-            };
-            await storageService.saveLecture(final);
-
-            setStopPhase('index');
-            // No real RAG re-index in this hook — leaving the phase as
-            // visual signal only. (App-level RAG service handles it
-            // separately when summary/note tasks fire.)
-
-            setStopPhase('done');
-            setStatus('stopped');
-            window.dispatchEvent(
-                new CustomEvent(RECORDING_CHANGE_EVENT, {
-                    detail: { lectureId, courseId, kind: 'stop' },
-                }),
-            );
-        } catch (err) {
-            console.error('[useRecordingSession] stop failed:', err);
-            setError(err instanceof Error ? err.message : String(err) || '結束失敗');
-            setStatus('stopped');
-            setStopPhase('done');
-            window.dispatchEvent(
-                new CustomEvent(RECORDING_CHANGE_EVENT, {
-                    detail: { lectureId, courseId, kind: 'stop' },
-                }),
+    // Adapt singleton's start signature to the legacy zero-arg form.
+    // - If the caller passed opts to the hook AND calls start() with no
+    //   args, fill from opts. (H18RecordingPage relies on this.)
+    // - If the caller passes args explicitly, forward them.
+    const start = async (
+        courseId?: string,
+        lectureId?: string,
+        startOpts?: StartRecordingOptions,
+    ): Promise<void> => {
+        const cid = courseId ?? opts?.courseId;
+        const lid = lectureId ?? opts?.lectureId;
+        if (!cid || !lid) {
+            throw new Error(
+                'useRecordingSession.start: courseId/lectureId missing — ' +
+                    'pass them as args or via hook opts',
             );
         }
-    }, [courseId, elapsed, lectureId]);
+        return recordingSessionService.start(cid, lid, startOpts);
+    };
+
+    const pause = (): Promise<void> => recordingSessionService.pause();
+    const resume = (): Promise<void> => recordingSessionService.resume();
+    const stop = (): Promise<void> => recordingSessionService.stop();
+
+    // Map contract stopPhase (no 'idle') back to legacy alias that
+    // includes 'idle' for the pre-stop default.
+    const legacyStopPhase: StopPhase = state.stopPhase ?? 'idle';
 
     return {
-        status,
-        elapsed,
-        segments,
-        currentText,
-        error,
-        stopPhase,
-        sessionStartMs: startTimeRef.current,
+        state,
+        isRecording: state.status === 'recording',
+        isPaused: state.status === 'paused',
+        isStopping: state.status === 'stopping',
+        isIdle: state.status === 'idle',
+        status: state.status,
+        elapsed: state.elapsed,
+        segments: legacySegments,
+        currentText: legacyCurrentText || state.currentText,
+        error: state.error ?? null,
+        stopPhase: legacyStopPhase,
+        sessionStartMs: state.sessionStartMs ?? 0,
         start,
         pause,
         resume,
@@ -347,6 +202,7 @@ export function useRecordingSession({
     };
 }
 
+/** Format an elapsed seconds value as HH:MM:SS / MM:SS. */
 export function fmtElapsed(seconds: number): string {
     if (seconds < 0 || !isFinite(seconds)) return '00:00';
     const h = Math.floor(seconds / 3600);

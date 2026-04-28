@@ -31,6 +31,36 @@ function key(lectureId: string): string {
     return `${STORAGE_KEY_PREFIX}${lectureId}`;
 }
 
+/* ─── Quota-safe localStorage wrappers (W14) ──────────────────────
+ * Throttled-warning toast so 5+ stores hitting quota in the same
+ * frame don't pile up 5+ toasts. Lazy import avoids circular dep.
+ */
+let __lastQuotaToastAt = 0;
+const __TOAST_COOLDOWN_MS = 5_000;
+
+function fireQuotaToast() {
+    const now = Date.now();
+    if (now - __lastQuotaToastAt < __TOAST_COOLDOWN_MS) return;
+    __lastQuotaToastAt = now;
+    void import('./toastService').then(({ toastService }) => {
+        toastService.warning(
+            '本機儲存空間不足',
+            '部分資料無法儲存。請至個人資料 → 資料 → 清除舊資料釋放空間。',
+        );
+    }).catch(() => {/* toast not available — best effort */});
+}
+
+function safeSetItem(k: string, value: string): boolean {
+    try {
+        localStorage.setItem(k, value);
+        return true;
+    } catch (err) {
+        console.warn('[examMarksStore] localStorage write failed', err);
+        fireQuotaToast();
+        return false;
+    }
+}
+
 export function getExamMarks(lectureId: string): ExamMark[] {
     try {
         const raw = localStorage.getItem(key(lectureId));
@@ -43,11 +73,7 @@ export function getExamMarks(lectureId: string): ExamMark[] {
 }
 
 function writeMarks(lectureId: string, marks: ExamMark[]): void {
-    try {
-        localStorage.setItem(key(lectureId), JSON.stringify(marks));
-    } catch (err) {
-        console.warn('[examMarksStore] persist failed:', err);
-    }
+    safeSetItem(key(lectureId), JSON.stringify(marks));
     const subs = listeners.get(lectureId);
     if (subs) {
         for (const cb of subs) {

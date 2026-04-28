@@ -37,6 +37,42 @@ type InboxStateMap = Record<string, InboxItemStateRaw>;
 let cache: InboxStateMap | null = null;
 const listeners = new Set<() => void>();
 
+/* ─── Quota-safe localStorage wrappers (W14) ──────────────────────
+ * QuotaExceededError / SecurityError (private browsing, sandboxed
+ * iframe) must not crash the call-site. We log + fire one warning
+ * toast (throttled per-store to 5s) and let the caller proceed.
+ * Toast is lazy-imported to avoid a circular dep on toastService.
+ */
+let __lastQuotaToastAt = 0;
+const __TOAST_COOLDOWN_MS = 5_000;
+
+function fireQuotaToast() {
+    const now = Date.now();
+    if (now - __lastQuotaToastAt < __TOAST_COOLDOWN_MS) return;
+    __lastQuotaToastAt = now;
+    void import('./toastService').then(({ toastService }) => {
+        toastService.warning(
+            '本機儲存空間不足',
+            '部分資料無法儲存。請至個人資料 → 資料 → 清除舊資料釋放空間。',
+        );
+    }).catch(() => {/* toast not available — best effort */});
+}
+
+function safeSetItem(key: string, value: string): boolean {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch (err) {
+        console.warn('[inboxStateService] localStorage write failed', err);
+        fireQuotaToast();
+        return false;
+    }
+}
+
+// Note: this store doesn't expose a removeItem path — single-key whole-map
+// rewrite via persist() is the only mutation. If you add per-id deletion
+// hitting localStorage.removeItem, mirror the safeSetItem pattern here.
+
 function load(): InboxStateMap {
     if (cache) return cache;
     try {
@@ -50,11 +86,7 @@ function load(): InboxStateMap {
 
 function persist() {
     if (!cache) return;
-    try {
-        localStorage.setItem(KEY, JSON.stringify(cache));
-    } catch {
-        // localStorage quota — silently drop. State is best-effort UI hint.
-    }
+    safeSetItem(KEY, JSON.stringify(cache));
 }
 
 function notify() {

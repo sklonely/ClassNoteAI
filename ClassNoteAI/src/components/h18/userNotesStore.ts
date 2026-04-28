@@ -20,6 +20,46 @@ function key(lectureId: string): string {
     return PREFIX + lectureId;
 }
 
+/* ─── Quota-safe localStorage wrappers (W14) ──────────────────────
+ * Throttled warning toast so multiple stores hitting quota in the
+ * same frame coalesce. Lazy import dodges circular deps.
+ */
+let __lastQuotaToastAt = 0;
+const __TOAST_COOLDOWN_MS = 5_000;
+
+function fireQuotaToast() {
+    const now = Date.now();
+    if (now - __lastQuotaToastAt < __TOAST_COOLDOWN_MS) return;
+    __lastQuotaToastAt = now;
+    void import('../../services/toastService').then(({ toastService }) => {
+        toastService.warning(
+            '本機儲存空間不足',
+            '部分資料無法儲存。請至個人資料 → 資料 → 清除舊資料釋放空間。',
+        );
+    }).catch(() => {/* toast not available — best effort */});
+}
+
+function safeSetItem(k: string, value: string): boolean {
+    try {
+        localStorage.setItem(k, value);
+        return true;
+    } catch (err) {
+        console.warn('[userNotesStore] localStorage write failed', err);
+        fireQuotaToast();
+        return false;
+    }
+}
+
+function safeRemoveItem(k: string): boolean {
+    try {
+        localStorage.removeItem(k);
+        return true;
+    } catch (err) {
+        console.warn('[userNotesStore] localStorage remove failed', err);
+        return false;
+    }
+}
+
 export function loadUserNotes(lectureId: string): string {
     if (!lectureId) return '';
     try {
@@ -31,17 +71,20 @@ export function loadUserNotes(lectureId: string): string {
 
 export function saveUserNotes(lectureId: string, text: string): void {
     if (!lectureId) return;
+    if (text.length === 0) {
+        safeRemoveItem(key(lectureId));
+    } else {
+        safeSetItem(key(lectureId), text);
+    }
+    // The event is fired regardless of write success: subscribers refresh
+    // their view from loadUserNotes(), and a failed write means the next
+    // load returns the previous text — which is the correct UI state.
     try {
-        if (text.length === 0) {
-            localStorage.removeItem(key(lectureId));
-        } else {
-            localStorage.setItem(key(lectureId), text);
-        }
         window.dispatchEvent(
             new CustomEvent(EVT, { detail: { lectureId } }),
         );
     } catch (err) {
-        console.warn('[userNotesStore] save failed:', err);
+        console.warn('[userNotesStore] dispatch failed:', err);
     }
 }
 
