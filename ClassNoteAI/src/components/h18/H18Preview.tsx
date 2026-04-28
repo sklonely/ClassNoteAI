@@ -503,6 +503,9 @@ export default function H18Preview({
                 </div>
             </div>
             <div className={s.foot}>
+                {/* TODO(S3a): 這四顆是 preview-local nav，沒進 keymapService
+                 *  ActionId 表 (J/K/E/H/⌘/ 跟全域動作沒重疊)。等 keymap
+                 *  expand 多支 inbox-action 再接。 */}
                 <span><span className={s.kbd}>J/K</span> 上下</span>
                 <span><span className={s.kbd}>E</span> 完成</span>
                 <span><span className={s.kbd}>H</span> 延後</span>

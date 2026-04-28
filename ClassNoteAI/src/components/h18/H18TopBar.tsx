@@ -15,6 +15,8 @@ import { useEffect, useState } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import WindowControls from '../WindowControls';
 import TaskIndicator from '../TaskIndicator';
+import { keymapService } from '../../services/keymapService';
+import { SHORTCUTS_CHANGE_EVENT } from '../../services/__contracts__/keymapService.contract';
 import s from './H18TopBar.module.css';
 
 /** Active recording lecture metadata for the center "recording island". */
@@ -78,6 +80,19 @@ export default function H18TopBar({
         return () => clearInterval(t);
     }, []);
 
+    // S3a-3: re-render whenever the user remaps a shortcut so the
+    // ⌘K / ⌘\ chips and titles stay in sync with PKeyboard.
+    const [, setShortcutsTick] = useState(0);
+    useEffect(() => {
+        const onChange = () => setShortcutsTick((n) => n + 1);
+        window.addEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+        return () =>
+            window.removeEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+    }, []);
+
+    const searchLabel = keymapService.getDisplayLabel('search');
+    const themeLabel = keymapService.getDisplayLabel('toggleTheme');
+
     return (
         <div
             className={`${s.bar} ${dense ? s.barDense : ''}`}
@@ -138,7 +153,7 @@ export default function H18TopBar({
                 <button
                     type="button"
                     onClick={onOpenSearch}
-                    title="搜尋 (⌘K)"
+                    title={`搜尋 (${searchLabel})`}
                     aria-label="搜尋"
                     className={s.search}
                 >
@@ -146,13 +161,13 @@ export default function H18TopBar({
                     <span className={s.searchPlaceholder}>
                         搜尋筆記、課程、語音片段…
                     </span>
-                    <span className={s.searchKbd}>⌘K</span>
+                    <span className={s.searchKbd}>{searchLabel}</span>
                 </button>
 
                 <button
                     type="button"
                     onClick={onToggleTheme}
-                    title="切換主題 (⌘\\)"
+                    title={`切換主題 (${themeLabel})`}
                     aria-label="切換主題"
                     className={s.themeBtn}
                 >

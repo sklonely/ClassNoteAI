@@ -1,0 +1,229 @@
+/* ============================================================
+ * LectureEditDialog · Phase 7 Sprint 3 Round 2 (S3c-2)
+ *
+ * Modal F1A — 編輯 lecture metadata。
+ * Token-only：z-index / spacing / radius / surface / scrim 全部用 token。
+ * 對齊 H18-MODAL-CONVENTIONS：scrim z-overlay (200) + dialog z-modal (210)；
+ * 內部 H18DayPicker popover 用 z-popover (220) 自浮在上面。
+ * ============================================================ */
+
+.scrim {
+    position: fixed;
+    inset: 0;
+    z-index: var(--h18-z-overlay);
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: lectureEditFadeIn var(--h18-duration-base) var(--h18-ease-spring);
+    font-family: var(--h18-font-sans);
+}
+
+:global(.dark) .scrim,
+:global([data-theme='dark']) .scrim {
+    background: rgba(0, 0, 0, 0.6);
+}
+
+.dialog {
+    position: relative;
+    z-index: var(--h18-z-modal);
+    width: var(--h18-modal-w-sm);
+    max-width: calc(100vw - var(--h18-space-16, 24px) * 2);
+    max-height: calc(100vh - var(--h18-space-16, 24px) * 2);
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-lg);
+    padding: var(--h18-space-12);
+    box-shadow: var(--h18-shadow-lg);
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.title {
+    margin: 0 0 var(--h18-space-12);
+    font-size: var(--h18-text-lg);
+    font-family: var(--h18-font-sans);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    color: var(--h18-text);
+}
+
+.field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--h18-space-2);
+    margin-bottom: var(--h18-space-8);
+    position: relative;
+}
+
+.fieldLabel {
+    font-size: var(--h18-text-sm);
+    font-weight: 700;
+    color: var(--h18-text-mid);
+    letter-spacing: 0.02em;
+}
+
+.input,
+.select,
+.dateBtn {
+    box-sizing: border-box;
+    height: var(--h18-input-height);
+    padding: 0 var(--h18-space-4);
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-md);
+    color: var(--h18-text);
+    font-size: var(--h18-text-base);
+    font-family: var(--h18-font-sans);
+    text-align: left;
+    width: 100%;
+    outline: none;
+    transition: border-color var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.input:focus,
+.select:focus,
+.dateBtn:focus {
+    border-color: var(--h18-accent);
+}
+
+.dateBtn {
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.dateBtn:hover {
+    background: var(--h18-row-hover);
+}
+
+.popoverWrap {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: var(--h18-space-2);
+    z-index: var(--h18-z-popover);
+}
+
+.keywordRow {
+    display: flex;
+    gap: var(--h18-space-2);
+}
+
+.keywordRow .input {
+    flex: 1;
+}
+
+.addBtn {
+    flex-shrink: 0;
+    height: var(--h18-input-height);
+    padding: 0 var(--h18-space-4);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-md);
+    color: var(--h18-text);
+    font-size: var(--h18-text-sm);
+    font-family: var(--h18-font-sans);
+    cursor: pointer;
+    transition: background var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.addBtn:hover:not(:disabled) {
+    background: var(--h18-row-hover);
+}
+
+.addBtn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.keywordChips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--h18-space-2);
+    margin-top: var(--h18-space-3);
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--h18-space-2);
+    padding: var(--h18-space-2) var(--h18-space-3);
+    background: var(--h18-chip-bg);
+    color: var(--h18-text);
+    border-radius: var(--h18-radius-full);
+    font-size: var(--h18-text-sm);
+    font-weight: 600;
+}
+
+.chipClose {
+    border: none;
+    background: transparent;
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-size: var(--h18-text-md);
+    line-height: 1;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.chipClose:hover {
+    color: var(--h18-text);
+}
+
+.footer {
+    display: flex;
+    gap: var(--h18-space-3);
+    justify-content: flex-end;
+    margin-top: var(--h18-space-12);
+}
+
+.btnGhost,
+.btnPrimary {
+    height: var(--h18-button-height);
+    padding: 0 var(--h18-space-8);
+    border-radius: var(--h18-radius-md);
+    font-size: var(--h18-text-base);
+    font-family: var(--h18-font-sans);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--h18-duration-fast) var(--h18-ease-out),
+        opacity var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.btnGhost {
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    color: var(--h18-text);
+}
+
+.btnGhost:hover {
+    background: var(--h18-row-hover);
+}
+
+.btnPrimary {
+    border: none;
+    background: var(--h18-accent);
+    color: #ffffff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+    filter: brightness(1.05);
+}
+
+.btnPrimary:disabled,
+.btnGhost:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+@keyframes lectureEditFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}

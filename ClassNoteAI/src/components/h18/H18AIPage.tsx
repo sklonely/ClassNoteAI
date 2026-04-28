@@ -12,6 +12,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { storageService } from '../../services/storageService';
 import { useAIHistory, type AIMsg, type AIContext } from './useAIHistory';
+import { keymapService } from '../../services/keymapService';
+import { SHORTCUTS_CHANGE_EVENT } from '../../services/__contracts__/keymapService.contract';
 import s from './H18AIPage.module.css';
 
 export interface H18AIPageProps {
@@ -54,6 +56,17 @@ export default function H18AIPage({ onBack, aiContext }: H18AIPageProps) {
         }
     }, [msgs]);
 
+    // S3a-3: keep AI dock chip / clear-confirm copy in sync with the
+    // user-customised toggleAiDock binding.
+    const [, setShortcutsTick] = useState(0);
+    useEffect(() => {
+        const onChange = () => setShortcutsTick((n) => n + 1);
+        window.addEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+        return () =>
+            window.removeEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+    }, []);
+    const aiDockLabel = keymapService.getDisplayLabel('toggleAiDock');
+
     const handleSend = () => {
         if (!input.trim() || streaming) return;
         const t = input;
@@ -90,7 +103,7 @@ export default function H18AIPage({ onBack, aiContext }: H18AIPageProps) {
                             const ok = await confirmService.ask({
                                 title: '清空目前對話？',
                                 message:
-                                    'AIPage 跟 ⌘J 浮動 dock 共用同一條 history。\n清空後無法復原（多 session 還沒做）。',
+                                    `AIPage 跟 ${aiDockLabel} 浮動 dock 共用同一條 history。\n清空後無法復原（多 session 還沒做）。`,
                                 confirmLabel: '清空並開始新對話',
                                 variant: 'danger',
                             });
@@ -125,7 +138,7 @@ export default function H18AIPage({ onBack, aiContext }: H18AIPageProps) {
                             <div className={s.emptyIcon}>✦</div>
                             還沒開始對話。
                             <br />
-                            從下方輸入框開始，或在任何頁面按 ⌘J 開浮動 dock。
+                            從下方輸入框開始，或在任何頁面按 {aiDockLabel} 開浮動 dock。
                         </div>
                     ) : (
                         msgs.map((m) => <Bubble key={m.id} m={m} />)

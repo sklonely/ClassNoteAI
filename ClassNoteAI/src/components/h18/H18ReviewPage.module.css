@@ -120,6 +120,39 @@
     color: var(--h18-text);
 }
 
+/* Phase 7 S3c-2 (S8) — hero title + ✎ edit button row */
+.heroTitleRow {
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-3, 8px);
+}
+
+.heroEditBtn {
+    flex-shrink: 0;
+    margin-top: 14px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-md, 6px);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: inherit;
+    transition: background var(--h18-duration-fast, 120ms) var(--h18-ease-out),
+        color var(--h18-duration-fast, 120ms) var(--h18-ease-out);
+}
+
+.heroEditBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
 .heroMeta {
     font-size: 12px;
     color: var(--h18-text-mid);

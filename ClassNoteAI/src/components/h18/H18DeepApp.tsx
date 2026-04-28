@@ -36,6 +36,7 @@ import {
 } from '../../types/h18Nav';
 import H18TopBar from './H18TopBar';
 import H18Rail from './H18Rail';
+import { keymapService } from '../../services/keymapService';
 import { courseColor, courseShort } from './courseColor';
 import { recordingSessionService } from '../../services/recordingSessionService';
 import type { RecordingSessionState } from '../../services/__contracts__/recordingSessionService.contract';
@@ -58,6 +59,7 @@ import ProfilePage from './ProfilePage';
 import NotesEditorComingSoon from './NotesEditorComingSoon';
 import DraggableAIFab from './DraggableAIFab';
 import SearchOverlay, { type SearchAction } from './SearchOverlay';
+import { H18TextContextMenu } from './H18TextContextMenu';
 import s from './H18DeepApp.module.css';
 
 // (Placeholder helper removed in P6.9 — every nav target now has a real component)
@@ -76,6 +78,18 @@ export default function H18DeepApp() {
     >(undefined);
     const [aiDockOpen, setAiDockOpen] = useState(false);
 
+    // ─── S3b-2 · text context menu state ────────────────────────────
+    // A global `contextmenu` listener (below) watches for right-clicks
+    // on any input / textarea / contentEditable surface and pops a
+    // H18TextContextMenu at the click coords. Component-level context
+    // menus (CourseRailContextMenu, future LectureContextMenu) live on
+    // their own elements and use stopPropagation; events that reach
+    // document have already been ignored by them.
+    const [textMenuState, setTextMenuState] = useState<{
+        x: number;
+        y: number;
+        target: HTMLElement;
+    } | null>(null);
 
     // ─── theme bootstrap ────────────────────────────────────────────
     useEffect(() => {
@@ -565,13 +579,17 @@ export default function H18DeepApp() {
     );
 
     // ─── keyboard shortcuts ─────────────────────────────────────────
+    // S3a-4: bindings now flow through keymapService — combos are
+    // defined in DEFAULT_KEYMAP and user-customisable from PKeyboard.
+    // We still gate `inEditor` here (rather than inside the service)
+    // because that's a UI policy, not a key-matching concern: ⌘K
+    // (search palette) is the one global escape hatch we still honour
+    // inside inputs. The legacy `e.key === '/'` shortcut for AI dock
+    // was dropped — its only motivation was muscle memory from before
+    // ⌘J shipped, and overloading `/` makes it impossible to type a
+    // slash without holding Mod.
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            const meta = e.metaKey || e.ctrlKey;
-            // Don't hijack shortcuts while user is typing — ⌘N in a textarea
-            // should insert "n", not open the new-course dialog. Esc still
-            // works (closes overlays/dialogs) since editors typically don't
-            // bind Esc themselves.
             const target = e.target as HTMLElement | null;
             const tag = target?.tagName;
             const inEditor =
@@ -580,35 +598,35 @@ export default function H18DeepApp() {
                 tag === 'SELECT' ||
                 target?.isContentEditable === true;
 
-            if (meta && e.key === '\\' && !inEditor) {
+            if (!inEditor && keymapService.matchesEvent('toggleTheme', e)) {
                 e.preventDefault();
                 void toggleTheme();
                 return;
             }
-            if (meta && e.key.toLowerCase() === 'k') {
-                // ⌘K we still allow in editors — palette is the universal
-                // escape hatch and shouldn't be eaten by an input.
+            if (keymapService.matchesEvent('search', e)) {
+                // search palette is the universal escape hatch —
+                // intentionally still fires inside inputs.
                 e.preventDefault();
                 setOverlayNav('search');
                 return;
             }
-            if (meta && (e.key.toLowerCase() === 'j' || e.key === '/') && !inEditor) {
+            if (!inEditor && keymapService.matchesEvent('toggleAiDock', e)) {
                 e.preventDefault();
                 setAiDockOpen((v) => !v);
                 return;
             }
-            if (meta && e.key.toLowerCase() === 'n' && !inEditor) {
+            if (!inEditor && keymapService.matchesEvent('newCourse', e)) {
                 e.preventDefault();
                 setIsCourseDialogOpen(true);
                 return;
             }
-            if (meta && e.key.toLowerCase() === 'h' && !inEditor) {
+            if (!inEditor && keymapService.matchesEvent('goHome', e)) {
                 e.preventDefault();
                 setActiveNav('home');
                 setOverlayNav(null);
                 return;
             }
-            if (meta && e.key === ',' && !inEditor) {
+            if (!inEditor && keymapService.matchesEvent('goProfile', e)) {
                 e.preventDefault();
                 setActiveNav('profile');
                 setOverlayNav(null);
@@ -623,6 +641,37 @@ export default function H18DeepApp() {
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [toggleTheme, overlayNav, isCourseDialogOpen, aiDockOpen]);
+
+    // ─── S3b-2 · global contextmenu listener (text inputs only) ──────
+    // We only intercept right-clicks on real text-editing surfaces
+    // (input / textarea / contentEditable). For everything else we
+    // do nothing — letting either:
+    //   (a) a component-level context menu (e.g. CourseRailContextMenu)
+    //       handle the event itself + call e.stopPropagation, or
+    //   (b) the browser show its native menu, since F6 says "其他
+    //       surface 右鍵 → 純 preventDefault，不彈空 menu"; preventing
+    //       default without offering a replacement leaves the user with
+    //       no way to e.g. inspect a link, so we stay out of the way.
+    //
+    // For text inputs we DO call e.preventDefault(), otherwise the
+    // browser races us and shows its native menu on top.
+    useEffect(() => {
+        const onContextMenu = (e: MouseEvent) => {
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            const isInput =
+                target instanceof HTMLInputElement ||
+                target instanceof HTMLTextAreaElement;
+            const isContentEditable = target.isContentEditable === true;
+            if (isInput || isContentEditable) {
+                e.preventDefault();
+                setTextMenuState({ x: e.clientX, y: e.clientY, target });
+            }
+        };
+        document.addEventListener('contextmenu', onContextMenu);
+        return () =>
+            document.removeEventListener('contextmenu', onContextMenu);
+    }, []);
 
     const parsed = useMemo(() => parseNav(activeNav), [activeNav]);
 
@@ -890,6 +939,16 @@ export default function H18DeepApp() {
                     }
                 }}
             />
+
+            {/* S3b-2 · text right-click menu (input / textarea / contenteditable) */}
+            {textMenuState && (
+                <H18TextContextMenu
+                    x={textMenuState.x}
+                    y={textMenuState.y}
+                    target={textMenuState.target}
+                    onClose={() => setTextMenuState(null)}
+                />
+            )}
 
             {/* 新增課程 dialog — H18 重寫版 (P6.3) */}
             <AddCourseDialog

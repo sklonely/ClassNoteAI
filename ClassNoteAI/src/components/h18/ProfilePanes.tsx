@@ -29,6 +29,12 @@ import { ChatGPTOAuthProvider } from '../../services/llm/providers/chatgpt-oauth
 import { fetchCalendarFeed } from '../../services/canvasFeedService';
 import { saveCanvasCache } from '../../services/canvasCacheService';
 import CanvasPairingWizard, { type PairingChanges } from './CanvasPairingWizard';
+import { keymapService } from '../../services/keymapService';
+import {
+    DEFAULT_KEYMAP,
+    type ActionId,
+} from '../../services/__contracts__/keymapService.contract';
+import { comboFromEvent } from '../../utils/kbd';
 import s from './ProfilePage.module.css';
 
 /* ────────── provider credential helpers ───────── */
@@ -1773,7 +1779,7 @@ export function PAppearance({
             <PHead>主題</PHead>
             <PRow
                 label="主題模式"
-                hint={`目前：${effectiveTheme === 'dark' ? '暗色' : '明亮'}。⌘\\ 也可即時切換。`}
+                hint={`目前：${effectiveTheme === 'dark' ? '暗色' : '明亮'}。${keymapService.getDisplayLabel('toggleTheme')} 也可即時切換。`}
                 right={
                     <PSeg
                         value={effectiveTheme}
@@ -1845,6 +1851,132 @@ export function PAppearance({
                     />
                 }
             />
+        </div>
+    );
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * PKeyboard — 鍵盤快捷鍵 (Phase 7 Sprint 3 R2 · S3a-2)
+ *
+ * Single source of truth for shortcut display + capture. Each row
+ * shows the OS-aware label from keymapService; clicking the chip
+ * enters capture mode where the next keypress is serialised via
+ * `comboFromEvent` and committed through `keymapService.set`.
+ *
+ * Conflict handling: `set` throws if the combo collides with another
+ * action, surfaced as a `toast.warning` (lazy import to avoid
+ * coupling the panel to toastService at load time).
+ * ════════════════════════════════════════════════════════════════ */
+
+const ACTION_LABELS: Record<ActionId, string> = {
+    search: '搜尋',
+    toggleAiDock: '開關 AI 對話',
+    newCourse: '新增課程',
+    goHome: '回首頁',
+    goProfile: '個人資料',
+    toggleTheme: '切換主題',
+    floatingNotes: '浮動筆記',
+};
+
+// Stable display order — matches DEFAULT_KEYMAP declaration order in
+// the contract, which itself follows perceived importance.
+const ACTION_ORDER: ActionId[] = [
+    'search',
+    'toggleAiDock',
+    'newCourse',
+    'goHome',
+    'goProfile',
+    'toggleTheme',
+    'floatingNotes',
+];
+
+export function PKeyboard() {
+    // Bump on subscribe to force re-render when ANY binding changes
+    // (including ones outside the row currently being edited).
+    const [, setVersion] = useState(0);
+    const [capturing, setCapturing] = useState<ActionId | null>(null);
+
+    useEffect(() => {
+        return keymapService.subscribe(() => setVersion((v) => v + 1));
+    }, []);
+
+    const handleStartCapture = (actionId: ActionId) => {
+        setCapturing(actionId);
+    };
+
+    const handleKeyDownCapture = (e: React.KeyboardEvent) => {
+        if (!capturing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+            setCapturing(null);
+            return;
+        }
+        // Standalone modifier presses fire keydown too — wait for the
+        // actual non-modifier key.
+        if (['Control', 'Meta', 'Shift', 'Alt'].includes(e.key)) return;
+
+        const combo = comboFromEvent(e.nativeEvent);
+        try {
+            keymapService.set(capturing, combo);
+            setCapturing(null);
+        } catch (err) {
+            // Conflict — surface as a non-blocking warning toast and
+            // stay in capture mode so the user can try again.
+            void import('../../services/toastService').then(
+                ({ toastService }) => {
+                    toastService.warning('快捷鍵衝突', String(err));
+                },
+            );
+        }
+    };
+
+    const handleReset = (actionId: ActionId) => {
+        keymapService.reset(actionId);
+    };
+
+    const isOverridden = (id: ActionId) =>
+        keymapService.getCombo(id) !== DEFAULT_KEYMAP[id];
+
+    return (
+        <div onKeyDown={handleKeyDownCapture} tabIndex={-1}>
+            <PHeader
+                title="鍵盤快捷鍵"
+                hint="點 chip 進入錄入模式，按下新快捷鍵組合。Esc 取消。"
+            />
+
+            <PHead first>動作綁定</PHead>
+            <div className={s.kbdList}>
+                {ACTION_ORDER.map((id) => (
+                    <div key={id} className={s.kbdRow}>
+                        <span className={s.kbdLabel}>{ACTION_LABELS[id]}</span>
+
+                        {capturing === id ? (
+                            <span className={s.kbdCapturing}>
+                                按下新快捷鍵…
+                            </span>
+                        ) : (
+                            <button
+                                type="button"
+                                className={s.kbdChip}
+                                onClick={() => handleStartCapture(id)}
+                            >
+                                {keymapService.getDisplayLabel(id)}
+                            </button>
+                        )}
+
+                        {isOverridden(id) && capturing !== id && (
+                            <button
+                                type="button"
+                                className={s.kbdReset}
+                                onClick={() => handleReset(id)}
+                            >
+                                重設
+                            </button>
+                        )}
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }

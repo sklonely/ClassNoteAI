@@ -27,6 +27,7 @@ import type { Course, Lecture, Note, Subtitle, Section } from '../../types';
 import { courseColor } from './courseColor';
 import H18AudioPlayer from './H18AudioPlayer';
 import H18RecordingPage from './H18RecordingPage';
+import { LectureEditDialog } from './LectureEditDialog';
 import { RecoveryHintBanner } from './RecoveryHintBanner';
 import { useRecordingSession, fmtElapsed } from './useRecordingSession';
 import {
@@ -125,6 +126,13 @@ export default function H18ReviewPage({
     const [subs, setSubs] = useState<Subtitle[]>([]);
     const [note, setNote] = useState<Note | null>(null);
     const [loading, setLoading] = useState(true);
+
+    // Phase 7 S3c-2 (F1A) — hero ✎ button opens LectureEditDialog. Caller
+    // can edit title / date / course_id / keywords. Changing course_id is
+    // a "move lecture" (S7) — we redirect to the new course's review URL
+    // after the save lands.
+    const [editOpen, setEditOpen] = useState(false);
+    const [allCourses, setAllCourses] = useState<Course[]>([]);
 
     const [lang, setLang] = useState<Lang>('zh');
     const [grouping, setGrouping] = useState<Group>('para');
@@ -308,6 +316,25 @@ export default function H18ReviewPage({
         };
     }, [lectureId, courseId]);
 
+    // Phase 7 S3c-2 — fetch all courses lazily when the user opens the
+    // edit dialog (avoids the cost on every review-page mount). Refresh
+    // when the dialog re-opens so newly added courses show up.
+    useEffect(() => {
+        if (!editOpen) return;
+        let cancelled = false;
+        storageService
+            .listCourses()
+            .then((cs) => {
+                if (!cancelled) setAllCourses(cs);
+            })
+            .catch((err) => {
+                console.warn('[H18ReviewPage] listCourses failed:', err);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [editOpen]);
+
     // Resolve audio source on lecture change
     useEffect(() => {
         let cancelled = false;
@@ -460,6 +487,44 @@ export default function H18ReviewPage({
                 lectureId,
             });
             void runSummary(newTaskId, lectureId, lecture?.title);
+        }
+    };
+
+    // Phase 7 S3c-2 (F1A + S7) — submit edits from LectureEditDialog.
+    // Caller (the dialog) closes itself after the promise resolves. We
+    // re-fetch the lecture to refresh the hero / breadcrumb. If the user
+    // changed `course_id`, that's a "move lecture" — go back so the
+    // breadcrumb (which still points at the old course) doesn't lie.
+    const handleEditSubmit = async (updates: {
+        title: string;
+        date: string;
+        course_id: string;
+        keywords: string[];
+    }) => {
+        if (!lecture) return;
+        const movedToNewCourse = updates.course_id !== lecture.course_id;
+        const next: Lecture = {
+            ...lecture,
+            title: updates.title,
+            date: updates.date,
+            course_id: updates.course_id,
+            keywords: updates.keywords.join(', '),
+            updated_at: new Date().toISOString(),
+        };
+        await storageService.saveLecture(next);
+        if (movedToNewCourse) {
+            // Lecture moved; go back so the breadcrumb (which still
+            // points at the old course) doesn't lie. The user can then
+            // open the new course from rail to verify.
+            onBack();
+            return;
+        }
+        // Same course — just refresh the local lecture so hero updates.
+        try {
+            const refreshed = await storageService.getLecture(lectureId);
+            if (refreshed) setLecture(refreshed);
+        } catch (err) {
+            console.warn('[H18ReviewPage] refresh after edit failed:', err);
         }
     };
 
@@ -705,7 +770,19 @@ export default function H18ReviewPage({
                               : '✗ 無音訊'}
                     </button>
                 </div>
-                <h1 className={s.heroTitle}>{lecture.title}</h1>
+                <div className={s.heroTitleRow}>
+                    <h1 className={s.heroTitle}>{lecture.title}</h1>
+                    {/* Phase 7 S3c-2 (F1A + S8) — open LectureEditDialog */}
+                    <button
+                        type="button"
+                        className={s.heroEditBtn}
+                        onClick={() => setEditOpen(true)}
+                        aria-label="編輯課堂"
+                        title="編輯課堂（標題 / 日期 / 課程 / 關鍵字）"
+                    >
+                        ✎
+                    </button>
+                </div>
                 <div className={s.heroMeta}>
                     {[
                         lecture.keywords ? `關鍵字：${lecture.keywords}` : null,
@@ -1282,6 +1359,15 @@ export default function H18ReviewPage({
                     onClose={() => setAudioOpen(false)}
                 />
             )}
+
+            {/* Phase 7 S3c-2 (F1A + S7 + S8) — lecture edit modal */}
+            <LectureEditDialog
+                isOpen={editOpen}
+                lecture={lecture}
+                courses={allCourses}
+                onClose={() => setEditOpen(false)}
+                onSubmit={handleEditSubmit}
+            />
         </div>
     );
 }

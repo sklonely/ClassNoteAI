@@ -16,6 +16,8 @@ import {
     globalSearchService,
     type SearchItem,
 } from '../../services/globalSearchService';
+import { keymapService } from '../../services/keymapService';
+import { SHORTCUTS_CHANGE_EVENT } from '../../services/__contracts__/keymapService.contract';
 import s from './SearchOverlay.module.css';
 
 export interface SearchOverlayProps {
@@ -95,6 +97,15 @@ export default function SearchOverlay({ open, onClose, onAction }: SearchOverlay
         if (el) el.scrollIntoView({ block: 'nearest' });
     }, [sel]);
 
+    // S3a-3: refresh chip labels when shortcuts change.
+    const [, setShortcutsTick] = useState(0);
+    useEffect(() => {
+        const onChange = () => setShortcutsTick((n) => n + 1);
+        window.addEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+        return () =>
+            window.removeEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+    }, []);
+
     const grouped = useMemo(() => {
         const order: string[] = [];
         const byGroup = new Map<string, { item: SearchItem; flatIdx: number }[]>();
@@ -156,7 +167,10 @@ export default function SearchOverlay({ open, onClose, onAction }: SearchOverlay
                         <div className={s.empty}>
                             找不到「{query}」的結果
                             <div className={s.emptyHint}>
-                                試試課程關鍵字、lecture title，或 ⌘N / ⌘J / ⌘H
+                                試試課程關鍵字、lecture title，或{' '}
+                                {keymapService.getDisplayLabel('newCourse')} /{' '}
+                                {keymapService.getDisplayLabel('toggleAiDock')} /{' '}
+                                {keymapService.getDisplayLabel('goHome')}
                             </div>
                         </div>
                     ) : (

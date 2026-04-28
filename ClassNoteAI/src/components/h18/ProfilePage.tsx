@@ -33,6 +33,7 @@ import {
     PAudio,
     PData,
     PIntegrations,
+    PKeyboard,
     PAbout,
 } from './ProfilePanes';
 
@@ -45,6 +46,7 @@ export type ProfileTab =
     | 'audio'
     | 'data'
     | 'integrations'
+    | 'keyboard'
     | 'about';
 
 export interface ProfilePageProps {
@@ -74,6 +76,7 @@ const SETTINGS: NavItem[] = [
     { id: 'cloud', label: '雲端 AI 助理', hint: '摘要 · Q&A · OCR' },
     { id: 'appearance', label: '介面與顯示', hint: 'AI · 版面' },
     { id: 'audio', label: '音訊與字幕', hint: '麥克風 · 字幕' },
+    { id: 'keyboard', label: '鍵盤', hint: '快捷鍵綁定' },
     { id: 'integrations', label: '整合', hint: 'Canvas · LMS RSS' },
     { id: 'data', label: '資料管理', hint: '匯入匯出 · 回收桶' },
     { id: 'about', label: '關於與更新', hint: '版本 · 診斷' },
@@ -162,6 +165,7 @@ export default function ProfilePage({
                     />
                 )}
                 {tab === 'audio' && <PAudio />}
+                {tab === 'keyboard' && <PKeyboard />}
                 {tab === 'integrations' && <PIntegrations />}
                 {tab === 'data' && <PData />}
                 {tab === 'about' && <PAbout />}

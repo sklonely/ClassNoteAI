@@ -37,6 +37,8 @@ import FloatingNotesPanel from './FloatingNotesPanel';
 import { useAppSettings } from './useAppSettings';
 import { addExamMark, getExamMarks } from '../../services/examMarksStore';
 import { selectPDFFile } from '../../services/fileService';
+import { keymapService } from '../../services/keymapService';
+import { SHORTCUTS_CHANGE_EVENT } from '../../services/__contracts__/keymapService.contract';
 import s from './H18RecordingPage.module.css';
 
 export interface H18RecordingPageProps {
@@ -125,11 +127,11 @@ export default function H18RecordingPage({
     // transport bar 的 ● 開始錄音 才啟動 session.start()，避免 mic
     // 在使用者沒準備好時就被搶走。
 
-    // ⌘⇧N / Ctrl⇧N — toggle floating notes window
+    // S3a-4: floating-notes shortcut now goes through keymapService —
+    // user-customisable from PKeyboard, default Mod+Shift+N.
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            const cmd = e.metaKey || e.ctrlKey;
-            if (cmd && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+            if (keymapService.matchesEvent('floatingNotes', e)) {
                 e.preventDefault();
                 setNotesOpen((v) => !v);
             }
@@ -137,6 +139,16 @@ export default function H18RecordingPage({
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, []);
+
+    // S3a-3: re-render the 筆記 chip when the user remaps floatingNotes.
+    const [, setShortcutsTick] = useState(0);
+    useEffect(() => {
+        const onChange = () => setShortcutsTick((n) => n + 1);
+        window.addEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+        return () =>
+            window.removeEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+    }, []);
+    const floatingNotesLabel = keymapService.getDisplayLabel('floatingNotes');
 
     const handleStop = async () => {
         // S3h: 結束 = 不可逆 (停止 mic + finalize pipeline)，先過 themed
@@ -256,15 +268,15 @@ export default function H18RecordingPage({
                     ))}
                 </div>
 
-                {/* 筆記 toggle — 浮動 markdown 筆記窗 (⌘⇧N) */}
+                {/* 筆記 toggle — 浮動 markdown 筆記窗 (floatingNotes) */}
                 <button
                     type="button"
                     onClick={() => setNotesOpen((v) => !v)}
                     className={`${s.heroBtn} ${notesOpen ? s.heroBtnActive : ''}`}
-                    title="筆記 ⌘⇧N"
+                    title={`筆記 ${floatingNotesLabel}`}
                 >
                     ✎ 筆記
-                    <span className={s.heroBtnKbd}>⌘⇧N</span>
+                    <span className={s.heroBtnKbd}>{floatingNotesLabel}</span>
                 </button>
 
                 {/* 匯入教材 button */}

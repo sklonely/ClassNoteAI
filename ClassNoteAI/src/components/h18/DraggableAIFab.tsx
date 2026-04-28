@@ -19,6 +19,8 @@ import {
     useState,
     type CSSProperties,
 } from 'react';
+import { keymapService } from '../../services/keymapService';
+import { SHORTCUTS_CHANGE_EVENT } from '../../services/__contracts__/keymapService.contract';
 import s from './DraggableAIFab.module.css';
 
 const STORAGE_KEY = 'h18-fab-pos-v1';
@@ -103,6 +105,16 @@ export default function DraggableAIFab({
         window.addEventListener('resize', onResize);
         return () => window.removeEventListener('resize', onResize);
     }, []);
+
+    // S3a-3: refresh title when the user remaps the AI dock shortcut.
+    const [, setShortcutsTick] = useState(0);
+    useEffect(() => {
+        const onChange = () => setShortcutsTick((n) => n + 1);
+        window.addEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+        return () =>
+            window.removeEventListener(SHORTCUTS_CHANGE_EVENT, onChange);
+    }, []);
+    const aiDockLabel = keymapService.getDisplayLabel('toggleAiDock');
 
     const onPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
         if (!btnRef.current) return;
@@ -224,7 +236,7 @@ export default function DraggableAIFab({
             type="button"
             className={`${s.fab} ${drag ? s.fabDragging : s.fabIdle} ${snapPreview}`}
             style={style}
-            title="拖拽移動 / 點擊問 AI (⌘J)"
+            title={`拖拽移動 / 點擊問 AI (${aiDockLabel})`}
             aria-label="AI 助教 (可拖拽)"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}

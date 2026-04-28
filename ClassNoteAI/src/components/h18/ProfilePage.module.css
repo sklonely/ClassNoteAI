@@ -1182,3 +1182,85 @@
     font-family: var(--h18-font-mono);
     letter-spacing: 0.04em;
 }
+
+/* ───────── PKeyboard (S3a-2) — keyboard shortcut rows ───────── */
+
+.kbdList {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.kbdRow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--h18-border);
+    border-radius: 8px;
+    background: var(--h18-surface2);
+}
+
+.kbdRow:hover {
+    background: var(--h18-row-hover);
+}
+
+.kbdLabel {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--h18-text);
+}
+
+.kbdChip {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    color: var(--h18-text);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    min-width: 64px;
+    text-align: center;
+    transition: background 120ms, border-color 120ms;
+}
+
+.kbdChip:hover {
+    background: var(--h18-row-hover);
+    border-color: var(--h18-accent);
+}
+
+.kbdCapturing {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--h18-accent);
+    background: var(--h18-chip-bg);
+    border: 1px dashed var(--h18-accent);
+    border-radius: 6px;
+    min-width: 64px;
+    text-align: center;
+}
+
+.kbdReset {
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--h18-text-dim);
+    background: transparent;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 120ms, border-color 120ms;
+}
+
+.kbdReset:hover {
+    color: var(--h18-hot);
+    border-color: var(--h18-hot);
+}
