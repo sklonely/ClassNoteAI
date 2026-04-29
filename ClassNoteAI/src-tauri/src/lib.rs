@@ -1349,7 +1349,9 @@ async fn update_lecture_status(id: String, status: String) -> Result<(), String>
 /// Returned rows should be cross-referenced with `find_orphaned_recordings`
 /// (the on-disk side) to decide whether audio is recoverable.
 #[tauri::command]
-async fn list_orphaned_recording_lectures() -> Result<Vec<storage::Lecture>, String> {
+async fn list_orphaned_recording_lectures(
+    user_id: Option<String>,
+) -> Result<Vec<storage::Lecture>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1358,7 +1360,8 @@ async fn list_orphaned_recording_lectures() -> Result<Vec<storage::Lecture>, Str
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.list_orphaned_recording_lectures()
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.list_orphaned_recording_lectures(&user)
         .map_err(|e| format!("查詢 orphan lectures 失敗: {}", e))
 }
 
@@ -1680,10 +1683,65 @@ async fn count_embeddings(lecture_id: String) -> Result<i64, String> {
 }
 
 /// 寫入文本文件
+/// cp75.7 — Path scope guard for `write_text_file` / `read_text_file` /
+/// `read_binary_file` / `write_binary_file`. These four custom commands
+/// were a security hole: they hit `std::fs` directly with the renderer-
+/// supplied path, bypassing the carefully scoped `fs:allow-read` /
+/// `fs:allow-write` capabilities in `capabilities/default.json`.
+///
+/// An XSS / supply-chain compromise could read `~/.ssh/id_rsa` or write
+/// arbitrary files anywhere the app process has perms.
+///
+/// We require the path to canonicalise inside the user's app data dir.
+/// The set of legitimate consumers — PDF imports, recovery scratch
+/// files, sidecar logs — all live there already, so this is a tighten
+/// not a feature regression.
+fn validate_user_writable_path(path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    let app_data = paths::get_app_data_dir()?;
+    let app_data_canonical = app_data
+        .canonicalize()
+        .unwrap_or_else(|_| app_data.clone());
+
+    let p = PathBuf::from(path);
+    // Canonicalise when possible (file already exists). For writes the
+    // file may not exist yet, so fall back to the parent's canonical
+    // form joined with the file name.
+    let canonical = match p.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            // Resolve parent directory if available.
+            let parent = p.parent().ok_or_else(|| {
+                "路徑無父目錄，拒絕（避免 traversal）".to_string()
+            })?;
+            let parent_canonical = parent.canonicalize().map_err(|_| {
+                format!(
+                    "父目錄不存在或無法 canonicalize，拒絕：{}",
+                    parent.display()
+                )
+            })?;
+            let file_name = p.file_name().ok_or_else(|| {
+                "路徑無檔名".to_string()
+            })?;
+            parent_canonical.join(file_name)
+        }
+    };
+
+    if !canonical.starts_with(&app_data_canonical) {
+        return Err(format!(
+            "拒絕：路徑必須在 app data 目錄內 ({})，收到：{}",
+            app_data_canonical.display(),
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
 #[tauri::command]
 async fn write_text_file(path: String, contents: String) -> Result<(), String> {
     use std::fs;
-    fs::write(&path, contents).map_err(|e| format!("寫入文件失敗: {}", e))?;
+    let safe = validate_user_writable_path(&path)?;
+    fs::write(&safe, contents).map_err(|e| format!("寫入文件失敗: {}", e))?;
     Ok(())
 }
 
@@ -1691,14 +1749,16 @@ async fn write_text_file(path: String, contents: String) -> Result<(), String> {
 #[tauri::command]
 async fn read_text_file(path: String) -> Result<String, String> {
     use std::fs;
-    fs::read_to_string(&path).map_err(|e| format!("讀取文件失敗: {}", e))
+    let safe = validate_user_writable_path(&path)?;
+    fs::read_to_string(&safe).map_err(|e| format!("讀取文件失敗: {}", e))
 }
 
 /// 讀取二進制文件（用於 PDF 等）
 #[tauri::command]
 async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     use std::fs;
-    fs::read(&path).map_err(|e| format!("讀取文件失敗: {}", e))
+    let safe = validate_user_writable_path(&path)?;
+    fs::read(&safe).map_err(|e| format!("讀取文件失敗: {}", e))
 }
 
 /// 寫入二進制文件
@@ -1706,14 +1766,13 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
 async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
     use std::fs::{self, File};
     use std::io::Write;
-    use std::path::Path;
 
-    let path_obj = Path::new(&path);
-    if let Some(parent) = path_obj.parent() {
+    let safe = validate_user_writable_path(&path)?;
+    if let Some(parent) = safe.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("創建目錄失敗: {}", e))?;
     }
 
-    let mut file = File::create(&path).map_err(|e| format!("創建文件失敗: {}", e))?;
+    let mut file = File::create(&safe).map_err(|e| format!("創建文件失敗: {}", e))?;
     file.write_all(&data)
         .map_err(|e| format!("寫入文件失敗: {}", e))?;
     Ok(())
@@ -3517,17 +3576,7 @@ fn verify_lecture_ownership(
     lecture_id: &str,
     user_id: &str,
 ) -> Result<(), String> {
-    let owner: Option<String> = db
-        .conn()
-        .query_row(
-            "SELECT c.user_id FROM lectures l \
-             JOIN courses c ON l.course_id = c.id \
-             WHERE l.id = ?1",
-            [lecture_id],
-            |r| r.get(0),
-        )
-        .ok();
-    match owner {
+    match db.find_lecture_owner(lecture_id) {
         Some(o) if o == user_id => Ok(()),
         Some(_) => Err("無權操作此課堂（屬於其他帳號）".to_string()),
         None => Err("找不到此課堂".to_string()),
@@ -3540,15 +3589,7 @@ fn verify_course_ownership(
     course_id: &str,
     user_id: &str,
 ) -> Result<(), String> {
-    let owner: Option<String> = db
-        .conn()
-        .query_row(
-            "SELECT user_id FROM courses WHERE id = ?1",
-            [course_id],
-            |r| r.get(0),
-        )
-        .ok();
-    match owner {
+    match db.find_course_owner(course_id) {
         Some(o) if o == user_id => Ok(()),
         Some(_) => Err("無權操作此課程（屬於其他帳號）".to_string()),
         None => Err("找不到此課程".to_string()),

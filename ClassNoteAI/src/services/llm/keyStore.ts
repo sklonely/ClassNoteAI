@@ -155,6 +155,16 @@ export const keyStore: KeyStore = new LocalStorageKeyStore();
  * doesn't abort the sweep.
  */
 export async function clearAll(): Promise<void> {
+    // cp75.7 — only clear keys belonging to the CURRENTLY-LOGGED-IN
+    // user. Before, this swept every `llm.*` entry in the store, so
+    // user A's logout also wiped user B's API keys (multi-user install)
+    // OR user A's logout wiped user A's own keys, forcing re-entry
+    // every login (single-user install). Layout is now
+    // `llm.<userId>.<providerId>.<field>` (cp75.3) — scope by the
+    // userId segment.
+    const userId = authService.getUserIdSegment();
+    const userPrefix = `${PREFIX}${userId}.`;
+
     const targets = new Set<string>();
 
     // Source 1: Web Storage API enumeration (production / jsdom).
@@ -163,7 +173,7 @@ export async function clearAll(): Promise<void> {
         if (typeof len === 'number') {
             for (let i = 0; i < len; i++) {
                 const k = (localStorage as Storage).key(i);
-                if (typeof k === 'string' && k.startsWith(PREFIX)) {
+                if (typeof k === 'string' && k.startsWith(userPrefix)) {
                     targets.add(k);
                 }
             }
@@ -173,7 +183,9 @@ export async function clearAll(): Promise<void> {
     }
 
     // Source 2: tracked-key fallback (test mocks).
-    for (const k of knownKeys) targets.add(k);
+    for (const k of knownKeys) {
+        if (k.startsWith(userPrefix)) targets.add(k);
+    }
 
     for (const k of targets) {
         try {

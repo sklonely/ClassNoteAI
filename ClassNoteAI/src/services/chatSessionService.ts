@@ -43,7 +43,13 @@ class ChatSessionService {
      */
     public async init(): Promise<void> {
         const user = authService.getUser();
-        this.userId = user?.username || 'default';
+        // cp75.7 — align with the rest of the codebase. Other stores
+        // (storageService.saveCourse, getUserIdSegment, settings keys)
+        // all default to 'default_user'. This service used to default
+        // to 'default' which created an inconsistent partition: chat
+        // sessions saved during the no-auth boot window vanished after
+        // login (queries filter by 'default_user').
+        this.userId = user?.username || 'default_user';
         await this.migrateFromLocalStorage();
     }
 

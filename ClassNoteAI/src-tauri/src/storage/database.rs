@@ -92,6 +92,32 @@ impl Database {
         &self.conn
     }
 
+    /// cp75.7 — public ownership lookups for the Tauri-command verifier
+    /// helpers. Returns None when the row doesn't exist (or DB error
+    /// occurred — the caller maps that to a user-facing "not found"
+    /// message; deeper diagnostics live in the rusqlite Error chain).
+    pub fn find_lecture_owner(&self, lecture_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT c.user_id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.id = ?1",
+                [lecture_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    pub fn find_course_owner(&self, course_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT user_id FROM courses WHERE id = ?1",
+                [course_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
     /// 初始化數據表
     ///
     /// `pub(crate)` so the sibling `storage::database_test` harness can
@@ -1207,16 +1233,25 @@ impl Database {
     /// `.pcm` files via `recording::find_orphaned_recordings` to decide
     /// whether audio can be recovered or whether only metadata-level
     /// cleanup is possible.
-    pub fn list_orphaned_recording_lectures(&self) -> SqlResult<Vec<Lecture>> {
+    pub fn list_orphaned_recording_lectures(
+        &self,
+        user_id: &str,
+    ) -> SqlResult<Vec<Lecture>> {
+        // cp75.7 — added user_id filter via courses JOIN. Before this,
+        // user B's first launch surfaced user A's mid-session crash as a
+        // recovery candidate; if B clicked "recover" the recording got
+        // attached to B's view (confused-deputy attack on the recovery
+        // prompt).
         let mut stmt = self.conn.prepare(
-            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, \
-                    status, is_deleted, created_at, updated_at \
-             FROM lectures \
-             WHERE status = 'recording' AND is_deleted = 0 \
-             ORDER BY created_at ASC",
+            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, \
+                    l.status, l.is_deleted, l.created_at, l.updated_at \
+             FROM lectures l \
+             JOIN courses c ON l.course_id = c.id \
+             WHERE l.status = 'recording' AND l.is_deleted = 0 AND c.user_id = ?1 \
+             ORDER BY l.created_at ASC",
         )?;
         let lectures = stmt
-            .query_map([], |row| {
+            .query_map([user_id], |row| {
                 Ok(Lecture {
                     id: row.get(0)?,
                     course_id: row.get(1)?,
@@ -2664,7 +2699,7 @@ mod tests {
         completed.status = "completed".into();
         db.save_lecture(&completed, "u").unwrap();
 
-        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        let orphans = db.list_orphaned_recording_lectures("u").unwrap();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].id, recording.id);
         assert_eq!(orphans[0].title, "zombie");
@@ -2685,7 +2720,7 @@ mod tests {
         db.save_lecture(&gone, "u").unwrap();
         db.delete_lecture(&gone.id).unwrap();
 
-        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        let orphans = db.list_orphaned_recording_lectures("u").unwrap();
         assert!(orphans.is_empty());
     }
 
@@ -2704,7 +2739,7 @@ mod tests {
 
         db.update_lecture_status(&l.id, "completed").unwrap();
 
-        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        let orphans = db.list_orphaned_recording_lectures("u").unwrap();
         assert!(orphans.is_empty());
     }
 }

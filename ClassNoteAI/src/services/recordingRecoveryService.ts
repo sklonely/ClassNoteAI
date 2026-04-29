@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { authService } from './authService';
 
 /**
  * Crash-recovery service for the incremental PCM persistence flow.
@@ -82,6 +83,12 @@ class RecordingRecoveryService {
       }>>('find_orphaned_recordings'),
       invoke<Array<{ id: string; title: string; date: string; course_id: string }>>(
         'list_orphaned_recording_lectures',
+        {
+          // cp75.7: scope orphan list to the current user so we don't
+          // surface another account's mid-crash recording as a recovery
+          // candidate (would attach the recording to whoever clicks).
+          userId: authService.getUser()?.username || 'default_user',
+        },
       ),
     ]);
     const pcmRaw =

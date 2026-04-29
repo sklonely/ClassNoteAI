@@ -42,7 +42,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
      * recording session, and the inbox cache from the first user.
      */
     const resetUserScopedState = async (label: string) => {
+        // cp75.7 — guard `recordingSessionService.reset()`: the JSDoc
+        // explicitly marks it TEST-ONLY because it bypasses the stop
+        // pipeline and leaks the AudioRecorder if a session is live.
+        // Auth transitions in the middle of a recording need to flush
+        // the recorder first; only then drop the singleton state.
         try {
+            const state = recordingSessionService.getState();
+            if (state.status === 'recording' || state.status === 'paused') {
+                // Best-effort flush so the OS mic indicator doesn't stay
+                // on after logout. mustFinalizeSync() drains transcribe +
+                // saves subtitles; if it errors we still proceed to reset.
+                await recordingSessionService.mustFinalizeSync().catch((err) =>
+                    console.warn(
+                        `[AuthContext.${label}] mustFinalizeSync failed`,
+                        err,
+                    ),
+                );
+            }
             recordingSessionService.reset();
         } catch (err) {
             console.warn(`[AuthContext.${label}] recording reset failed`, err);
@@ -52,10 +69,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch (err) {
             console.warn(`[AuthContext.${label}] taskTracker cancelAll failed`, err);
         }
-        try {
-            await clearAllKeys();
-        } catch (err) {
-            console.warn(`[AuthContext.${label}] keyStore clear failed`, err);
+        // cp75.7 — only clear API keys on EXPLICIT LOGOUT, not on every
+        // state reset. Since cp75.3 keystore is per-user-scoped (key path
+        // includes userId segment), the next user can't read this user's
+        // keys anyway — clearing on every login was destroying the user's
+        // own keys when they came back. clearAll() also removes API keys
+        // belonging to OTHER accounts (sweep matches `llm.*` regardless),
+        // which means a single-user install loses all keys on every logout.
+        // Run only on logout, where the destructive intent is explicit.
+        if (label === 'logout') {
+            try {
+                await clearAllKeys();
+            } catch (err) {
+                console.warn(`[AuthContext.${label}] keyStore clear failed`, err);
+            }
         }
         try {
             const { __resetInboxCache } = await import(
