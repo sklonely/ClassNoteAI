@@ -25,9 +25,21 @@ import {
     getCourseSyllabusState,
     getCourseSyllabusFailureReason,
 } from '../../services/storageService';
+import { selectPDFFile } from '../../services/fileService';
+import type { AgentResult } from '../../services/courseUrlAgent';
+import CourseUrlAgentPanel from './CourseUrlAgentPanel';
+import { toastService } from '../../services/toastService';
 import type { Course, SyllabusInfo, TeachingPerson } from '../../types';
 import { courseColor } from './courseColor';
 import s from './CourseEditPage.module.css';
+
+type ReimportMode = 'text' | 'file' | 'url';
+
+const REIMPORT_OPTS: { k: ReimportMode; label: string; hint: string }[] = [
+    { k: 'text', label: '貼文字', hint: '改 / 貼新大綱重跑 AI' },
+    { k: 'file', label: '上傳檔案', hint: '換 PDF · 重新解析' },
+    { k: 'url', label: '從網址', hint: '抓取課程網址 syllabus' },
+];
 
 export interface CourseEditPageProps {
     courseId: string;
@@ -109,6 +121,15 @@ export default function CourseEditPage({
     // grading + schedule
     const [grading, setGrading] = useState<GradingRow[]>([]);
     const [schedule, setSchedule] = useState<string[]>([]);
+
+    // cp75.2: re-import section (paste text / upload PDF / fetch URL).
+    // Mirrors AddCourseDialog's three source modes so editing a course
+    // is symmetric with creating one.
+    const [reimportMode, setReimportMode] = useState<ReimportMode>('text');
+    const [reimportText, setReimportText] = useState('');
+    const [reimportPdf, setReimportPdf] = useState<{ path: string; data: ArrayBuffer } | null>(null);
+    const [reimportAgent, setReimportAgent] = useState<AgentResult | null>(null);
+    const [reimporting, setReimporting] = useState(false);
 
     /* ────────── load ────────── */
     const loadCourse = (id: string) => {
@@ -316,6 +337,110 @@ export default function CourseEditPage({
                 (err as Error)?.message || '重新生成失敗，請查看 console。',
             );
             setRegenerating(false);
+        }
+    };
+
+    // ─── Re-import handlers (cp75.2) ─────────────────────────────────
+    // Three-mode parity with AddCourseDialog:
+    //   text → swap description + force AI re-extract
+    //   file → upload new PDF + re-extract
+    //   url  → fetch via courseUrlAgent + apply pre-parsed syllabus directly
+    //          (skip extractSyllabus, the agent already did the work).
+
+    const handlePickReimportFile = async () => {
+        try {
+            const picked = await selectPDFFile();
+            if (picked) setReimportPdf(picked);
+        } catch (err) {
+            console.warn('[CourseEditPage] selectPDFFile failed:', err);
+        }
+    };
+
+    const handleApplyTextReimport = async () => {
+        if (!original) return;
+        const trimmed = reimportText.trim();
+        if (!trimmed) return;
+        setReimporting(true);
+        setError(null);
+        try {
+            // Push the new description through the same path AddCourseDialog
+            // uses: saveCourseWithSyllabus { forceRegenerate: true } makes
+            // the AI pipeline run on the freshly-pasted text.
+            const next: Course = {
+                ...original,
+                description: trimmed,
+                updated_at: new Date().toISOString(),
+            };
+            await storageService.saveCourseWithSyllabus(next, {
+                forceRegenerate: true,
+            });
+            setDescription(trimmed);
+            setReimportText('');
+            toastService.success(
+                '已套用新文字，AI 重新解析中…',
+                '完成後欄位會自動更新。',
+            );
+        } catch (err) {
+            console.error('[CourseEditPage] reimport text failed:', err);
+            setError((err as Error)?.message || '重新匯入失敗');
+        } finally {
+            setReimporting(false);
+        }
+    };
+
+    const handleApplyFileReimport = async () => {
+        if (!original || !reimportPdf) return;
+        setReimporting(true);
+        setError(null);
+        try {
+            await storageService.saveCourseWithSyllabus(
+                { ...original, updated_at: new Date().toISOString() },
+                { pdfData: reimportPdf.data, forceRegenerate: true },
+            );
+            setReimportPdf(null);
+            toastService.success(
+                '已套用新 PDF，AI 重新解析中…',
+                '完成後欄位會自動更新。',
+            );
+        } catch (err) {
+            console.error('[CourseEditPage] reimport file failed:', err);
+            setError((err as Error)?.message || '重新匯入 PDF 失敗');
+        } finally {
+            setReimporting(false);
+        }
+    };
+
+    const handleApplyUrlReimport = async () => {
+        if (!original || !reimportAgent) return;
+        setReimporting(true);
+        setError(null);
+        try {
+            // URL agent already produced a structured syllabus — apply it
+            // directly without re-running extractSyllabus (mirrors
+            // H18DeepApp.tsx URL-agent path used at course creation).
+            const now = new Date().toISOString();
+            const stampedSyllabus = {
+                ...reimportAgent.syllabus,
+                _classnote_status: 'ready',
+                _classnote_source: 'description',
+                _classnote_updated_at: now,
+                _classnote_raw_description: reimportAgent.sourceText,
+            } as unknown as SyllabusInfo;
+            await storageService.saveCourse({
+                ...original,
+                syllabus_info: stampedSyllabus,
+                updated_at: now,
+            });
+            setReimportAgent(null);
+            toastService.success(
+                '已套用網址解析結果',
+                '頁面欄位將自動刷新。',
+            );
+        } catch (err) {
+            console.error('[CourseEditPage] reimport url failed:', err);
+            setError((err as Error)?.message || '套用網址結果失敗');
+        } finally {
+            setReimporting(false);
         }
     };
 
@@ -546,6 +671,121 @@ export default function CourseEditPage({
             )}
 
             <div className={s.body}>
+                {/* 重新匯入 (cp75.2) — symmetric with AddCourseDialog */}
+                <Card
+                    title="重新匯入課綱"
+                    eyebrow="RE-IMPORT"
+                >
+                    <div className={s.reimportHint}>
+                        從新來源蓋掉現有 syllabus。三種模式跟新增課程時相同 —
+                        貼新文字 / 換新 PDF / 改抓另一個課程網址。
+                    </div>
+                    <div className={s.reimportSrcRow}>
+                        {REIMPORT_OPTS.map((o) => (
+                            <button
+                                key={o.k}
+                                type="button"
+                                onClick={() => setReimportMode(o.k)}
+                                disabled={reimporting}
+                                className={`${s.reimportSrcBtn} ${reimportMode === o.k ? s.reimportSrcBtnActive : ''}`}
+                            >
+                                <div className={s.reimportSrcLabel}>{o.label}</div>
+                                <div className={s.reimportSrcHint}>{o.hint}</div>
+                            </button>
+                        ))}
+                    </div>
+
+                    {reimportMode === 'text' && (
+                        <div className={s.reimportBody}>
+                            <textarea
+                                className={s.textarea}
+                                rows={6}
+                                value={reimportText}
+                                onChange={(e) => setReimportText(e.target.value)}
+                                disabled={reimporting}
+                                placeholder={`貼新的課綱 / 大綱 / 老師說明文字。提交後 AI 會用這份新文字重新解析。\n\n例：\n計算機網路 · 陳老師 · 週三 10:00 · 資訊館 204\n單元：TCP / UDP / routing / socket / security ...`}
+                            />
+                            <div className={s.reimportActions}>
+                                <button
+                                    type="button"
+                                    onClick={handleApplyTextReimport}
+                                    disabled={
+                                        reimporting || !reimportText.trim()
+                                    }
+                                    className={s.reimportApplyBtn}
+                                >
+                                    {reimporting
+                                        ? '解析中…'
+                                        : '✦ 套用新文字'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {reimportMode === 'file' && (
+                        <div className={s.reimportBody}>
+                            <button
+                                type="button"
+                                className={s.fileDrop}
+                                onClick={handlePickReimportFile}
+                                disabled={reimporting}
+                            >
+                                <div className={s.fileDropIcon}>⎘</div>
+                                <div className={s.fileDropTitle}>
+                                    {reimportPdf
+                                        ? '已選新 PDF — 點擊更換'
+                                        : '點擊選擇新 PDF 檔案'}
+                                </div>
+                                <div className={s.fileDropHint}>PDF · 最多 20 MB</div>
+                            </button>
+                            {reimportPdf && (
+                                <div className={s.fileSelectedRow}>
+                                    ✓ {reimportPdf.path.split(/[\\/]/).pop()} ·{' '}
+                                    {(reimportPdf.data.byteLength / 1024).toFixed(0)} KB
+                                </div>
+                            )}
+                            <div className={s.reimportActions}>
+                                <button
+                                    type="button"
+                                    onClick={handleApplyFileReimport}
+                                    disabled={reimporting || !reimportPdf}
+                                    className={s.reimportApplyBtn}
+                                >
+                                    {reimporting
+                                        ? '解析中…'
+                                        : '✦ 套用新 PDF'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {reimportMode === 'url' && (
+                        <div className={s.reimportBody}>
+                            <CourseUrlAgentPanel
+                                titleHint={title}
+                                onResult={(r) => setReimportAgent(r)}
+                                onClear={() => setReimportAgent(null)}
+                            />
+                            <div className={s.reimportActions}>
+                                <button
+                                    type="button"
+                                    onClick={handleApplyUrlReimport}
+                                    disabled={
+                                        reimporting || !reimportAgent
+                                    }
+                                    className={s.reimportApplyBtn}
+                                >
+                                    {reimporting
+                                        ? '套用中…'
+                                        : reimportAgent
+                                            ? '✦ 套用此網址結果'
+                                            : '先在上方貼網址解析'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </Card>
+
                 {/* 基本資料 */}
                 <Card title="基本資料" eyebrow="ABOUT">
                     <Field label="課程名稱">
