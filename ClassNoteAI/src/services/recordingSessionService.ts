@@ -460,13 +460,21 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             const subtitles = segments.map((seg, i) => {
                 const relSec = toRelativeSeconds(seg.startTime, sessionStart);
                 const startMs = Math.max(0, seg.startTime - sessionStart);
+                // Resolve text_zh with displayTranslation as last-resort
+                // fallback — older code paths may set displayTranslation
+                // without writing back to roughTranslation. Defensive
+                // against future callers; transcriptionService now writes
+                // both (Phase 7 Bug 2 fix).
                 return {
                     id: `sub-${lectureId}-${i}`,
                     lecture_id: lectureId,
                     timestamp: relSec,
                     text_en:
                         seg.fineText ?? seg.roughText ?? seg.displayText ?? '',
-                    text_zh: seg.fineTranslation ?? seg.roughTranslation,
+                    text_zh:
+                        seg.fineTranslation ??
+                        seg.roughTranslation ??
+                        seg.displayTranslation,
                     type: 'rough' as const,
                     confidence: seg.fineConfidence ?? seg.roughConfidence,
                     created_at: new Date(
@@ -969,7 +977,10 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                     endMs: Math.max(0, seg.endTime - sessionStart),
                     textEn:
                         seg.fineText ?? seg.roughText ?? seg.displayText ?? '',
-                    textZh: seg.fineTranslation ?? seg.roughTranslation,
+                    textZh:
+                        seg.fineTranslation ??
+                        seg.roughTranslation ??
+                        seg.displayTranslation,
                 }),
             );
             this.setState({

@@ -22,7 +22,7 @@
  *  - drag-drop 教材匯入：沒接
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText, BookOpen } from 'lucide-react';
 import type { Course, Lecture } from '../../types';
 import { storageService } from '../../services/storageService';
@@ -591,6 +591,36 @@ interface SubPaneProps {
 }
 
 function SubPane({ session, focus, mini }: SubPaneProps) {
+    // Auto-scroll behaviour:
+    //  - 預設貼底，新字幕進來自動跟著捲。
+    //  - 使用者主動往上滾離底部 → 暫停 auto-scroll（可慢慢翻舊字幕）。
+    //  - 滾回底部（< 24px 視為「貼底」）→ 恢復 auto-scroll。
+    // 監聽的依賴：segments.length（新句 commit）、currentText（streaming
+    // 過程的尚未 commit 字也算）。
+    const streamRef = useRef<HTMLDivElement | null>(null);
+    const stickToBottomRef = useRef(true);
+    const STICK_THRESHOLD_PX = 24;
+
+    const handleScroll = (): void => {
+        const el = streamRef.current;
+        if (!el) return;
+        const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        stickToBottomRef.current = distFromBottom <= STICK_THRESHOLD_PX;
+    };
+
+    useEffect(() => {
+        const el = streamRef.current;
+        if (!el) return;
+        if (!stickToBottomRef.current) return;
+        // 用 requestAnimationFrame 等 layout flush 完才量 scrollHeight。
+        const id = requestAnimationFrame(() => {
+            const node = streamRef.current;
+            if (!node) return;
+            node.scrollTop = node.scrollHeight;
+        });
+        return () => cancelAnimationFrame(id);
+    }, [session.segments.length, session.currentText]);
+
     return (
         <div className={`${s.subPane} ${focus ? s.subPaneFocus : ''} ${mini ? s.subPaneMini : ''}`}>
             <div className={s.subHead}>
@@ -600,7 +630,11 @@ function SubPane({ session, focus, mini }: SubPaneProps) {
                 </span>
                 <span className={s.subHeadCount}>{session.segments.length} 句</span>
             </div>
-            <div className={s.subStream}>
+            <div
+                ref={streamRef}
+                className={s.subStream}
+                onScroll={handleScroll}
+            >
                 {session.segments.length === 0 && !session.currentText && (
                     <div className={s.subEmpty}>
                         字幕將顯示在這裡。

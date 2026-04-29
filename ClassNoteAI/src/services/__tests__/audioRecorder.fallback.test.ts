@@ -107,8 +107,12 @@ describe('AudioRecorder.getMediaStream — fallback path (regression #99)', () =
         const fallbackConstraints = getUserMedia.mock.calls[1][0];
         expect(fallbackConstraints.audio.deviceId).toBeUndefined();
         expect(mockedToast.warning).toHaveBeenCalledTimes(1);
+        // Production uses 4-arg signature: (title, description?, action?).
+        // Don't pin description / action — just confirm the title pattern.
         expect(mockedToast.warning).toHaveBeenCalledWith(
             expect.stringContaining('系統預設麥克風'),
+            undefined,
+            expect.objectContaining({ label: '改選麥克風' }),
         );
     });
 
