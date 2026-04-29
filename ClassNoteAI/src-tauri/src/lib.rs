@@ -890,6 +890,31 @@ async fn download_gemma_model(
         .await
         .map_err(|e| format!("Gemma 模型下載失敗: {e}"))?;
 
+    // cp75.13 — post-download integrity check. The HTTP-layer guards in
+    // `whisper::download::download_model` (cp75.12) catch 4xx/5xx, but a
+    // legit 200 with the wrong body (HF redirect index page, partial
+    // CDN truncation, etc.) still writes garbage to disk. For 12B / 27B
+    // we use a wide ±5% expected-size band; verify the downloaded file
+    // actually sits in that band, otherwise delete it and bubble the
+    // error up so the UI can react instead of falsely declaring success.
+    if !translation::gemma_model::is_present_for(v) {
+        let actual = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let expected = v.expected_size();
+        // Best-effort cleanup so the next click re-downloads instead of
+        // hitting the "file exists, skip" fast path.
+        let _ = std::fs::remove_file(&path);
+        return Err(format!(
+            "Gemma {} download finished but file size looks wrong: \
+             {} bytes on disk vs. expected ~{} bytes. The HuggingFace URL \
+             may not exist or the response was a redirect/index page. \
+             URL: {}",
+            v.label(),
+            actual,
+            expected,
+            v.url(),
+        ));
+    }
+
     Ok(path.to_string_lossy().to_string())
 }
 
