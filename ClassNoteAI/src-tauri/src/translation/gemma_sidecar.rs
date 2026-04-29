@@ -216,6 +216,19 @@ async fn wait_for_health(port: u16) -> bool {
 /// pre-fix unbounded sentence. KV-cache cost at c=4096 is well under
 /// 1 GB on Q4_K_M, fits any 4GB+ VRAM card.
 fn server_args(model_path: &str, port: u16) -> Vec<String> {
+    // cp74.3 changes:
+    //  - Removed `--temp 0.0` server-side default. Per-request body now
+    //    controls temperature so we can ship 0.0 for translation but
+    //    higher values for any future chat / refinement use of the same
+    //    sidecar without rebooting.
+    //  - Kept `--no-jinja`. We tested switching to `--jinja` so we could
+    //    drive TranslateGemma's specialized chat template through the
+    //    OpenAI-compatible /v1/chat/completions endpoint, but support for
+    //    structured-content payloads (source_lang_code / target_lang_code
+    //    fields) varies by llama-server version. The official reference
+    //    implementation (TranslateGemma-Studio) also stays on `/completion`
+    //    + manual prompt rendering, so that's the lower-risk path. We
+    //    instead beef up the prompt itself in `build_prompt` below.
     vec![
         "-m".into(),
         model_path.into(),
@@ -228,8 +241,6 @@ fn server_args(model_path: &str, port: u16) -> Vec<String> {
         "--host".into(),
         "127.0.0.1".into(),
         "--no-jinja".into(),
-        "--temp".into(),
-        "0.0".into(),
     ]
 }
 

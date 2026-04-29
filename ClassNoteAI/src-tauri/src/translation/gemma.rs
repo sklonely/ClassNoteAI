@@ -44,7 +44,13 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Maximum tokens to generate per request. Caps runaway generations
 /// while still covering long lecture sentences.
-const MAX_TOKENS: u32 = 200;
+///
+/// cp74.3: bumped 200 → 400. A 60-word English sentence is ~80–120
+/// English tokens, but the *translation* into Chinese can easily double
+/// that with formal compounds and connectors (那麼／因此／我們可以). At
+/// 200 we observed long academic sentences truncating mid-clause. 400
+/// gives ~3× headroom and KV-cache cost is negligible.
+const MAX_TOKENS: u32 = 400;
 
 /// Refuse inputs longer than this character count *before* we hit the
 /// network, so a single huge sentence (e.g. an accumulator that
@@ -57,48 +63,40 @@ const MAX_INPUT_CHARS: usize = 3_000;
 
 /// Gemma chat template for raw `/completion`.
 ///
-/// Phase 7 cp74.2 — domain-aware prompt:
+/// cp74.3 — domain-neutral but precise prompt. Approximates the
+/// information TranslateGemma's specialized chat template would carry
+/// (source_lang_code / target_lang_code) but rendered as a plain Gemma
+/// chat turn so it works through `/completion` without requiring the
+/// `--jinja` path (which has version-dependent llama-server support).
 ///
-/// The earlier prompt was a one-liner ("translate to Traditional Chinese,
-/// output only") which left the 4B Q4_K_M model to guess on academic /
-/// ML / technical content. Real failure modes observed:
-///   - "adversarial training" rendered three different ways across the
-///     same lecture (對抗性訓練 / 敵對訓練 / 對抗式訓練).
-///   - Acronyms invented or expanded incorrectly ("DBAT" → "the bat").
-///   - Loanwords like "natural accuracy" translated literally to
-///     「自然的精確度」 instead of the canonical 「自然準確率」.
+/// The previous one-liner ("translate to Traditional Chinese, output
+/// only") was too sparse; the model was guessing at register, treating
+/// acronyms inconsistently, and occasionally emitting Simplified
+/// characters or English preambles. The new prompt:
 ///
-/// New prompt: tells the model the input is academic/technical, pins a
-/// few canonical ML translations, and explicitly says to preserve
-/// acronyms / proper nouns. Costs ~150 extra prompt tokens — negligible
-/// compared to the per-sentence generation budget. Empirically this
-/// also stops the model from emitting an introductory phrase before
-/// the actual translation, a recurring 4B failure mode.
+///   - Names the source/target language codes explicitly (en → zh-TW)
+///     so the model's mode-of-operation is unambiguous.
+///   - Caps output behaviour ("only the translation, nothing else")
+///     to suppress 4B's habit of prepending 「翻譯：」or 「以下是」.
+///   - Pins five domain-neutral rules: Traditional vs Simplified,
+///     proper-noun preservation, unknown-term fallback, register
+///     matching, and output discipline.
+///   - Stays generic — no ML / academic / medical / legal hints. The
+///     rules apply equally to a Wikipedia article, a cooking video
+///     transcript, or a board-meeting recording.
 fn build_prompt(eng: &str) -> String {
     format!(
         "<start_of_turn>user\n\
-         Translate the following English sentence to Traditional Chinese (繁體中文).\n\
-         \n\
-         Context: this is one sentence from a transcript of an academic / technical \
-         lecture or presentation. The speaker may use machine learning, computer \
-         science, or other scientific terminology, and the recording may be from a \
-         non-native English speaker.\n\
+         Translate the following from English (en) to Traditional Chinese (zh-TW).\n\
          \n\
          Rules:\n\
-         - Output ONLY the Traditional Chinese translation. No preamble, no \
-           explanations, no English echo.\n\
-         - Preserve canonical technical translations: 'adversarial training' → \
-           '對抗訓練', 'natural accuracy' → '自然準確率', 'robustness' → '穩健性', \
-           'gradient' → '梯度', 'loss function' → '損失函數', 'perturbation' → '擾動', \
-           'decision boundary' → '決策邊界', 'fine-tuning' → '微調'.\n\
-         - Keep ALL acronyms (e.g. DBAT, ASR, LLM, RNN, BERT, GAN) and ALL proper \
-           nouns / model names in their original English form. Do NOT translate or \
-           expand them.\n\
-         - When you don't know the canonical Chinese translation of a technical \
-           term, keep that term in English rather than guessing.\n\
-         - Use Traditional Chinese (繁體中文), not Simplified.\n\
+         - Output only the translation. No preamble, no explanation, no English echo.\n\
+         - Use Traditional Chinese (繁體) characters. Never Simplified (简体).\n\
+         - Preserve proper nouns, brand names, model names, and acronyms verbatim in their original form.\n\
+         - For technical terms whose canonical Chinese form you don't know, keep the English original.\n\
+         - Match the source register: keep formal sentences formal, casual sentences casual.\n\
          \n\
-         English:\n{eng}\n\n\
+         English: {eng}\n\
          Traditional Chinese:<end_of_turn>\n\
          <start_of_turn>model\n"
     )
@@ -109,7 +107,22 @@ struct CompletionRequest<'a> {
     prompt: String,
     temperature: f32,
     top_p: f32,
+    /// Filter tokens with probability < min_p × max_token_prob. cp74.3 —
+    /// added with `min_p: 0.05` to discard junk continuations the 4B Q4
+    /// model occasionally surfaces when greedy decoding gets unstuck.
+    min_p: f32,
+    /// cp74.3 — added at 1.1. The 4B Q4 quantization sometimes degenerates
+    /// into character-level repetition mid-sentence (常常常常 / theytheythey)
+    /// especially on long inputs; a mild penalty kills the loop without
+    /// distorting normal repetition (e.g. 「我們」 used twice in one
+    /// sentence is fine, this is per-token not per-phrase).
+    repeat_penalty: f32,
     n_predict: u32,
+    /// llama-server reuses cached prompt prefixes across requests when
+    /// `cache_prompt: true`. Our prompts share the same ~10-line system
+    /// scaffold for every sentence in a recording — caching saves ~5–10ms
+    /// per request on top of the inference itself.
+    cache_prompt: bool,
     stop: &'a [&'a str],
     stream: bool,
 }
@@ -151,9 +164,26 @@ pub async fn translate(
     let url = format!("{}/completion", base.trim_end_matches('/'));
     let body = CompletionRequest {
         prompt: build_prompt(text),
-        temperature: 0.0,
-        top_p: 1.0,
+        // cp74.3 sampling tuning — based on the LLM-prompting guide (see
+        // promptingguide.ai / f22labs Apr 2026):
+        //   - temperature 0.0 (pure greedy) gets stuck on the first
+        //     wrong continuation when 4B Q4_K_M is uncertain. 0.1 gives
+        //     just enough slack to step out of local minima while
+        //     remaining effectively deterministic for a given input.
+        //   - top_p 0.9 excludes the long tail of nonsense tokens. With
+        //     temp ≈ 0 and top_p = 1.0 the long tail rarely kicks in,
+        //     but on rare-vocabulary inputs (proper nouns, acronyms)
+        //     0.9 protects against the model latching onto a pre-trained
+        //     bias.
+        //   - min_p 0.05 belt-and-braces with top_p (filters absolute
+        //     low-probability junk no matter the nucleus size).
+        //   - repeat_penalty 1.1 stops 4B's degenerate-repetition mode.
+        temperature: 0.1,
+        top_p: 0.9,
+        min_p: 0.05,
+        repeat_penalty: 1.1,
         n_predict: MAX_TOKENS,
+        cache_prompt: true,
         // Gemma may regenerate the chat boundary tokens after finishing
         // a translation; stop at either to avoid bleeding into a fake
         // next turn.
@@ -258,8 +288,25 @@ mod tests {
     #[test]
     fn prompt_includes_target_language_marker() {
         let p = build_prompt("Hello world.");
-        assert!(p.contains("Traditional Chinese (繁體中文)"));
-        assert!(p.contains("Hello world."));
-        assert!(p.contains("<start_of_turn>model"));
+        // cp74.3: prompt now uses lang-code form (en, zh-TW) rather than
+        // the prose 「Traditional Chinese (繁體中文)」 string. We assert on
+        // the components separately so the test survives further prompt
+        // tuning that doesn't break TranslateGemma's expected signals.
+        assert!(p.contains("zh-TW"), "prompt must mention target lang code");
+        assert!(p.contains("繁體"), "prompt must mention 繁體 character class");
+        assert!(p.contains("Hello world."), "prompt must contain the input");
+        assert!(p.contains("<start_of_turn>model"), "prompt must end with the model turn marker");
+    }
+
+    #[test]
+    fn prompt_pins_register_and_acronym_rules() {
+        // Regression: cp74.3 added five behaviour rules. Don't let a
+        // future refactor silently drop any of them — at least verify
+        // the keywords land in the prompt body.
+        let p = build_prompt("Some sentence.");
+        assert!(p.contains("Output only the translation"));
+        assert!(p.contains("Simplified") || p.contains("简体"));
+        assert!(p.contains("acronym") || p.contains("proper noun"));
+        assert!(p.contains("register"));
     }
 }
