@@ -66,6 +66,7 @@ function subtitleFromEvent(
         timestamp: baseSec + event.audioStartSec,
         text_en: event.textEn,
         type: 'rough',
+        source: 'imported',
         confidence: undefined,
         created_at: new Date().toISOString(),
     };

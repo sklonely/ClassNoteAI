@@ -150,6 +150,19 @@ impl TryFrom<&Row<'_>> for Lecture {
 }
 
 /// 字幕數據模型
+///
+/// Phase 7 cp74.1: two orthogonal classifications
+///   - `subtitle_type` (column "type"): tier — "rough" | "fine"
+///     `fine` rows carry an LLM-refined version of the same line; `rough`
+///     is the live ASR / Gemma output.
+///   - `source`: provenance — "live" | "imported" | "edited"
+///     "live" = produced by recordingSessionService stop pipeline,
+///     "imported" = subtitleImportService (SRT / VTT / plain text),
+///     "edited" = manual edit from the user (UI not built yet).
+///
+/// `fine_text` / `fine_translation` columns hold the LLM-refined English
+/// and Chinese versions of the same line WITHOUT overwriting the rough
+/// originals (per Phase 7 v3 audit feedback — keep both layers).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subtitle {
     pub id: String,
@@ -161,6 +174,24 @@ pub struct Subtitle {
     pub subtitle_type: String, // "rough" | "fine" - 序列化為 "type"
     pub confidence: Option<f64>,
     pub created_at: String,
+
+    // ─── Phase 7 cp74.1 (subtitle two-axis schema) ────────────────────
+    /// 'live' | 'imported' | 'edited'. Default 'live' for legacy rows.
+    #[serde(default = "default_subtitle_source")]
+    pub source: String,
+    /// LLM-refined English. None on rough-only rows.
+    #[serde(default)]
+    pub fine_text: Option<String>,
+    /// LLM-refined Chinese. None on rough-only rows.
+    #[serde(default)]
+    pub fine_translation: Option<String>,
+    /// Confidence of the fine-tier transcription, when available.
+    #[serde(default)]
+    pub fine_confidence: Option<f64>,
+}
+
+fn default_subtitle_source() -> String {
+    "live".to_string()
 }
 
 impl Subtitle {
@@ -181,6 +212,10 @@ impl Subtitle {
             subtitle_type,
             confidence,
             created_at: Utc::now().to_rfc3339(),
+            source: default_subtitle_source(),
+            fine_text: None,
+            fine_translation: None,
+            fine_confidence: None,
         }
     }
 }
@@ -198,6 +233,16 @@ impl TryFrom<&Row<'_>> for Subtitle {
             subtitle_type: row.get(5)?,
             confidence: row.get(6)?,
             created_at: row.get(7)?,
+            // Source defaults to 'live' if NULL on legacy rows; the v9
+            // migration backfills NOT NULL DEFAULT but old rows pre-
+            // migration may still surface here briefly.
+            source: row
+                .get::<_, Option<String>>(8)
+                .unwrap_or(None)
+                .unwrap_or_else(default_subtitle_source),
+            fine_text: row.get(9).unwrap_or(None),
+            fine_translation: row.get(10).unwrap_or(None),
+            fine_confidence: row.get(11).unwrap_or(None),
         })
     }
 }

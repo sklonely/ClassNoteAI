@@ -197,6 +197,7 @@ export const subtitleImportService = {
                 // Pasted captions came from a human-written source on the
                 // course platform — treat as fine rather than rough.
                 type: 'fine',
+                source: 'imported',
                 confidence: undefined,
                 created_at: nowIso,
             };

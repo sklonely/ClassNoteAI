@@ -724,6 +724,76 @@ impl Database {
         // already-migrated DB is a no-op. This is the same pattern used
         // by all the prior migration blocks in this function.
         self.run_v8_migration()?;
+        self.run_v9_migration()?;
+
+        Ok(())
+    }
+
+    /// v0.8.1 schema migration — Phase 7 cp74.1.
+    ///
+    /// Subtitle two-axis schema:
+    ///   - new `source TEXT NOT NULL DEFAULT 'live'`
+    ///       'live' | 'imported' | 'edited'
+    ///   - new `fine_text`, `fine_translation`, `fine_confidence`
+    ///       columns to persist LLM-refined versions WITHOUT overwriting
+    ///       the rough originals
+    ///
+    /// Also reverses v8's incorrect `type='live'` rewrite. v8 collapsed
+    /// rough/fine `type` semantics into a 'live' marker because the
+    /// original V11 plan was to drop the rough/fine distinction. After
+    /// user feedback (preserve both layers), we restore: `type` = tier
+    /// ('rough' | 'fine'), `source` = provenance ('live' | 'imported' |
+    /// 'edited'). Any row with type='live' was a v8-mislabeled rough
+    /// row — flip it back to 'rough' and stamp source='live'.
+    ///
+    /// Idempotent via PRAGMA table_info.
+    fn run_v9_migration(&self) -> SqlResult<()> {
+        let cols = self.column_names("subtitles")?;
+        let needs_source = !cols.iter().any(|c| c == "source");
+        let needs_fine_text = !cols.iter().any(|c| c == "fine_text");
+        let needs_fine_translation = !cols.iter().any(|c| c == "fine_translation");
+        let needs_fine_confidence = !cols.iter().any(|c| c == "fine_confidence");
+
+        // Schema-side ALTERs only need to run once (idempotency = column
+        // presence check). Data-side UPDATE has to run every init_tables
+        // because legacy callers (or tests) may insert type='live' rows
+        // AFTER the schema migration completed once.
+        let any_schema_pending =
+            needs_source || needs_fine_text || needs_fine_translation || needs_fine_confidence;
+
+        if any_schema_pending {
+            println!("[Database] Running v0.8.1 subtitle two-axis migration (cp74.1)…");
+
+            let tx = self.conn.unchecked_transaction()?;
+            if needs_source {
+                tx.execute(
+                    "ALTER TABLE subtitles ADD COLUMN source TEXT NOT NULL DEFAULT 'live'",
+                    [],
+                )?;
+            }
+            if needs_fine_text {
+                tx.execute("ALTER TABLE subtitles ADD COLUMN fine_text TEXT", [])?;
+            }
+            if needs_fine_translation {
+                tx.execute(
+                    "ALTER TABLE subtitles ADD COLUMN fine_translation TEXT",
+                    [],
+                )?;
+            }
+            if needs_fine_confidence {
+                tx.execute("ALTER TABLE subtitles ADD COLUMN fine_confidence REAL", [])?;
+            }
+            tx.commit()?;
+            println!("[Database] v0.8.1 subtitle two-axis migration complete.");
+        }
+
+        // Always-run data fix: reverse v8's `type='live'` collapse. Cheap
+        // (~1 row update or 0). Catches both first-run migration and rows
+        // inserted later via legacy code paths.
+        self.conn.execute(
+            "UPDATE subtitles SET type = 'rough', source = 'live' WHERE type = 'live'",
+            [],
+        )?;
 
         Ok(())
     }
@@ -870,7 +940,7 @@ impl Database {
     /// Helper: list column names of a table via `PRAGMA table_info`.
     /// Used by `run_v8_migration` to keep the ALTER TABLE chain
     /// idempotent on re-launch.
-    fn column_names(&self, table: &str) -> SqlResult<Vec<String>> {
+    pub(crate) fn column_names(&self, table: &str) -> SqlResult<Vec<String>> {
         let mut stmt = self
             .conn
             .prepare(&format!("PRAGMA table_info({})", table))?;
@@ -1182,8 +1252,10 @@ impl Database {
     /// 保存字幕
     pub fn save_subtitle(&self, subtitle: &Subtitle) -> SqlResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO subtitles (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR REPLACE INTO subtitles \
+             (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, \
+              source, fine_text, fine_translation, fine_confidence) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             rusqlite::params![
                 subtitle.id,
                 subtitle.lecture_id,
@@ -1192,7 +1264,11 @@ impl Database {
                 subtitle.text_zh,
                 subtitle.subtitle_type,
                 subtitle.confidence,
-                subtitle.created_at
+                subtitle.created_at,
+                subtitle.source,
+                subtitle.fine_text,
+                subtitle.fine_translation,
+                subtitle.fine_confidence,
             ],
         )?;
         Ok(())
@@ -1263,7 +1339,8 @@ impl Database {
     /// 獲取課程的所有字幕
     pub fn get_subtitles(&self, lecture_id: &str) -> SqlResult<Vec<Subtitle>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at
+            "SELECT id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, \
+                    source, fine_text, fine_translation, fine_confidence \
              FROM subtitles WHERE lecture_id = ?1 ORDER BY timestamp ASC",
         )?;
 
@@ -1578,6 +1655,49 @@ impl Database {
             "DELETE FROM courses WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
             rusqlite::params![cutoff],
         )?;
+
+        tx.commit()?;
+        Ok(purged)
+    }
+
+    /// Phase 7 cp74.1 (S3.f-RS-3 補): hard-delete a specific list of
+    /// lectures by id. Mirrors `hard_delete_trashed_older_than` in
+    /// transactional safety but is user-driven (Trash UI 「永久刪除選取」
+    /// button) instead of time-based.
+    ///
+    /// Constraints:
+    ///   - Only purges rows where `is_deleted = 1`. Live lectures are
+    ///     refused (would be a UX disaster — the bulk-delete UI never
+    ///     sees them, but defensive-deny in case of malformed input).
+    ///   - Returns the actually-purged ids so the caller (frontend
+    ///     toast) can report a real count, not the requested count.
+    ///   - FK ON DELETE CASCADE handles subtitles / notes / embeddings.
+    pub fn hard_delete_lectures_by_ids(&self, ids: &[String]) -> SqlResult<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        let mut purged: Vec<String> = Vec::new();
+        for id in ids {
+            // Confirm trashed before purge.
+            let trashed: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = ?1 AND is_deleted = 1)",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !trashed {
+                continue;
+            }
+            tx.execute(
+                "DELETE FROM lectures WHERE id = ?1 AND is_deleted = 1",
+                [id],
+            )?;
+            purged.push(id.clone());
+        }
 
         tx.commit()?;
         Ok(purged)

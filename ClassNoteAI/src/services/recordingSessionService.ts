@@ -460,23 +460,32 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             const subtitles = segments.map((seg, i) => {
                 const relSec = toRelativeSeconds(seg.startTime, sessionStart);
                 const startMs = Math.max(0, seg.startTime - sessionStart);
-                // Resolve text_zh with displayTranslation as last-resort
-                // fallback — older code paths may set displayTranslation
-                // without writing back to roughTranslation. Defensive
-                // against future callers; transcriptionService now writes
-                // both (Phase 7 Bug 2 fix).
+                // Phase 7 cp74.1: persist BOTH layers separately so we
+                // never overwrite the rough original with the LLM-refined
+                // version. text_en / text_zh hold rough; fine_text /
+                // fine_translation hold the refined version (undefined
+                // until a future fine-refinement pipeline runs).
+                //
+                // type = 'fine' iff fine_text is set, else 'rough'. This
+                // makes `type` a derived "best available tier" pointer.
+                // Keep displayTranslation in the rough fallback chain as
+                // last-resort because older code paths may set it without
+                // writing back to roughTranslation (Bug 2 defensive).
+                const roughEn = seg.roughText ?? seg.displayText ?? '';
+                const roughZh =
+                    seg.roughTranslation ?? seg.displayTranslation;
                 return {
                     id: `sub-${lectureId}-${i}`,
                     lecture_id: lectureId,
                     timestamp: relSec,
-                    text_en:
-                        seg.fineText ?? seg.roughText ?? seg.displayText ?? '',
-                    text_zh:
-                        seg.fineTranslation ??
-                        seg.roughTranslation ??
-                        seg.displayTranslation,
-                    type: 'rough' as const,
-                    confidence: seg.fineConfidence ?? seg.roughConfidence,
+                    text_en: roughEn,
+                    text_zh: roughZh,
+                    fine_text: seg.fineText,
+                    fine_translation: seg.fineTranslation,
+                    fine_confidence: seg.fineConfidence,
+                    type: (seg.fineText ? 'fine' : 'rough') as 'fine' | 'rough',
+                    source: 'live' as const,
+                    confidence: seg.roughConfidence,
                     created_at: new Date(
                         (this.state.sessionStartMs ?? Date.now()) + startMs,
                     ).toISOString(),

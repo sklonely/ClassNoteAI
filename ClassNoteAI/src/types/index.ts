@@ -121,13 +121,31 @@ export interface Lecture {
 }
 
 // 字幕類型（用於數據庫存儲）
+//
+// Phase 7 cp74.1 — two-axis schema:
+//   - `type` (a.k.a. `subtitle_type` server-side): tier — 'rough' | 'fine'.
+//     `fine` indicates an LLM-refined replacement; `rough` is the live ASR
+//     / Gemma output.
+//   - `source`: provenance — 'live' | 'imported' | 'edited'.
+//     'live' = recordingSessionService stop pipeline,
+//     'imported' = subtitleImportService (SRT / VTT / plain text),
+//     'edited' = manual edit by user.
+//
+// `fine_text` / `fine_translation` carry the LLM-refined English / Chinese
+// versions of the same line WITHOUT overwriting the rough originals.
+// `text_en` / `text_zh` always hold the rough-tier text once both layers
+// exist; UI display logic prefers `fine_*` when present.
 export interface Subtitle {
   id: string;
   lecture_id: string; // 必需字段
   timestamp: number; // 秒
   text_en: string;
   text_zh?: string;
-  type: "rough" | "fine"; // 對應後端的 subtitle_type 字段
+  type: "rough" | "fine"; // 對應後端的 subtitle_type 字段（修訂等級）
+  source?: "live" | "imported" | "edited"; // 來源 — Phase 7 cp74.1
+  fine_text?: string;            // LLM-refined English
+  fine_translation?: string;     // LLM-refined Chinese
+  fine_confidence?: number;
   confidence?: number;
   created_at: string; // ISO 8601 - 必需字段
 }

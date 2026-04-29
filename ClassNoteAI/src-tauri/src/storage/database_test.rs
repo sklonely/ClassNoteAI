@@ -481,4 +481,152 @@ mod tests {
         let purged = db.hard_delete_trashed_older_than(30).unwrap();
         assert!(purged.is_empty());
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // Phase 7 cp74.1 — subtitle two-axis schema (v9) + new commands
+    // ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn migration_v9_adds_subtitle_columns() {
+        let db = make_test_db();
+        let cols = db.column_names("subtitles").unwrap();
+        assert!(cols.iter().any(|c| c == "source"), "missing source");
+        assert!(cols.iter().any(|c| c == "fine_text"), "missing fine_text");
+        assert!(
+            cols.iter().any(|c| c == "fine_translation"),
+            "missing fine_translation"
+        );
+        assert!(
+            cols.iter().any(|c| c == "fine_confidence"),
+            "missing fine_confidence"
+        );
+    }
+
+    #[test]
+    fn migration_v9_reverses_v8_type_live_to_rough() {
+        // Simulate a v8-mislabeled row by directly inserting type='live'.
+        // After init_tables runs (which calls v9), the row should flip
+        // back to 'rough' with source='live'.
+        let db = make_test_db();
+        seed_minimal(&db);
+        // Need a lecture to attach to — seed_minimal made l1.
+        // Direct INSERT bypassing save_subtitle to plant the legacy state.
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO subtitles (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, source) \
+             VALUES ('s-legacy', 'l1', 0.0, 'hi', NULL, 'live', NULL, '2026-04-28T00:00:00Z', 'live')",
+            [],
+        )
+        .unwrap();
+
+        // Re-run init_tables — v9 migration is idempotent and should
+        // catch the type='live' row.
+        db.init_tables().unwrap();
+
+        let (typ, src): (String, String) = conn
+            .query_row(
+                "SELECT type, source FROM subtitles WHERE id = 's-legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(typ, "rough");
+        assert_eq!(src, "live");
+    }
+
+    #[test]
+    fn save_and_get_subtitle_round_trips_new_fields() {
+        let db = make_test_db();
+        seed_minimal(&db);
+
+        let mut sub = crate::storage::models::Subtitle::new(
+            "l1".to_string(),
+            12.345,
+            "hello world".to_string(),
+            Some("你好".to_string()),
+            "rough".to_string(),
+            Some(0.91),
+        );
+        sub.source = "live".to_string();
+        sub.fine_text = Some("hello, world!".to_string());
+        sub.fine_translation = Some("你好，世界！".to_string());
+        sub.fine_confidence = Some(0.99);
+
+        db.save_subtitle(&sub).unwrap();
+
+        let got = db.get_subtitles("l1").unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source, "live");
+        assert_eq!(got[0].fine_text.as_deref(), Some("hello, world!"));
+        assert_eq!(got[0].fine_translation.as_deref(), Some("你好，世界！"));
+        assert_eq!(got[0].fine_confidence, Some(0.99));
+    }
+
+    #[test]
+    fn save_subtitle_legacy_caller_defaults_source_to_live() {
+        // Subtitle::new() defaults source='live', fine_*=None — verify
+        // that path persists to DB without complaint.
+        let db = make_test_db();
+        seed_minimal(&db);
+        let sub = crate::storage::models::Subtitle::new(
+            "l1".to_string(),
+            0.0,
+            "rough only".to_string(),
+            None,
+            "rough".to_string(),
+            None,
+        );
+        db.save_subtitle(&sub).unwrap();
+        let got = db.get_subtitles("l1").unwrap();
+        assert_eq!(got[0].source, "live");
+        assert!(got[0].fine_text.is_none());
+    }
+
+    #[test]
+    fn hard_delete_lectures_by_ids_purges_only_trashed() {
+        // Seed: l1 (live), l2 (trashed). Caller asks to purge both.
+        let db = make_test_db();
+        seed_minimal(&db);
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, status, duration, is_deleted, deleted_at, created_at, updated_at) \
+             VALUES ('l2', 'c1', 'trashed lec', '2026-04-28', 'completed', 0, 1, \
+                strftime('%s', 'now')*1000, strftime('%s', 'now'), strftime('%s', 'now'))",
+            [],
+        )
+        .unwrap();
+
+        let purged = db
+            .hard_delete_lectures_by_ids(&["l1".to_string(), "l2".to_string()])
+            .unwrap();
+        // Only l2 was trashed; l1 (live) is silently skipped.
+        assert_eq!(purged, vec!["l2".to_string()]);
+
+        // Confirm l1 still exists, l2 is gone.
+        let l1_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = 'l1')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let l2_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = 'l2')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(l1_exists);
+        assert!(!l2_exists);
+    }
+
+    #[test]
+    fn hard_delete_lectures_by_ids_empty_input_is_noop() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        let purged = db.hard_delete_lectures_by_ids(&[]).unwrap();
+        assert!(purged.is_empty());
+    }
 }

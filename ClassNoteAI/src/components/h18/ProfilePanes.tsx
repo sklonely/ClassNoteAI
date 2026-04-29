@@ -2387,20 +2387,54 @@ export function PData() {
     };
 
     const handleBulkPermanentDelete = async () => {
-        // V14 backend 沒提供 single-id hard delete；只有 30 天 sweep。
-        // 標 TODO，給 user 清楚預期。
+        // Phase 7 cp74.1: hard_delete_lectures_by_ids Tauri command 已加。
+        // 課程目前沒提供獨立的 by-id 永久刪除（cascade 從課堂端帶；30 天
+        // 清掃在 boot 時批次跑）。本版只處理 lecture ids，selected 集合
+        // 內的 course id 跳過 + toast 提示。
+        const lectureIdsToPurge: string[] = [];
+        const courseIdsSkipped: string[] = [];
+        for (const id of selected) {
+            const isCourse = trashedCourses.some((c) => c.id === id);
+            if (isCourse) courseIdsSkipped.push(id);
+            else lectureIdsToPurge.push(id);
+        }
+
+        if (lectureIdsToPurge.length === 0) {
+            toastService.warning(
+                '沒有可永久刪除的課堂',
+                '目前選取只有課程，課程的永久刪除請等 30 天清掃或先還原後再刪。',
+            );
+            return;
+        }
+
         const ok = await confirmService.ask({
             title: '永久刪除選取',
-            message: `選取的 ${selected.size} 個項目將被永久刪除，無法回復。\n\n（後端目前只支援 30 天自動清掃，沒提供逐一強制刪。按下確認只會出提示。）`,
-            confirmLabel: '我了解',
+            message: `${lectureIdsToPurge.length} 個課堂將被永久刪除（含字幕、摘要、索引），無法回復。${
+                courseIdsSkipped.length > 0
+                    ? `\n（${courseIdsSkipped.length} 個課程會略過 — 課程級永久刪除請等 30 天清掃。）`
+                    : ''
+            }`,
+            confirmLabel: '永久刪除',
             cancelLabel: '取消',
             variant: 'danger',
         });
         if (!ok) return;
-        toastService.warning(
-            '永久刪除尚未實作',
-            '目前只支援還原或等 30 天自動清掃；如需立刻清空，請等下個版本。',
-        );
+
+        try {
+            const purged = await invoke<string[]>(
+                'hard_delete_lectures_by_ids',
+                { ids: lectureIdsToPurge },
+            );
+            setSelected(new Set());
+            await loadTrash();
+            toastService.success(
+                '已永久刪除',
+                `${purged.length} 個課堂已從垃圾桶清除`,
+            );
+            window.dispatchEvent(new CustomEvent('classnote-courses-changed'));
+        } catch (err) {
+            toastService.error('永久刪除失敗', String(err));
+        }
     };
 
     const handleNotImplemented = (label: string) => {

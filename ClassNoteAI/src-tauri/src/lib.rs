@@ -2893,7 +2893,9 @@ pub fn run() {
             // Phase 7 S3.f-RS Trash Bin Cascade (cascade delete + 30-day sweep)
             delete_course_cascade,
             list_trashed_lectures,
+            list_trashed_courses,
             hard_delete_trashed_older_than,
+            hard_delete_lectures_by_ids,
             // Sync Extensions (New)
             delete_subtitles_by_lecture,
             get_all_chat_sessions,
@@ -3414,6 +3416,42 @@ async fn hard_delete_trashed_older_than(days: i64) -> Result<Vec<String>, String
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.hard_delete_trashed_older_than(days)
         .map_err(|e| format!("永久清除過期垃圾桶失敗: {}", e))
+}
+
+/// Phase 7 cp74.1: list every soft-deleted COURSE for the user. Mirrors
+/// `list_trashed_lectures`; the Trash UI's hierarchical view needs both
+/// to render the "course → lectures" tree correctly when the parent
+/// course is also in the trash.
+#[tauri::command]
+async fn list_trashed_courses(
+    user_id: Option<String>,
+) -> Result<Vec<storage::models::Course>, String> {
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_deleted_courses(&user)
+        .map_err(|e| format!("列出垃圾桶課程失敗: {}", e))
+}
+
+/// Phase 7 cp74.1: user-driven permanent delete of selected trashed
+/// lectures. Backs the Trash UI's 「永久刪除選取」 button which until
+/// now was a no-op TODO toast. Returns ids that were actually purged
+/// (a row that was racing-restored between selection and click is
+/// silently skipped — count returned reflects reality).
+#[tauri::command]
+async fn hard_delete_lectures_by_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.hard_delete_lectures_by_ids(&ids)
+        .map_err(|e| format!("永久刪除選取課堂失敗: {}", e))
 }
 
 // ========== Sync 相關 Commands ==========

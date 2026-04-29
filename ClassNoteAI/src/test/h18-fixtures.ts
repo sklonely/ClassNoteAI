@@ -103,9 +103,14 @@ export function makeSubtitle(overrides?: Partial<Subtitle>): Subtitle {
     timestamp: 0,
     text_en: 'This is a test subtitle.',
     text_zh: '這是一個測試字幕。',
-    // 規格寫 type='live'，但 Subtitle.type 限定 'rough' | 'fine'。
-    // 'rough' 對應「即時 / live 階段」字幕；'fine' 是後製精修。
+    // Phase 7 cp74.1 two-axis schema:
+    //   type   = tier ('rough' | 'fine')
+    //   source = provenance ('live' | 'imported' | 'edited')
     type: 'rough',
+    source: 'live',
+    fine_text: undefined,
+    fine_translation: undefined,
+    fine_confidence: undefined,
     confidence: undefined,
     created_at: MOCK_ISO_TIMESTAMP,
   };

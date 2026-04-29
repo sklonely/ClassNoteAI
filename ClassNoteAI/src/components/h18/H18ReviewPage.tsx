@@ -933,6 +933,11 @@ export default function H18ReviewPage({
                                     </span>
                                     <span className={s.paraCount}>{p.items.length} 句</span>
                                 </div>
+                                {/* Phase 7 cp74.1: prefer LLM-refined `fine_*`
+                                    when available, fall back to rough.
+                                    text_zh empty → fall back to (rough)
+                                    text_en so the reader still sees content
+                                    in zh-only mode. */}
                                 {(lang === 'both' || lang === 'zh') && (
                                     <div className={s.paraZh}>
                                         {p.items.map((it) => (
@@ -943,7 +948,10 @@ export default function H18ReviewPage({
                                                     it.id === activeSubId ? s.paraSubActive : ''
                                                 }
                                             >
-                                                {it.text_zh || it.text_en}{' '}
+                                                {it.fine_translation ||
+                                                    it.text_zh ||
+                                                    it.fine_text ||
+                                                    it.text_en}{' '}
                                             </span>
                                         ))}
                                     </div>
@@ -962,7 +970,7 @@ export default function H18ReviewPage({
                                                     it.id === activeSubId ? s.paraSubActive : ''
                                                 }
                                             >
-                                                {it.text_en}{' '}
+                                                {it.fine_text || it.text_en}{' '}
                                             </span>
                                         ))}
                                     </div>
@@ -984,11 +992,17 @@ export default function H18ReviewPage({
                                             {fmtTime(sub.timestamp)}
                                         </span>
                                     </div>
-                                    {(lang === 'both' || lang === 'zh') && sub.text_zh && (
-                                        <div className={s.sentZh}>{sub.text_zh}</div>
-                                    )}
+                                    {/* Phase 7 cp74.1: prefer fine_* over rough. */}
+                                    {(lang === 'both' || lang === 'zh') &&
+                                        (sub.fine_translation || sub.text_zh) && (
+                                            <div className={s.sentZh}>
+                                                {sub.fine_translation || sub.text_zh}
+                                            </div>
+                                        )}
                                     {(lang === 'both' || lang === 'en') && (
-                                        <div className={s.sentEn}>{sub.text_en}</div>
+                                        <div className={s.sentEn}>
+                                            {sub.fine_text || sub.text_en}
+                                        </div>
                                     )}
                                 </div>
                             ))
@@ -1406,7 +1420,14 @@ async function runSummary(
             () => [] as Subtitle[],
         );
         const text = subs
-            .map((s) => s.text_zh || s.text_en || '')
+            .map(
+                (s) =>
+                    s.fine_translation ||
+                    s.text_zh ||
+                    s.fine_text ||
+                    s.text_en ||
+                    '',
+            )
             .filter(Boolean)
             .join('\n');
         if (text.trim().length < 100) {
