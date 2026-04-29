@@ -72,8 +72,24 @@ export class AsrPipeline {
       );
     }
 
+    // Phase 7 cp74.2: read user-selected variant from settings (PTranscribe
+    // → Parakeet Variant). FP32 is materially better on non-native /
+    // accented English but the renderer used to drop the setting on the
+    // floor — Rust auto-loaded INT8 regardless. Now we forward.
+    let preferredVariant: 'int8' | 'fp32' | undefined;
+    try {
+      const { storageService } = await import('../storageService');
+      const settings = await storageService.getAppSettings();
+      preferredVariant = settings?.experimental?.parakeetVariant;
+    } catch (err) {
+      console.warn('[asrPipeline] could not read parakeet variant pref:', err);
+    }
+
     const sessionId = crypto.randomUUID();
-    await invoke('asr_start_session', { sessionId });
+    await invoke('asr_start_session', {
+      sessionId,
+      preferredVariant: preferredVariant ?? null,
+    });
     this.sessionId = sessionId;
     this.startedAt = Date.now();
     this.lastAudioEndSec = 0;

@@ -573,14 +573,41 @@ async fn parakeet_unload_model() -> Result<(), String> {
         .map_err(|e| format!("unload_model task join error: {e}"))
 }
 
-/// Begin an ASR session. Auto-loads the first available variant
-/// (INT8 wins over FP32 if both are present) if nothing is in RAM yet.
+/// Begin an ASR session.
+///
+/// `preferred_variant`: optional 'int8' | 'fp32' from settings.experimental
+/// .parakeetVariant. The renderer (asrPipeline.start) passes whatever the
+/// user picked in PTranscribe. We honor it when:
+///   - No model is currently loaded → load this variant.
+///   - A different variant IS loaded → reload to the requested one
+///     (FP32 is materially better on non-native / accented English; if
+///     the user explicitly chose it, switch even if INT8 is already
+///     warm).
+/// If no variant is preferred or the requested variant isn't downloaded,
+/// fall back to first_present() (legacy behaviour).
 #[tauri::command]
-async fn asr_start_session(session_id: String) -> Result<(), String> {
-    if !asr::parakeet_engine::is_loaded() {
-        let variant = asr::parakeet_model::first_present().ok_or_else(|| {
-            "No Nemotron model downloaded — open 設定 → 本地轉錄 to download.".to_string()
-        })?;
+async fn asr_start_session(
+    session_id: String,
+    preferred_variant: Option<String>,
+) -> Result<(), String> {
+    let want: Option<asr::parakeet_model::Variant> = preferred_variant
+        .as_deref()
+        .map(variant_from_str)
+        .transpose()?;
+
+    let needs_load = !asr::parakeet_engine::is_loaded()
+        || want
+            .map(|w| asr::parakeet_engine::loaded_variant() != Some(w))
+            .unwrap_or(false);
+
+    if needs_load {
+        // Pick the variant: requested-and-present, else first_present.
+        let variant = want
+            .filter(|v| asr::parakeet_model::is_present(*v))
+            .or_else(asr::parakeet_model::first_present)
+            .ok_or_else(|| {
+                "No Nemotron model downloaded — open 設定 → 本地轉錄 to download.".to_string()
+            })?;
         let dir = asr::parakeet_model::model_dir(variant)?;
         tokio::task::spawn_blocking(move || asr::parakeet_engine::ensure_loaded(variant, &dir))
             .await

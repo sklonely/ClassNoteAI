@@ -55,12 +55,49 @@ const MAX_TOKENS: u32 = 200;
 /// approaching `-c 4096`.
 const MAX_INPUT_CHARS: usize = 3_000;
 
-/// Gemma chat template for raw `/completion`. Built once and reused.
+/// Gemma chat template for raw `/completion`.
+///
+/// Phase 7 cp74.2 — domain-aware prompt:
+///
+/// The earlier prompt was a one-liner ("translate to Traditional Chinese,
+/// output only") which left the 4B Q4_K_M model to guess on academic /
+/// ML / technical content. Real failure modes observed:
+///   - "adversarial training" rendered three different ways across the
+///     same lecture (對抗性訓練 / 敵對訓練 / 對抗式訓練).
+///   - Acronyms invented or expanded incorrectly ("DBAT" → "the bat").
+///   - Loanwords like "natural accuracy" translated literally to
+///     「自然的精確度」 instead of the canonical 「自然準確率」.
+///
+/// New prompt: tells the model the input is academic/technical, pins a
+/// few canonical ML translations, and explicitly says to preserve
+/// acronyms / proper nouns. Costs ~150 extra prompt tokens — negligible
+/// compared to the per-sentence generation budget. Empirically this
+/// also stops the model from emitting an introductory phrase before
+/// the actual translation, a recurring 4B failure mode.
 fn build_prompt(eng: &str) -> String {
     format!(
         "<start_of_turn>user\n\
-         Translate the following English text to Traditional Chinese (繁體中文). \
-         Output ONLY the translation, no explanations.\n\n\
+         Translate the following English sentence to Traditional Chinese (繁體中文).\n\
+         \n\
+         Context: this is one sentence from a transcript of an academic / technical \
+         lecture or presentation. The speaker may use machine learning, computer \
+         science, or other scientific terminology, and the recording may be from a \
+         non-native English speaker.\n\
+         \n\
+         Rules:\n\
+         - Output ONLY the Traditional Chinese translation. No preamble, no \
+           explanations, no English echo.\n\
+         - Preserve canonical technical translations: 'adversarial training' → \
+           '對抗訓練', 'natural accuracy' → '自然準確率', 'robustness' → '穩健性', \
+           'gradient' → '梯度', 'loss function' → '損失函數', 'perturbation' → '擾動', \
+           'decision boundary' → '決策邊界', 'fine-tuning' → '微調'.\n\
+         - Keep ALL acronyms (e.g. DBAT, ASR, LLM, RNN, BERT, GAN) and ALL proper \
+           nouns / model names in their original English form. Do NOT translate or \
+           expand them.\n\
+         - When you don't know the canonical Chinese translation of a technical \
+           term, keep that term in English rather than guessing.\n\
+         - Use Traditional Chinese (繁體中文), not Simplified.\n\
+         \n\
          English:\n{eng}\n\n\
          Traditional Chinese:<end_of_turn>\n\
          <start_of_turn>model\n"
