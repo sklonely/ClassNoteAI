@@ -1453,6 +1453,21 @@ async function runSummary(
         let mapTotal = 0;
         let reduceChunks = 0;
         // cp75.14 — phase-aware progress (mirrors recordingSessionService).
+        // cp75.16 — added map-section-delta to drive smooth motion within
+        // each section instead of stepping only on map-section-done.
+        const mapSectionChars: Record<number, number> = {};
+        const MAP_SECTION_PROGRESS_CAP_CHARS = 600;
+        const computeMapProgress = (): number => {
+            if (mapTotal <= 0) return 0.05;
+            let acc = 0;
+            for (let i = 1; i <= mapTotal; i++) {
+                const c = mapSectionChars[i] ?? 0;
+                acc += Math.min(1, c / MAP_SECTION_PROGRESS_CAP_CHARS);
+            }
+            const frac = Math.min(1, acc / mapTotal);
+            return 0.05 + 0.4 * frac;
+        };
+
         for await (const event of summarizeStream({
             content: text,
             language: lang,
@@ -1464,12 +1479,26 @@ async function runSummary(
                     progress: 0.05,
                     status: 'running',
                 });
+            } else if (
+                event.phase === 'map-section-delta' &&
+                typeof event.delta === 'string'
+            ) {
+                const idx = event.sectionIndex ?? 0;
+                if (idx > 0) {
+                    mapSectionChars[idx] =
+                        (mapSectionChars[idx] ?? 0) + event.delta.length;
+                    taskTrackerService.update(taskId, {
+                        progress: computeMapProgress(),
+                        status: 'running',
+                    });
+                }
             } else if (event.phase === 'map-section-done') {
                 const idx = event.sectionIndex ?? 0;
-                const total = event.sectionCount ?? mapTotal ?? 1;
+                if (idx > 0) {
+                    mapSectionChars[idx] = MAP_SECTION_PROGRESS_CAP_CHARS;
+                }
                 taskTrackerService.update(taskId, {
-                    progress:
-                        0.05 + 0.4 * Math.min(1, idx / Math.max(1, total)),
+                    progress: computeMapProgress(),
                     status: 'running',
                 });
             } else if (event.phase === 'reduce-start') {

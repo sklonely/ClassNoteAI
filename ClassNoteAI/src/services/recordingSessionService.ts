@@ -740,13 +740,26 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             let fullSummary = '';
             let mapTotal = 0;
             let reduceChunks = 0;
+            // cp75.16 — accumulator for streaming map-phase deltas. Each
+            // section contributes up to MAP_SECTION_PROGRESS_CAP_CHARS of
+            // its streamed bytes toward the map-phase progress slice;
+            // capping per-section avoids one chatty section dominating the
+            // bar (and avoids retry-emitted bytes overcounting).
+            const mapSectionChars: Record<number, number> = {};
+            const MAP_SECTION_PROGRESS_CAP_CHARS = 600;
 
             // cp75.14 phase-aware progress mapping. Old: only `reduce-delta`
             // moved the bar (cap 0.95) → user saw 0% during the entire map
             // phase, then a sudden jump to 95% in a couple of seconds.
             //
-            // New weights:
-            //   map phase     0% → 50%   (driven by map-section-done)
+            // cp75.16 — added map-section-delta to drive map-phase smooth
+            // motion. Map slice splits each section into a bytes-driven
+            // ramp [up to cap] + a hard step on map-section-done.
+            //
+            // Weights:
+            //   map phase     0% → 50%   (delta bytes within sections,
+            //                              snapping to clean per-section
+            //                              boundaries on map-section-done)
             //   reduce phase  50% → 95%  (asymptotic via reduce-delta count)
             //   db save       95% → 99%
             //   complete      99% → 100% (taskTrackerService.complete)
@@ -754,6 +767,17 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             // Asymptotic reduce mapping: progress = 0.5 + 0.45 × (1 - 1/(1+k×0.15))
             // — keeps moving even when the model emits 100+ deltas, never
             // hits the wall at exactly 0.95.
+            const computeMapProgress = (): number => {
+                if (mapTotal <= 0) return 0.05;
+                let acc = 0;
+                for (let i = 1; i <= mapTotal; i++) {
+                    const c = mapSectionChars[i] ?? 0;
+                    acc += Math.min(1, c / MAP_SECTION_PROGRESS_CAP_CHARS);
+                }
+                const frac = Math.min(1, acc / mapTotal);
+                return 0.05 + 0.4 * frac;
+            };
+
             for await (const event of summarizeStream({
                 content: text,
                 language: summaryLang,
@@ -764,12 +788,26 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                         progress: 0.05,
                         status: 'running',
                     });
+                } else if (
+                    event.phase === 'map-section-delta' &&
+                    typeof event.delta === 'string'
+                ) {
+                    const idx = event.sectionIndex ?? 0;
+                    if (idx > 0) {
+                        mapSectionChars[idx] =
+                            (mapSectionChars[idx] ?? 0) + event.delta.length;
+                        taskTrackerService.update(taskId, {
+                            progress: computeMapProgress(),
+                            status: 'running',
+                        });
+                    }
                 } else if (event.phase === 'map-section-done') {
                     const idx = event.sectionIndex ?? 0;
-                    const total = event.sectionCount ?? mapTotal ?? 1;
+                    if (idx > 0) {
+                        mapSectionChars[idx] = MAP_SECTION_PROGRESS_CAP_CHARS;
+                    }
                     taskTrackerService.update(taskId, {
-                        progress:
-                            0.05 + 0.4 * Math.min(1, idx / Math.max(1, total)),
+                        progress: computeMapProgress(),
                         status: 'running',
                     });
                 } else if (event.phase === 'reduce-start') {

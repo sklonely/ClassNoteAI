@@ -169,6 +169,115 @@ const SECTION_OVERLAP_CHARS = 200;
  *  whole summarise would fail on the first section that 429s. */
 const MAP_PHASE_CONCURRENCY = 3;
 
+/** Per-section deadline. cp75.16 — added so a single hung map call
+ *  can't lock a concurrency slot indefinitely. 90s is conservative —
+ *  most 4000-char sections finish in 5-30s on a well-fed paid API,
+ *  and 90s is well past the point where any reasonable provider has
+ *  either streamed the answer or surfaced a transient error.
+ *
+ *  Hitting this timeout doesn't immediately fail the section: the
+ *  outer retry layer treats it as a transient error and retries
+ *  (with backoff). Only after `MAP_SECTION_MAX_RETRIES` exhausts do
+ *  we surface a `partial-failure`. */
+const MAP_SECTION_TIMEOUT_MS = 90_000;
+
+/** How many extra attempts a section gets after the first try.
+ *  Total attempts = 1 + MAP_SECTION_MAX_RETRIES. We retry on:
+ *    - timeouts (most common — slow provider, occasional GC pause)
+ *    - 429 / 5xx (rate limit / transient server)
+ *    - network errors (TypeError: Failed to fetch on Wi-Fi blip)
+ *  We do NOT retry on: AbortError (user cancelled), 4xx other than
+ *  429 (auth / quota / bad request — retrying won't help). */
+const MAP_SECTION_MAX_RETRIES = 2;
+
+/** Base delay before retry #1; retry #2 waits 2× this. Keeps total
+ *  per-section worst case at ≤ TIMEOUT × 3 + ~3s of backoff,
+ *  comfortably under what most users will tolerate. */
+const MAP_SECTION_RETRY_BASE_MS = 1_000;
+
+/** Classify an error from a map-phase section call as either:
+ *    - `'abort'`: user cancelled, must propagate (do NOT retry)
+ *    - `'transient'`: retry-eligible (timeout, network, 429, 5xx)
+ *    - `'fatal'`: 4xx auth/quota/bad-request — retrying won't help
+ *
+ *  cp75.16 — extracted as a pure function so the retry loop is
+ *  testable in isolation and so we never accidentally retry an
+ *  AbortError (which would burn the user's other sections after
+ *  they pressed cancel). */
+export function classifyMapSectionError(err: unknown): 'abort' | 'transient' | 'fatal' {
+  if (err instanceof DOMException && err.name === 'AbortError') return 'abort';
+  if (err instanceof Error && err.name === 'AbortError') return 'abort';
+
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+
+  // Per-section timeout we raise ourselves wears the 'TimeoutError'
+  // hat. Treat it as transient.
+  if (err instanceof Error && err.name === 'TimeoutError') return 'transient';
+  if (/timeout|timed out/i.test(msg)) return 'transient';
+
+  // Network failures. fetch() throws TypeError('Failed to fetch') on
+  // most browsers when offline / DNS hiccup / connection reset.
+  if (err instanceof TypeError && /failed to fetch|networkerror/i.test(msg)) {
+    return 'transient';
+  }
+  if (/network\s*error|connection\s*(reset|refused|aborted)|econn(reset|refused)/i.test(msg)) {
+    return 'transient';
+  }
+
+  // HTTP status codes — provider implementations typically embed
+  // the status in their error message.
+  if (/\b429\b|rate[\s_-]?limit/i.test(msg)) return 'transient';
+  if (/\b5\d\d\b|server\s*error|gateway|service\s*unavailable/i.test(msg)) {
+    return 'transient';
+  }
+
+  // 401 / 403 / 404 / 400 — retrying won't help.
+  return 'fatal';
+}
+
+/** Bounded async producer/consumer queue. Map-phase workers `push`
+ *  events as they arrive; the outer generator `await next()` drains
+ *  them in real time so the UI sees progress immediately rather than
+ *  after Promise.all settles. `close()` lets the consumer's loop end
+ *  cleanly when all producers are done.
+ *
+ *  cp75.16 — pulled in to support streaming map events. The previous
+ *  cp75.14 model (post-fan-in ordered yield) couldn't surface
+ *  per-token progress because workers can't `yield` from inside a
+ *  Promise. */
+class AsyncEventQueue<T> {
+  private buf: T[] = [];
+  private waiters: Array<(v: { value: T | undefined; done: boolean }) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    if (this.closed) return;
+    if (this.waiters.length > 0) {
+      this.waiters.shift()!({ value, done: false });
+    } else {
+      this.buf.push(value);
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()!({ value: undefined, done: true });
+    }
+  }
+
+  next(): Promise<{ value: T | undefined; done: boolean }> {
+    if (this.buf.length > 0) {
+      return Promise.resolve({ value: this.buf.shift()!, done: false });
+    }
+    if (this.closed) {
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+}
+
 /** Tiny promise-concurrency limiter. Kept inline because pulling in
  *  `p-limit` would add a dep we use in one place. */
 async function runWithConcurrency<T, R>(
@@ -256,10 +365,17 @@ export async function summarize(params: SummarizeParams): Promise<string> {
  *  W7 (Phase 7): when a per-section map call fails, the generator now
  *  yields a `partial-failure` event in addition to the existing inline
  *  placeholder. UI can use this to surface "1/6 段失敗" without parsing
- *  the markdown body. */
+ *  the markdown body.
+ *
+ *  cp75.16: map phase is now streaming. Each per-section call emits
+ *  `map-section-delta` as tokens arrive so the UI can show smooth
+ *  progress instead of "frozen at 0%, then jumps to 50%". The
+ *  `map-section-done` event still fires once per section after its
+ *  stream closes. */
 export interface SummarizeStreamEvent {
   phase:
     | 'map-start'
+    | 'map-section-delta'
     | 'map-section-done'
     | 'partial-failure'
     | 'reduce-start'
@@ -274,7 +390,12 @@ export interface SummarizeStreamEvent {
   /** Human-readable error message for the failed section
    *  (partial-failure). */
   error?: string;
-  /** Token delta to append to the running output (reduce-delta). */
+  /** Token delta to append to the running output. Used by both
+   *  `reduce-delta` (assembling the final note) and `map-section-delta`
+   *  (per-section streaming during map phase — caller can drive a
+   *  smooth progress bar from byte counts but doesn't need to retain
+   *  the per-section text, since the map result is consumed by the
+   *  reducer not the user). */
   delta?: string;
   /** Full assembled text (emitted on done — useful for callers that
    *  only want the final string without accumulating deltas). */
@@ -357,15 +478,22 @@ export async function* summarizeStream(
   // W7 (Phase 7): each per-section call is wrapped in try/catch and
   // failures collapse to a placeholder + a `failures[]` entry. We yield
   // a `partial-failure` event for each failed section AFTER the
-  // concurrency-limited fan-in completes (yielding from inside
-  // runWithConcurrency would interleave with parallel work in
-  // surprising ways — easier to reason about a flat post-fan-in
-  // emission).
+  // concurrency-limited fan-in completes — keeps `failedSectionIndex`
+  // ordering deterministic.
+  //
+  // cp75.16: each section is now streamed (not `complete()`). Per-token
+  // deltas are pushed onto `eventQueue` and yielded to the caller in
+  // real time so the UI shows smooth progress instead of "frozen at 5%
+  // → jump to 50% when fan-in completes". On top: each section call is
+  // bounded by `MAP_SECTION_TIMEOUT_MS` and retried up to
+  // `MAP_SECTION_MAX_RETRIES` times on transient failures (timeout,
+  // network blip, 429, 5xx). `map-section-done` is emitted per section
+  // in completion order; `partial-failure` is still batched at the end
+  // so its ordering matches `failedSectionIndex` ascending.
   const failures: Array<{ index: number; error: string }> = [];
-  const sectionSummaries = await runWithConcurrency(sections, MAP_PHASE_CONCURRENCY, async (section, i) => {
-    // Per-section abort check — bail out of in-flight sections without
-    // burning more LLM calls. The throw bubbles through Promise.all
-    // and out of runWithConcurrency.
+  const eventQueue = new AsyncEventQueue<SummarizeStreamEvent>();
+
+  const fanInPromise = runWithConcurrency(sections, MAP_PHASE_CONCURRENCY, async (section, i) => {
     throwIfAborted(params.signal);
 
     const sectionMessages: LLMMessage[] = [
@@ -382,40 +510,128 @@ export async function* summarizeStream(
         content: `Section ${i + 1} of ${sections.length}:\n\n${section}`,
       },
     ];
-    try {
-      const res = await provider!.complete({
-        model,
-        messages: sectionMessages,
-        temperature: 0.2,
-        maxTokens: 1024,
-        signal: params.signal,
-      });
-      trackUsage(providerId, model, 'summarize', res.usage);
-      return res.content;
-    } catch (err) {
-      // Aborts must propagate, not collapse to placeholders — the
-      // user explicitly asked us to stop, so don't keep going on
-      // their other sections and don't pretend the call "failed".
-      if (err instanceof DOMException && err.name === 'AbortError') throw err;
-      if (err instanceof Error && err.name === 'AbortError') throw err;
-      // Section-level failures must NOT blow up the whole summarisation.
-      // Returning a placeholder lets the reduce step continue with
-      // whatever succeeded — better to have a slightly patchy summary
-      // than zero summary for the user.
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[summarizeStream] Section ${i + 1} failed, continuing without it:`, err);
-      failures.push({ index: i, error: errMsg });
-      return `_[此段摘要失敗 · ${errMsg}]_`;
-    }
-  });
 
-  // After fan-in: emit per-section progress in deterministic order
-  // (the concurrency limiter doesn't preserve issue order otherwise),
-  // and surface every map-phase failure as its own event so callers
-  // can render "1/N 段失敗" without scanning the markdown body.
-  for (let i = 1; i <= sections.length; i++) {
-    yield { phase: 'map-section-done', sectionIndex: i, sectionCount: sections.length };
+    // Try with up to MAP_SECTION_MAX_RETRIES retries on transient
+    // failures. Total worst case: (1 + MAX_RETRIES) attempts × the
+    // timeout, plus exponential backoff between attempts.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+      throwIfAborted(params.signal);
+
+      // Inner controller hooked to outer signal + the per-section
+      // timeout. We abort it from BOTH paths so the underlying fetch
+      // is actually cancelled when the deadline fires (otherwise the
+      // sidecar keeps generating tokens we'll just throw away).
+      const innerAc = new AbortController();
+      const propagateAbort = () => innerAc.abort();
+      params.signal?.addEventListener('abort', propagateAbort, { once: true });
+      let timedOut = false;
+      const deadlineId = setTimeout(() => {
+        timedOut = true;
+        innerAc.abort();
+      }, MAP_SECTION_TIMEOUT_MS);
+
+      try {
+        let acc = '';
+        let usage: { inputTokens?: number; outputTokens?: number } | undefined;
+        for await (const chunk of provider!.stream({
+          model,
+          messages: sectionMessages,
+          temperature: 0.2,
+          maxTokens: 1024,
+          signal: innerAc.signal,
+        })) {
+          // If the OUTER signal aborted, propagate as AbortError —
+          // not a retry-eligible error.
+          throwIfAborted(params.signal);
+          if (chunk.delta) {
+            acc += chunk.delta;
+            eventQueue.push({
+              phase: 'map-section-delta',
+              delta: chunk.delta,
+              sectionIndex: i + 1,
+              sectionCount: sections.length,
+            });
+          }
+          if (chunk.done && chunk.usage) usage = chunk.usage;
+        }
+
+        // Success path. If the inner controller aborted but the outer
+        // signal didn't, that's a timeout that fired exactly as the
+        // stream closed — treat as retryable.
+        if (timedOut) {
+          const e = new Error(`section ${i + 1} timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+          e.name = 'TimeoutError';
+          throw e;
+        }
+        trackUsage(providerId, model, 'summarize', usage);
+        eventQueue.push({
+          phase: 'map-section-done',
+          sectionIndex: i + 1,
+          sectionCount: sections.length,
+        });
+        return acc;
+      } catch (err) {
+        // Outer-abort: propagate immediately, never retry.
+        if (params.signal?.aborted) throw err;
+        const kind = classifyMapSectionError(err);
+        if (kind === 'abort') throw err;
+
+        lastErr = err;
+        const last = attempt === MAP_SECTION_MAX_RETRIES;
+        if (kind === 'fatal' || last) {
+          // Surface as placeholder + failures[] entry. Map-phase
+          // failures must NOT blow up the whole summarisation —
+          // a partial summary is more useful than no summary.
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[summarizeStream] Section ${i + 1} failed after ${attempt + 1} attempt(s):`,
+            err,
+          );
+          failures.push({ index: i, error: errMsg });
+          eventQueue.push({
+            phase: 'map-section-done',
+            sectionIndex: i + 1,
+            sectionCount: sections.length,
+          });
+          return `_[此段摘要失敗 · ${errMsg}]_`;
+        }
+        // Transient + retries left: backoff then retry.
+        // 1s → 2s → 4s exponential backoff capped by MAX_RETRIES.
+        const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+        await new Promise<void>((r) => setTimeout(r, backoff));
+        // Fall through to next iteration.
+      } finally {
+        clearTimeout(deadlineId);
+        params.signal?.removeEventListener('abort', propagateAbort);
+      }
+    }
+    // Unreachable — the loop either returns or throws on the last
+    // iteration. TS needs an explicit throw.
+    throw lastErr ?? new Error(`Section ${i + 1}: unreachable retry exit`);
+  })
+    .finally(() => {
+      // No matter how the fan-in resolves (success / abort / unexpected),
+      // close the queue so the consumer loop below exits.
+      eventQueue.close();
+    });
+
+  // Drain the queue: yield each event the workers push as they push
+  // it, until the close() above unblocks `next()` with `done: true`.
+  while (true) {
+    const item = await eventQueue.next();
+    if (item.done) break;
+    yield item.value!;
   }
+  // fan-in must have finished by the time queue closes; await it to
+  // surface any propagated abort.
+  const sectionSummaries = await fanInPromise;
+
+  // Partial-failure events are still emitted post-fan-in so they're
+  // ordered by `failedSectionIndex` ascending — UI surfaces "段 N 失敗"
+  // in a stable order regardless of which sections happened to finish
+  // first under concurrency.
+  failures.sort((a, b) => a.index - b.index);
   for (const failure of failures) {
     yield {
       phase: 'partial-failure',
