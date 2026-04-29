@@ -9,7 +9,14 @@
  * 之後 Schema 化的時候，這裡的 marks 會被一次性 migrate 進 subtitle 表。
  */
 
+// cp75.3 — multi-user prefix. Was: 'classnote-exam-marks-v1:<lectureId>'.
+// Now:    'classnote-exam-marks-v1:<userId>:<lectureId>'.
+// Switching user wipes the mark visibility for the previous account
+// (data still on disk under the old key prefix; not auto-migrated to
+// avoid cross-user contamination).
 const STORAGE_KEY_PREFIX = 'classnote-exam-marks-v1:';
+
+import { authService } from './authService';
 
 export interface ExamMark {
     /** Seconds since recording start when 「⚑」 was pressed. */
@@ -28,7 +35,8 @@ type Listener = (marks: ExamMark[]) => void;
 const listeners = new Map<string, Set<Listener>>();
 
 function key(lectureId: string): string {
-    return `${STORAGE_KEY_PREFIX}${lectureId}`;
+    const userId = authService.getUserIdSegment();
+    return `${STORAGE_KEY_PREFIX}${userId}:${lectureId}`;
 }
 
 /* ─── Quota-safe localStorage wrappers (W14) ──────────────────────

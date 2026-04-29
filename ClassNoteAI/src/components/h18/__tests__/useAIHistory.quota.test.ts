@@ -46,7 +46,8 @@ describe('useAIHistory — quota safety (W14)', () => {
         const { result } = renderHook(() => useAIHistory());
         expect(result.current.msgs.length).toBeGreaterThan(0);
         // useEffect runs after render — read should reflect at least the intro.
-        const raw = localStorage.getItem('h18-ai-history-v1');
+        // cp75.3: per-user-scoped key.
+        const raw = localStorage.getItem('h18-ai-history-v1:default_user');
         expect(raw).toBeTruthy();
     });
 

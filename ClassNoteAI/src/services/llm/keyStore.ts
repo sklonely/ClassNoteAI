@@ -8,7 +8,14 @@
  * access." A future PR can migrate hot providers to an OS keychain.
  */
 
+// cp75.3 — multi-user-aware. Layout is now `llm.<userId>.<providerId>.<field>`
+// (was `llm.<providerId>.<field>` — single shared bucket leaked API keys
+// across user accounts). The PREFIX still starts with 'llm.' so the
+// existing seed-from-storage / clearAll sweep doesn't have to know about
+// userId — it just removes everything beginning with 'llm.'.
 const PREFIX = 'llm.';
+
+import { authService } from '../authService';
 
 export interface KeyStore {
   get(providerId: string, field: string): string | null;
@@ -18,7 +25,8 @@ export interface KeyStore {
 }
 
 function keyOf(providerId: string, field: string): string {
-  return `${PREFIX}${providerId}.${field}`;
+  const userId = authService.getUserIdSegment();
+  return `${PREFIX}${userId}.${providerId}.${field}`;
 }
 
 /**

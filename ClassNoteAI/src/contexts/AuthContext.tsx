@@ -79,6 +79,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch (err) {
             console.warn('[AuthContext.logout] taskTracker cancelAll failed', err);
         }
+
+        // cp75.3: drop the inbox-state in-memory cache so the next read
+        // hits localStorage under the new user's scoped key. Without this
+        // the previous user's snooze/done state would persist in `cache`
+        // until a page reload.
+        try {
+            const { __resetInboxCache } = await import(
+                '../services/inboxStateService'
+            );
+            __resetInboxCache();
+        } catch (err) {
+            console.warn('[AuthContext.logout] inbox cache reset failed', err);
+        }
     };
 
     return (

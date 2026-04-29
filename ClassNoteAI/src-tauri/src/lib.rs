@@ -1426,8 +1426,18 @@ async fn delete_subtitle(id: String) -> Result<(), String> {
 }
 
 /// 保存設置
+///
+/// cp75.3: `user_id` is now scoped — multi-user isolation. Before this
+/// the v8 `settings.user_id` column existed but every save/get ran
+/// without a WHERE filter, leaking settings across accounts. The
+/// renderer always passes the current user's username; legacy callers
+/// that omit it land on `default_user` (matches v8 schema default).
 #[tauri::command]
-async fn save_setting(key: String, value: String) -> Result<(), String> {
+async fn save_setting(
+    key: String,
+    value: String,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1436,7 +1446,8 @@ async fn save_setting(key: String, value: String) -> Result<(), String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.save_setting(&key, &value)
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.save_setting(&key, &value, &user)
         .map_err(|e| format!("保存設置失敗: {}", e))?;
 
     Ok(())
@@ -1444,7 +1455,10 @@ async fn save_setting(key: String, value: String) -> Result<(), String> {
 
 /// 獲取設置
 #[tauri::command]
-async fn get_setting(key: String) -> Result<Option<String>, String> {
+async fn get_setting(
+    key: String,
+    user_id: Option<String>,
+) -> Result<Option<String>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1453,7 +1467,8 @@ async fn get_setting(key: String) -> Result<Option<String>, String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.get_setting(&key)
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.get_setting(&key, &user)
         .map_err(|e| format!("獲取設置失敗: {}", e))
 }
 

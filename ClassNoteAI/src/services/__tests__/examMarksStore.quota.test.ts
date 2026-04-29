@@ -26,8 +26,10 @@ describe('examMarksStore — quota safety (W14)', () => {
     it('persists a mark normally to localStorage', async () => {
         const { addExamMark } = await import('../examMarksStore');
         addExamMark('lec-1', { elapsedSec: 30, text: 'foo', markedAtMs: 1 });
+        // cp75.3: key is scoped per user. Tests run unauthenticated so
+        // authService.getUserIdSegment() returns 'default_user'.
         const stored = JSON.parse(
-            localStorage.getItem('classnote-exam-marks-v1:lec-1') ?? '[]',
+            localStorage.getItem('classnote-exam-marks-v1:default_user:lec-1') ?? '[]',
         );
         expect(stored).toHaveLength(1);
         expect(stored[0].elapsedSec).toBe(30);

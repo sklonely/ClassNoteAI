@@ -668,16 +668,27 @@ class StorageService {
 
   /**
    * 保存設置
+   *
+   * cp75.3: forwards the current user's id so the Rust side can scope
+   * the row to that user. Before this, the v8 schema migration added
+   * `settings.user_id` column but the SQL queries ignored it — every
+   * user shared one row per key. Now per-user.
    */
   async saveSetting(key: string, value: string): Promise<void> {
-    await invoke('save_setting', { key, value });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_setting', { key, value, userId });
   }
 
   /**
    * 獲取設置
+   *
+   * cp75.3: same as saveSetting — passes userId so the Rust side returns
+   * the row for the current user instead of any (which would silently
+   * leak account A's settings to account B).
    */
   async getSetting(key: string): Promise<string | null> {
-    return await invoke<string | null>('get_setting', { key });
+    const userId = authService.getUser()?.username || 'default_user';
+    return await invoke<string | null>('get_setting', { key, userId });
   }
 
   /**

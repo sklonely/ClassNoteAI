@@ -22,7 +22,16 @@
  * useAggregatedCanvasInbox.items diff later if needed.
  */
 
-const KEY = 'classnote.inbox.states.v1';
+// cp75.3 — multi-user-aware key. Was a single global blob
+// 'classnote.inbox.states.v1', now `<base>:<userId>` so the snooze /
+// done state of one user's inbox doesn't bleed into another's.
+const KEY_BASE = 'classnote.inbox.states.v1';
+
+import { authService } from './authService';
+
+function storageKey(): string {
+    return `${KEY_BASE}:${authService.getUserIdSegment()}`;
+}
 
 interface InboxItemStateRaw {
     state: 'snoozed' | 'done';
@@ -76,7 +85,7 @@ function safeSetItem(key: string, value: string): boolean {
 function load(): InboxStateMap {
     if (cache) return cache;
     try {
-        const raw = localStorage.getItem(KEY);
+        const raw = localStorage.getItem(storageKey());
         cache = raw ? (JSON.parse(raw) as InboxStateMap) : {};
     } catch {
         cache = {};
@@ -86,7 +95,13 @@ function load(): InboxStateMap {
 
 function persist() {
     if (!cache) return;
-    safeSetItem(KEY, JSON.stringify(cache));
+    safeSetItem(storageKey(), JSON.stringify(cache));
+}
+
+/** cp75.3 — exposed so logout can drop in-memory cache and force a
+ *  re-read from the new user's localStorage on next access. */
+export function __resetInboxCache(): void {
+    cache = null;
 }
 
 function notify() {

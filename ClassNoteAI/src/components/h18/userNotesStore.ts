@@ -13,11 +13,18 @@
  * load/save signatures stay the same.
  */
 
+// cp75.3 — multi-user prefix. Key is now
+// `classnote-h18-user-notes:<userId>:<lectureId>` so switching account
+// hides previous user's free-form notes (data left on disk for manual
+// recovery; not auto-migrated to avoid leaking content across accounts).
 const PREFIX = 'classnote-h18-user-notes:';
 const EVT = 'classnote-h18-user-notes-changed';
 
+import { authService } from '../../services/authService';
+
 function key(lectureId: string): string {
-    return PREFIX + lectureId;
+    const userId = authService.getUserIdSegment();
+    return `${PREFIX}${userId}:${lectureId}`;
 }
 
 /* ─── Quota-safe localStorage wrappers (W14) ──────────────────────

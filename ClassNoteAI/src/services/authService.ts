@@ -83,6 +83,20 @@ class AuthService {
         return this.currentUser;
     }
 
+    /**
+     * Stable user-id segment for use as a localStorage / DB key prefix.
+     * Returns the logged-in username when available, falling back to
+     * `'default_user'` for the unauthenticated boot window. Service-level
+     * stores (inbox / exam marks / notes / AI history / keyStore) call
+     * this from non-React code paths where `useAuth()` isn't usable.
+     *
+     * cp75.3 (Phase 7 §8.4 V5) — wires actual multi-user isolation that
+     * the v8 schema migration prepared for in cp73.0.
+     */
+    public getUserIdSegment(): string {
+        return this.currentUser?.username || 'default_user';
+    }
+
     public async register(username: string, serverUrl?: string): Promise<void> {
         // 1. Local Registration
         try {

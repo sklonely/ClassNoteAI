@@ -444,7 +444,12 @@ describe('StorageService', () => {
 
             await storageService.saveSetting('theme', 'dark');
 
-            expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'theme', value: 'dark' });
+            // cp75.3: invoke now carries userId for per-user isolation.
+            expect(invoke).toHaveBeenCalledWith('save_setting', {
+                key: 'theme',
+                value: 'dark',
+                userId: 'test_user',
+            });
         });
 
         it('should get setting', async () => {
@@ -452,7 +457,10 @@ describe('StorageService', () => {
 
             const result = await storageService.getSetting('theme');
 
-            expect(invoke).toHaveBeenCalledWith('get_setting', { key: 'theme' });
+            expect(invoke).toHaveBeenCalledWith('get_setting', {
+                key: 'theme',
+                userId: 'test_user',
+            });
             expect(result).toBe('dark');
         });
 
@@ -478,7 +486,10 @@ describe('StorageService', () => {
 
             const result = await storageService.getAppSettings();
 
-            expect(invoke).toHaveBeenCalledWith('get_setting', { key: 'app_settings' });
+            expect(invoke).toHaveBeenCalledWith('get_setting', {
+                key: 'app_settings',
+                userId: 'test_user',
+            });
             expect(result?.ocr?.mode).toBe('off');
             expect(result?.experimental?.refineProvider).toBe('auto');
             expect('ollama' in ((result ?? {}) as Record<string, unknown>)).toBe(false);
@@ -513,6 +524,7 @@ describe('StorageService', () => {
                         toastStyle: 'card',
                     },
                 }),
+                userId: 'test_user',
             });
         });
     });

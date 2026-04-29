@@ -27,7 +27,8 @@ describe('inboxStateService — quota safety (W14)', () => {
     it('writes through normally when localStorage works', async () => {
         const { setInboxDone } = await import('../inboxStateService');
         setInboxDone('inbox-id-ok');
-        const raw = localStorage.getItem('classnote.inbox.states.v1');
+        // cp75.3: per-user-scoped key.
+        const raw = localStorage.getItem('classnote.inbox.states.v1:default_user');
         expect(raw).toBeTruthy();
         const parsed = JSON.parse(raw!);
         expect(parsed['inbox-id-ok']?.state).toBe('done');

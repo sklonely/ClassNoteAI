@@ -1401,23 +1401,59 @@ impl Database {
         Ok(())
     }
 
-    /// 保存設置
-    pub fn save_setting(&self, key: &str, value: &str) -> SqlResult<()> {
+    /// cp75.3 — composite-key helper for per-user settings isolation.
+    /// The settings table's primary key is (key) alone; v8 added a
+    /// `user_id` column but adding it to the PK would have required a
+    /// table rebuild. Instead we namespace inside the key column itself:
+    /// `<userId>::<originalKey>`. The column `user_id` is still set so a
+    /// future migration can split into two real columns without losing
+    /// the mapping.
+    fn scoped_setting_key(key: &str, user_id: &str) -> String {
+        format!("{}::{}", user_id, key)
+    }
+
+    /// 保存設置 — per-user via composite key.
+    pub fn save_setting(&self, key: &str, value: &str, user_id: &str) -> SqlResult<()> {
         let updated_at = Utc::now().to_rfc3339();
+        let scoped = Self::scoped_setting_key(key, user_id);
         self.conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, value, updated_at],
+            "INSERT OR REPLACE INTO settings (key, value, updated_at, user_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![scoped, value, updated_at, user_id],
         )?;
         Ok(())
     }
 
-    /// 獲取設置
-    pub fn get_setting(&self, key: &str) -> SqlResult<Option<String>> {
+    /// 獲取設置 — per-user via composite key, with a graceful fallback
+    /// for legacy single-user rows that pre-dated cp75.3 (those have
+    /// the bare key string and `user_id = 'default_user'`).
+    pub fn get_setting(&self, key: &str, user_id: &str) -> SqlResult<Option<String>> {
+        // Primary lookup: scoped key for this user.
+        let scoped = Self::scoped_setting_key(key, user_id);
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT value FROM settings WHERE key = ?1")?;
+            match stmt.query_row([scoped.as_str()], |row| row.get::<_, String>(0)) {
+                Ok(value) => return Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    // fall through to legacy lookup below
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Legacy fallback: pre-cp75.3 rows used the bare key with
+        // user_id='default_user'. Migrate-on-read for the default user
+        // so subsequent saves use the new scoped form. For non-default
+        // users, do NOT read default_user's data — that would re-leak
+        // settings across accounts.
+        if user_id != "default_user" {
+            return Ok(None);
+        }
         let mut stmt = self
             .conn
             .prepare("SELECT value FROM settings WHERE key = ?1")?;
-
         match stmt.query_row([key], |row| row.get::<_, String>(0)) {
             Ok(value) => Ok(Some(value)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -2302,14 +2338,14 @@ mod tests {
     fn test_save_and_get_setting() {
         let (db, _temp) = create_test_db();
 
-        db.save_setting("theme", "dark").unwrap();
+        db.save_setting("theme", "dark", "default_user").unwrap();
 
-        let value = db.get_setting("theme").unwrap();
+        let value = db.get_setting("theme", "default_user").unwrap();
         assert_eq!(value, Some("dark".to_string()));
 
         // Update
-        db.save_setting("theme", "light").unwrap();
-        let value = db.get_setting("theme").unwrap();
+        db.save_setting("theme", "light", "default_user").unwrap();
+        let value = db.get_setting("theme", "default_user").unwrap();
         assert_eq!(value, Some("light".to_string()));
     }
 
@@ -2317,11 +2353,55 @@ mod tests {
     fn test_get_all_settings() {
         let (db, _temp) = create_test_db();
 
-        db.save_setting("key1", "value1").unwrap();
-        db.save_setting("key2", "value2").unwrap();
+        db.save_setting("key1", "value1", "default_user").unwrap();
+        db.save_setting("key2", "value2", "default_user").unwrap();
 
         let settings = db.get_all_settings().unwrap();
         assert!(settings.len() >= 2); // May include defaults
+    }
+
+    #[test]
+    fn test_settings_are_isolated_per_user() {
+        // cp75.3 — same key under different users must not collide.
+        let (db, _temp) = create_test_db();
+
+        db.save_setting("theme", "dark", "alice").unwrap();
+        db.save_setting("theme", "light", "bob").unwrap();
+
+        assert_eq!(
+            db.get_setting("theme", "alice").unwrap(),
+            Some("dark".to_string())
+        );
+        assert_eq!(
+            db.get_setting("theme", "bob").unwrap(),
+            Some("light".to_string())
+        );
+        // Unknown user reads back nothing rather than leaking another's.
+        assert_eq!(db.get_setting("theme", "carol").unwrap(), None);
+    }
+
+    #[test]
+    fn test_settings_legacy_default_user_fallback() {
+        // cp75.3 — pre-migration rows had the bare key + user_id='default_user'.
+        // get_setting('default_user', ..) must still find them.
+        let (db, _temp) = create_test_db();
+
+        // Hand-write a legacy row directly (no scoped key prefix).
+        db.conn
+            .execute(
+                "INSERT INTO settings (key, value, updated_at, user_id) \
+                 VALUES ('legacy_key', 'legacy_value', '2026-01-01T00:00:00Z', 'default_user')",
+                [],
+            )
+            .unwrap();
+
+        // Default user can read it via the legacy fallback path.
+        assert_eq!(
+            db.get_setting("legacy_key", "default_user").unwrap(),
+            Some("legacy_value".to_string())
+        );
+        // Other users must NOT see legacy data (would be a cross-user leak).
+        assert_eq!(db.get_setting("legacy_key", "alice").unwrap(), None);
     }
 
     // ===== Note Tests =====

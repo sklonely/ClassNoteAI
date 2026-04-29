@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { chatStream as llmChatStream } from '../../services/llm';
 import type { LLMMessage } from '../../services/llm/types';
 import { ragService } from '../../services/ragService';
+import { authService } from '../../services/authService';
 
 export interface AIContext {
     kind: 'lecture' | 'course' | 'global';
@@ -36,7 +37,16 @@ export interface AIMsg {
     id: string;
 }
 
-const STORE_KEY = 'h18-ai-history-v1';
+// cp75.3 — multi-user-aware key. Was a single global blob 'h18-ai-history-v1',
+// now `h18-ai-history-v1:<userId>` so switching account hides previous
+// user's AI conversation history. Resolved via getter so logout/login
+// in the same tab picks up the new id without a page reload.
+const STORE_KEY_BASE = 'h18-ai-history-v1';
+
+function getStoreKey(): string {
+    const userId = authService.getUserIdSegment();
+    return `${STORE_KEY_BASE}:${userId}`;
+}
 
 /* ─── Quota-safe localStorage wrapper (W14) ──────────────────────
  * Long AI conversations bloat history, so we're a likely first
@@ -83,7 +93,7 @@ const DEFAULT_INTRO: AIMsg[] = [
 
 function loadHistory(): AIMsg[] {
     try {
-        const raw = localStorage.getItem(STORE_KEY);
+        const raw = localStorage.getItem(getStoreKey());
         if (raw) {
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -95,7 +105,7 @@ function loadHistory(): AIMsg[] {
 }
 
 function saveHistory(msgs: AIMsg[]): void {
-    safeSetItem(STORE_KEY, JSON.stringify(msgs));
+    safeSetItem(getStoreKey(), JSON.stringify(msgs));
 }
 
 export function useAIHistory() {
@@ -111,7 +121,7 @@ export function useAIHistory() {
     // fire 'storage', 但若另一個 webview 寫了同 key 我們仍同步)
     useEffect(() => {
         const onStorage = (e: StorageEvent) => {
-            if (e.key === STORE_KEY && e.newValue) {
+            if (e.key === getStoreKey() && e.newValue) {
                 try {
                     const parsed = JSON.parse(e.newValue);
                     if (Array.isArray(parsed)) setMsgs(parsed);
