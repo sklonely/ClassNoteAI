@@ -22,6 +22,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { authService } from '../../services/authService';
 import { storageService } from '../../services/storageService';
 import { toastService } from '../../services/toastService';
 import type { Course, Lecture } from '../../types';
@@ -193,7 +194,10 @@ export default function CourseDetailPage({
     const handleDelete = async () => {
         if (!menuState) return;
         try {
-            await invoke('delete_lecture', { id: menuState.lecture.id });
+            await invoke('delete_lecture', {
+                id: menuState.lecture.id,
+                userId: authService.getUser()?.username || 'default_user',
+            });
             setRefreshTick((v) => v + 1);
             toastService.success(
                 '已刪除',

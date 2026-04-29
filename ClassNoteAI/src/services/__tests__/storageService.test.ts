@@ -122,7 +122,10 @@ describe('StorageService', () => {
 
             await storageService.deleteCourse('course-1');
 
-            expect(invoke).toHaveBeenCalledWith('delete_course', { id: 'course-1' });
+            expect(invoke).toHaveBeenCalledWith('delete_course', {
+                id: 'course-1',
+                userId: 'test_user',
+            });
         });
     });
 

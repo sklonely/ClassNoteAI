@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { authService } from '../../services/authService';
 import { storageService } from '../../services/storageService';
 import { confirmService } from '../../services/confirmService';
 import { toastService } from '../../services/toastService';
@@ -2285,6 +2286,7 @@ export function PData() {
             try {
                 const count = await invoke<number>('restore_course', {
                     id: lecture.course_id,
+                    userId: authService.getUser()?.username || 'default_user',
                 });
                 await loadTrash();
                 toastService.success(
@@ -2304,7 +2306,10 @@ export function PData() {
 
         setBusy(true);
         try {
-            await invoke('restore_lecture', { id: lecture.id });
+            await invoke('restore_lecture', {
+                id: lecture.id,
+                userId: authService.getUser()?.username || 'default_user',
+            });
             await loadTrash();
             toastService.success('已還原', `「${lecture.title}」已還原`);
         } catch (err) {
@@ -2320,6 +2325,7 @@ export function PData() {
         try {
             const count = await invoke<number>('restore_course', {
                 id: course.id,
+                userId: authService.getUser()?.username || 'default_user',
             });
             await loadTrash();
             toastService.success(
@@ -2347,7 +2353,10 @@ export function PData() {
             const restoredViaCourse = new Set<string>();
             for (const cid of courseIds) {
                 try {
-                    await invoke<number>('restore_course', { id: cid });
+                    await invoke<number>('restore_course', {
+                        id: cid,
+                        userId: authService.getUser()?.username || 'default_user',
+                    });
                     restoredViaCourse.add(cid);
                     // lectures whose course was just restored are now alive again
                     for (const lec of trashedLectures) {
@@ -2368,7 +2377,10 @@ export function PData() {
                 );
             for (const lid of lectureIds) {
                 try {
-                    await invoke('restore_lecture', { id: lid });
+                    await invoke('restore_lecture', {
+                        id: lid,
+                        userId: authService.getUser()?.username || 'default_user',
+                    });
                 } catch (err) {
                     console.warn(`[PData] restore_lecture ${lid} failed:`, err);
                 }
@@ -2423,7 +2435,10 @@ export function PData() {
         try {
             const purged = await invoke<string[]>(
                 'hard_delete_lectures_by_ids',
-                { ids: lectureIdsToPurge },
+                {
+                    ids: lectureIdsToPurge,
+                    userId: authService.getUser()?.username || 'default_user',
+                },
             );
             setSelected(new Set());
             await loadTrash();

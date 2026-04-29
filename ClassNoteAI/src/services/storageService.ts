@@ -593,10 +593,11 @@ class StorageService {
   }
 
   /**
-   * 刪除科目
+   * 刪除科目（cp75.6: 傳 userId 給 Rust 端做 ownership check）
    */
   async deleteCourse(id: string): Promise<void> {
-    await invoke('delete_course', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('delete_course', { id, userId });
   }
 
   /**
@@ -633,10 +634,11 @@ class StorageService {
   }
 
   /**
-   * 刪除課程
+   * 刪除課堂（cp75.6: 傳 userId 給 Rust 端做 ownership check）
    */
   async deleteLecture(id: string): Promise<void> {
-    await invoke('delete_lecture', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('delete_lecture', { id, userId });
   }
 
   /**
@@ -1134,17 +1136,19 @@ class StorageService {
   }
 
   /**
-   * 還原已刪除的課程
+   * 還原已刪除的課程（cp75.6 ownership check）
    */
   async restoreCourse(id: string): Promise<void> {
-    await invoke('restore_course', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('restore_course', { id, userId });
   }
 
   /**
-   * 還原已刪除的課堂
+   * 還原已刪除的課堂（cp75.6 ownership check）
    */
   async restoreLecture(id: string): Promise<void> {
-    await invoke('restore_lecture', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('restore_lecture', { id, userId });
   }
 
   /**

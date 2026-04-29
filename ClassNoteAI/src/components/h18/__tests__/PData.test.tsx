@@ -213,7 +213,9 @@ describe('PData · S3f trash bin', () => {
             ([cmd]) => cmd === 'restore_lecture',
         );
         expect(restoreCall).toBeTruthy();
-        expect(restoreCall?.[1]).toEqual({ id: 'lec-x' });
+        // cp75.6: ownership check piggybacks userId; tests run unauthenticated
+        // so the value is the default_user fallback.
+        expect(restoreCall?.[1]).toEqual({ id: 'lec-x', userId: 'default_user' });
     });
 
     it('5. lecture 的 course 在垃圾桶 → confirm 跳「需連同 course」', async () => {
@@ -267,7 +269,11 @@ describe('PData · S3f trash bin', () => {
             ([cmd]) => cmd === 'restore_course',
         );
         expect(restoreCourseCall).toBeTruthy();
-        expect(restoreCourseCall?.[1]).toEqual({ id: 'course-1' });
+        // cp75.6: ownership check piggybacks userId.
+        expect(restoreCourseCall?.[1]).toEqual({
+            id: 'course-1',
+            userId: 'default_user',
+        });
     });
 
     it('7. 全選 → checkbox 全打勾', async () => {

@@ -1692,7 +1692,19 @@ impl Database {
     /// `ON DELETE CASCADE`, so we only DELETE FROM the parent tables.
     /// Idempotent: a repeat call after the rows are gone returns an
     /// empty Vec.
-    pub fn hard_delete_trashed_older_than(&self, days: i64) -> SqlResult<Vec<String>> {
+    pub fn hard_delete_trashed_older_than(
+        &self,
+        days: i64,
+        user_id: &str,
+    ) -> SqlResult<Vec<String>> {
+        // cp75.6 — added `user_id` filter. Before this, the boot-time
+        // sweep ran with no scope, so user A's 31-day-old trash got
+        // physically deleted the moment user B logged in (App.tsx fires
+        // 5s after `appState=ready`). Worse: B saw a toast "已永久清除
+        // N 個" and assumed it was their own.
+        //
+        // The filter joins lectures→courses→user_id (lectures themselves
+        // don't carry user_id; the trust boundary is the courses table).
         let cutoff = now_unix_ms() - days.saturating_mul(86_400_000);
         let tx = self.conn.unchecked_transaction()?;
 
@@ -1701,19 +1713,37 @@ impl Database {
         // scope so the prepared statement drops before the next
         // `tx.execute`.
         let purged: Vec<String> = {
-            let mut stmt = tx
-                .prepare("SELECT id FROM lectures WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1")?;
-            let rows = stmt.query_map(rusqlite::params![cutoff], |r| r.get::<_, String>(0))?;
+            let mut stmt = tx.prepare(
+                "SELECT l.id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.is_deleted = 1 \
+                   AND l.deleted_at IS NOT NULL \
+                   AND l.deleted_at < ?1 \
+                   AND c.user_id = ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![cutoff, user_id], |r| {
+                r.get::<_, String>(0)
+            })?;
             rows.filter_map(|r| r.ok()).collect()
         };
 
+        // Delete lectures owned by THIS user only.
         tx.execute(
-            "DELETE FROM lectures WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
-            rusqlite::params![cutoff],
+            "DELETE FROM lectures WHERE id IN ( \
+                 SELECT l.id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.is_deleted = 1 \
+                   AND l.deleted_at IS NOT NULL \
+                   AND l.deleted_at < ?1 \
+                   AND c.user_id = ?2 \
+             )",
+            rusqlite::params![cutoff, user_id],
         )?;
         tx.execute(
-            "DELETE FROM courses WHERE is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?1",
-            rusqlite::params![cutoff],
+            "DELETE FROM courses WHERE is_deleted = 1 \
+             AND deleted_at IS NOT NULL AND deleted_at < ?1 \
+             AND user_id = ?2",
+            rusqlite::params![cutoff, user_id],
         )?;
 
         tx.commit()?;

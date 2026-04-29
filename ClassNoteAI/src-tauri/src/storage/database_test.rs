@@ -446,7 +446,7 @@ mod tests {
             )
             .unwrap();
 
-        let purged = db.hard_delete_trashed_older_than(30).expect("hard_delete");
+        let purged = db.hard_delete_trashed_older_than(30, "default_user").expect("hard_delete");
 
         assert_eq!(purged, vec!["l1".to_string()]);
 
@@ -478,8 +478,47 @@ mod tests {
     fn hard_delete_trashed_older_than_empty_trash_is_noop() {
         let db = make_test_db();
         seed_minimal(&db);
-        let purged = db.hard_delete_trashed_older_than(30).unwrap();
+        let purged = db.hard_delete_trashed_older_than(30, "default_user").unwrap();
         assert!(purged.is_empty());
+    }
+
+    /// cp75.6: hard_delete must NOT touch other users' trash. User A's
+    /// expired lecture survives a sweep run as user B.
+    #[test]
+    fn hard_delete_trashed_older_than_skips_other_user() {
+        let db = make_test_db();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Two users, each with one course + one trashed lecture > 30 days old.
+        db.conn().execute(
+            "INSERT INTO local_users (username, created_at, sync_status) \
+             VALUES ('alice', ?1, 'synced'), ('bob', ?1, 'synced')",
+            rusqlite::params![now],
+        ).unwrap();
+        db.conn().execute(
+            "INSERT INTO courses (id, title, description, keywords, user_id, is_deleted, created_at, updated_at) \
+             VALUES ('ca', 'Alice Course', NULL, NULL, 'alice', 0, ?1, ?1), \
+                    ('cb', 'Bob Course', NULL, NULL, 'bob', 0, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        let day_ms: i64 = 86_400_000;
+        db.conn().execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, deleted_at, created_at, updated_at) \
+             VALUES ('la', 'ca', 'A lec', '2026-01-01', 0, 'completed', 1, ?1, ?2, ?2), \
+                    ('lb', 'cb', 'B lec', '2026-01-01', 0, 'completed', 1, ?1, ?2, ?2)",
+            rusqlite::params![now_ms - 31 * day_ms, now],
+        ).unwrap();
+
+        // Bob runs the boot sweep — Alice's expired lecture must survive.
+        let purged = db.hard_delete_trashed_older_than(30, "bob").unwrap();
+        assert_eq!(purged, vec!["lb".to_string()]);
+        let alice_still_there: bool = db.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = 'la')", [], |r| r.get(0),
+        ).unwrap();
+        assert!(alice_still_there, "Alice's expired lecture must NOT be touched by Bob's sweep");
     }
 
     // ────────────────────────────────────────────────────────────────

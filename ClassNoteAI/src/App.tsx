@@ -406,8 +406,15 @@ function App() {
     const t = setTimeout(async () => {
       try {
         const { invoke } = await import('@tauri-apps/api/core');
+        const { authService } = await import('./services/authService');
+        // cp75.6 — pass userId so the boot sweep only purges THIS user's
+        // trash. Before this, sweep ran with no scope; user A's expired
+        // lecture would be physically deleted the moment user B logged
+        // in, with B getting the toast credit ("已永久清除 N 個").
+        const userId = authService.getUser()?.username || 'default_user';
         const ids = await invoke<string[]>('hard_delete_trashed_older_than', {
           days: 30,
+          userId,
         });
         if (ids && ids.length > 0) {
           toastService.info(

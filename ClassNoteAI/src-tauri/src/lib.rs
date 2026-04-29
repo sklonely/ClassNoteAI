@@ -1308,9 +1308,9 @@ async fn list_lectures(user_id: String) -> Result<Vec<storage::Lecture>, String>
         .map_err(|e| format!("列出課程失敗: {}", e))
 }
 
-/// 刪除課程
+/// 刪除課堂 (soft-delete)。cp75.6 加 user_id ownership check 防跨 user 動作。
 #[tauri::command]
-async fn delete_lecture(id: String) -> Result<(), String> {
+async fn delete_lecture(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1319,8 +1319,11 @@ async fn delete_lecture(id: String) -> Result<(), String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &id, &user)?;
+
     db.delete_lecture(&id)
-        .map_err(|e| format!("刪除課程失敗: {}", e))?;
+        .map_err(|e| format!("刪除課堂失敗: {}", e))?;
 
     Ok(())
 }
@@ -3358,13 +3361,15 @@ async fn list_deleted_lectures(user_id: String) -> Result<Vec<storage::models::L
 /// 課堂". Frontends that previously ignored the unit return type just
 /// have to accept (and discard) the integer now.
 #[tauri::command]
-async fn restore_course(id: String) -> Result<i64, String> {
+async fn restore_course(id: String, user_id: Option<String>) -> Result<i64, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &id, &user)?;
     db.restore_course(&id)
         .map_err(|e| format!("還原課程失敗: {}", e))
 }
@@ -3374,39 +3379,45 @@ async fn restore_course(id: String) -> Result<i64, String> {
 /// soft-deleted — the frontend uses that signal to prompt
 /// "需要連同課程一起回復".
 #[tauri::command]
-async fn restore_lecture(id: String) -> Result<(), String> {
+async fn restore_lecture(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &id, &user)?;
     db.restore_lecture(&id)
         .map_err(|e| format!("還原課堂失敗: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-async fn purge_course(id: String) -> Result<(), String> {
+async fn purge_course(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &id, &user)?;
     db.purge_course(&id)
         .map_err(|e| format!("永久刪除課程失敗: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-async fn purge_lecture(id: String) -> Result<(), String> {
+async fn purge_lecture(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &id, &user)?;
     db.purge_lecture(&id)
         .map_err(|e| format!("永久刪除課堂失敗: {}", e))?;
     Ok(())
@@ -3422,13 +3433,18 @@ async fn purge_lecture(id: String) -> Result<(), String> {
 /// at the call site. PData uses this; legacy callers that still invoke
 /// `delete_course` get the same behavior.
 #[tauri::command]
-async fn delete_course_cascade(course_id: String) -> Result<(), String> {
+async fn delete_course_cascade(
+    course_id: String,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &course_id, &user)?;
     db.delete_course(&course_id)
         .map_err(|e| format!("Cascade 刪除課程失敗: {}", e))?;
     Ok(())
@@ -3457,14 +3473,18 @@ async fn list_trashed_lectures(
 /// caller can chain on-disk cleanup (audio / video / pcm sidecars).
 /// App.tsx runs this on boot with `days = 30` and toasts the count.
 #[tauri::command]
-async fn hard_delete_trashed_older_than(days: i64) -> Result<Vec<String>, String> {
+async fn hard_delete_trashed_older_than(
+    days: i64,
+    user_id: Option<String>,
+) -> Result<Vec<String>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
-    db.hard_delete_trashed_older_than(days)
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.hard_delete_trashed_older_than(days, &user)
         .map_err(|e| format!("永久清除過期垃圾桶失敗: {}", e))
 }
 
@@ -3487,20 +3507,82 @@ async fn list_trashed_courses(
         .map_err(|e| format!("列出垃圾桶課程失敗: {}", e))
 }
 
+/// cp75.6 — Verify a lecture's owning course belongs to `user_id`.
+/// Returns Ok if owner matches, Err with a friendly message otherwise.
+/// Used by every destructive lecture-level command to refuse
+/// cross-user calls (defense-in-depth on top of the frontend
+/// logout/login cleanup).
+fn verify_lecture_ownership(
+    db: &storage::Database,
+    lecture_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    let owner: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT c.user_id FROM lectures l \
+             JOIN courses c ON l.course_id = c.id \
+             WHERE l.id = ?1",
+            [lecture_id],
+            |r| r.get(0),
+        )
+        .ok();
+    match owner {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課堂（屬於其他帳號）".to_string()),
+        None => Err("找不到此課堂".to_string()),
+    }
+}
+
+/// cp75.6 — same as `verify_lecture_ownership` but for courses.
+fn verify_course_ownership(
+    db: &storage::Database,
+    course_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    let owner: Option<String> = db
+        .conn()
+        .query_row(
+            "SELECT user_id FROM courses WHERE id = ?1",
+            [course_id],
+            |r| r.get(0),
+        )
+        .ok();
+    match owner {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課程（屬於其他帳號）".to_string()),
+        None => Err("找不到此課程".to_string()),
+    }
+}
+
 /// Phase 7 cp74.1: user-driven permanent delete of selected trashed
 /// lectures. Backs the Trash UI's 「永久刪除選取」 button which until
 /// now was a no-op TODO toast. Returns ids that were actually purged
 /// (a row that was racing-restored between selection and click is
 /// silently skipped — count returned reflects reality).
+///
+/// cp75.6 — added per-id ownership verification. Skip silently any
+/// id the user doesn't own (the function used to accept ANY id from
+/// the frontend → cross-user purge attack).
 #[tauri::command]
-async fn hard_delete_lectures_by_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
+async fn hard_delete_lectures_by_ids(
+    ids: Vec<String>,
+    user_id: Option<String>,
+) -> Result<Vec<String>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
-    db.hard_delete_lectures_by_ids(&ids)
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    // Filter out ids the user doesn't own (silently — selection might be
+    // stale; better to drop than throw on the whole batch).
+    let owned: Vec<String> = ids
+        .into_iter()
+        .filter(|id| verify_lecture_ownership(&db, id, &user).is_ok())
+        .collect();
+    db.hard_delete_lectures_by_ids(&owned)
         .map_err(|e| format!("永久刪除選取課堂失敗: {}", e))
 }
 
