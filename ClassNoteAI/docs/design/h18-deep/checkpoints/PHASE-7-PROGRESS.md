@@ -1,8 +1,18 @@
 # Phase 7 進度報告
 
-**最後更新**：2026-04-29T01:55Z (cp75.7 + P1-A trash resurrect fix 完工)
-**狀態**：✅ Phase 7 主體完工，4 輪 unbiased review pass — round 5 確認「找不到 P0」
+**最後更新**：2026-04-29T09:30Z (cp75.10 模型下載 UI 真接通)
+**狀態**：✅ Phase 7 主體完工 + 4 輪 unbiased review + cp75.8~10 使用者實測 fix
 **測試**：1039 / 1039 frontend ✓ + cargo storage 39 / 39 ✓
+
+## cp75.8 ~ cp75.10 補增（2026-04-29 早晨使用者實測）
+
+| commit | 範圍 | 修了什麼 |
+|---|---|---|
+| **cp75.8** | docs final report + P1-A | save_lecture ON CONFLICT 不再覆寫 is_deleted (trash resurrect race) + 完整 final progress doc |
+| **cp75.9** | 設定 + 全域右鍵 | useAppSettings stale closure → useRef baseline (Calendar URL 持久化恢復) + 全域 contextmenu listener 對「非 input surface」加 preventDefault (PLAN F6 spec) + Rust get_setting fallback 命中時自動寫進 scoped key (避免下次 read miss) |
+| **cp75.10** | 模型下載 UI | Parakeet ModelCard 真接 download_parakeet_model + status-driven loaded/active；TranslateGemma multi-variant (Rust gemma_model.rs 從 4B-only 重構 → 4B/12B/27B Variant enum + per-variant URL/size/path)；PTranslate 改用 ModelCard list 給每個 variant 獨立下載 |
+
+
 
 ---
 
