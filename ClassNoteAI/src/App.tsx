@@ -176,6 +176,22 @@ function App() {
       .catch((err) => console.warn('[App] 課程大綱狀態回收失敗：', err));
   }, [appState]);
 
+  // cp75.5 — load saved keyboard-shortcut overrides from the active
+  // user's AppSettings into the keymapService singleton. The service's
+  // internal `hydrate()` was previously never called, so customised
+  // shortcuts saved through PKeyboard round-tripped to disk but never
+  // applied at runtime — every restart silently reverted to defaults.
+  // Re-runs on user change so a logout/login flow picks up the new
+  // user's bindings.
+  useEffect(() => {
+    if (appState !== 'ready') return;
+    void import('./services/keymapService')
+      .then(({ keymapService }) => keymapService.hydrate())
+      .catch((err) =>
+        console.warn('[App] keymap hydrate failed:', err),
+      );
+  }, [appState, user]);
+
   // Background audio-link audit for completed lectures. This fixes the
   // "DB points at a stale absolute path from an older install/home dir"
   // class of bug even before the user re-opens the affected lecture.

@@ -65,6 +65,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch (err) {
             console.warn(`[AuthContext.${label}] inbox cache reset failed`, err);
         }
+        // cp75.5 — clear keymapService overrides so next user doesn't
+        // inherit (and then accidentally persist) the previous user's
+        // custom keyboard bindings. App.tsx will hydrate() the new user's
+        // settings on next ready transition.
+        try {
+            const { keymapService } = await import('../services/keymapService');
+            keymapService.__reset();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] keymap reset failed`, err);
+        }
+        // cp75.5 — chatSessionService caches a userId at first init. Force
+        // it to re-read from authService so subsequent invokes target the
+        // correct account. (No-op when service hasn't been loaded yet.)
+        try {
+            const { chatSessionService } = await import(
+                '../services/chatSessionService'
+            );
+            (chatSessionService as { resetUserId?: () => void }).resetUserId?.();
+        } catch (err) {
+            console.warn(
+                `[AuthContext.${label}] chatSession resetUserId failed`,
+                err,
+            );
+        }
+        // cp75.5 — kick the global settings-changed event so any mounted
+        // useAppSettings consumers reload from the new user's namespace.
+        try {
+            window.dispatchEvent(new CustomEvent('classnote-settings-changed'));
+        } catch (err) {
+            console.warn(
+                `[AuthContext.${label}] settings-changed dispatch failed`,
+                err,
+            );
+        }
     };
 
     const login = async (username: string) => {

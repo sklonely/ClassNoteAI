@@ -1313,13 +1313,37 @@ impl Database {
             .unwrap_or(false);
 
         if !course_exists {
-            // 自動創建缺失的 Course
+            // cp75.5 — race-recovery path: parent course was deleted while
+            // the recording's stop pipeline was still running. We auto-
+            // recreate the course shell so the subtitles aren't lost. The
+            // owning user_id is read from the lecture's own row (lectures
+            // were soft-deleted with the course but the rows still exist
+            // and carry the original course_id; in the rare bare race
+            // where lecture has no surviving FK trail we fall back to a
+            // sentinel that an admin can later reassign).
+            //
+            // Before this fix the auto-recreate hardcoded user_id =
+            // 'default_user' which silently misattributed everyone's
+            // race-recovered subtitles to the default account.
             let now = chrono::Utc::now().to_rfc3339();
+            // Best-effort user_id discovery — try to find ANY trashed
+            // course row with the same id (cascade-delete keeps the row
+            // until 30-day purge, so this usually succeeds).
+            let owner: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT user_id FROM courses WHERE id = ?1",
+                    [&course_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            let owner = owner.unwrap_or_else(|| "default_user".to_string());
             self.conn.execute(
                 "INSERT OR IGNORE INTO courses (id, user_id, title, description, keywords, created_at, updated_at)
-                 VALUES (?1, 'default_user', ?2, ?3, ?4, ?5, ?6)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     course_id,
+                    owner,
                     "自動修復的課程",
                     "",
                     "",

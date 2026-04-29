@@ -48,6 +48,16 @@ class ChatSessionService {
     }
 
     /**
+     * cp75.5 — drop the cached userId so subsequent calls re-read from
+     * authService. Called by AuthContext.resetUserScopedState() on
+     * logout AND login so a user-switch in the same session doesn't
+     * keep targeting the previous account's chat history.
+     */
+    public resetUserId(): void {
+        this.userId = '';
+    }
+
+    /**
      * 從 localStorage 遷移到 SQLite (僅執行一次)
      */
     private async migrateFromLocalStorage(): Promise<void> {

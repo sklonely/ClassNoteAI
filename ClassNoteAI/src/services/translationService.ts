@@ -28,16 +28,34 @@ class TranslationCache {
 
   /**
    * 生成緩存鍵
+   *
+   * cp75.5 — `provider` joined the key. Without it, switching providers
+   * (Gemma → Google → local) returned the previously-cached translation
+   * for 24 h, masking provider-quality differences and preventing users
+   * from validating their settings change. Empty string when caller
+   * doesn't pass one (single-provider call sites).
    */
-  private getCacheKey(text: string, sourceLang: string, targetLang: string, type: 'rough' | 'fine'): string {
-    return `${type}:${sourceLang}:${targetLang}:${text}`;
+  private getCacheKey(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    type: 'rough' | 'fine',
+    provider: string = '',
+  ): string {
+    return `${type}:${provider}:${sourceLang}:${targetLang}:${text}`;
   }
 
   /**
    * 獲取緩存
    */
-  get(text: string, sourceLang: string, targetLang: string, type: 'rough' | 'fine'): TranslationResult | null {
-    const key = this.getCacheKey(text, sourceLang, targetLang, type);
+  get(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    type: 'rough' | 'fine',
+    provider: string = '',
+  ): TranslationResult | null {
+    const key = this.getCacheKey(text, sourceLang, targetLang, type, provider);
     const entry = this.cache.get(key);
 
     if (!entry) {
@@ -56,8 +74,15 @@ class TranslationCache {
   /**
    * 設置緩存
    */
-  set(text: string, sourceLang: string, targetLang: string, type: 'rough' | 'fine', result: TranslationResult): void {
-    const key = this.getCacheKey(text, sourceLang, targetLang, type);
+  set(
+    text: string,
+    sourceLang: string,
+    targetLang: string,
+    type: 'rough' | 'fine',
+    result: TranslationResult,
+    provider: string = '',
+  ): void {
+    const key = this.getCacheKey(text, sourceLang, targetLang, type, provider);
 
     // 如果緩存已滿，刪除最舊的條目
     if (this.cache.size >= this.maxSize) {
@@ -106,16 +131,12 @@ export async function translateRough(
   googleApiKey?: string,
   gemmaEndpoint?: string
 ): Promise<TranslationResult> {
-  // 檢查緩存
-  if (useCache) {
-    const cached = translationCache.get(text, sourceLang, targetLang, 'rough');
-    if (cached) {
-      return cached;
-    }
-  }
-
   try {
     // 確定使用的 provider 和 API key
+    // cp75.5 — moved BEFORE the cache check so the cache key uses the
+    // resolved provider, not the (often undefined) caller-supplied one.
+    // Otherwise GET and SET ran with different keys → effectively no
+    // cache hit ever.
     let actualProvider = provider;
     let actualApiKey = googleApiKey;
 
@@ -130,6 +151,25 @@ export async function translateRough(
         }
       } catch (e) {
         console.warn('[TranslationService] 無法讀取設置，使用默認本地翻譯');
+      }
+    }
+
+    // 預設使用 gemma — pin here so the cache key downstream is stable.
+    // Repeated downstream `actualProvider = actualProvider || 'gemma'`
+    // line later is now a no-op for cache purposes.
+    actualProvider = actualProvider || 'gemma';
+
+    // 檢查緩存 — provider-aware key (cp75.5)
+    if (useCache) {
+      const cached = translationCache.get(
+        text,
+        sourceLang,
+        targetLang,
+        'rough',
+        actualProvider,
+      );
+      if (cached) {
+        return cached;
       }
     }
 
@@ -222,9 +262,17 @@ export async function translateRough(
       throw firstError ?? new Error('ææç¿»è­¯å¾ç«¯åä¸å¯ç¨');
     }
 
-    // 保存到緩存
+    // 保存到緩存 — keep the resolved provider in the key so a future
+    // settings change (provider switch) doesn't return this entry.
     if (useCache) {
-      translationCache.set(text, sourceLang, targetLang, 'rough', result);
+      translationCache.set(
+        text,
+        sourceLang,
+        targetLang,
+        'rough',
+        result,
+        actualProvider ?? '',
+      );
     }
 
     return result;
