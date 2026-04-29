@@ -717,14 +717,33 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             // cp75.17 — also build a TIMESTAMPED transcript for the
             // segmentation pass. The segmenter needs `[mm:ss]` prefixes
             // so it can pin the section start to a real moment in the
-            // recording. Plain transcript (above) is what the summary
-            // consumes — timestamps would just be noise the model has
-            // to translate into prose.
+            // recording.
+            //
+            // cp75.18 — three-way normalisation. Subtitle rows can be in
+            // any of three historical shapes (column type is just REAL):
+            //   - **relative seconds** (modern):  0..5525
+            //   - **absolute Unix seconds** (legacy): 1.7e9 (~2026)
+            //   - **absolute Unix ms** (very legacy): 1.7e12
+            // We can't use `subtitleTimestamp.toRelativeSeconds` here
+            // because it conflates absolute-seconds and absolute-ms via
+            // a single 1e9 cutoff, treating both as ms — which is wrong
+            // for the absolute-seconds case (gives a negative result
+            // ~31 years off). Inline a 3-way detector instead.
+            const firstTs = subs.length > 0 ? subs[0].timestamp : 0;
+            const normalizeTs: (t: number) => number =
+                firstTs >= 1_000_000_000_000
+                    ? // Absolute Unix ms.
+                      (t) => Math.max(0, (t - firstTs) / 1000)
+                    : firstTs >= 1_000_000_000
+                      ? // Absolute Unix seconds.
+                        (t) => Math.max(0, t - firstTs)
+                      : // Already relative seconds.
+                        (t) => Math.max(0, t);
             const transcriptWithTs = subs
                 .map((s) => {
                     const txt = (s.text_en || s.text_zh || '').trim();
                     if (!txt) return '';
-                    const ts = Math.max(0, Math.floor(s.timestamp));
+                    const ts = Math.floor(normalizeTs(s.timestamp));
                     const mm = Math.floor(ts / 60).toString().padStart(2, '0');
                     const ss = Math.floor(ts % 60).toString().padStart(2, '0');
                     return `[${mm}:${ss}] ${txt}`;

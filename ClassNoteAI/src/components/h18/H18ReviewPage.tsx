@@ -1431,6 +1431,15 @@ async function runSummary(
             .filter(Boolean)
             .join('\n');
         // cp75.17 — also build timestamped transcript for the segmenter.
+        // cp75.18 — three-way timestamp normalisation (relative / abs
+        // seconds / abs ms). See recordingSessionService for full notes.
+        const _firstTs = subs.length > 0 ? subs[0].timestamp : 0;
+        const _normalizeTs: (t: number) => number =
+            _firstTs >= 1_000_000_000_000
+                ? (t: number) => Math.max(0, (t - _firstTs) / 1000)
+                : _firstTs >= 1_000_000_000
+                  ? (t: number) => Math.max(0, t - _firstTs)
+                  : (t: number) => Math.max(0, t);
         const transcriptWithTs = subs
             .map((s) => {
                 const txt = (
@@ -1441,7 +1450,7 @@ async function runSummary(
                     ''
                 ).trim();
                 if (!txt) return '';
-                const ts = Math.max(0, Math.floor(s.timestamp));
+                const ts = Math.floor(_normalizeTs(s.timestamp));
                 const mm = Math.floor(ts / 60).toString().padStart(2, '0');
                 const ss = Math.floor(ts % 60).toString().padStart(2, '0');
                 return `[${mm}:${ss}] ${txt}`;
