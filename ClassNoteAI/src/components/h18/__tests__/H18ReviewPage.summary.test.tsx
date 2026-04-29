@@ -109,7 +109,10 @@ vi.mock('../../../services/examMarksStore', () => ({
     subscribeExamMarks: vi.fn(() => () => {}),
 }));
 
-// llm/tasks — mock summarizeStream + summarize. Default: yield one delta + done.
+// llm/tasks — mock summarizeStream + summarize + segmentSections.
+// Default: yield one delta + done; segmenter returns null so the path
+// falls back to summary's ## headings (matches pre-cp75.17 behaviour
+// these tests were written against).
 vi.mock('../../../services/llm/tasks', () => ({
     summarizeStream: vi.fn(async function* () {
         yield { phase: 'reduce-delta', delta: '## 摘要\n' };
@@ -117,6 +120,7 @@ vi.mock('../../../services/llm/tasks', () => ({
         yield { phase: 'done', fullText: '## 摘要\n本堂課重點...' };
     }),
     summarize: vi.fn(async () => '## 摘要\n本堂課重點...'),
+    segmentSections: vi.fn(async () => null),
 }));
 
 // H18AudioPlayer — heavy media component, stub.

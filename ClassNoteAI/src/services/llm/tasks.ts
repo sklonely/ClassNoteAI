@@ -12,6 +12,7 @@ import { resolveActiveProvider } from './registry';
 import type { LLMMessage } from './types';
 import { LLMError } from './types';
 import { usageTracker, type UsageTask } from './usageTracker';
+import type { Section } from '../../types';
 
 /**
  * Record token usage from a provider response so the UI can render
@@ -744,6 +745,202 @@ export async function extractKeywords(text: string, max = 20): Promise<string[]>
     .filter(Boolean)
     .slice(0, max);
 }
+
+// ─── Section segmentation (cp75.17) ──────────────────────────────────
+//
+// Distinct from `summarizeStream`'s `## headings` — the summary is a
+// *study-note* organisation (overview / key concepts / examples /
+// review questions); the section list is a *temporal* organisation
+// (presenter A → presenter B → instructor commentary → Q&A).
+//
+// Why a separate LLM pass instead of post-processing the summary:
+//   - Summary headings reflect the model's chosen pedagogical
+//     structure ("Overview", "Examples"), not the lecture's actual
+//     topical timeline.
+//   - The TOC needs timestamps mapped to where the topic *starts in
+//     the recording*, which the summary deliberately strips.
+//   - A general-purpose segmenter prompt produces stable output across
+//     lecture types (presentation vs. seminar vs. workshop).
+//
+// Single LLM call — modern high-tier models (Claude 4.x at 200K-1M,
+// Gemini 2.0 Pro at 2M, GPT-4.1 / GPT-5 at 128K-256K) comfortably fit
+// even a 4-hour lecture's timestamped transcript (~60K tokens). No
+// chunking needed — the segmenter benefits from a holistic view.
+
+export interface SegmentSectionsParams {
+  /** Timestamped transcript: lines like `[00:15] sentence text`.
+   *  Caller is responsible for assembling this from subtitle rows. */
+  transcript: string;
+  language: 'zh' | 'en';
+  /** Recorded duration in seconds — used to clamp model-emitted
+   *  timestamps that fell outside the actual range. */
+  durationSec: number;
+  signal?: AbortSignal;
+  /** Optional model override (defaults to high-tier flagship). */
+  model?: string;
+}
+
+/** Build the segmenter system prompt. Domain-neutral by design — does
+ *  NOT mention any specific lecture format (presentation / Q&A /
+ *  classroom), so the same prompt works for keynotes, classrooms,
+ *  podcasts, etc. */
+function buildSegmenterSystemPrompt(language: 'zh' | 'en'): string {
+  const langName = language === 'zh' ? '繁體中文' : 'English';
+  return (
+    `You are a lecture-transcript segmenter. Identify *topical* shift ` +
+    `points in the transcript and produce a navigable table-of-contents.\n\n` +
+    `Input: a transcript with [mm:ss] timestamp prefixes per line.\n\n` +
+    `Output: a JSON array. Each element MUST be an object with exactly:\n` +
+    `  - "timestamp": integer seconds where this topic begins. Parse it ` +
+    `from the [mm:ss] of the line that opens this section. DO NOT invent ` +
+    `times not in the transcript. The first section MUST have timestamp 0.\n` +
+    `  - "title": a short topic title (≤ 15 ${langName} characters / words). ` +
+    `No decorations like "Part 1", "第一段", "Section 3:". Just the topic.\n` +
+    `  - "summary": 1-2 sentences in ${langName} on what the section covers, ` +
+    `so a reader skimming the TOC can decide whether to jump in.\n\n` +
+    `Topic-shift signals (any one is enough — be CONSERVATIVE, prefer ` +
+    `fewer, larger sections over many tiny ones):\n` +
+    `  1. Speaker explicitly announces a transition: "next we'll", ` +
+    `"接下來", "我們現在開始", "let's move on", "第二部分".\n` +
+    `  2. Speaker role change: presenter handover, instructor takes over, ` +
+    `Q&A starts.\n` +
+    `  3. Domain leap: theory → implementation; history → current ` +
+    `application; topic A → topic B with no continuity.\n\n` +
+    `DO NOT:\n` +
+    `  - Split every minute. Target 3-10 sections regardless of duration.\n` +
+    `  - Use study-note categories like "Overview / Key Concepts / ` +
+    `Examples / Review" — that's the summary's job, NOT yours.\n` +
+    `  - Invent topics not actually discussed in the transcript.\n` +
+    `  - Output anything other than the JSON array — no markdown ` +
+    `fences, no preamble, no trailing commentary.\n\n` +
+    `Sections must be in chronological order. The transcript follows.`
+  );
+}
+
+/** Parse the model's raw output into a Section[]. Tolerant of:
+ *   - leading/trailing whitespace,
+ *   - markdown fences (```json … ```),
+ *   - a stray prefix or suffix the model bolted on despite instructions.
+ *  Throws if no array can be salvaged so the caller can fall back. */
+function parseSegmenterOutput(raw: string, durationSec: number): Section[] {
+  let txt = raw.trim();
+  // Strip markdown fence if present.
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(txt);
+  if (fenced) txt = fenced[1].trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(txt);
+  } catch {
+    // Last-resort: find the first balanced [...] in the response.
+    const m = /\[\s*\{[\s\S]*\}\s*\]/.exec(txt);
+    if (!m) throw new Error('segmentSections: model did not return parseable JSON');
+    parsed = JSON.parse(m[0]);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('segmentSections: top-level value is not an array');
+  }
+
+  const out: Section[] = [];
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const ts = typeof obj.timestamp === 'number' ? obj.timestamp : Number(obj.timestamp);
+    const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+    const summary = typeof obj.summary === 'string' ? obj.summary.trim() : '';
+    if (!Number.isFinite(ts) || !title) continue;
+    out.push({
+      title: title.slice(0, 30),
+      content: summary.slice(0, 500),
+      timestamp: Math.max(0, Math.min(durationSec || ts, Math.round(ts))),
+    });
+  }
+  if (out.length === 0) {
+    throw new Error('segmentSections: no valid section objects in model output');
+  }
+  // Sort by timestamp ascending (defensive — model usually does this).
+  out.sort((a, b) => a.timestamp - b.timestamp);
+  // Force the first section to start at 0 if it doesn't (the model
+  // sometimes opens with "[01:24]" because it skipped a no-content
+  // intro; from a TOC standpoint we still want a section that maps to
+  // the start of the recording).
+  if (out[0].timestamp > 0) out[0].timestamp = 0;
+  return out;
+}
+
+/** Generate a navigable Section[] for a lecture's transcript via a
+ *  single high-tier LLM call. Uses the same per-call timeout + retry
+ *  envelope as the map-phase calls do (cp75.16) — segmentation is a
+ *  single point of failure for the TOC, so transient errors must not
+ *  leave the user with an empty left rail.
+ *
+ *  Throws on outright failure (auth / persistent transient / parse
+ *  error after retries) — caller should fall back to extracting
+ *  `## heading` lines from the summary markdown. */
+export async function segmentSections(params: SegmentSectionsParams): Promise<Section[]> {
+  throwIfAborted(params.signal);
+  if (!params.transcript.trim()) return [];
+
+  const { provider, model: defaultModel, providerId } = await activeProviderAndModel('high');
+  const model = params.model ?? defaultModel;
+
+  const messages: LLMMessage[] = [
+    { role: 'system', content: buildSegmenterSystemPrompt(params.language) },
+    { role: 'user', content: params.transcript },
+  ];
+
+  // Same retry envelope as the map phase (cp75.16): per-attempt
+  // timeout via inner AbortController, exponential backoff between
+  // attempts, abort propagated immediately.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+    throwIfAborted(params.signal);
+
+    const innerAc = new AbortController();
+    const propagateAbort = () => innerAc.abort();
+    params.signal?.addEventListener('abort', propagateAbort, { once: true });
+    let timedOut = false;
+    const deadlineId = setTimeout(() => {
+      timedOut = true;
+      innerAc.abort();
+    }, MAP_SECTION_TIMEOUT_MS);
+
+    try {
+      const res = await provider!.complete({
+        model,
+        messages,
+        temperature: 0.1,
+        maxTokens: 2048, // ~10-15 sections × 100 tokens each is plenty
+        jsonMode: true,
+        signal: innerAc.signal,
+      });
+      if (timedOut) {
+        const e = new Error(`segmentSections timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+        e.name = 'TimeoutError';
+        throw e;
+      }
+      trackUsage(providerId, model, 'summarize', res.usage);
+      return parseSegmenterOutput(res.content, params.durationSec);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      const kind = classifyMapSectionError(err);
+      if (kind === 'abort') throw err;
+      lastErr = err;
+      if (kind === 'fatal' || attempt === MAP_SECTION_MAX_RETRIES) {
+        throw err;
+      }
+      const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+      await new Promise<void>((r) => setTimeout(r, backoff));
+    } finally {
+      clearTimeout(deadlineId);
+      params.signal?.removeEventListener('abort', propagateAbort);
+    }
+  }
+  throw lastErr ?? new Error('segmentSections: unreachable retry exit');
+}
+
+// ─── Syllabus extraction ─────────────────────────────────────────────
 
 export interface TeachingPerson {
   name: string;

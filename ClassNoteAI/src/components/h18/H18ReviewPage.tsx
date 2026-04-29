@@ -1430,6 +1430,24 @@ async function runSummary(
             )
             .filter(Boolean)
             .join('\n');
+        // cp75.17 — also build timestamped transcript for the segmenter.
+        const transcriptWithTs = subs
+            .map((s) => {
+                const txt = (
+                    s.fine_translation ||
+                    s.text_zh ||
+                    s.fine_text ||
+                    s.text_en ||
+                    ''
+                ).trim();
+                if (!txt) return '';
+                const ts = Math.max(0, Math.floor(s.timestamp));
+                const mm = Math.floor(ts / 60).toString().padStart(2, '0');
+                const ss = Math.floor(ts % 60).toString().padStart(2, '0');
+                return `[${mm}:${ss}] ${txt}`;
+            })
+            .filter(Boolean)
+            .join('\n');
         if (text.trim().length < 100) {
             // Not enough content to bother — short-circuit to done so
             // the tracker row clears.
@@ -1448,7 +1466,41 @@ async function runSummary(
             /* default zh */
         }
 
-        const { summarizeStream } = await import('../../services/llm/tasks');
+        const { summarizeStream, segmentSections } = await import(
+            '../../services/llm/tasks'
+        );
+
+        // cp75.17 — Look up duration once up-front for segmentation
+        // timestamp clamping AND post-loop fallback merge.
+        let durationSec = 0;
+        try {
+            const lec = await storageService.getLecture(lectureId);
+            durationSec = lec?.duration ?? 0;
+        } catch {
+            /* keep 0 */
+        }
+
+        // cp75.17 — Section segmentation runs in parallel with summary.
+        // See recordingSessionService for the full rationale; same
+        // fall-back-to-## headings on failure. IIFE wraps both sync
+        // throws and async rejections.
+        const segmentationPromise: Promise<Section[] | null> = (async () => {
+            if (transcriptWithTs.length < 100) return null;
+            try {
+                return await segmentSections({
+                    transcript: transcriptWithTs,
+                    language: lang,
+                    durationSec,
+                });
+            } catch (err) {
+                console.warn(
+                    '[H18ReviewPage] segmentSections failed, falling back to summary ## headings:',
+                    err,
+                );
+                return null;
+            }
+        })();
+
         let full = '';
         let mapTotal = 0;
         let reduceChunks = 0;
@@ -1527,22 +1579,23 @@ async function runSummary(
         const existing = await storageService.getNote(lectureId).catch(
             () => null,
         );
-        // cp75.14 — extract sections from markdown so the TOC populates.
-        const { mergeExtractedSections } = await import(
-            '../../utils/summaryStructure'
-        );
-        let durationSec = 0;
-        try {
-            const lec = await storageService.getLecture(lectureId);
-            durationSec = lec?.duration ?? 0;
-        } catch {
-            /* keep 0 — single-section path still works */
+        // cp75.17 — prefer segmenter output, fall back to summary's
+        // ## headings, then to existing sections (so retry doesn't wipe
+        // a good prior TOC if both LLM paths fail this round).
+        const segmented = await segmentationPromise;
+        let sections: Section[];
+        if (segmented && segmented.length > 0) {
+            sections = segmented;
+        } else {
+            const { mergeExtractedSections } = await import(
+                '../../utils/summaryStructure'
+            );
+            sections = mergeExtractedSections(
+                full,
+                durationSec,
+                existing?.sections ?? [],
+            );
         }
-        const sections = mergeExtractedSections(
-            full,
-            durationSec,
-            existing?.sections ?? [],
-        );
         await storageService.saveNote({
             lecture_id: lectureId,
             title: existing?.title ?? title ?? '',

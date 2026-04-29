@@ -259,6 +259,12 @@ vi.mock('../llm/tasks', () => ({
             };
         },
     ),
+    // cp75.17 — segmentSections runs in parallel with summarize. Default
+    // stub returns null so the runBackgroundSummary path falls through
+    // to summary's `## headings` extraction, matching the pre-cp75.17
+    // behaviour these tests were written against. Tests that want to
+    // verify segmenter wiring can override via `.mockResolvedValueOnce`.
+    segmentSections: vi.fn(async () => null),
 }));
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -593,8 +599,11 @@ describe('stop() · background summary', () => {
         ];
         await recordingSessionService.start('c', 'lecture-1');
         await recordingSessionService.stop();
-        // Wait for background to finish.
-        await new Promise((r) => setTimeout(r, 30));
+        // Wait for background to finish. cp75.17 — bumped 30 → 100ms
+        // because runBackgroundSummary now awaits getLecture +
+        // segmentSections (parallel) + dynamic import of llm/tasks
+        // before persisting; 30ms was on the edge under load.
+        await new Promise((r) => setTimeout(r, 100));
         expect(storageMockState.saveNoteCalls.length).toBeGreaterThanOrEqual(1);
         const note = storageMockState.saveNoteCalls[0][0] as {
             lecture_id: string;

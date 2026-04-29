@@ -31,6 +31,7 @@
  */
 
 import type { SubtitleState, SubtitleSegment } from '../types/subtitle';
+import type { Section } from '../types';
 
 import {
     type RecordingSessionService,
@@ -713,6 +714,24 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                 .filter(Boolean)
                 .join('\n');
 
+            // cp75.17 — also build a TIMESTAMPED transcript for the
+            // segmentation pass. The segmenter needs `[mm:ss]` prefixes
+            // so it can pin the section start to a real moment in the
+            // recording. Plain transcript (above) is what the summary
+            // consumes — timestamps would just be noise the model has
+            // to translate into prose.
+            const transcriptWithTs = subs
+                .map((s) => {
+                    const txt = (s.text_en || s.text_zh || '').trim();
+                    if (!txt) return '';
+                    const ts = Math.max(0, Math.floor(s.timestamp));
+                    const mm = Math.floor(ts / 60).toString().padStart(2, '0');
+                    const ss = Math.floor(ts % 60).toString().padStart(2, '0');
+                    return `[${mm}:${ss}] ${txt}`;
+                })
+                .filter(Boolean)
+                .join('\n');
+
             // Don't waste an LLM call on a 5-second test ping.
             // 100 chars ≈ one short paragraph, which matches the
             // PHASE-7-PLAN §S2.3 minimum.
@@ -777,6 +796,56 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                 const frac = Math.min(1, acc / mapTotal);
                 return 0.05 + 0.4 * frac;
             };
+
+            // Look up duration ONCE up-front — both segmentation (for
+            // timestamp clamping) and the post-loop section merge need
+            // it, and a single read is cheaper than two.
+            let lectureDurationSec = 0;
+            try {
+                const lec = await storage.getLecture(lectureId);
+                lectureDurationSec = lec?.duration ?? 0;
+            } catch {
+                /* fall back to 0 — segmenter still produces useful TOC */
+            }
+
+            // cp75.17 — Section segmentation runs in PARALLEL with the
+            // summary. Conceptually they answer different questions:
+            //   summary → "what did the lecture teach?"
+            //   sections → "where in the recording does each topic
+            //              start, so the user can jump to it?"
+            // Pre cp75.17 we abused summary's `## headings` for the TOC,
+            // which produced a study-note structure (Overview / Examples /
+            // Q&A) instead of a temporal one (presenter A / instructor /
+            // Q&A). Running the segmenter as a separate LLM call with a
+            // dedicated prompt fixes that without serialising — both
+            // calls go to the same provider but we don't block one on
+            // the other.
+            //
+            // Failure of the segmenter falls back to summary's ##
+            // headings (still better than empty TOC). Catch is nested
+            // here so it can't take down the whole runBackgroundSummary.
+            const { segmentSections } = await import('./llm/tasks');
+            // IIFE wrapper handles both sync throws (e.g. segmentSections
+            // missing in older test stubs) and async rejections in one
+            // place — the parallel call must never propagate, falling
+            // back to ## heading extraction is always preferable to
+            // failing the whole summarise.
+            const segmentationPromise: Promise<Section[] | null> = (async () => {
+                if (transcriptWithTs.length < 100) return null;
+                try {
+                    return await segmentSections({
+                        transcript: transcriptWithTs,
+                        language: summaryLang,
+                        durationSec: lectureDurationSec,
+                    });
+                } catch (err) {
+                    console.warn(
+                        '[recordingSession] segmentSections failed, falling back to summary ## headings:',
+                        err,
+                    );
+                    return null;
+                }
+            })();
 
             for await (const event of summarizeStream({
                 content: text,
@@ -853,22 +922,26 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             try {
                 const existing = await storage.getNote(lectureId);
                 const now = new Date().toISOString();
-                const { mergeExtractedSections } = await import(
-                    '../utils/summaryStructure'
-                );
-                // Best-effort lecture duration for timestamp spread.
-                let durationSec = 0;
-                try {
-                    const lec = await storage.getLecture(lectureId);
-                    durationSec = lec?.duration ?? 0;
-                } catch {
-                    /* fall back to 0 — single-section markdown still works */
+
+                // cp75.17 — prefer segmentation result; fall back through
+                // summary's ## headings; finally keep existing sections
+                // (so re-running summarise doesn't wipe a good prior TOC
+                // when both LLM paths fail).
+                const segmented = await segmentationPromise;
+                let sections: Section[];
+                if (segmented && segmented.length > 0) {
+                    sections = segmented;
+                } else {
+                    const { mergeExtractedSections } = await import(
+                        '../utils/summaryStructure'
+                    );
+                    sections = mergeExtractedSections(
+                        fullSummary,
+                        lectureDurationSec,
+                        existing?.sections ?? [],
+                    );
                 }
-                const sections = mergeExtractedSections(
-                    fullSummary,
-                    durationSec,
-                    existing?.sections ?? [],
-                );
+
                 await storage.saveNote({
                     lecture_id: lectureId,
                     title: existing?.title ?? '',
