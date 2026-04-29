@@ -74,8 +74,18 @@ export default function SettingsAboutUpdates({ appVersion }: Props) {
         const settings = await storageService.getAppSettings();
         const canReadLocalStorage = typeof window !== "undefined" &&
           typeof window.localStorage !== "undefined";
-        const storedPat = canReadLocalStorage
-          ? window.localStorage.getItem("llm.github-models.pat")
+        // cp75.19 — was raw `localStorage.getItem("llm.github-models.pat")`.
+        // Pre-cp75.3 keys lived under `llm.<providerId>.<field>` (single-
+        // user) but cp75.3 added per-user namespacing → `llm.<userId>.
+        // <providerId>.<field>`. This file was missed in the migration,
+        // so since cp75.3 the read always returned null → the GitHub
+        // issue button vanished from the bug-report UI even when the
+        // user had a GitHub Models PAT configured.
+        // Use keyStore (which already does the userId namespacing) so
+        // any future key-layout change picks this site up automatically.
+        const { keyStore } = await import('../../services/llm/keyStore');
+        const storedPat: string | null = canReadLocalStorage
+          ? keyStore.get('github-models', 'pat')
           : null;
         const configured = typeof storedPat === "string"
           ? storedPat.trim().length > 0
