@@ -306,10 +306,18 @@ async fn translate_rough(
         .await
         .map_err(|e| e.to_string()),
         "gemma" => {
+            // cp75.1: forward source/target lang to TranslateGemma so the
+            // PTranslate language pickers actually take effect. Before
+            // this, gemma::translate was hardcoded en → zh-TW regardless.
             // gemma_endpoint == None → translate() falls back to DEFAULT_ENDPOINT
-            translation::gemma::translate(&text, gemma_endpoint.as_deref())
-                .await
-                .map_err(|e| e.to_string())
+            translation::gemma::translate(
+                &text,
+                &source_lang,
+                &target_lang,
+                gemma_endpoint.as_deref(),
+            )
+            .await
+            .map_err(|e| e.to_string())
         }
         #[cfg(feature = "nmt-local")]
         "local" => translation::rough::translate_rough(&text, &source_lang, &target_lang)

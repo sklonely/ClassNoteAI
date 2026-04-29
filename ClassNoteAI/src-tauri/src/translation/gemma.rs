@@ -84,21 +84,76 @@ const MAX_INPUT_CHARS: usize = 3_000;
 ///   - Stays generic — no ML / academic / medical / legal hints. The
 ///     rules apply equally to a Wikipedia article, a cooking video
 ///     transcript, or a board-meeting recording.
-fn build_prompt(eng: &str) -> String {
+/// Map an ISO-style code to a human-readable name + character-class hint.
+/// Used by `build_prompt` to render `Translate from {src_name} to {tgt_name}`
+/// dynamically per request. The character-class hint is appended only for
+/// targets where simplified/traditional confusion is real (zh-TW vs zh-CN).
+fn lang_label(code: &str) -> (&'static str, Option<&'static str>) {
+    match code.to_lowercase().as_str() {
+        "en" | "en-us" | "en-gb" => ("English", None),
+        "zh-tw" | "zh-hant" | "zh_tw" => (
+            "Traditional Chinese (繁體中文)",
+            Some("Use Traditional Chinese (繁體) characters. Never Simplified (简体)."),
+        ),
+        "zh-cn" | "zh-hans" | "zh_cn" | "zh" => (
+            "Simplified Chinese (简体中文)",
+            Some("Use Simplified Chinese (简体) characters. Never Traditional (繁體)."),
+        ),
+        "ja" => ("Japanese", None),
+        "ko" => ("Korean", None),
+        "es" => ("Spanish", None),
+        "fr" => ("French", None),
+        "de" => ("German", None),
+        "pt" => ("Portuguese", None),
+        "ru" => ("Russian", None),
+        "ar" => ("Arabic", None),
+        "vi" => ("Vietnamese", None),
+        "th" => ("Thai", None),
+        "id" => ("Indonesian", None),
+        // Pass through any other ISO code we don't have a name for.
+        _ => ("the target language", None),
+    }
+}
+
+/// Gemma chat template for raw `/completion`.
+///
+/// cp75.1 — accepts dynamic source/target language. Replaces the previous
+/// hardcoded "English → Traditional Chinese" path so PTranslate's
+/// source_language / target_language settings actually take effect.
+///
+/// The prompt structure stays the same as cp74.3: domain-neutral, 4–5
+/// behaviour rules, two trailing turn markers. The character-class rule
+/// (繁體 vs 简体) is only emitted for Chinese targets where it actually
+/// matters; for Japanese, Korean, etc. it would just be confusing noise.
+fn build_prompt(text: &str, source_lang: &str, target_lang: &str) -> String {
+    let (src_name, _) = lang_label(source_lang);
+    let (tgt_name, tgt_charset_hint) = lang_label(target_lang);
+
+    let charset_line = match tgt_charset_hint {
+        Some(hint) => format!("- {hint}\n"),
+        None => String::new(),
+    };
+
     format!(
         "<start_of_turn>user\n\
-         Translate the following from English (en) to Traditional Chinese (zh-TW).\n\
+         Translate the following from {src_name} ({src_code}) to {tgt_name} ({tgt_code}).\n\
          \n\
          Rules:\n\
-         - Output only the translation. No preamble, no explanation, no English echo.\n\
-         - Use Traditional Chinese (繁體) characters. Never Simplified (简体).\n\
+         - Output only the translation. No preamble, no explanation, no source-language echo.\n\
+         {charset_line}\
          - Preserve proper nouns, brand names, model names, and acronyms verbatim in their original form.\n\
-         - For technical terms whose canonical Chinese form you don't know, keep the English original.\n\
+         - For technical terms whose canonical translation you don't know, keep the original term.\n\
          - Match the source register: keep formal sentences formal, casual sentences casual.\n\
          \n\
-         English: {eng}\n\
-         Traditional Chinese:<end_of_turn>\n\
-         <start_of_turn>model\n"
+         {src_name}: {text}\n\
+         {tgt_name}:<end_of_turn>\n\
+         <start_of_turn>model\n",
+        src_name = src_name,
+        tgt_name = tgt_name,
+        src_code = source_lang,
+        tgt_code = target_lang,
+        charset_line = charset_line,
+        text = text,
     )
 }
 
@@ -133,13 +188,25 @@ struct CompletionResponse {
     content: String,
 }
 
-/// Translate `text` from English to Traditional Chinese using TranslateGemma.
+/// Translate `text` from `source_lang` to `target_lang` using TranslateGemma.
 ///
 /// `endpoint` should point at the llama-server root (e.g.
 /// `http://127.0.0.1:8080`); the `/completion` path is appended here.
 /// Pass `None` to use [`DEFAULT_ENDPOINT`].
+///
+/// `source_lang` / `target_lang` are ISO-639-1 (or BCP-47 region) codes,
+/// e.g. `en`, `zh-TW`, `zh-CN`, `ja`. Unknown codes are passed through
+/// to the prompt verbatim and labelled "the target language" in the
+/// natural-language portion (the model still sees the code so it has a
+/// chance to recognise it).
+///
+/// cp75.1 — added `source_lang` / `target_lang` parameters. Before this
+/// release the function was hardcoded English → Traditional Chinese; the
+/// PTranslate language pickers had no runtime effect.
 pub async fn translate(
     text: &str,
+    source_lang: &str,
+    target_lang: &str,
     endpoint: Option<&str>,
 ) -> Result<TranslationResult, TranslationError> {
     if text.trim().is_empty() {
@@ -163,7 +230,7 @@ pub async fn translate(
     let base = endpoint.unwrap_or(DEFAULT_ENDPOINT);
     let url = format!("{}/completion", base.trim_end_matches('/'));
     let body = CompletionRequest {
-        prompt: build_prompt(text),
+        prompt: build_prompt(text, source_lang, target_lang),
         // cp74.3 sampling tuning — based on the LLM-prompting guide (see
         // promptingguide.ai / f22labs Apr 2026):
         //   - temperature 0.0 (pure greedy) gets stuck on the first
@@ -248,7 +315,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_text_short_circuits() {
-        let result = translate("", None).await.unwrap();
+        let result = translate("", "en", "zh-TW", None).await.unwrap();
         assert!(result.translated_text.is_empty());
         assert!(matches!(result.source, TranslationSource::Rough));
     }
@@ -256,7 +323,7 @@ mod tests {
     #[tokio::test]
     async fn unreachable_endpoint_returns_friendly_error() {
         // Use a port we don't expect anything on
-        let err = translate("Hello.", Some("http://127.0.0.1:1"))
+        let err = translate("Hello.", "en", "zh-TW", Some("http://127.0.0.1:1"))
             .await
             .unwrap_err();
         let msg = err.to_string();
@@ -276,7 +343,9 @@ mod tests {
         let huge = "word ".repeat(800); // 4000 chars, well over MAX_INPUT_CHARS
         // Point at port 1 — if the size guard fails we'd get a connect
         // error instead of LocalError, which is what the assertion catches.
-        let err = translate(&huge, Some("http://127.0.0.1:1")).await.unwrap_err();
+        let err = translate(&huge, "en", "zh-TW", Some("http://127.0.0.1:1"))
+            .await
+            .unwrap_err();
         match err {
             TranslationError::LocalError(msg) => {
                 assert!(msg.contains("too long"), "msg = {msg}");
@@ -286,16 +355,35 @@ mod tests {
     }
 
     #[test]
-    fn prompt_includes_target_language_marker() {
-        let p = build_prompt("Hello world.");
-        // cp74.3: prompt now uses lang-code form (en, zh-TW) rather than
-        // the prose 「Traditional Chinese (繁體中文)」 string. We assert on
-        // the components separately so the test survives further prompt
-        // tuning that doesn't break TranslateGemma's expected signals.
+    fn prompt_includes_target_language_marker_zh_tw() {
+        let p = build_prompt("Hello world.", "en", "zh-TW");
         assert!(p.contains("zh-TW"), "prompt must mention target lang code");
-        assert!(p.contains("繁體"), "prompt must mention 繁體 character class");
+        assert!(p.contains("繁體"), "zh-TW prompt must mention 繁體 character class");
         assert!(p.contains("Hello world."), "prompt must contain the input");
         assert!(p.contains("<start_of_turn>model"), "prompt must end with the model turn marker");
+    }
+
+    #[test]
+    fn prompt_zh_cn_uses_simplified_charset_hint() {
+        // cp75.1: dynamic prompt should swap the character-class hint
+        // between Traditional and Simplified by target lang code.
+        let p = build_prompt("Hello world.", "en", "zh-CN");
+        assert!(p.contains("zh-CN"), "prompt must mention target lang code");
+        assert!(p.contains("简体"), "zh-CN prompt must mention 简体 charset hint");
+        assert!(
+            !p.contains("Use Traditional Chinese (繁體) characters."),
+            "zh-CN prompt must NOT pin Traditional charset"
+        );
+    }
+
+    #[test]
+    fn prompt_non_chinese_target_skips_charset_rule() {
+        // For ja/ko/etc. there's no Trad/Simp distinction → don't emit
+        // the line at all (avoids confusing the model).
+        let p = build_prompt("Hello.", "en", "ja");
+        assert!(p.contains("Japanese"), "prompt must name target language");
+        assert!(!p.contains("繁體"), "ja prompt must not mention 繁體");
+        assert!(!p.contains("简体"), "ja prompt must not mention 简体");
     }
 
     #[test]
@@ -303,9 +391,8 @@ mod tests {
         // Regression: cp74.3 added five behaviour rules. Don't let a
         // future refactor silently drop any of them — at least verify
         // the keywords land in the prompt body.
-        let p = build_prompt("Some sentence.");
+        let p = build_prompt("Some sentence.", "en", "zh-TW");
         assert!(p.contains("Output only the translation"));
-        assert!(p.contains("Simplified") || p.contains("简体"));
         assert!(p.contains("acronym") || p.contains("proper noun"));
         assert!(p.contains("register"));
     }

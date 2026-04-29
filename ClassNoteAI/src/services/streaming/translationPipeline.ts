@@ -185,12 +185,33 @@ class TranslationPipeline {
     const RETRY_DELAY_MS = 500;
     let lastError: unknown = null;
 
+    // cp75.1: read source/target language from settings instead of
+    // hardcoding 'en' → 'zh'. Falls back to en → zh-TW to preserve the
+    // pre-cp75 default behaviour for users who never touched the
+    // PTranslate language pickers.
+    let sourceLang = 'en';
+    let targetLang = 'zh-TW';
+    try {
+      const { storageService } = await import('../storageService');
+      const settings = await storageService.getAppSettings();
+      const src = settings?.translation?.source_language;
+      const tgt = settings?.translation?.target_language;
+      // 'auto' source means "let ASR decide"; we still need a concrete
+      // code for the translator's prompt → fall back to 'en' since that's
+      // what the ASR pipeline emits today (Phase 8 will plumb the real
+      // detected language through).
+      if (src && src !== 'auto') sourceLang = src;
+      if (tgt) targetLang = tgt;
+    } catch {
+      // settings read failed — keep defaults
+    }
+
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const result = await translateRough(
           job.textEn,
-          'en',
-          'zh',
+          sourceLang,
+          targetLang,
           /* useCache */ true,
         );
         const latencyMs = performance.now() - start;

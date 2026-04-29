@@ -723,12 +723,26 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
 
             taskTrackerService.update(taskId, { status: 'running' });
 
+            // cp75.1: derive summary output language from user's target_language
+            // setting instead of hardcoding 'zh'. Mirrors H18ReviewPage's
+            // runSummary logic so the live stop pipeline and the manual
+            // ReviewPage retry stay consistent.
+            let summaryLang: 'zh' | 'en' = 'zh';
+            try {
+                const storage2 = await this.storage();
+                const settings = await storage2.getAppSettings();
+                const tgt = settings?.translation?.target_language || 'zh-TW';
+                summaryLang = tgt.startsWith('zh') ? 'zh' : 'en';
+            } catch {
+                /* fall through with 'zh' default */
+            }
+
             let fullSummary = '';
             let chunkCount = 0;
 
             for await (const event of summarizeStream({
                 content: text,
-                language: 'zh',
+                language: summaryLang,
             })) {
                 if (
                     event.phase === 'reduce-delta' &&
