@@ -261,6 +261,13 @@ export interface AppSettings {
      * 留空使用預設值。
      */
     gemma_endpoint?: string;
+    /**
+     * cp75.12 — Which TranslateGemma variant to use when the provider
+     * is `gemma`. Sidecar startup uses this to pick the model file.
+     * Defaults to `'4b'` for backward compat with pre-multi-variant
+     * installs. UI: PTranslate's per-variant ModelCard list.
+     */
+    gemma_variant?: '4b' | '12b' | '27b';
     // Spoken language of the lecture. `auto` lets Whisper detect per
     // session; once detected we pass it to M2M100. Introduced in v0.5.1.
     source_language?: 'auto' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'zh-TW' | 'zh-CN';

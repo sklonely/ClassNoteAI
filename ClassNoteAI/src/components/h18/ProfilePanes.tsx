@@ -481,7 +481,7 @@ export function PTranscribe() {
         void loadFeatures(false);
     }, []);
 
-    const setVariant = (next: 'int8' | 'fp32') => {
+    const setVariant = async (next: 'int8' | 'fp32') => {
         // Don't let the user switch to a variant they haven't downloaded
         // yet — the runtime would just fall back to first_present and
         // ignore the setting silently. Tell them via toast and stay on
@@ -495,7 +495,21 @@ export function PTranscribe() {
             );
             return;
         }
-        update({ experimental: { ...exp, parakeetVariant: next } });
+        if (variant === next) return;
+        // cp75.12 — surface concrete switch feedback. Before this the
+        // click silently flipped settings but the user got no signal
+        // (presentMap could also be racey-empty during first render →
+        // looked like "切換不了"). Now: persist + toast that the new
+        // variant takes effect at the next session boot. Active recording
+        // stays on the loaded engine (in-place hot-swap mid-session
+        // would cut audio, which is worse).
+        await update({ experimental: { ...exp, parakeetVariant: next } });
+        void import('../../services/toastService').then(({ toastService }) =>
+            toastService.success(
+                `已切到 ${next === 'fp32' ? 'Parakeet FP32' : 'Parakeet INT8'}`,
+                '下次開始錄音時會自動用此變體。目前錄音中的話請結束再開始。',
+            ),
+        );
     };
 
     const handleDownloadVariant = useCallback(
@@ -1080,14 +1094,34 @@ export function PTranslate() {
         }
     };
 
+    /** cp75.12 — resolve the sidecar model_path for the user's selected
+     *  variant. Falls back to legacy gemmaStatus.model_path (4B) when
+     *  the variants list isn't surfaced yet (older binary) or the
+     *  selected one isn't downloaded. */
+    const resolveSelectedGemmaModelPath = (): string | null => {
+        const sel = t?.gemma_variant ?? '4b';
+        const match = gemmaStatus?.variants?.find(
+            (v) => v.variant.replace(/^b/, '') === sel && v.present,
+        );
+        if (match) {
+            // model_path is the legacy 4B path's directory; swap filename.
+            const dir = gemmaStatus?.model_path?.replace(/[^/\\]+$/, '');
+            return dir ? `${dir}${match.filename}` : null;
+        }
+        return gemmaStatus?.model_present
+            ? gemmaStatus.model_path
+            : null;
+    };
+
     const handleStartSidecar = async () => {
-        if (!gemmaStatus?.model_present) return;
+        const modelPath = resolveSelectedGemmaModelPath();
+        if (!modelPath) return;
         setSidecarBusy('starting');
         setSidecarMsg(null);
         try {
             const { invoke } = await import('@tauri-apps/api/core');
             const result = await invoke<SidecarBringUp>('start_gemma_sidecar', {
-                modelPath: gemmaStatus.model_path,
+                modelPath,
                 port: null,
             });
             setSidecarMsg(SIDECAR_BRING_UP_LABEL[result] || result);
@@ -1095,6 +1129,95 @@ export function PTranslate() {
         } catch (err) {
             setSidecarMsg(
                 (err as Error)?.message || String(err) || '啟動失敗',
+            );
+        } finally {
+            setSidecarBusy('idle');
+        }
+    };
+
+    /**
+     * cp75.12 — real Gemma variant hot-swap. Persists the new variant
+     * to settings.translation.gemma_variant AND, if the sidecar is
+     * currently up, stops + restarts it with the new model path. UI
+     * surfaces clear progress / success feedback so "切換不了" is no
+     * longer the user's experience.
+     */
+    const handleSwitchGemmaVariant = async (
+        variant: '4b' | '12b' | '27b',
+        label: string,
+        filename: string,
+    ) => {
+        // Already selected? No-op (button shows 使用中, can't get here
+        // anyway via normal click but defensive).
+        const current = t?.gemma_variant ?? '4b';
+        if (current === variant) return;
+
+        const variantPresent = gemmaStatus?.variants?.find(
+            (v) => v.variant.replace(/^b/, '') === variant,
+        )?.present;
+        if (!variantPresent) {
+            const { toastService } = await import(
+                '../../services/toastService'
+            );
+            toastService.warning(
+                `${label} 模型尚未下載`,
+                '請先按該卡片的「下載」取得模型後再切換。',
+            );
+            return;
+        }
+
+        const wasRunning = !!gemmaStatus?.sidecar_running;
+        const { invoke } = await import('@tauri-apps/api/core');
+        const { toastService } = await import('../../services/toastService');
+
+        try {
+            // 1. Persist new selected variant.
+            await update({
+                translation: { ...(t || {}), gemma_variant: variant },
+            });
+
+            // 2. If sidecar is up, stop it (was bound to the old variant's
+            //    model_path; cannot hot-swap models without a restart).
+            if (wasRunning) {
+                setSidecarBusy('stopping');
+                try {
+                    await invoke('stop_gemma_sidecar');
+                } catch (err) {
+                    console.warn(
+                        '[PTranslate] stop_gemma_sidecar failed:',
+                        err,
+                    );
+                }
+            }
+
+            // 3. Start with new path.
+            const dir = gemmaStatus?.model_path?.replace(/[^/\\]+$/, '');
+            const newPath = dir ? `${dir}${filename}` : null;
+            if (!newPath) {
+                toastService.error(
+                    '無法解析模型路徑',
+                    '重啟後手動按 sidecar 列「啟動」即可。',
+                );
+                setSidecarBusy('idle');
+                return;
+            }
+            setSidecarBusy('starting');
+            const result = await invoke<SidecarBringUp>(
+                'start_gemma_sidecar',
+                { modelPath: newPath, port: null },
+            );
+            setSidecarMsg(SIDECAR_BRING_UP_LABEL[result] || result);
+            await refreshGemmaStatus();
+            toastService.success(
+                `已切到 ${label}`,
+                wasRunning
+                    ? 'sidecar 已用新模型重啟，現在生效。'
+                    : '下次啟動 sidecar 會用此模型。',
+            );
+        } catch (err) {
+            toastService.error(
+                '切換變體失敗',
+                (err as Error)?.message || String(err),
             );
         } finally {
             setSidecarBusy('idle');
@@ -1178,10 +1301,14 @@ export function PTranslate() {
                             const sizeGb = (
                                 v.expected_size / 1_000_000_000
                             ).toFixed(1);
-                            const isActive =
-                                v.present &&
-                                gemmaStatus.sidecar_running &&
-                                gemmaStatus.model_path.endsWith(v.filename);
+                            // cp75.12 — active = THIS is the user's selected
+                            // variant per settings. Sidecar running just
+                            // means *some* variant is up, not necessarily
+                            // this one — gemmaStatus.model_path tells us
+                            // which file the sidecar was started with.
+                            const selectedVariant =
+                                t?.gemma_variant ?? '4b';
+                            const isActive = selectedVariant === variantKey;
                             return (
                                 <ModelCard
                                     key={v.variant}
@@ -1199,25 +1326,13 @@ export function PTranslate() {
                                     actionLabel="下載"
                                     active={isActive}
                                     downloading={downloading}
-                                    onSelect={() => {
-                                        // For Gemma, switching means
-                                        // restarting the sidecar with a
-                                        // different model path. This UX
-                                        // is left as-is for cp75.10 (lay
-                                        // groundwork without changing
-                                        // sidecar lifecycle); user can
-                                        // stop sidecar + start with new
-                                        // path manually until the wire-
-                                        // up lands.
-                                        void import(
-                                            '../../services/toastService',
-                                        ).then(({ toastService }) =>
-                                            toastService.info(
-                                                'Gemma 變體切換',
-                                                `${v.label} 已下載；下次啟動 sidecar 時會用該變體。請按 sidecar 列「停止」+「啟動」立即套用。`,
-                                            ),
-                                        );
-                                    }}
+                                    onSelect={() =>
+                                        handleSwitchGemmaVariant(
+                                            variantKey,
+                                            v.label,
+                                            v.filename,
+                                        )
+                                    }
                                     onDownload={() =>
                                         handleDownload(variantKey)
                                     }
