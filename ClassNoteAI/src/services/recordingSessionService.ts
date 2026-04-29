@@ -218,8 +218,39 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
 
             // Bring up the recorder. Lazy-construct so test runs that
             // never call start() don't pay the AudioContext cost.
+            //
+            // cp75: pull the user-preferred mic from settings.audio.device_id
+            // so the picker actually works. Before this, AudioRecorder({})
+            // was hardcoded with no deviceId → getUserMedia always fell back
+            // to the OS default mic, ignoring whatever the user picked in
+            // PAudio. Tolerate failure — if device prep blows up we still
+            // want to record (with the OS default).
+            let preferredDeviceId: string | undefined;
+            try {
+                const { audioDeviceService } = await import('./audioDeviceService');
+                const prepared = await audioDeviceService
+                    .preparePreferredInputDeviceForRecording()
+                    .catch(() => null);
+                preferredDeviceId =
+                    typeof prepared === 'string' && prepared.length > 0
+                        ? prepared
+                        : undefined;
+            } catch (err) {
+                console.warn(
+                    '[recordingSession] device prep failed; using default mic',
+                    err,
+                );
+            }
             if (!this.recorder) {
-                this.recorder = new AudioRecorder({});
+                this.recorder = new AudioRecorder(
+                    preferredDeviceId ? { deviceId: preferredDeviceId } : {},
+                );
+            } else if (preferredDeviceId) {
+                try {
+                    this.recorder.setDeviceId(preferredDeviceId);
+                } catch (err) {
+                    console.warn('[recordingSession] setDeviceId failed', err);
+                }
             }
             // Wire mic chunks → ASR. (useRecordingSession had this — the
             // reason 字幕 pane stayed blank in P6.5 before they wired it.)
@@ -1093,20 +1124,39 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         if (!md || typeof md.addEventListener !== 'function') return;
         if (this.deviceChangeHandler) return;
         this.deviceChangeHandler = () => {
-            // Re-query device info from the recorder. If the active
-            // input changed, surface a toast.
-            const info = this.recorder?.getInputDeviceInfo();
-            if (!info) return;
-            const next: RecordingInputSnapshot = {
-                label: info.label,
-                sampleRate: info.sampleRate,
-            };
-            const warning = buildDeviceChangeWarning(this.lastInputSnapshot, next);
-            this.lastInputSnapshot = next;
-            if (!warning) return;
-            void this.toast().then((toast) =>
-                toast.warning(warning.message, warning.detail),
-            );
+            // cp75: respect settings.audio.auto_switch_detection. The toggle
+            // existed in PAudio (ProfilePanes) since cp70a but the handler
+            // never read it — turning it off did nothing. Lazy-import the
+            // storage service so test environments without it don't break.
+            void (async () => {
+                try {
+                    const { storageService } = await import('./storageService');
+                    const settings = await storageService.getAppSettings();
+                    if (settings?.audio?.auto_switch_detection === false) {
+                        return; // user explicitly disabled monitoring
+                    }
+                } catch {
+                    // Could not read settings — default to monitoring on.
+                }
+
+                // Re-query device info from the recorder. If the active
+                // input changed, surface a toast.
+                const info = this.recorder?.getInputDeviceInfo();
+                if (!info) return;
+                const next: RecordingInputSnapshot = {
+                    label: info.label,
+                    sampleRate: info.sampleRate,
+                };
+                const warning = buildDeviceChangeWarning(
+                    this.lastInputSnapshot,
+                    next,
+                );
+                this.lastInputSnapshot = next;
+                if (!warning) return;
+                void this.toast().then((toast) =>
+                    toast.warning(warning.message, warning.detail),
+                );
+            })();
         };
         md.addEventListener('devicechange', this.deviceChangeHandler);
     }

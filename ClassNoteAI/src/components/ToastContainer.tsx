@@ -93,9 +93,42 @@ const TYPE_CLASS: Record<ToastType, string> = {
   info: s.typeInfo,
 };
 
-export default function ToastContainer({ toastStyle = 'card' }: Props) {
+export default function ToastContainer({ toastStyle: toastStyleProp }: Props) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [hovered, setHovered] = useState(false);
+
+  // cp75: read appearance.toastStyle from settings if no explicit prop.
+  // The Phase 2 TODO finally wired up — before this, the user's pick in
+  // PAppearance was a dead toggle (the App.tsx mounts both render
+  // <ToastContainer /> with no prop, defaulting forever to 'card').
+  const [styleFromSettings, setStyleFromSettings] = useState<
+    ToastStyle | undefined
+  >(undefined);
+  useEffect(() => {
+    let alive = true;
+    const sync = async () => {
+      try {
+        const { storageService } = await import(
+          '../services/storageService'
+        );
+        const settings = await storageService.getAppSettings();
+        if (alive) {
+          setStyleFromSettings(settings?.appearance?.toastStyle);
+        }
+      } catch {
+        // best-effort — fall back to default 'card' below
+      }
+    };
+    void sync();
+    const onChange = () => void sync();
+    window.addEventListener('classnote-settings-changed', onChange);
+    return () => {
+      alive = false;
+      window.removeEventListener('classnote-settings-changed', onChange);
+    };
+  }, []);
+
+  const toastStyle: ToastStyle = toastStyleProp ?? styleFromSettings ?? 'card';
 
   useEffect(() => {
     return toastService.subscribe(setToasts);

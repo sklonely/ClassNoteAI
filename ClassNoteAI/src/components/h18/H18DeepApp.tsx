@@ -98,20 +98,75 @@ export default function H18DeepApp() {
 
     useEffect(() => {
         let cancelled = false;
+        let osMediaQuery: MediaQueryList | null = null;
+        let osChangeHandler: ((e: MediaQueryListEvent) => void) | null = null;
+        const detachOsListener = () => {
+            if (osMediaQuery && osChangeHandler) {
+                try {
+                    osMediaQuery.removeEventListener('change', osChangeHandler);
+                } catch {
+                    /* swallow */
+                }
+            }
+            osMediaQuery = null;
+            osChangeHandler = null;
+        };
+
         const loadTheme = async () => {
             try {
                 const settings = await storageService.getAppSettings();
                 if (cancelled) return;
-                if (settings?.theme) setTheme(settings.theme as 'light' | 'dark');
-                else setTheme(getSystemTheme());
+
+                // cp75: prefer the v0.7 `appearance.themeMode` ('system' /
+                // 'light' / 'dark') over the legacy `theme` field. Until
+                // this fix the boot path read only `settings.theme`, so
+                // PAppearance writing `appearance.themeMode = 'system'`
+                // had no runtime effect.
+                const mode = settings?.appearance?.themeMode;
+                detachOsListener();
+
+                if (mode === 'system') {
+                    const apply = () => setTheme(getSystemTheme());
+                    apply();
+                    if (typeof window !== 'undefined' && window.matchMedia) {
+                        osMediaQuery = window.matchMedia(
+                            '(prefers-color-scheme: dark)',
+                        );
+                        osChangeHandler = () => apply();
+                        try {
+                            osMediaQuery.addEventListener('change', osChangeHandler);
+                        } catch {
+                            /* legacy browsers — skip */
+                        }
+                    }
+                    return;
+                }
+                if (mode === 'light' || mode === 'dark') {
+                    setTheme(mode);
+                    return;
+                }
+                // Fall back to legacy `theme` field for users who never
+                // touched the new "follow system" toggle.
+                if (settings?.theme) {
+                    setTheme(settings.theme as 'light' | 'dark');
+                } else {
+                    setTheme(getSystemTheme());
+                }
             } catch (err) {
                 console.warn('[H18DeepApp] theme load failed:', err);
                 if (!cancelled) setTheme(getSystemTheme());
             }
         };
         loadTheme();
+        const onSettingsChange = () => loadTheme();
+        window.addEventListener('classnote-settings-changed', onSettingsChange);
         return () => {
             cancelled = true;
+            detachOsListener();
+            window.removeEventListener(
+                'classnote-settings-changed',
+                onSettingsChange,
+            );
         };
     }, []);
 
