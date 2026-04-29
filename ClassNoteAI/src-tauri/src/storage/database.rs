@@ -1122,8 +1122,7 @@ impl Database {
                 audio_path = excluded.audio_path,
                 video_path = excluded.video_path,
                 status = excluded.status,
-                updated_at = excluded.updated_at,
-                is_deleted = excluded.is_deleted",
+                updated_at = excluded.updated_at",
             rusqlite::params![
                 lecture.id,
                 lecture.course_id,
