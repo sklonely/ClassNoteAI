@@ -23,7 +23,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return unsubscribe;
     }, []);
 
+    /**
+     * cp75.4 — Shared cleanup sweep. Both `logout()` and `login()` call
+     * this so switching users doesn't carry singletons / API keys / inbox
+     * cache from the previous account into the next one.
+     *
+     * Steps (each wrapped in independent try/catch so partial failure
+     * doesn't block the auth transition):
+     *  1. recordingSessionService.reset() — bypass stop pipeline
+     *  2. taskTrackerService.cancelAll() — drop in-flight LLM tasks
+     *  3. clearAllKeys() — wipe llm.* API keys
+     *  4. __resetInboxCache() — drop in-memory snooze/done state
+     *
+     * Phase 7 R-1 (Sprint 1) originally only ran on logout. Cp75.4 audit
+     * caught: `setCurrentUser()` (used by cross-device sync) and direct
+     * `login()` calls were skipping all four steps, so the second user
+     * inherited keymapService overrides, keystore content (until clearAll),
+     * recording session, and the inbox cache from the first user.
+     */
+    const resetUserScopedState = async (label: string) => {
+        try {
+            recordingSessionService.reset();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] recording reset failed`, err);
+        }
+        try {
+            taskTrackerService.cancelAll();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] taskTracker cancelAll failed`, err);
+        }
+        try {
+            await clearAllKeys();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] keyStore clear failed`, err);
+        }
+        try {
+            const { __resetInboxCache } = await import(
+                '../services/inboxStateService'
+            );
+            __resetInboxCache();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] inbox cache reset failed`, err);
+        }
+    };
+
     const login = async (username: string) => {
+        // cp75.4: clear out any state left by a previous account before
+        // attaching the new user (covers the no-explicit-logout flow,
+        // e.g. switching users via UI without the logout button).
+        await resetUserScopedState('login');
         return authService.login(username);
     };
 
@@ -31,20 +79,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return authService.register(username);
     };
 
-    /**
-     * Logout: clears the auth principal AND any user-scoped in-memory
-     * / on-disk state that must not survive a user switch.
-     *
-     * Phase 7 R-1 (Sprint 1): tear down the recording session singleton
-     * (so a stale recorder/mic stream doesn't carry into the next
-     * login) and wipe stored API keys. Errors from each step are
-     * swallowed independently — partial cleanup beats refusing to log
-     * out at all.
-     *
-     * TODO Sprint 2 R-1: also call taskTrackerService.cancelAll() once
-     * that service lands; cancelling pending background tasks is the
-     * remaining piece of the R-1 sweep.
-     */
     const logout = async () => {
         // Existing: clear auth principal. Wrap in try/catch — partial
         // cleanup is better than refusing to log out at all (e.g. if
@@ -54,44 +88,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch (err) {
             console.warn('[AuthContext.logout] authService.logout failed', err);
         }
-
-        // R-1: reset recording singleton — bypasses the stop pipeline,
-        // which is the right call here because the user is leaving the
-        // session entirely.
-        try {
-            recordingSessionService.reset();
-        } catch (err) {
-            console.warn('[AuthContext.logout] recording reset failed', err);
-        }
-
-        // R-1: wipe API keys so the next user can't read them.
-        try {
-            await clearAllKeys();
-        } catch (err) {
-            console.warn('[AuthContext.logout] keyStore clear failed', err);
-        }
-
-        // R-1 (cp75): cancel any in-flight background tasks (summarize /
-        // index / export). taskTrackerService landed in Sprint 2 cp72.0;
-        // this completes the R-1 sweep that the Sprint 1 TODO promised.
-        try {
-            taskTrackerService.cancelAll();
-        } catch (err) {
-            console.warn('[AuthContext.logout] taskTracker cancelAll failed', err);
-        }
-
-        // cp75.3: drop the inbox-state in-memory cache so the next read
-        // hits localStorage under the new user's scoped key. Without this
-        // the previous user's snooze/done state would persist in `cache`
-        // until a page reload.
-        try {
-            const { __resetInboxCache } = await import(
-                '../services/inboxStateService'
-            );
-            __resetInboxCache();
-        } catch (err) {
-            console.warn('[AuthContext.logout] inbox cache reset failed', err);
-        }
+        await resetUserScopedState('logout');
     };
 
     return (

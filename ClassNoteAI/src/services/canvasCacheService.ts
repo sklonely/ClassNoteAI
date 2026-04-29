@@ -22,10 +22,17 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+// cp75.4: per-user-scoped cache key. Was a global bucket — user A's
+// Canvas announcements / calendar events were visible to user B for the
+// first second after login (until the background re-fetch under user B's
+// RSS URL overwrote it). Now `<PREFIX><userId>:<key>` so each account
+// has its own cache silo.
 const PREFIX = 'classnote-canvas-cache:';
 const EVT = 'classnote-canvas-cache-changed';
 const MIN_REFETCH_INTERVAL_MS = 60 * 1000; // 60s throttle
 const STALE_TTL_MS = 30 * 60 * 1000; // 30min — anything older is "stale"
+
+import { authService } from './authService';
 
 interface CacheRecord<T> {
     data: T;
@@ -36,7 +43,8 @@ interface CacheRecord<T> {
 }
 
 function key(k: string): string {
-    return PREFIX + k;
+    const userId = authService.getUserIdSegment();
+    return `${PREFIX}${userId}:${k}`;
 }
 
 function dispatchChange(k: string) {

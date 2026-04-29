@@ -38,10 +38,13 @@ function trackUsage(
   });
 }
 
-const DEFAULT_PROVIDER_KEY = 'llm.defaultProvider';
+// cp75.4: pulled out into ./defaultProvider.ts — per-user scoped + no
+// longer clobbered by keyStore.clearAll(). Same source-of-truth used by
+// AIProviderSettings UI.
+import { getDefaultProvider } from './defaultProvider';
 
 function preferredProvider(): string | undefined {
-  return localStorage.getItem(DEFAULT_PROVIDER_KEY) || undefined;
+  return getDefaultProvider();
 }
 
 /**

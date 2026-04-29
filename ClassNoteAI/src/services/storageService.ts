@@ -127,8 +127,16 @@ function normalizeAppSettings(settings: AppSettings | (AppSettings & Record<stri
   // 舊 user 升級時 settings.appearance === undefined → 全填 default。
   // 已有 appearance 但缺某欄位 → 補該欄位。已有的不蓋。
   // legacy `theme` field 只在 appearance.themeMode 缺時 migrate 過去。
+  //
+  // cp75.4 — spread the existing object first so new appearance fields
+  // (recordingLayout, future additions) survive normalize. The previous
+  // version listed only 5 fields by name; H18RecordingPage was already
+  // writing settings.appearance.recordingLayout but every save round-
+  // tripped through normalize would silently drop it → user's layout
+  // toggle reverted to default A on every reload.
   const existingAppearance = normalized.appearance ?? {};
   normalized.appearance = {
+    ...existingAppearance,
     themeMode: existingAppearance.themeMode ?? normalized.theme ?? 'light',
     density: existingAppearance.density ?? 'comfortable',
     fontSize: existingAppearance.fontSize ?? 'normal',
@@ -692,13 +700,32 @@ class StorageService {
   }
 
   /**
-   * 獲取所有設置
+   * 獲取所有設置（only the current user's, not the global table dump）.
+   *
+   * cp75.4 fix — `get_all_settings` Tauri command returns the entire
+   * settings table. Since cp75.3 stores keys as `<userId>::<originalKey>`,
+   * raw SELECT returned every user's entries. Filter here so callers
+   * (notably `exportAllData`) only see the active user.
+   *
+   * Returns a `{ originalKey: value }` map (the userId prefix stripped).
    */
   async getAllSettings(): Promise<Record<string, string>> {
     const settings = await invoke<Array<{ key: string; value: string }>>('get_all_settings');
+    const userId = authService.getUser()?.username || 'default_user';
+    const scopedPrefix = `${userId}::`;
     const result: Record<string, string> = {};
     settings.forEach(({ key, value }) => {
-      result[key] = value;
+      // cp75.3 scoped keys: keep only this user's, strip the prefix.
+      if (key.startsWith(scopedPrefix)) {
+        result[key.slice(scopedPrefix.length)] = value;
+        return;
+      }
+      // Legacy bare keys (pre-cp75.3) are owned by 'default_user' per the
+      // v8 migration default. Surface them only when the active user IS
+      // default_user, otherwise they'd leak into another account's export.
+      if (!key.includes('::') && userId === 'default_user') {
+        result[key] = value;
+      }
     });
     return result;
   }
