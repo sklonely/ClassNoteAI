@@ -1509,14 +1509,34 @@ impl Database {
         if user_id != "default_user" {
             return Ok(None);
         }
-        let mut stmt = self
-            .conn
-            .prepare("SELECT value FROM settings WHERE key = ?1")?;
-        match stmt.query_row([key], |row| row.get::<_, String>(0)) {
-            Ok(value) => Ok(Some(value)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
+        let legacy = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT value FROM settings WHERE key = ?1")?;
+            match stmt.query_row([key], |row| row.get::<_, String>(0)) {
+                Ok(value) => Some(value),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e),
+            }
+        };
+
+        // cp75.9 — migrate-on-read: when we hit a legacy row, write it
+        // back under the scoped key SO THE NEXT GET HITS THE PRIMARY
+        // PATH. Without this, every save through the new scoped path
+        // creates an *empty* scoped row (when the user's first edit
+        // doesn't include all the legacy fields), and after that the
+        // primary lookup wins → the legacy value (e.g. Calendar RSS URL)
+        // becomes invisible. Idempotent: re-running on an already-
+        // migrated row is a no-op (same value).
+        if let Some(value) = &legacy {
+            let updated_at = Utc::now().to_rfc3339();
+            let _ = self.conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at, user_id) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![scoped, value, updated_at, user_id],
+            );
         }
+        Ok(legacy)
     }
 
     /// 獲取所有設置

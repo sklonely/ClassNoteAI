@@ -697,19 +697,19 @@ export default function H18DeepApp() {
         return () => window.removeEventListener('keydown', onKey);
     }, [toggleTheme, overlayNav, isCourseDialogOpen, aiDockOpen]);
 
-    // ─── S3b-2 · global contextmenu listener (text inputs only) ──────
-    // We only intercept right-clicks on real text-editing surfaces
-    // (input / textarea / contentEditable). For everything else we
-    // do nothing — letting either:
-    //   (a) a component-level context menu (e.g. CourseRailContextMenu)
-    //       handle the event itself + call e.stopPropagation, or
-    //   (b) the browser show its native menu, since F6 says "其他
-    //       surface 右鍵 → 純 preventDefault，不彈空 menu"; preventing
-    //       default without offering a replacement leaves the user with
-    //       no way to e.g. inspect a link, so we stay out of the way.
+    // ─── S3b-2 · global contextmenu listener ─────────────────────────
+    // Per PLAN §3b (F6): on text inputs we render H18TextContextMenu;
+    // on every other surface we **just preventDefault** so the browser's
+    // native (Inspect / Save Image / Reload) menu doesn't surface in a
+    // shipped desktop app context. Component-level menus (e.g.
+    // CourseRailContextMenu, LectureContextMenu) call e.stopPropagation
+    // first, so they're unaffected — only the bubbling defaults that
+    // reach `document` get suppressed.
     //
-    // For text inputs we DO call e.preventDefault(), otherwise the
-    // browser races us and shows its native menu on top.
+    // cp75.9 — restored the "其他 → preventDefault" half that the
+    // earlier comment had carved out as a trade-off. The trade-off
+    // (let users keep Inspect access) wasn't accepted by the spec; in
+    // production builds Inspect is gone anyway, so the cost was zero.
     useEffect(() => {
         const onContextMenu = (e: MouseEvent) => {
             const target = e.target as HTMLElement | null;
@@ -721,7 +721,13 @@ export default function H18DeepApp() {
             if (isInput || isContentEditable) {
                 e.preventDefault();
                 setTextMenuState({ x: e.clientX, y: e.clientY, target });
+                return;
             }
+            // F6: every non-text surface — we don't open anything, but
+            // the browser's native menu is suppressed. Component-level
+            // ctx menus must call e.stopPropagation before bubbling here
+            // (they already do; verified for course rail / lecture row).
+            e.preventDefault();
         };
         document.addEventListener('contextmenu', onContextMenu);
         return () =>
