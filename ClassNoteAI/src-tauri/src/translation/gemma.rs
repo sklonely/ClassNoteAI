@@ -45,12 +45,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Maximum tokens to generate per request. Caps runaway generations
 /// while still covering long lecture sentences.
 ///
-/// cp74.3: bumped 200 → 400. A 60-word English sentence is ~80–120
-/// English tokens, but the *translation* into Chinese can easily double
-/// that with formal compounds and connectors (那麼／因此／我們可以). At
-/// 200 we observed long academic sentences truncating mid-clause. 400
-/// gives ~3× headroom and KV-cache cost is negligible.
-const MAX_TOKENS: u32 = 400;
+/// cp75.15: trimmed 400 → 300. With the vLLM-style delimiter prompt
+/// (no instructional preamble), echoed-prompt failures are bounded by
+/// stop tokens, not by n_predict. 300 is enough headroom for a 60-word
+/// sentence's Chinese expansion (~150–250 target tokens) while limiting
+/// the worst-case bleed if the model ever ignores the stop sequences.
+const MAX_TOKENS: u32 = 300;
 
 /// Refuse inputs longer than this character count *before* we hit the
 /// network, so a single huge sentence (e.g. an accumulator that
@@ -63,96 +63,39 @@ const MAX_INPUT_CHARS: usize = 3_000;
 
 /// Gemma chat template for raw `/completion`.
 ///
-/// cp74.3 — domain-neutral but precise prompt. Approximates the
-/// information TranslateGemma's specialized chat template would carry
-/// (source_lang_code / target_lang_code) but rendered as a plain Gemma
-/// chat turn so it works through `/completion` without requiring the
-/// `--jinja` path (which has version-dependent llama-server support).
+/// cp75.15 — switched to vLLM-style structured delimiter format wrapped
+/// in a Gemma chat turn. Combines two findings from the 2026-04-29
+/// translation-prompt research:
 ///
-/// The previous one-liner ("translate to Traditional Chinese, output
-/// only") was too sparse; the model was guessing at register, treating
-/// acronyms inconsistently, and occasionally emitting Simplified
-/// characters or English preambles. The new prompt:
+///   - **Option A (vLLM TranslateGemma fork)**: production deployments
+///     of TranslateGemma feed the model `<<<source>>>{src}<<<target>>>{tgt}<<<text>>>{text}`
+///     as the user content. The delimiters mirror the structured-content
+///     fields the model's training-time chat template expected; the
+///     model recognises them as a translation request without any
+///     natural-language instruction.
+///   - **Option D (TranslateGemma-Studio plain mode)**: minimal prompt
+///     plus a wide stop-sequence net catches the model when it tries to
+///     continue past the translation (e.g. emitting another `<<<source>>>`
+///     turn or an English `Source:` echo).
 ///
-///   - Names the source/target language codes explicitly (en → zh-TW)
-///     so the model's mode-of-operation is unambiguous.
-///   - Caps output behaviour ("only the translation, nothing else")
-///     to suppress 4B's habit of prepending 「翻譯：」or 「以下是」.
-///   - Pins five domain-neutral rules: Traditional vs Simplified,
-///     proper-noun preservation, unknown-term fallback, register
-///     matching, and output discipline.
-///   - Stays generic — no ML / academic / medical / legal hints. The
-///     rules apply equally to a Wikipedia article, a cooking video
-///     transcript, or a board-meeting recording.
-/// Map an ISO-style code to a human-readable name + character-class hint.
-/// Used by `build_prompt` to render `Translate from {src_name} to {tgt_name}`
-/// dynamically per request. The character-class hint is appended only for
-/// targets where simplified/traditional confusion is real (zh-TW vs zh-CN).
-fn lang_label(code: &str) -> (&'static str, Option<&'static str>) {
-    match code.to_lowercase().as_str() {
-        "en" | "en-us" | "en-gb" => ("English", None),
-        "zh-tw" | "zh-hant" | "zh_tw" => (
-            "Traditional Chinese (繁體中文)",
-            Some("Use Traditional Chinese (繁體) characters. Never Simplified (简体)."),
-        ),
-        "zh-cn" | "zh-hans" | "zh_cn" | "zh" => (
-            "Simplified Chinese (简体中文)",
-            Some("Use Simplified Chinese (简体) characters. Never Traditional (繁體)."),
-        ),
-        "ja" => ("Japanese", None),
-        "ko" => ("Korean", None),
-        "es" => ("Spanish", None),
-        "fr" => ("French", None),
-        "de" => ("German", None),
-        "pt" => ("Portuguese", None),
-        "ru" => ("Russian", None),
-        "ar" => ("Arabic", None),
-        "vi" => ("Vietnamese", None),
-        "th" => ("Thai", None),
-        "id" => ("Indonesian", None),
-        // Pass through any other ISO code we don't have a name for.
-        _ => ("the target language", None),
-    }
-}
-
-/// Gemma chat template for raw `/completion`.
+/// Why the previous cp74.3 multi-rule prompt failed:
+///   - Per Google's TranslateGemma model card, the model "does not
+///     support separate system prompts or instruction-style parameters"
+///     — any text in the user turn is treated as content to translate.
+///     The five English "Rules:" lines were being faithfully translated
+///     into the output instead of being followed.
 ///
-/// cp75.1 — accepts dynamic source/target language. Replaces the previous
-/// hardcoded "English → Traditional Chinese" path so PTranslate's
-/// source_language / target_language settings actually take effect.
-///
-/// The prompt structure stays the same as cp74.3: domain-neutral, 4–5
-/// behaviour rules, two trailing turn markers. The character-class rule
-/// (繁體 vs 简体) is only emitted for Chinese targets where it actually
-/// matters; for Japanese, Korean, etc. it would just be confusing noise.
+/// We don't need natural-language naming of the language ("Traditional
+/// Chinese") in the prompt: the BCP-47 code (`zh-TW` vs `zh-CN`) is the
+/// signal the model was trained on, and lang_label's character-class
+/// nudge ("never Simplified") was itself getting echoed.
 fn build_prompt(text: &str, source_lang: &str, target_lang: &str) -> String {
-    let (src_name, _) = lang_label(source_lang);
-    let (tgt_name, tgt_charset_hint) = lang_label(target_lang);
-
-    let charset_line = match tgt_charset_hint {
-        Some(hint) => format!("- {hint}\n"),
-        None => String::new(),
-    };
-
     format!(
         "<start_of_turn>user\n\
-         Translate the following from {src_name} ({src_code}) to {tgt_name} ({tgt_code}).\n\
-         \n\
-         Rules:\n\
-         - Output only the translation. No preamble, no explanation, no source-language echo.\n\
-         {charset_line}\
-         - Preserve proper nouns, brand names, model names, and acronyms verbatim in their original form.\n\
-         - For technical terms whose canonical translation you don't know, keep the original term.\n\
-         - Match the source register: keep formal sentences formal, casual sentences casual.\n\
-         \n\
-         {src_name}: {text}\n\
-         {tgt_name}:<end_of_turn>\n\
+         <<<source>>>{src_code}<<<target>>>{tgt_code}<<<text>>>{text}<end_of_turn>\n\
          <start_of_turn>model\n",
-        src_name = src_name,
-        tgt_name = tgt_name,
         src_code = source_lang,
         tgt_code = target_lang,
-        charset_line = charset_line,
         text = text,
     )
 }
@@ -195,14 +138,20 @@ struct CompletionResponse {
 /// Pass `None` to use [`DEFAULT_ENDPOINT`].
 ///
 /// `source_lang` / `target_lang` are ISO-639-1 (or BCP-47 region) codes,
-/// e.g. `en`, `zh-TW`, `zh-CN`, `ja`. Unknown codes are passed through
-/// to the prompt verbatim and labelled "the target language" in the
-/// natural-language portion (the model still sees the code so it has a
-/// chance to recognise it).
+/// e.g. `en`, `zh-TW`, `zh-CN`, `ja`. Codes flow through to the prompt
+/// verbatim inside the `<<<source>>>…<<<target>>>` delimiter pair —
+/// TranslateGemma was trained on the bare lang code, no human-readable
+/// language name is needed (or beneficial — see cp75.15 notes on
+/// `build_prompt` for why prompt text gets translated, not followed).
 ///
 /// cp75.1 — added `source_lang` / `target_lang` parameters. Before this
 /// release the function was hardcoded English → Traditional Chinese; the
 /// PTranslate language pickers had no runtime effect.
+///
+/// cp75.15 — switched to vLLM-style structured-delimiter prompt; dropped
+/// natural-language language naming + behaviour rules (Google's model
+/// card confirms the model treats them as input to translate, not as
+/// instructions).
 pub async fn translate(
     text: &str,
     source_lang: &str,
@@ -231,30 +180,54 @@ pub async fn translate(
     let url = format!("{}/completion", base.trim_end_matches('/'));
     let body = CompletionRequest {
         prompt: build_prompt(text, source_lang, target_lang),
-        // cp74.3 sampling tuning — based on the LLM-prompting guide (see
-        // promptingguide.ai / f22labs Apr 2026):
-        //   - temperature 0.0 (pure greedy) gets stuck on the first
-        //     wrong continuation when 4B Q4_K_M is uncertain. 0.1 gives
-        //     just enough slack to step out of local minima while
-        //     remaining effectively deterministic for a given input.
-        //   - top_p 0.9 excludes the long tail of nonsense tokens. With
-        //     temp ≈ 0 and top_p = 1.0 the long tail rarely kicks in,
-        //     but on rare-vocabulary inputs (proper nouns, acronyms)
-        //     0.9 protects against the model latching onto a pre-trained
-        //     bias.
-        //   - min_p 0.05 belt-and-braces with top_p (filters absolute
-        //     low-probability junk no matter the nucleus size).
-        //   - repeat_penalty 1.1 stops 4B's degenerate-repetition mode.
-        temperature: 0.1,
+        // cp75.15 sampling tuning — aligned with WaveSpeedAI's published
+        // TranslateGemma defaults (the closest-to-official guidance we
+        // have, since Google's docs deliberately don't pin sampling
+        // params): temperature 0.2 / top_p 0.9 / repetition_penalty 1.02.
+        //   - temperature 0.1 → 0.2: WaveSpeedAI recommends 0.2–0.4.
+        //     The bump gives the model room to pick correct collocations
+        //     on rare-vocabulary inputs without becoming creative.
+        //   - top_p 0.9: unchanged.
+        //   - min_p 0.05: kept as belt-and-braces vs top_p — filters
+        //     absolute low-probability junk on long-tail inputs.
+        //   - repeat_penalty 1.1 → 1.02: 1.1 was distorting the model's
+        //     natural connector usage in long Chinese sentences (它它它
+        //     loops were a rough-mode artefact and shouldn't dominate
+        //     the param choice for the well-formed default case).
+        temperature: 0.2,
         top_p: 0.9,
         min_p: 0.05,
-        repeat_penalty: 1.1,
+        repeat_penalty: 1.02,
         n_predict: MAX_TOKENS,
         cache_prompt: true,
-        // Gemma may regenerate the chat boundary tokens after finishing
-        // a translation; stop at either to avoid bleeding into a fake
-        // next turn.
-        stop: &["<end_of_turn>", "<start_of_turn>"],
+        // cp75.15 — wider stop net. The vLLM-style delimiter prompt has
+        // no natural English continuation, so any of these markers
+        // appearing in the output means the model is starting a fake
+        // next turn or echoing the prompt structure. Stopping at the
+        // first occurrence cuts the bleed before it becomes user-visible.
+        //
+        //   - <end_of_turn> / <start_of_turn>: Gemma chat-template
+        //     boundaries, primary stop signal.
+        //   - <<<source>>> / <<<target>>> / <<<text>>>: vLLM delimiter
+        //     tokens. If the model tries to start a second translation
+        //     turn it'll emit one of these first.
+        //   - "\n<<<": catches partial delimiter emission (e.g. a model
+        //     that tokenises `<<<source>>>` differently might emit
+        //     `<<<` alone before the body).
+        //   - "Source:" / "Target:" / "English:": plain-language
+        //     prompt-echo guards (these would mean the model fell back
+        //     to its generic instruction-following mode).
+        stop: &[
+            "<end_of_turn>",
+            "<start_of_turn>",
+            "<<<source>>>",
+            "<<<target>>>",
+            "<<<text>>>",
+            "\n<<<",
+            "\nSource:",
+            "\nTarget:",
+            "\nEnglish:",
+        ],
         stream: false,
     };
 
@@ -354,46 +327,81 @@ mod tests {
         }
     }
 
+    /// cp75.15 — vLLM-style delimiter format. The prompt body is a
+    /// single line of structured tokens between Gemma chat boundaries:
+    /// no English instructions, no rules, no charset hints. This test
+    /// pins the exact wire format we're sending to TranslateGemma so a
+    /// stray newline or reordered delimiter shows up immediately.
     #[test]
-    fn prompt_includes_target_language_marker_zh_tw() {
+    fn prompt_uses_vllm_delimiter_format() {
         let p = build_prompt("Hello world.", "en", "zh-TW");
-        assert!(p.contains("zh-TW"), "prompt must mention target lang code");
-        assert!(p.contains("繁體"), "zh-TW prompt must mention 繁體 character class");
-        assert!(p.contains("Hello world."), "prompt must contain the input");
-        assert!(p.contains("<start_of_turn>model"), "prompt must end with the model turn marker");
+
+        // Must open and close with the Gemma chat markers (the
+        // `--no-jinja` raw-completion path requires these literally).
+        assert!(p.starts_with("<start_of_turn>user\n"), "prompt = {p:?}");
+        assert!(p.contains("<end_of_turn>\n<start_of_turn>model\n"), "prompt = {p:?}");
+
+        // Must contain the three vLLM delimiters in order, with the
+        // raw lang codes (no human-readable names).
+        let body_pos_source = p.find("<<<source>>>en").expect("source delimiter");
+        let body_pos_target = p.find("<<<target>>>zh-TW").expect("target delimiter");
+        let body_pos_text = p.find("<<<text>>>Hello world.").expect("text delimiter");
+        assert!(body_pos_source < body_pos_target);
+        assert!(body_pos_target < body_pos_text);
     }
 
+    /// cp75.15 — the new prompt has zero natural-language instructions.
+    /// The TranslateGemma model card says any text in the user turn is
+    /// translated, so words like "translate" or "rules" leaking into
+    /// the prompt are the original cp74.3 echo-bug.
     #[test]
-    fn prompt_zh_cn_uses_simplified_charset_hint() {
-        // cp75.1: dynamic prompt should swap the character-class hint
-        // between Traditional and Simplified by target lang code.
-        let p = build_prompt("Hello world.", "en", "zh-CN");
-        assert!(p.contains("zh-CN"), "prompt must mention target lang code");
-        assert!(p.contains("简体"), "zh-CN prompt must mention 简体 charset hint");
-        assert!(
-            !p.contains("Use Traditional Chinese (繁體) characters."),
-            "zh-CN prompt must NOT pin Traditional charset"
-        );
+    fn prompt_contains_no_english_instructions() {
+        let p = build_prompt("Some text.", "en", "zh-TW");
+        let lower = p.to_lowercase();
+        for forbidden in ["translate", "output only", "rules:", "preserve", "register"] {
+            assert!(
+                !lower.contains(forbidden),
+                "prompt must not contain instruction word {forbidden:?}, got: {p}"
+            );
+        }
     }
 
+    /// cp75.15 — character-class hints (繁體 / 简体) are no longer
+    /// emitted. The lang code itself (`zh-TW` vs `zh-CN`) is the
+    /// signal TranslateGemma was trained on; the natural-language
+    /// hint was being translated into the output.
     #[test]
-    fn prompt_non_chinese_target_skips_charset_rule() {
-        // For ja/ko/etc. there's no Trad/Simp distinction → don't emit
-        // the line at all (avoids confusing the model).
-        let p = build_prompt("Hello.", "en", "ja");
-        assert!(p.contains("Japanese"), "prompt must name target language");
-        assert!(!p.contains("繁體"), "ja prompt must not mention 繁體");
-        assert!(!p.contains("简体"), "ja prompt must not mention 简体");
+    fn prompt_omits_charset_hints_for_chinese() {
+        let p_tw = build_prompt("Hello.", "en", "zh-TW");
+        let p_cn = build_prompt("Hello.", "en", "zh-CN");
+        assert!(!p_tw.contains("繁體"));
+        assert!(!p_tw.contains("Traditional"));
+        assert!(!p_cn.contains("简体"));
+        assert!(!p_cn.contains("Simplified"));
+
+        // …but the lang codes themselves must land verbatim.
+        assert!(p_tw.contains("<<<target>>>zh-TW"));
+        assert!(p_cn.contains("<<<target>>>zh-CN"));
     }
 
+    /// cp75.15 — pass-through lang codes. A code we don't know about
+    /// (e.g. a region we haven't tested) should still flow through
+    /// the delimiter format without any special fallback like
+    /// "the target language".
     #[test]
-    fn prompt_pins_register_and_acronym_rules() {
-        // Regression: cp74.3 added five behaviour rules. Don't let a
-        // future refactor silently drop any of them — at least verify
-        // the keywords land in the prompt body.
-        let p = build_prompt("Some sentence.", "en", "zh-TW");
-        assert!(p.contains("Output only the translation"));
-        assert!(p.contains("acronym") || p.contains("proper noun"));
-        assert!(p.contains("register"));
+    fn prompt_passes_through_unknown_lang_codes() {
+        let p = build_prompt("Hi.", "en", "sw"); // Swahili
+        assert!(p.contains("<<<target>>>sw<<<text>>>Hi."));
+        assert!(!p.contains("the target language"), "no human-readable fallback expected");
+    }
+
+    /// Regression: the input text must land in the prompt verbatim,
+    /// without any leading or trailing whitespace inserted between
+    /// `<<<text>>>` and the body. The model relies on the delimiter
+    /// touching the text directly to recognise the boundary.
+    #[test]
+    fn prompt_text_immediately_follows_text_delimiter() {
+        let p = build_prompt("ACME Corp launched OmniGPT.", "en", "zh-TW");
+        assert!(p.contains("<<<text>>>ACME Corp launched OmniGPT."));
     }
 }
