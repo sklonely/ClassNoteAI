@@ -1450,32 +1450,75 @@ async function runSummary(
 
         const { summarizeStream } = await import('../../services/llm/tasks');
         let full = '';
-        let chunkCount = 0;
+        let mapTotal = 0;
+        let reduceChunks = 0;
+        // cp75.14 — phase-aware progress (mirrors recordingSessionService).
         for await (const event of summarizeStream({
             content: text,
             language: lang,
             title,
         })) {
-            if (event.phase === 'reduce-delta' && event.delta) {
-                full += event.delta;
-                chunkCount += 1;
+            if (event.phase === 'map-start') {
+                mapTotal = event.sectionCount ?? 0;
                 taskTrackerService.update(taskId, {
-                    progress: Math.min(0.95, chunkCount * 0.05),
+                    progress: 0.05,
+                    status: 'running',
+                });
+            } else if (event.phase === 'map-section-done') {
+                const idx = event.sectionIndex ?? 0;
+                const total = event.sectionCount ?? mapTotal ?? 1;
+                taskTrackerService.update(taskId, {
+                    progress:
+                        0.05 + 0.4 * Math.min(1, idx / Math.max(1, total)),
+                    status: 'running',
+                });
+            } else if (event.phase === 'reduce-start') {
+                taskTrackerService.update(taskId, {
+                    progress: 0.5,
+                    status: 'running',
+                });
+            } else if (event.phase === 'reduce-delta' && event.delta) {
+                full += event.delta;
+                reduceChunks += 1;
+                const reduceShare =
+                    0.45 * (1 - 1 / (1 + reduceChunks * 0.15));
+                taskTrackerService.update(taskId, {
+                    progress: Math.min(0.95, 0.5 + reduceShare),
                     status: 'running',
                 });
             } else if (event.phase === 'done' && event.fullText) {
                 full = event.fullText;
             }
         }
+        taskTrackerService.update(taskId, {
+            progress: 0.97,
+            status: 'running',
+        });
 
         const existing = await storageService.getNote(lectureId).catch(
             () => null,
+        );
+        // cp75.14 — extract sections from markdown so the TOC populates.
+        const { mergeExtractedSections } = await import(
+            '../../utils/summaryStructure'
+        );
+        let durationSec = 0;
+        try {
+            const lec = await storageService.getLecture(lectureId);
+            durationSec = lec?.duration ?? 0;
+        } catch {
+            /* keep 0 — single-section path still works */
+        }
+        const sections = mergeExtractedSections(
+            full,
+            durationSec,
+            existing?.sections ?? [],
         );
         await storageService.saveNote({
             lecture_id: lectureId,
             title: existing?.title ?? title ?? '',
             summary: full,
-            sections: existing?.sections ?? [],
+            sections,
             qa_records: existing?.qa_records ?? [],
             generated_at: new Date().toISOString(),
         });

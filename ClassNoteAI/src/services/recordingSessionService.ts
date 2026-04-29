@@ -738,22 +738,56 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             }
 
             let fullSummary = '';
-            let chunkCount = 0;
+            let mapTotal = 0;
+            let reduceChunks = 0;
 
+            // cp75.14 phase-aware progress mapping. Old: only `reduce-delta`
+            // moved the bar (cap 0.95) → user saw 0% during the entire map
+            // phase, then a sudden jump to 95% in a couple of seconds.
+            //
+            // New weights:
+            //   map phase     0% → 50%   (driven by map-section-done)
+            //   reduce phase  50% → 95%  (asymptotic via reduce-delta count)
+            //   db save       95% → 99%
+            //   complete      99% → 100% (taskTrackerService.complete)
+            //
+            // Asymptotic reduce mapping: progress = 0.5 + 0.45 × (1 - 1/(1+k×0.15))
+            // — keeps moving even when the model emits 100+ deltas, never
+            // hits the wall at exactly 0.95.
             for await (const event of summarizeStream({
                 content: text,
                 language: summaryLang,
             })) {
-                if (
+                if (event.phase === 'map-start') {
+                    mapTotal = event.sectionCount ?? 0;
+                    taskTrackerService.update(taskId, {
+                        progress: 0.05,
+                        status: 'running',
+                    });
+                } else if (event.phase === 'map-section-done') {
+                    const idx = event.sectionIndex ?? 0;
+                    const total = event.sectionCount ?? mapTotal ?? 1;
+                    taskTrackerService.update(taskId, {
+                        progress:
+                            0.05 + 0.4 * Math.min(1, idx / Math.max(1, total)),
+                        status: 'running',
+                    });
+                } else if (event.phase === 'reduce-start') {
+                    taskTrackerService.update(taskId, {
+                        progress: 0.5,
+                        status: 'running',
+                    });
+                } else if (
                     event.phase === 'reduce-delta' &&
                     typeof event.delta === 'string'
                 ) {
                     fullSummary += event.delta;
-                    chunkCount += 1;
-                    // Cap progress at 0.95 — we still need to do the DB
-                    // write before we can call it done.
+                    reduceChunks += 1;
+                    const reduceShare =
+                        0.45 *
+                        (1 - 1 / (1 + reduceChunks * 0.15));
                     taskTrackerService.update(taskId, {
-                        progress: Math.min(0.95, chunkCount * 0.05),
+                        progress: Math.min(0.95, 0.5 + reduceShare),
                         status: 'running',
                     });
                 } else if (
@@ -763,18 +797,45 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                     fullSummary = event.fullText;
                 }
             }
+            // Pre-save signal so the bar visibly moves out of 95%.
+            taskTrackerService.update(taskId, {
+                progress: 0.97,
+                status: 'running',
+            });
 
             // Persist into the note row. Merge with whatever's already
             // there (qa_records, sections from a prior run) so we don't
             // wipe user work when re-summarising.
+            //
+            // cp75.14 — extract `## Heading` sections from the markdown
+            // body so the ReviewPage left-rail TOC ("章節 · N") actually
+            // shows entries. Before this we always wrote `[]` and the
+            // TOC was permanently empty even though the markdown had
+            // proper headings.
             try {
                 const existing = await storage.getNote(lectureId);
                 const now = new Date().toISOString();
+                const { mergeExtractedSections } = await import(
+                    '../utils/summaryStructure'
+                );
+                // Best-effort lecture duration for timestamp spread.
+                let durationSec = 0;
+                try {
+                    const lec = await storage.getLecture(lectureId);
+                    durationSec = lec?.duration ?? 0;
+                } catch {
+                    /* fall back to 0 — single-section markdown still works */
+                }
+                const sections = mergeExtractedSections(
+                    fullSummary,
+                    durationSec,
+                    existing?.sections ?? [],
+                );
                 await storage.saveNote({
                     lecture_id: lectureId,
                     title: existing?.title ?? '',
                     summary: fullSummary,
-                    sections: existing?.sections ?? [],
+                    sections,
                     qa_records: existing?.qa_records ?? [],
                     generated_at: now,
                 });

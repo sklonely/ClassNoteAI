@@ -52,6 +52,19 @@ const MAX_ENTRIES = 100;
  *  tasks are left around so the user can hit retry. */
 const AUTO_REMOVE_DELAY_MS = 5_000;
 
+/** cp75.14 fake-tween cadence — every TWEEN_INTERVAL_MS the tracker
+ *  smoothly increments any running task's progress that hasn't received
+ *  a real update recently. Stops the bar from looking "frozen at 95%"
+ *  during the silent DB write / sticky reduce delta gaps. */
+const TWEEN_INTERVAL_MS = 800;
+/** Per-tick increment in fake-tween mode. With 800ms cadence and 0.005
+ *  per tick, the bar drifts ~3.75% per minute — fast enough to feel
+ *  alive, slow enough not to lap real progress. */
+const TWEEN_STEP = 0.005;
+/** Fake-tween will not push progress past this cap by itself — leaves
+ *  the last 5% to be filled by the real `complete()` transition. */
+const TWEEN_CAP = 0.95;
+
 /**
  * S2.9 · localStorage persistence (退階方案).
  *
@@ -92,6 +105,16 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
      *  to produce unique ids even if two start() calls land in the
      *  same millisecond. */
     private nextId = 1;
+
+    /** cp75.14 — last wall-clock time `update()` mutated each task's
+     *  progress. The fake-tween loop reads this to decide when to step
+     *  in (only push progress forward when nothing real has happened
+     *  for TWEEN_INTERVAL_MS). */
+    private lastProgressUpdate = new Map<string, number>();
+    /** cp75.14 — single shared tween interval. Created lazily when the
+     *  first task starts running and torn down when no running tasks
+     *  remain (so the page doesn't keep a 800ms timer around forever). */
+    private tweenInterval: ReturnType<typeof setInterval> | null = null;
     /**
      * S2.9 — in-memory mirror of every key we've written to localStorage
      * under PERSIST_KEY_PREFIX. We keep it as a fallback discovery path
@@ -105,6 +128,53 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
     // ─── Public API ─────────────────────────────────────────────────────
 
     start(input: TaskStartInput): string {
+        // cp75.14 — implicit dedup by (kind, lectureId). When the user
+        // retries a summary on ReviewPage we want the new task to
+        // *replace* whatever was in the tray for the same lecture, not
+        // pile on top of it. This handles three messy cases the user
+        // hit:
+        //   (a) stop-pipeline summarize fails → ReviewPage retry success →
+        //       old failed entry still showed "失敗" in the tray
+        //   (b) "重試摘要" + "生成課程摘要" duplicate failure rows
+        //   (c) any same-lecture task that already terminated stale
+        // Cancel queued/running siblings; drop terminal-but-still-shown
+        // siblings. Limited to 'summarize' + 'index' (export tasks
+        // intentionally CAN run in parallel — different files).
+        if (
+            input.lectureId &&
+            (input.kind === 'summarize' || input.kind === 'index')
+        ) {
+            for (const [otherId, otherEntry] of this.tasks) {
+                if (
+                    otherEntry.kind !== input.kind ||
+                    otherEntry.lectureId !== input.lectureId
+                ) {
+                    continue;
+                }
+                if (
+                    otherEntry.status === 'queued' ||
+                    otherEntry.status === 'running'
+                ) {
+                    // Active sibling — cancel so it stops emitting
+                    // progress (and the user doesn't see two bars).
+                    this.tasks.set(otherId, {
+                        ...otherEntry,
+                        status: 'cancelled',
+                    });
+                    this.removePersisted(otherId);
+                } else if (
+                    otherEntry.status === 'failed' ||
+                    otherEntry.status === 'done' ||
+                    otherEntry.status === 'cancelled'
+                ) {
+                    // Terminal sibling — drop from the tray immediately.
+                    // The new task will represent the truth from now on.
+                    this.tasks.delete(otherId);
+                    this.lastProgressUpdate.delete(otherId);
+                }
+            }
+        }
+
         const id = `tracker-${Date.now()}-${this.nextId++}`;
         const entry: TaskTrackerEntry = {
             id,
@@ -116,11 +186,13 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
             startedAt: Date.now(),
         };
         this.tasks.set(id, entry);
+        this.lastProgressUpdate.set(id, Date.now());
         // GC if exceeding cap (kick out oldest done/failed/cancelled).
         if (this.tasks.size > MAX_ENTRIES) {
             this.gc();
         }
         this.notify();
+        this.startTweenIfNeeded();
         // S2.9: persist LLM tasks so an unclean shutdown doesn't lose
         // the work. Wrapped in a guard inside persistTask so this is a
         // safe no-op for export kind.
@@ -141,6 +213,11 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
         // Clamp progress 0..1.
         if (safePatch.progress !== undefined) {
             safePatch.progress = Math.max(0, Math.min(1, safePatch.progress));
+            // cp75.14 — only count caller-driven progress moves toward
+            // the tween's "is this task alive" timer. Status-only patches
+            // shouldn't reset the idle clock (otherwise a queued→running
+            // flip would suppress the tween for a tick).
+            this.lastProgressUpdate.set(taskId, Date.now());
         }
         this.tasks.set(taskId, { ...e, ...safePatch });
         this.notify();
@@ -159,7 +236,33 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
             return;
         }
         this.tasks.set(taskId, { ...e, status: 'done', progress: 1 });
+        this.lastProgressUpdate.delete(taskId);
+        // cp75.14 — sweep stale failed/cancelled siblings of the same
+        // (kind, lectureId). Common case: stop-pipeline summarize failed,
+        // ReviewPage retry just succeeded → the old failed entry is now
+        // misleading (the user has a summary). Drop those rows from the
+        // tray rather than make the user dismiss them by hand.
+        if (e.lectureId && (e.kind === 'summarize' || e.kind === 'index')) {
+            for (const [otherId, otherEntry] of this.tasks) {
+                if (
+                    otherId === taskId ||
+                    otherEntry.kind !== e.kind ||
+                    otherEntry.lectureId !== e.lectureId
+                ) {
+                    continue;
+                }
+                if (
+                    otherEntry.status === 'failed' ||
+                    otherEntry.status === 'cancelled'
+                ) {
+                    this.tasks.delete(otherId);
+                    this.lastProgressUpdate.delete(otherId);
+                    this.removePersisted(otherId);
+                }
+            }
+        }
         this.notify();
+        this.stopTweenIfIdle();
         // S2.9: drop the persisted row — task succeeded, no resume needed.
         this.removePersisted(taskId);
         // W18: sticky success toast for LLM task completion. Per
@@ -201,7 +304,9 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
         // already terminal. (`failed` → `failed` is fine, refreshes err.)
         if (e.status === 'done' || e.status === 'cancelled') return;
         this.tasks.set(taskId, { ...e, status: 'failed', error: err });
+        this.lastProgressUpdate.delete(taskId);
         this.notify();
+        this.stopTweenIfIdle();
         // S2.9 (v3 audit choice): drop persistence for failed tasks too.
         // Keeping the row would mean the next launch infinitely retries
         // a permanently-broken job. The user can rerun manually if they
@@ -218,7 +323,9 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
         // are no-ops.
         if (e.status !== 'queued' && e.status !== 'running') return;
         this.tasks.set(taskId, { ...e, status: 'cancelled' });
+        this.lastProgressUpdate.delete(taskId);
         this.notify();
+        this.stopTweenIfIdle();
         // S2.9: cancelled tasks are explicitly user-rejected — don't
         // resurrect them on next launch.
         this.removePersisted(taskId);
@@ -230,6 +337,57 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
                 this.notify();
             }
         }, AUTO_REMOVE_DELAY_MS);
+    }
+
+    // ─── cp75.14 fake-tween machinery ───────────────────────────────
+    /** Start the shared tween interval if at least one task is running
+     *  or queued. Called from `start()` and `update()` (via the
+     *  promotion to running). Idempotent — re-entrant call returns
+     *  early without creating a second timer. */
+    private startTweenIfNeeded(): void {
+        if (this.tweenInterval) return;
+        if (typeof setInterval !== 'function') return; // SSR / tests
+        this.tweenInterval = setInterval(() => {
+            const now = Date.now();
+            let touched = false;
+            for (const [id, entry] of this.tasks) {
+                if (entry.status !== 'running' && entry.status !== 'queued') {
+                    continue;
+                }
+                if (entry.progress >= TWEEN_CAP) continue;
+                const last = this.lastProgressUpdate.get(id) ?? entry.startedAt;
+                if (now - last < TWEEN_INTERVAL_MS) continue;
+                // Quietly nudge progress forward. We do NOT overwrite
+                // lastProgressUpdate so caller-driven updates win the
+                // moment they happen — this just fills the silence.
+                const next = Math.min(TWEEN_CAP, entry.progress + TWEEN_STEP);
+                if (next > entry.progress) {
+                    this.tasks.set(id, { ...entry, progress: next });
+                    touched = true;
+                }
+            }
+            if (touched) this.notify();
+            this.stopTweenIfIdle();
+        }, TWEEN_INTERVAL_MS);
+    }
+
+    /** Tear down the tween interval when no task remains in a non-
+     *  terminal state. Called from terminal transitions + the tween
+     *  loop itself (so it self-stops on the same tick the last task
+     *  completes). */
+    private stopTweenIfIdle(): void {
+        if (!this.tweenInterval) return;
+        let anyActive = false;
+        for (const t of this.tasks.values()) {
+            if (t.status === 'running' || t.status === 'queued') {
+                anyActive = true;
+                break;
+            }
+        }
+        if (!anyActive) {
+            clearInterval(this.tweenInterval);
+            this.tweenInterval = null;
+        }
     }
 
     getActive(): TaskTrackerEntry[] {
@@ -264,6 +422,11 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
      */
     reset(): void {
         this.tasks.clear();
+        this.lastProgressUpdate.clear();
+        if (this.tweenInterval) {
+            clearInterval(this.tweenInterval);
+            this.tweenInterval = null;
+        }
         this.nextId = 1;
         // Notify subscribers so any UI bound to the service clears.
         this.subscribers.forEach((cb) => {
