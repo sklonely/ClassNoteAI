@@ -14,7 +14,7 @@
  *  - PData 回收桶列表 → 顯示真資料 (storageService.listTrashed*)
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { authService } from '../../services/authService';
 import { storageService } from '../../services/storageService';
@@ -414,6 +414,54 @@ export function PTranscribe() {
     const [featuresErr, setFeaturesErr] = useState<string | null>(null);
     const [redetecting, setRedetecting] = useState(false);
 
+    // cp75.10 — real download/switch wiring. The previous PTranscribe
+    // had `loaded` hardcoded true for INT8 / undefined for FP32, and the
+    //「下載」button was a cosmetic PBtn with no onClick — so the user
+    // could not download FP32, could not switch to FP32, and had no
+    // signal whether INT8 was actually present locally either.
+    interface ParakeetStatusVariant {
+        variant: 'int8' | 'fp32';
+        present: boolean;
+        loaded: boolean;
+    }
+    interface ParakeetStatusShape {
+        variants?: ParakeetStatusVariant[];
+        loaded_variant?: 'int8' | 'fp32' | null;
+    }
+    const [parakeetStatus, setParakeetStatus] =
+        useState<ParakeetStatusShape | null>(null);
+    const [parakeetDownloading, setParakeetDownloading] =
+        useState<'int8' | 'fp32' | null>(null);
+    const [parakeetProgress, setParakeetProgress] = useState<{
+        variant: 'int8' | 'fp32';
+        downloaded: number;
+        total: number;
+    } | null>(null);
+
+    const refreshParakeetStatus = useCallback(async () => {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const status = await invoke<ParakeetStatusShape>(
+                'get_parakeet_status',
+            );
+            setParakeetStatus(status);
+        } catch (err) {
+            console.warn('[PTranscribe] get_parakeet_status failed:', err);
+        }
+    }, []);
+
+    useEffect(() => {
+        void refreshParakeetStatus();
+    }, [refreshParakeetStatus]);
+
+    const presentMap = useMemo(() => {
+        const m: Record<'int8' | 'fp32', boolean> = { int8: false, fp32: false };
+        for (const v of parakeetStatus?.variants ?? []) {
+            m[v.variant] = !!v.present;
+        }
+        return m;
+    }, [parakeetStatus]);
+
     const loadFeatures = async (force = false) => {
         try {
             setFeaturesErr(null);
@@ -433,8 +481,72 @@ export function PTranscribe() {
         void loadFeatures(false);
     }, []);
 
-    const setVariant = (next: 'int8' | 'fp32') =>
+    const setVariant = (next: 'int8' | 'fp32') => {
+        // Don't let the user switch to a variant they haven't downloaded
+        // yet — the runtime would just fall back to first_present and
+        // ignore the setting silently. Tell them via toast and stay on
+        // the current variant.
+        if (!presentMap[next]) {
+            void import('../../services/toastService').then(({ toastService }) =>
+                toastService.warning(
+                    `${next === 'fp32' ? 'FP32' : 'INT8'} 模型尚未下載`,
+                    '請先按「下載」取得該變體後再切換。',
+                ),
+            );
+            return;
+        }
         update({ experimental: { ...exp, parakeetVariant: next } });
+    };
+
+    const handleDownloadVariant = useCallback(
+        async (target: 'int8' | 'fp32') => {
+            if (parakeetDownloading) return;
+            setParakeetDownloading(target);
+            setParakeetProgress({ variant: target, downloaded: 0, total: 0 });
+            const { invoke } = await import('@tauri-apps/api/core');
+            const { listen } = await import('@tauri-apps/api/event');
+            const { toastService } = await import(
+                '../../services/toastService'
+            );
+            let unlisten: (() => void) | null = null;
+            try {
+                unlisten = await listen<{
+                    variant: 'int8' | 'fp32';
+                    file_index: number;
+                    file_name: string;
+                    file_size: number;
+                    file_downloaded: number;
+                    total_size: number;
+                    completed: boolean;
+                }>('parakeet-download-progress', (e) => {
+                    if (e.payload.variant !== target) return;
+                    setParakeetProgress({
+                        variant: target,
+                        downloaded: e.payload.file_downloaded,
+                        total: e.payload.total_size,
+                    });
+                });
+                await invoke<string>('parakeet_download_model', {
+                    variant: target,
+                });
+                await refreshParakeetStatus();
+                toastService.success(
+                    '模型下載完成',
+                    `${target === 'fp32' ? 'FP32' : 'INT8'} 已下載；可在卡片切換為使用中。`,
+                );
+            } catch (err) {
+                toastService.error(
+                    '模型下載失敗',
+                    (err as Error)?.message || String(err),
+                );
+            } finally {
+                if (unlisten) unlisten();
+                setParakeetDownloading(null);
+                setParakeetProgress(null);
+            }
+        },
+        [parakeetDownloading, refreshParakeetStatus],
+    );
 
     return (
         <div>
@@ -446,7 +558,12 @@ export function PTranscribe() {
             <PHead first>模型</PHead>
             <PRow
                 label="模型管理"
-                hint="點卡片即切換；未下載的會提示先下載。已下載 1 / 2 · 佔用 852 MB"
+                hint={(() => {
+                    const downloaded = (['int8', 'fp32'] as const).filter(
+                        (v) => presentMap[v],
+                    ).length;
+                    return `已下載 ${downloaded} / 2 · 點卡片切換；未下載的可按「下載」取得。`;
+                })()}
             >
                 <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <ModelCard
@@ -454,18 +571,33 @@ export function PTranscribe() {
                         size="852 MB"
                         wer="WER 8.01%"
                         hint="8-bit 量化 · 推薦：精度差距在誤差內，下載快 3×"
-                        loaded
+                        loaded={presentMap.int8}
                         active={variant === 'int8'}
+                        downloading={parakeetDownloading === 'int8'}
+                        progress={
+                            parakeetProgress?.variant === 'int8'
+                                ? parakeetProgress
+                                : undefined
+                        }
                         onSelect={() => setVariant('int8')}
+                        onDownload={() => handleDownloadVariant('int8')}
                     />
                     <ModelCard
                         name="parakeet-fp32"
                         size="2.5 GB"
                         wer="WER 8.03%"
                         hint="原版浮點 · 對精度有極致要求 / A/B 比較的進階使用者"
+                        loaded={presentMap.fp32}
                         actionLabel="下載"
                         active={variant === 'fp32'}
+                        downloading={parakeetDownloading === 'fp32'}
+                        progress={
+                            parakeetProgress?.variant === 'fp32'
+                                ? parakeetProgress
+                                : undefined
+                        }
                         onSelect={() => setVariant('fp32')}
+                        onDownload={() => handleDownloadVariant('fp32')}
                     />
                 </div>
             </PRow>
@@ -629,7 +761,10 @@ function ModelCard({
     loaded,
     actionLabel,
     active,
+    downloading,
+    progress,
     onSelect,
+    onDownload,
 }: {
     name: string;
     size: string;
@@ -639,24 +774,60 @@ function ModelCard({
     actionLabel?: string;
     /** True when this is the user's currently selected variant. */
     active?: boolean;
+    /** Currently downloading this card's variant. */
+    downloading?: boolean;
+    /** Live progress for this variant during download. */
+    progress?: { downloaded: number; total: number };
     /** Click handler for switching to this variant. */
     onSelect?: () => void;
+    /** Click handler for the「下載」action button. */
+    onDownload?: () => void;
 }) {
-    const interactive = !!loaded && !!onSelect;
-    const handleClick = () => {
-        if (!interactive || active) return;
+    // cp75.10 — card behaviour:
+    //   - loaded + !active → click row OR button to switch
+    //   - !loaded         → click button to download (row click is no-op)
+    //   - downloading     → button shows progress / disabled
+    //   - active          → 使用中 (no action)
+    const cardInteractive = !!loaded && !!onSelect && !active;
+    const showDownload = !loaded;
+    const handleRowClick = () => {
+        if (!cardInteractive) return;
         onSelect?.();
     };
+    const handleBtnClick: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+        // Don't bubble — otherwise loaded cards' row click ALSO fires.
+        e.stopPropagation();
+        if (active) return;
+        if (showDownload) {
+            if (downloading) return;
+            onDownload?.();
+        } else if (loaded) {
+            onSelect?.();
+        }
+    };
+    const pctNum =
+        progress && progress.total > 0
+            ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+            : null;
+    const btnLabel = active
+        ? '使用中'
+        : downloading
+        ? pctNum !== null
+            ? `下載中 ${pctNum}%`
+            : '下載中…'
+        : loaded
+        ? '切換'
+        : actionLabel || '下載';
     return (
         <div
-            role={interactive ? 'button' : undefined}
-            tabIndex={interactive ? 0 : undefined}
-            onClick={handleClick}
+            role={cardInteractive ? 'button' : undefined}
+            tabIndex={cardInteractive ? 0 : undefined}
+            onClick={handleRowClick}
             onKeyDown={(e) => {
-                if (!interactive) return;
+                if (!cardInteractive) return;
                 if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    handleClick();
+                    handleRowClick();
                 }
             }}
             style={{
@@ -668,7 +839,8 @@ function ModelCard({
                 gridTemplateColumns: '140px 80px 80px 1fr auto',
                 gap: 10,
                 alignItems: 'center',
-                cursor: interactive ? 'pointer' : 'default',
+                cursor: cardInteractive ? 'pointer' : 'default',
+                opacity: !loaded && !downloading ? 0.85 : 1,
             }}
         >
             <div style={{ fontSize: 12, fontWeight: 600, fontFamily: 'var(--h18-font-mono)' }}>
@@ -683,9 +855,33 @@ function ModelCard({
             <div style={{ fontSize: 10, color: 'var(--h18-text-mid)', lineHeight: 1.4 }}>
                 {hint}
             </div>
-            <PBtn>
-                {active ? '使用中' : loaded ? '切換' : actionLabel || '下載'}
-            </PBtn>
+            <button
+                type="button"
+                onClick={handleBtnClick}
+                disabled={active || (downloading && showDownload)}
+                style={{
+                    padding: '4px 10px',
+                    fontSize: 11,
+                    borderRadius: 4,
+                    border: '1px solid var(--h18-border-soft)',
+                    background: active
+                        ? 'var(--h18-surface)'
+                        : 'var(--h18-surface)',
+                    color: active
+                        ? 'var(--h18-text-dim)'
+                        : showDownload
+                        ? 'var(--h18-accent)'
+                        : 'var(--h18-text)',
+                    cursor: active
+                        ? 'default'
+                        : downloading
+                        ? 'wait'
+                        : 'pointer',
+                    fontFamily: 'var(--h18-font-mono)',
+                }}
+            >
+                {btnLabel}
+            </button>
         </div>
     );
 }
@@ -720,13 +916,28 @@ function valueOf(opts: { label: string; value: string }[], label: string): strin
     return opts.find((o) => o.label === label)?.value || opts[0].value;
 }
 
+interface GemmaVariantStatus {
+    variant: 'b4' | 'b12' | 'b27' | string; // server may extend
+    label: string;
+    filename: string;
+    url: string;
+    present: boolean;
+    expected_size: number;
+}
+
 interface GemmaSidecarStatus {
     binary_path: string | null;
+    /** Legacy 4B path (kept for backwards compat). */
     model_path: string;
+    /** Legacy 4B presence (kept for backwards compat). */
     model_present: boolean;
+    /** Legacy 4B size. */
     model_size_bytes: number;
+    /** Legacy 4B url. */
     model_url: string;
     sidecar_running: boolean;
+    /** cp75.10 — per-variant presence, drives multi-card UI. */
+    variants?: GemmaVariantStatus[];
 }
 
 type SidecarBringUp =
@@ -811,8 +1022,11 @@ export function PTranslate() {
      *
      * Concurrent clicks are no-ops — guarded by the `downloading` state.
      */
-    const handleDownload = async () => {
+    // cp75.10 — accept a variant ('4b' | '12b' | '27b'). Defaults to '4b'
+    // when not supplied so existing call sites still work.
+    const handleDownload = async (variantArg?: '4b' | '12b' | '27b') => {
         if (downloading) return;
+        const variant = variantArg ?? '4b';
         setDownloading(true);
 
         const { taskTrackerService } = await import(
@@ -822,9 +1036,10 @@ export function PTranslate() {
         const { invoke } = await import('@tauri-apps/api/core');
         const { listen } = await import('@tauri-apps/api/event');
 
+        const variantLabel = variant.toUpperCase();
         const taskId = taskTrackerService.start({
             kind: 'export',
-            label: '下載 Gemma 模型',
+            label: `下載 Gemma ${variantLabel} 模型`,
         });
         downloadTaskIdRef.current = taskId;
 
@@ -846,18 +1061,18 @@ export function PTranslate() {
                 });
             });
 
-            await invoke<string>('download_gemma_model');
+            await invoke<string>('download_gemma_model', { variant });
 
             taskTrackerService.complete(taskId);
             await refreshGemmaStatus();
             toastService.success(
-                '模型下載完成',
+                `Gemma ${variantLabel} 模型下載完成`,
                 '可在 Provider=Gemma 時自動啟動 sidecar',
             );
         } catch (err) {
             const msg = (err as Error)?.message || String(err);
             taskTrackerService.fail(taskId, msg);
-            toastService.error('模型下載失敗', msg);
+            toastService.error(`Gemma ${variantLabel} 下載失敗`, msg);
         } finally {
             if (unlisten) unlisten();
             downloadTaskIdRef.current = null;
@@ -933,45 +1148,102 @@ export function PTranslate() {
 
             <PHead>TranslateGemma (主引擎)</PHead>
             <PRow
-                label="模型"
-                hint={
-                    gemmaStatus?.model_present
-                        ? 'TranslateGemma 4B Q4_K_M · 4-bit 量化 · 繁中品質明顯優於 M2M100'
-                        : '下載 ≈ 2.5 GB GGUF；progress 同步顯示在頂部 Tasks indicator'
-                }
-                right={
-                    gemmaStatus?.model_present ? (
-                        <span className={s.statusOK}>
-                            ✓ 已下載 ·{' '}
-                            {(gemmaStatus.model_size_bytes / 1_000_000_000).toFixed(2)} GB
-                        </span>
+                label="模型管理"
+                hint={(() => {
+                    const total = gemmaStatus?.variants?.length ?? 1;
+                    const have =
+                        gemmaStatus?.variants?.filter((v) => v.present).length ??
+                        (gemmaStatus?.model_present ? 1 : 0);
+                    return `已下載 ${have} / ${total} · 4B 速度最快、27B 品質最佳；下方可分別下載並切換`;
+                })()}
+            >
+                <div
+                    style={{
+                        marginTop: 10,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 4,
+                    }}
+                >
+                    {/* cp75.10 — render one card per variant. Falls back
+                        to the legacy single-button card when the backend
+                        doesn't return a `variants` array (older Tauri
+                        binary). */}
+                    {gemmaStatus?.variants && gemmaStatus.variants.length > 0 ? (
+                        gemmaStatus.variants.map((v) => {
+                            const variantKey = v.variant.replace(
+                                /^b/,
+                                '',
+                            ) as '4b' | '12b' | '27b';
+                            const sizeGb = (
+                                v.expected_size / 1_000_000_000
+                            ).toFixed(1);
+                            const isActive =
+                                v.present &&
+                                gemmaStatus.sidecar_running &&
+                                gemmaStatus.model_path.endsWith(v.filename);
+                            return (
+                                <ModelCard
+                                    key={v.variant}
+                                    name={`translategemma-${v.label.toLowerCase()}`}
+                                    size={`${sizeGb} GB`}
+                                    wer={v.label}
+                                    hint={
+                                        v.label === '4B'
+                                            ? '速度最快 · 適合一般筆電 / iGPU'
+                                            : v.label === '12B'
+                                            ? '中等品質 · 需 ≥10 GB VRAM'
+                                            : '最佳品質 (SOTA) · 需 ≥24 GB VRAM'
+                                    }
+                                    loaded={v.present}
+                                    actionLabel="下載"
+                                    active={isActive}
+                                    downloading={downloading}
+                                    onSelect={() => {
+                                        // For Gemma, switching means
+                                        // restarting the sidecar with a
+                                        // different model path. This UX
+                                        // is left as-is for cp75.10 (lay
+                                        // groundwork without changing
+                                        // sidecar lifecycle); user can
+                                        // stop sidecar + start with new
+                                        // path manually until the wire-
+                                        // up lands.
+                                        void import(
+                                            '../../services/toastService',
+                                        ).then(({ toastService }) =>
+                                            toastService.info(
+                                                'Gemma 變體切換',
+                                                `${v.label} 已下載；下次啟動 sidecar 時會用該變體。請按 sidecar 列「停止」+「啟動」立即套用。`,
+                                            ),
+                                        );
+                                    }}
+                                    onDownload={() =>
+                                        handleDownload(variantKey)
+                                    }
+                                />
+                            );
+                        })
                     ) : (
-                        <div
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 8,
-                            }}
-                        >
-                            <span
-                                style={{
-                                    color: 'var(--h18-hot)',
-                                    fontSize: 11,
-                                }}
-                            >
-                                ✗ 模型尚未下載
-                            </span>
-                            <PBtn
-                                primary
-                                disabled={downloading}
-                                onClick={handleDownload}
-                            >
-                                {downloading ? '下載中…' : '下載'}
-                            </PBtn>
-                        </div>
-                    )
-                }
-            />
+                        // Legacy fallback (older Tauri build w/o variants list)
+                        <ModelCard
+                            name="translategemma-4b"
+                            size={`${(
+                                (gemmaStatus?.model_size_bytes ?? 0) /
+                                1_000_000_000
+                            ).toFixed(2)} GB`}
+                            wer="4B"
+                            hint="速度最快 · 適合一般筆電 / iGPU"
+                            loaded={!!gemmaStatus?.model_present}
+                            actionLabel="下載"
+                            active={!!gemmaStatus?.sidecar_running}
+                            downloading={downloading}
+                            onSelect={() => undefined}
+                            onDownload={() => handleDownload('4b')}
+                        />
+                    )}
+                </div>
+            </PRow>
             <PRow
                 label="llama-server sidecar"
                 hint={

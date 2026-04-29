@@ -735,23 +735,52 @@ struct GemmaStatus {
     /// llama-server binary discovered (bundled / dev / PATH).
     binary_path: Option<String>,
     /// Absolute path the GGUF model would live at on this machine.
+    /// (Legacy 4B path; per-variant paths in `variants` below.)
     model_path: String,
-    /// `true` when the model file exists at the expected size.
+    /// `true` when ANY variant is on disk (legacy field — was 4B-only).
     model_present: bool,
     /// Approximate full size in bytes — frontend uses this to render the
-    /// download dialog "you'll download X.X GB".
+    /// download dialog "you'll download X.X GB". (Legacy 4B size.)
     model_size_bytes: u64,
     /// HuggingFace URL we'd download from. Surfaced for transparency
-    /// (some users/networks block HF; they need to know).
+    /// (some users/networks block HF; they need to know). (Legacy 4B URL.)
     model_url: String,
     /// `true` when our supervised sidecar is currently running. Doesn't
     /// HTTP-probe — for that, call `check_gemma_server`.
     sidecar_running: bool,
+    /// cp75.10 — per-variant presence list. Frontend renders one
+    /// ModelCard per entry so the user sees 4B / 12B / 27B all together.
+    variants: Vec<GemmaVariantStatus>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct GemmaVariantStatus {
+    variant: String, // "4b" | "12b" | "27b"
+    label: &'static str,
+    filename: &'static str,
+    url: &'static str,
+    present: bool,
+    expected_size: u64,
 }
 
 #[tauri::command]
 fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
     let resource_dir = app.path().resource_dir().ok();
+    let variants: Vec<GemmaVariantStatus> = translation::gemma_model::Variant::all()
+        .iter()
+        .map(|v| GemmaVariantStatus {
+            variant: match v {
+                translation::gemma_model::Variant::B4 => "4b".into(),
+                translation::gemma_model::Variant::B12 => "12b".into(),
+                translation::gemma_model::Variant::B27 => "27b".into(),
+            },
+            label: v.label(),
+            filename: v.filename(),
+            url: v.url(),
+            present: translation::gemma_model::is_present_for(*v),
+            expected_size: v.expected_size(),
+        })
+        .collect();
     Ok(GemmaStatus {
         binary_path: translation::gemma_sidecar::locate_binary(resource_dir.as_ref())
             .map(|p| p.to_string_lossy().to_string()),
@@ -762,10 +791,15 @@ fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
         model_size_bytes: translation::gemma_model::EXPECTED_SIZE,
         model_url: translation::gemma_model::MODEL_URL.to_string(),
         sidecar_running: translation::gemma_sidecar::is_running(),
+        variants,
     })
 }
 
-/// Download the TranslateGemma 4B Q4_K_M GGUF model file (≈ 2.5 GB).
+/// Download a TranslateGemma GGUF model file.
+///
+/// Variant selection (cp75.10): caller passes `variant: "4b" | "12b" | "27b"`.
+/// Backward compat: when `variant` is None, defaults to 4B (the only
+/// option pre-cp75.10).
 ///
 /// Resume-friendly: a partial file from a previous interrupted download
 /// is detected and continued (driven by `whisper::download::download_model`).
@@ -774,7 +808,10 @@ fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
 ///
 /// Returns the absolute path to the downloaded file on success.
 #[tauri::command]
-async fn download_gemma_model(app: tauri::AppHandle) -> Result<String, String> {
+async fn download_gemma_model(
+    app: tauri::AppHandle,
+    variant: Option<String>,
+) -> Result<String, String> {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
@@ -782,10 +819,15 @@ async fn download_gemma_model(app: tauri::AppHandle) -> Result<String, String> {
 
     use whisper::download;
 
-    let config = translation::gemma_model::download_config()?;
+    let v = match variant.as_deref() {
+        None | Some("") => translation::gemma_model::Variant::B4,
+        Some(s) => translation::gemma_model::Variant::from_str(s)
+            .ok_or_else(|| format!("unknown gemma variant: {s} (expected 4b|12b|27b)"))?,
+    };
+    let config = translation::gemma_model::download_config_for(v)?;
 
     // Fast path: already complete.
-    if translation::gemma_model::is_present() {
+    if translation::gemma_model::is_present_for(v) {
         return Ok(config.output_path.to_string_lossy().to_string());
     }
 

@@ -199,32 +199,40 @@ async function flush(times = 4) {
 }
 
 describe('PTranslate · S3g model download', () => {
-    it('1. mount → model_present=true → 顯示 ✓ 已下載 (no download button)', async () => {
+    // cp75.10: legacy STATUS_* doesn't carry per-variant info → exercises
+    // the legacy single-card fallback path. The card surfaces "下載" /
+    // "切換" / "使用中" labels via ModelCard rather than the old
+    // 「✓ 已下載 / ✗ 模型尚未下載」 prose row.
+    it('1. mount → model_present=true → no 下載 button (loaded card shows 切換)', async () => {
         setupInvoke({ status: STATUS_PRESENT });
         setupListen();
 
         render(<PTranslate />);
         await flush();
 
-        expect(screen.getByText(/✓ 已下載/)).toBeInTheDocument();
+        // The fallback card name should be visible.
+        expect(screen.getByText(/translategemma-4b/)).toBeInTheDocument();
+        // Loaded + active sidecar → button label is 「使用中」 (legacy
+        // fallback treats sidecar_running as active). model_present=true
+        // + sidecar_running=false → button is 「切換」. Either way no
+        // "下載" download button.
         expect(screen.queryByRole('button', { name: '下載' })).toBeNull();
         expect(screen.queryByRole('button', { name: '下載中…' })).toBeNull();
     });
 
-    it('2. mount → model_present=false → 顯示 ✗ 模型尚未下載 + 下載 button', async () => {
+    it('2. mount → model_present=false → 下載 button rendered', async () => {
         setupInvoke({ status: STATUS_MISSING });
         setupListen();
 
         render(<PTranslate />);
         await flush();
 
-        expect(screen.getByText(/✗ 模型尚未下載/)).toBeInTheDocument();
         const btn = screen.getByRole('button', { name: '下載' });
         expect(btn).toBeInTheDocument();
         expect(btn).not.toBeDisabled();
     });
 
-    it('3. click 下載 → invoke download_gemma_model 被呼叫 + taskTracker.start', async () => {
+    it('3. click 下載 → invoke download_gemma_model({variant:"4b"}) + taskTracker.start', async () => {
         const invokeSpy = setupInvoke({
             status: STATUS_MISSING,
             download: async () => '/tmp/gemma.gguf',
@@ -239,7 +247,10 @@ describe('PTranslate · S3g model download', () => {
             fireEvent.click(btn);
         });
 
-        expect(invokeSpy).toHaveBeenCalledWith('download_gemma_model');
+        // cp75.10: now passes variant param
+        expect(invokeSpy).toHaveBeenCalledWith('download_gemma_model', {
+            variant: '4b',
+        });
         expect(mockTaskTracker.start).toHaveBeenCalledTimes(1);
         const startArg = mockTaskTracker.start.mock.calls[0][0];
         expect(startArg.kind).toBe('export');
@@ -346,9 +357,11 @@ describe('PTranslate · S3g model download', () => {
         expect(mockTaskTracker.fail).not.toHaveBeenCalled();
         expect(mockToast.success).toHaveBeenCalled();
 
-        // Refreshed status should swap to "已下載" branch.
+        // Refreshed status: loaded card no longer shows the 下載 button.
         await waitFor(() => {
-            expect(screen.getByText(/✓ 已下載/)).toBeInTheDocument();
+            expect(
+                screen.queryByRole('button', { name: '下載' }),
+            ).toBeNull();
         });
     });
 
