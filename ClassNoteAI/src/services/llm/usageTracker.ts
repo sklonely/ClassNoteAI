@@ -14,7 +14,15 @@
  * CourseListView / NotesView / AIChatPanel. The tracker-with-timestamp
  * pattern means legacy callers keep their `.then((text) => ...)`
  * shape while new display surfaces subscribe or query on demand.
+ *
+ * cp75.26 — STORAGE_KEY is now user-scoped via the cp75.3 composite-key
+ * pattern (`<userIdSegment>::<base>`). Previously a single global bucket
+ * meant User A's usage bled into User B's "today" summary on multi-user
+ * machines. The legacy unscoped key is left orphaned — no auto-migration
+ * because we have no way to know which user the legacy data belongs to.
  */
+
+import { authService } from '../authService';
 
 export type UsageTask =
   | 'summarize'
@@ -44,7 +52,18 @@ export interface UsageEvent {
 
 type Listener = (e: UsageEvent) => void;
 
-const STORAGE_KEY = 'llm.usageTracker.events.v1';
+/**
+ * cp75.26 — base key, prefixed at use-site by the active user's
+ * id-segment so multi-user machines isolate usage history. Resolved
+ * lazily via `getStorageKey()` rather than captured at module-load time
+ * so a user switch (logout → login as different user) re-targets the
+ * next `persist()` / `loadFromStorage()` call to the new bucket.
+ */
+const BASE_STORAGE_KEY = 'llm.usageTracker.events.v1';
+
+function getStorageKey(): string {
+  return `${authService.getUserIdSegment()}::${BASE_STORAGE_KEY}`;
+}
 
 class UsageTracker {
   private events: UsageEvent[] = [];
@@ -67,7 +86,7 @@ class UsageTracker {
   private loadFromStorage() {
     if (typeof localStorage === 'undefined') return;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
+      const raw = localStorage.getItem(getStorageKey());
       if (!raw) return;
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -92,7 +111,7 @@ class UsageTracker {
   private persist() {
     if (typeof localStorage === 'undefined') return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.events));
+      localStorage.setItem(getStorageKey(), JSON.stringify(this.events));
     } catch (err) {
       // Quota / disabled storage — non-fatal; we just lose persistence.
       console.warn('[UsageTracker] localStorage write failed:', err);

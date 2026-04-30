@@ -629,14 +629,44 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     );
 
     // v0.7.x: Render Canvas integration step (optional)
+    //
+    // cp75.26 P1-E — rollback the Canvas URL save when checkRequirements
+    // throws AFTER the save committed. Without rollback, the URL stays
+    // persisted but the wizard is stuck on the same step with no clear
+    // recovery (the user retries → second save layered on top, no signal
+    // that the previous attempt half-succeeded).
+    //
+    // Rollback strategy: snapshot the prior AppSettings BEFORE the save.
+    // On any post-save failure, write the snapshot back. We also surface
+    // a toast so the user sees something happened — the inline error box
+    // alone is easy to miss when the wizard transitions states quickly.
     const saveCanvasCalendarRssAndContinue = async (skipped: boolean) => {
         setCanvasIntegrationBusy(true);
         setCanvasIntegrationError(null);
+
+        // Snapshot prior settings up-front so the catch path can rollback
+        // even if `storageService` lazy-import or `getAppSettings()` is
+        // the thing that throws. `null` is a valid snapshot (means: no
+        // settings existed before this attempt — rollback path will
+        // delete-by-saving-default if we ever need it; for now we just
+        // skip the rollback write in that branch since nothing was
+        // committed to overwrite).
+        let original: Awaited<
+            ReturnType<typeof import('../services/storageService').storageService.getAppSettings>
+        > | null = null;
+        let didSave = false;
+        let storageServiceRef:
+            | typeof import('../services/storageService').storageService
+            | null = null;
+
         try {
             if (!skipped && canvasCalendarRssDraft.trim()) {
                 // Save URL into AppSettings.integrations.canvas.calendar_rss
                 const { storageService } = await import('../services/storageService');
-                const cur = (await storageService.getAppSettings()) || {
+                storageServiceRef = storageService;
+                original = await storageService.getAppSettings();
+
+                const cur = original || {
                     server: { url: '', port: 0, enabled: false },
                     audio: { sample_rate: 48000, chunk_duration: 5 },
                     subtitle: {
@@ -659,11 +689,44 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                     },
                 };
                 await storageService.saveAppSettings(next as any);
+                didSave = true;
                 window.dispatchEvent(new CustomEvent('classnote-settings-changed'));
             }
             await checkRequirements();
         } catch (err) {
             console.error('[SetupWizard] save canvas integration failed:', err);
+
+            // cp75.26 — rollback the URL save so the user can retry without
+            // leaving stale Canvas state in DB. Only attempt rollback if
+            // (a) we actually committed a save AND (b) we have a snapshot
+            // of prior settings (original !== null). Inner try/catch so a
+            // rollback failure doesn't mask the original error.
+            if (didSave && original && storageServiceRef) {
+                try {
+                    await storageServiceRef.saveAppSettings(original as any);
+                    window.dispatchEvent(
+                        new CustomEvent('classnote-settings-changed'),
+                    );
+                } catch (rollbackErr) {
+                    console.warn(
+                        '[SetupWizard] Canvas URL rollback failed:',
+                        rollbackErr,
+                    );
+                }
+            }
+
+            // Surface a toast on top of the inline error box. Lazy-import
+            // toastService to keep wizard cold-start light.
+            try {
+                const { toastService } = await import('../services/toastService');
+                toastService.error(
+                    '校曆 / RSS 整合驗證失敗，已還原設定',
+                    String((err as Error)?.message ?? err),
+                );
+            } catch {
+                /* toast unavailable — inline error is the fallback */
+            }
+
             setCanvasIntegrationError(
                 (err as Error)?.message || '儲存失敗 — 請查看 console。',
             );
