@@ -186,6 +186,79 @@ export function useAIHistory() {
                 console.warn('[useAIHistory] RAG retrieval failed (non-fatal):', err);
             }
 
+            // cp75.30 — when RAG returns nothing for a known lecture context,
+            // stuff the lecture's note + recent transcript as fallback
+            // grounding. Modern high-tier providers handle 200K+ tokens; even
+            // a 92-min lecture fits comfortably. Better to over-stuff than
+            // have the AI reply 「I don't know what lecture you mean」.
+            if (!ragGrounding && ctx?.kind === 'lecture' && ctx.lectureId) {
+                try {
+                    const [{ storageService }, { recordingSessionService }] =
+                        await Promise.all([
+                            import('../../services/storageService'),
+                            import(
+                                '../../services/recordingSessionService'
+                            ),
+                        ]);
+                    const note = await storageService
+                        .getNote(ctx.lectureId)
+                        .catch(() => null);
+                    const subs = await storageService
+                        .getSubtitles(ctx.lectureId)
+                        .catch(() => []);
+
+                    let isRecording = false;
+                    try {
+                        const st = recordingSessionService.getState();
+                        isRecording =
+                            st.status === 'recording' &&
+                            st.lectureId === ctx.lectureId;
+                    } catch {
+                        /* swallow — defaults to false */
+                    }
+
+                    const lines: string[] = [];
+                    if (note?.summary) {
+                        lines.push('【課程摘要】', note.summary.slice(0, 8000));
+                    }
+                    if (note?.sections?.length) {
+                        lines.push(
+                            '【章節】',
+                            note.sections
+                                .map((sec) => `- ${sec.title}`)
+                                .join('\n'),
+                        );
+                    }
+                    if (subs.length > 0) {
+                        const window = isRecording
+                            ? subs.filter((s) => {
+                                  const lastTs = subs[subs.length - 1].timestamp;
+                                  return s.timestamp >= lastTs - 60;
+                              })
+                            : subs;
+                        const transcriptText = window
+                            .map((s) => s.text_en || s.text_zh || '')
+                            .filter(Boolean)
+                            .join('\n')
+                            .slice(0, 30000);
+                        if (transcriptText) {
+                            lines.push(
+                                isRecording
+                                    ? '【最近 60 秒（進行中）】'
+                                    : '【完整逐字稿】',
+                                transcriptText,
+                            );
+                        }
+                    }
+                    if (lines.length > 0) ragGrounding = lines.join('\n\n');
+                } catch (err) {
+                    console.warn(
+                        '[useAIHistory] fallback fetch failed (non-fatal):',
+                        err,
+                    );
+                }
+            }
+
             // Build LLM messages (history without intro hint)
             const history = [...msgs, userMsg];
             const systemContent = ragGrounding

@@ -60,6 +60,12 @@ import NotesEditorComingSoon from './NotesEditorComingSoon';
 import DraggableAIFab from './DraggableAIFab';
 import SearchOverlay, { type SearchAction } from './SearchOverlay';
 import { H18TextContextMenu } from './H18TextContextMenu';
+import {
+    deriveAIContextForPage,
+    loadLastReview,
+    storeLastReview,
+    type LastReviewState,
+} from './aiContextDerivation';
 import s from './H18DeepApp.module.css';
 
 // (Placeholder helper removed in P6.9 — every nav target now has a real component)
@@ -736,6 +742,33 @@ export default function H18DeepApp() {
 
     const parsed = useMemo(() => parseNav(activeNav), [activeNav]);
 
+    // cp75.30 — remember the last review:cid:lid the user landed on so
+    // navigating to /ai afterwards still gives the AI tutor a lecture
+    // scope. Hydrated from localStorage once on mount; updated whenever
+    // the route enters a review page with both ids resolved.
+    const [lastReview, setLastReview] = useState<LastReviewState | undefined>(
+        () => loadLastReview(),
+    );
+    useEffect(() => {
+        if (
+            parsed.kind === 'review' &&
+            parsed.lectureId &&
+            parsed.courseId
+        ) {
+            const next: LastReviewState = {
+                lectureId: parsed.lectureId,
+                courseId: parsed.courseId,
+            };
+            setLastReview((prev) =>
+                prev?.lectureId === next.lectureId &&
+                prev?.courseId === next.courseId
+                    ? prev
+                    : next,
+            );
+            storeLastReview(next);
+        }
+    }, [parsed]);
+
     // ─── inbox aggregation for TopBar count + Rail per-course badge ──
     // We re-run useAggregatedCanvasInbox here (H18Inbox uses it too —
     // both share the canvasCache so the second hook is essentially free).
@@ -822,7 +855,12 @@ export default function H18DeepApp() {
             case 'notes':
                 return <NotesEditorComingSoon onBack={() => setActiveNav('home')} />;
             case 'ai':
-                return <H18AIPage onBack={() => setActiveNav('home')} />;
+                return (
+                    <H18AIPage
+                        onBack={() => setActiveNav('home')}
+                        aiContext={deriveAIContextForPage(parsed, lastReview)}
+                    />
+                );
             case 'profile':
                 return (
                     <ProfilePage
