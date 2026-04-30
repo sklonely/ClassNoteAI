@@ -905,4 +905,47 @@ mod tests {
             "alive lecture must not appear in trash list"
         );
     }
+
+    // ── cp75.20.1 — trash-aware ownership lookup ────────────────────────
+    //
+    // The cp75.20 gate on `find_lecture_owner` (`AND l.is_deleted = 0`)
+    // broke restore_lecture / purge_lecture / hard_delete_lectures_by_ids,
+    // which legitimately need to verify ownership of *trashed* rows.
+    // cp75.20.1 introduces `find_lecture_owner_including_trashed` for
+    // those paths while leaving the gated default in place for every
+    // other destructive command.
+
+    /// 1.1 — trash-aware lookup MUST resolve owner for both alive and
+    /// soft-deleted lectures (and still None for missing rows).
+    #[test]
+    fn find_lecture_owner_including_trashed_returns_owner_for_deleted_lecture() {
+        let db = fixture_softdelete();
+        // Alive lecture: same as the gated function — returns owner.
+        let alive_owner = db.find_lecture_owner_including_trashed("lec-alive");
+        assert_eq!(alive_owner, Some("default_user".to_string()));
+        // Soft-deleted lecture: should ALSO return owner (vs the gated
+        // version which returns None).
+        let deleted_owner =
+            db.find_lecture_owner_including_trashed("lec-deleted-under-alive");
+        assert_eq!(
+            deleted_owner,
+            Some("default_user".to_string()),
+            "trash-aware ownership lookup must return owner of soft-deleted rows"
+        );
+        // Non-existent lecture: still None.
+        let missing = db.find_lecture_owner_including_trashed("does-not-exist");
+        assert_eq!(missing, None);
+    }
+
+    /// 1.2 — Regression: the gated `find_lecture_owner` (cp75.20) MUST
+    /// still refuse trashed lectures after cp75.20.1 lands.
+    #[test]
+    fn find_lecture_owner_still_filters_is_deleted_after_cp75_20_1() {
+        let db = fixture_softdelete();
+        assert_eq!(db.find_lecture_owner("lec-deleted-under-alive"), None);
+        assert_eq!(
+            db.find_lecture_owner("lec-alive"),
+            Some("default_user".to_string())
+        );
+    }
 }

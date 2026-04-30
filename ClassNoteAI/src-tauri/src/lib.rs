@@ -3513,7 +3513,7 @@ async fn restore_lecture(id: String, user_id: Option<String>) -> Result<(), Stri
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     let user = user_id.unwrap_or_else(|| "default_user".to_string());
-    verify_lecture_ownership(&db, &id, &user)?;
+    verify_lecture_ownership_including_trashed(&db, &id, &user)?;
     db.restore_lecture(&id)
         .map_err(|e| format!("還原課堂失敗: {}", e))?;
     Ok(())
@@ -3543,7 +3543,7 @@ async fn purge_lecture(id: String, user_id: Option<String>) -> Result<(), String
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     let user = user_id.unwrap_or_else(|| "default_user".to_string());
-    verify_lecture_ownership(&db, &id, &user)?;
+    verify_lecture_ownership_including_trashed(&db, &id, &user)?;
     db.purge_lecture(&id)
         .map_err(|e| format!("永久刪除課堂失敗: {}", e))?;
     Ok(())
@@ -3663,6 +3663,21 @@ fn verify_course_ownership(
     }
 }
 
+/// cp75.20.1 — verify ownership of a lecture WHEN trashed lectures are
+/// in scope (restore / purge / hard-delete from trash). Mirrors
+/// `verify_lecture_ownership` but uses the trash-aware DB lookup.
+fn verify_lecture_ownership_including_trashed(
+    db: &storage::Database,
+    lecture_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_lecture_owner_including_trashed(lecture_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課堂（屬於其他帳號）".to_string()),
+        None => Err("找不到此課堂".to_string()),
+    }
+}
+
 /// Phase 7 cp74.1: user-driven permanent delete of selected trashed
 /// lectures. Backs the Trash UI's 「永久刪除選取」 button which until
 /// now was a no-op TODO toast. Returns ids that were actually purged
@@ -3688,7 +3703,7 @@ async fn hard_delete_lectures_by_ids(
     // stale; better to drop than throw on the whole batch).
     let owned: Vec<String> = ids
         .into_iter()
-        .filter(|id| verify_lecture_ownership(&db, id, &user).is_ok())
+        .filter(|id| verify_lecture_ownership_including_trashed(&db, id, &user).is_ok())
         .collect();
     db.hard_delete_lectures_by_ids(&owned)
         .map_err(|e| format!("永久刪除選取課堂失敗: {}", e))

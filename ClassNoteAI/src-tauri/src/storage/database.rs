@@ -112,6 +112,25 @@ impl Database {
             .ok()
     }
 
+    /// cp75.20.1 — trash-aware ownership lookup.
+    ///
+    /// Same as `find_lecture_owner` but does NOT filter `is_deleted`. Used
+    /// by trash-management commands (restore_lecture, purge_lecture,
+    /// hard_delete_lectures_by_ids) that legitimately need to operate on
+    /// soft-deleted rows. The "alive-only" `find_lecture_owner` (cp75.20)
+    /// stays the default for every other destructive operation.
+    pub fn find_lecture_owner_including_trashed(&self, lecture_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT c.user_id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.id = ?1",
+                [lecture_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
     pub fn find_course_owner(&self, course_id: &str) -> Option<String> {
         self.conn
             .query_row(
