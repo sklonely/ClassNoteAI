@@ -99,6 +99,26 @@ Some intro.
         expect(out).toHaveLength(2);
         expect(out.every((s) => s.timestamp === 0)).toBe(true);
     });
+
+    // ─── cp75.28 regression guards ──────────────────────────────────────
+    //
+    // Pre cp75.28, recordingSessionService stamped lecture.duration=0,
+    // so this function got durationSec=0 → every section clamped to
+    // timestamp 0 → groupSubsBySections degenerated to "1 wall of
+    // subs". These tests pin the contract (non-degenerate spread when
+    // duration > 0; clamp to 0 *only* when duration === 0) so a future
+    // refactor can't silently re-introduce the bug.
+    it('cp75.28 — spreads timestamps non-zero across durationSec > 0 with N=4 headings', () => {
+        const md = '## A\n\n## B\n\n## C\n\n## D';
+        const out = extractSectionsFromSummary(md, 1200);
+        expect(out.map((s) => s.timestamp)).toEqual([0, 300, 600, 900]);
+    });
+
+    it('cp75.28 — all timestamps clamp to 0 ONLY when durationSec is 0', () => {
+        const md = '## A\n\n## B\n\n## C';
+        const out = extractSectionsFromSummary(md, 0);
+        expect(out.every((s) => s.timestamp === 0)).toBe(true);
+    });
 });
 
 describe('mergeExtractedSections', () => {

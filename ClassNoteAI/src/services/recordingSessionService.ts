@@ -610,12 +610,45 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         // Step 6 · done — flip the lecture row to 'completed', wire in
         // the audio_path we got from step 2, dispatch the event.
         // ──────────────────────────────────────────────────────────────
+        // cp75.28 — also stamp the recorded duration. Pre cp75.28 this
+        // was a hardcoded `0` (and in the existing-row branch, simply
+        // omitted, so whatever stale value lived in `lecture.duration`
+        // got carried forward — usually `0` from start()). That zero
+        // cascaded into runBackgroundSummary → segmentSections /
+        // extractSectionsFromSummary's heading-spread formula
+        // `Math.round((i / N) * Math.max(0, durationSec))`, clamping
+        // every section's timestamp to 0; downstream groupSubsBySections
+        // then bucketed every subtitle into section 0, producing a
+        // single "1 段到底" wall of text. Stamping the real duration
+        // once here fixes both Issue 1 (章節 timestamp 全 00:00) and
+        // Issue 2 (段落不分段).
+        //
+        // The recorder's `getRecordingInfo()` computes duration as
+        // `totalSamples / sampleRate` — always non-zero after step 2's
+        // `finalizeToDisk` returned successfully. We round to integer
+        // seconds for storage (lecture.duration is `seconds`, integer).
+        // Falls back to 0 only when the recorder is null, missing the
+        // API (older test stubs), or throws.
+        let recordedDurationSec = 0;
+        try {
+            const info = this.recorder?.getRecordingInfo?.();
+            if (info && Number.isFinite(info.duration) && info.duration > 0) {
+                recordedDurationSec = Math.round(info.duration);
+            }
+        } catch (err) {
+            console.warn(
+                '[recordingSession.stop] step 6 getRecordingInfo failed:',
+                err,
+            );
+            // duration=0 is a degraded-but-functional result.
+        }
         try {
             const storage = await this.storage();
             const lecture = await storage.getLecture(lectureId);
             if (lecture) {
                 await storage.saveLecture({
                     ...lecture,
+                    duration: recordedDurationSec,
                     status: 'completed',
                     audio_path: finalAudioPath ?? lecture.audio_path,
                     updated_at: new Date().toISOString(),
@@ -630,7 +663,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                     course_id: courseId,
                     title: '',
                     date: new Date().toISOString(),
-                    duration: 0,
+                    duration: recordedDurationSec,
                     status: 'completed',
                     audio_path: finalAudioPath ?? undefined,
                     created_at: new Date().toISOString(),

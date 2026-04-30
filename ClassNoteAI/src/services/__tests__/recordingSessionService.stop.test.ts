@@ -48,6 +48,16 @@ const mockRecorderInstance = {
     finalizeToDisk: vi.fn(
         async (path: string) => path,
     ) as ReturnType<typeof vi.fn>,
+    // cp75.28 — recordingSessionService.stop step 6 reads this to stamp
+    // lecture.duration. Default null = "no PCM samples" (which is what
+    // a fresh test fixture would normally report); individual tests
+    // override via mockReturnValue / mockReturnValueOnce.
+    getRecordingInfo: vi.fn(
+        () =>
+            null as
+                | { duration: number; sampleRate: number; chunks: number }
+                | null,
+    ),
     mediaStream: null as unknown,
 };
 
@@ -311,6 +321,8 @@ beforeEach(() => {
     mockRecorderInstance.finalizeToDisk = vi.fn(async (p: string) => p);
     mockRecorderInstance.start.mockClear();
     mockRecorderInstance.stop.mockClear();
+    mockRecorderInstance.getRecordingInfo.mockReset();
+    mockRecorderInstance.getRecordingInfo.mockReturnValue(null);
     recordingSessionService.reset();
 });
 
@@ -806,5 +818,127 @@ describe('stop() · W17 toast coalescing', () => {
         expect(toastModule.toastService.success).toHaveBeenCalledTimes(1);
         expect(toastModule.toastService.warning).not.toHaveBeenCalled();
         expect(toastModule.toastService.error).not.toHaveBeenCalled();
+    });
+});
+
+// ─── cp75.28 · stamps lecture.duration from recorder.getRecordingInfo() ──
+//
+// Pre cp75.28: stop step 6 hardcoded `duration: 0` on the lecture row.
+// That zero cascaded into runBackgroundSummary → segmentSections (the
+// segmenter's heading-spread fallback formula clamped every section to
+// timestamp=0) → groupSubsBySections (all subs land in section 0 → "1
+// para wall of text"). Both Issue 1 (章節 timestamp 全 00:00) and
+// Issue 2 (段落不分段) shared this single root cause; stamping the
+// real duration once fixes both.
+
+describe('stop() · cp75.28 stamps lecture.duration', () => {
+    it('saveLecture is called with duration > 0 when recorder produced PCM samples', async () => {
+        // Recorder reports a real duration (sub-second precision allowed —
+        // the impl rounds to the nearest integer second for storage).
+        mockRecorderInstance.getRecordingInfo.mockReturnValue({
+            duration: 1234.5,
+            sampleRate: 48_000,
+            chunks: 12,
+        });
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+
+        expect(storageMockState.saveLectureCalls).toHaveLength(1);
+        const saved = storageMockState.saveLectureCalls[0][0] as {
+            duration?: number;
+        };
+        // Math.round(1234.5) === 1235 — spec the rounding so future
+        // refactors don't silently swap it for floor() and lose half a
+        // second.
+        expect(saved.duration).toBe(1235);
+    });
+
+    it('saveLecture stamps duration=0 gracefully when getRecordingInfo returns null', async () => {
+        // Default mock already returns null; assert the no-op path.
+        mockRecorderInstance.getRecordingInfo.mockReturnValue(null);
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+
+        expect(storageMockState.saveLectureCalls).toHaveLength(1);
+        const saved = storageMockState.saveLectureCalls[0][0] as {
+            duration?: number;
+        };
+        expect(saved.duration).toBe(0);
+    });
+
+    it('saveLecture stamps duration=0 gracefully when getRecordingInfo throws', async () => {
+        mockRecorderInstance.getRecordingInfo.mockImplementation(() => {
+            throw new Error('recorder went away');
+        });
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+
+        expect(storageMockState.saveLectureCalls).toHaveLength(1);
+        const saved = storageMockState.saveLectureCalls[0][0] as {
+            duration?: number;
+        };
+        expect(saved.duration).toBe(0);
+        // Pipeline still succeeded — duration sourcing is best-effort.
+        expect(recordingSessionService.getState().stopPhase).toBe('done');
+    });
+
+    it('runBackgroundSummary reads the just-stamped duration and passes it to segmentSections', async () => {
+        // cp75.28 — the stamped duration must propagate. Set up a long
+        // enough transcript so the summary path actually runs (and thus
+        // segmentSections is called); set up the recorder to report
+        // duration=600.
+        mockRecorderInstance.getRecordingInfo.mockReturnValue({
+            duration: 600,
+            sampleRate: 48_000,
+            chunks: 6,
+        });
+        // Step 6 saveLecture in the impl writes through to the in-memory
+        // mock; downstream getLecture (called from runBackgroundSummary
+        // for durationSec lookup) reads that updated row. Wire it.
+        const originalSaveLecture =
+            storageMockState.saveLectureCalls; // for tracking
+        // Update getLecture mock side: re-import storageService and
+        // patch getLecture to return the most recent saveLecture row.
+        const { storageService } = await import('../storageService');
+        (storageService.getLecture as ReturnType<typeof vi.fn>).mockImplementation(
+            async () => {
+                const last =
+                    originalSaveLecture[originalSaveLecture.length - 1]?.[0];
+                if (last) return last;
+                return storageMockState.lectureRow;
+            },
+        );
+
+        // Long enough transcript — runBackgroundSummary's < 100 char
+        // short-circuit otherwise skips summarizeStream entirely.
+        const longSentence =
+            'lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ut enim ad minim veniam, quis nostrud exercitation';
+        storageMockState.subsForLecture = [
+            {
+                id: 'sub-x-0',
+                lecture_id: 'lecture-1',
+                timestamp: 0,
+                text_en: longSentence,
+                text_zh: '夠長的中文翻譯內容夠長的中文翻譯內容夠長的中文翻譯內容夠長的中文翻譯內容夠長的中文翻譯內容',
+                type: 'rough',
+                created_at: new Date().toISOString(),
+            },
+        ];
+
+        const { segmentSections } = await import('../llm/tasks');
+        (segmentSections as ReturnType<typeof vi.fn>).mockClear();
+
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        // Allow background summary to enter segmentSections.
+        await new Promise((r) => setTimeout(r, 100));
+
+        // segmentSections should have been called with durationSec=600,
+        // i.e. the value just stamped onto the lecture row by step 6.
+        expect(segmentSections).toHaveBeenCalled();
+        const call = (segmentSections as ReturnType<typeof vi.fn>).mock
+            .calls[0]?.[0] as { durationSec?: number } | undefined;
+        expect(call).toBeDefined();
+        expect(call?.durationSec).toBe(600);
     });
 });
