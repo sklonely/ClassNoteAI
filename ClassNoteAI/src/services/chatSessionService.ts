@@ -97,7 +97,7 @@ class ChatSessionService {
                     isDeleted: false,
                 });
 
-                // Save messages
+                // Save messages (cp75.21: pass userId for ownership verify)
                 for (const msg of session.messages) {
                     await invoke('save_chat_message', {
                         id: msg.id,
@@ -106,6 +106,7 @@ class ChatSessionService {
                         content: msg.content,
                         sources: msg.sources ? JSON.stringify(msg.sources) : null,
                         timestamp: msg.timestamp,
+                        userId: this.userId,
                     });
                 }
             }
@@ -290,7 +291,7 @@ class ChatSessionService {
     public async addMessage(sessionId: string, message: ChatMessage): Promise<void> {
         if (!this.userId) await this.init();
 
-        // Save message
+        // Save message (cp75.21: pass userId for ownership verify)
         await invoke('save_chat_message', {
             id: message.id,
             sessionId: sessionId,
@@ -298,6 +299,7 @@ class ChatSessionService {
             content: message.content,
             sources: message.sources ? JSON.stringify(message.sources) : null,
             timestamp: message.timestamp,
+            userId: this.userId,
         });
 
         // Update session's updatedAt and potentially title

@@ -948,4 +948,129 @@ mod tests {
             Some("default_user".to_string())
         );
     }
+
+    // ── cp75.21 — Cross-user write protection ───────────────────────────
+    //
+    // P0 ownership gaps closed in cp75.21:
+    //   • delete_course (non-cascade) — already covered by cascade
+    //     variant's verify, but the non-cascade entry point was unguarded
+    //   • save_chat_message — no ownership check; anyone with a session_id
+    //     could inject messages
+    //   • save_subtitle / delete_subtitle — no ownership check
+    //
+    // The DB-level helpers tested here are the SQL primitives the
+    // Tauri-layer verify_*_ownership functions delegate to.
+
+    /// Fixture for cp75.21: two users, each owning one chat session +
+    /// one lecture with one subtitle.
+    fn fixture_cp75_21() -> Database {
+        let db = make_test_db();
+        let now = Utc::now().to_rfc3339();
+        let conn = db.conn();
+
+        // Two users: 'sk' and 'other'. (default_user is auto-created by
+        // init_tables; we don't touch it here to keep the fixture
+        // surface tight.)
+        conn.execute(
+            "INSERT OR IGNORE INTO local_users (username, created_at, sync_status) \
+             VALUES ('sk', ?1, 'synced'), ('other', ?1, 'synced')",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        // One course per user.
+        conn.execute(
+            "INSERT INTO courses \
+                (id, title, description, keywords, user_id, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('course-sk',    'SK Course',    NULL, NULL, 'sk',    0, ?1, ?1), \
+                ('course-other', 'Other Course', NULL, NULL, 'other', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        // One lecture per user (alive).
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('lec-sk',    'course-sk',    'SK Lec',    ?1, 0, 'completed', 0, ?1, ?1), \
+                ('lec-other', 'course-other', 'Other Lec', ?1, 0, 'completed', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        // One subtitle per lecture.
+        conn.execute(
+            "INSERT INTO subtitles \
+                (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, source, fine_text) \
+             VALUES \
+                ('sub-sk',    'lec-sk',    0.0, 'sk en',    NULL, 'rough', NULL, ?1, 'live', NULL), \
+                ('sub-other', 'lec-other', 0.0, 'other en', NULL, 'rough', NULL, ?1, 'live', NULL)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        // One chat session per user (sk's session attached to sk's lecture,
+        // other's session is global). Aliveness doesn't matter for the
+        // ownership lookup — we want it to succeed regardless of trash.
+        conn.execute(
+            "INSERT INTO chat_sessions \
+                (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) \
+             VALUES \
+                ('sess-sk',    'lec-sk', 'sk',    'SK Sess',    NULL, ?1, ?1, 0), \
+                ('sess-other', NULL,     'other', 'Other Sess', NULL, ?1, ?1, 0)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+
+        db
+    }
+
+    /// cp75.21 · 2.2 — `find_chat_session_owner` resolves the right
+    /// user_id for each session, and returns None for missing rows.
+    #[test]
+    fn cp75_21_find_chat_session_owner_returns_owner() {
+        let db = fixture_cp75_21();
+
+        assert_eq!(
+            db.find_chat_session_owner("sess-sk"),
+            Some("sk".to_string()),
+            "sess-sk should resolve to 'sk'"
+        );
+        assert_eq!(
+            db.find_chat_session_owner("sess-other"),
+            Some("other".to_string()),
+            "sess-other should resolve to 'other'"
+        );
+        assert_eq!(
+            db.find_chat_session_owner("does-not-exist"),
+            None,
+            "missing session_id must return None"
+        );
+    }
+
+    /// cp75.21 · 2.3 — `find_subtitle_lecture` resolves the parent
+    /// lecture_id off a subtitle row, so the verify helper can chain
+    /// into `verify_lecture_ownership`. Missing → None.
+    #[test]
+    fn cp75_21_find_subtitle_lecture_returns_lecture_id() {
+        let db = fixture_cp75_21();
+
+        assert_eq!(
+            db.find_subtitle_lecture("sub-sk"),
+            Some("lec-sk".to_string()),
+            "sub-sk should resolve to lec-sk"
+        );
+        assert_eq!(
+            db.find_subtitle_lecture("sub-other"),
+            Some("lec-other".to_string()),
+            "sub-other should resolve to lec-other"
+        );
+        assert_eq!(
+            db.find_subtitle_lecture("missing-sub"),
+            None,
+            "missing subtitle id must return None"
+        );
+    }
 }

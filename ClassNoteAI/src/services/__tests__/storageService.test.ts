@@ -289,7 +289,11 @@ describe('StorageService', () => {
 
             await storageService.saveSubtitle(mockSubtitle);
 
-            expect(invoke).toHaveBeenCalledWith('save_subtitle', { subtitle: mockSubtitle });
+            // cp75.21 — userId tagged for ownership verify on the Rust side.
+            expect(invoke).toHaveBeenCalledWith('save_subtitle', {
+                subtitle: mockSubtitle,
+                userId: 'test_user',
+            });
         });
 
         it('should get subtitles for lecture', async () => {
@@ -336,7 +340,23 @@ describe('StorageService', () => {
 
             await storageService.saveSubtitles(subtitles);
 
-            expect(invoke).toHaveBeenCalledWith('save_subtitles', { subtitles });
+            // cp75.21 — userId tagged for ownership verify on the Rust side.
+            expect(invoke).toHaveBeenCalledWith('save_subtitles', {
+                subtitles,
+                userId: 'test_user',
+            });
+        });
+
+        // ===== cp75.21 — Cross-user write protection on subtitles =====
+        it('deleteSubtitle passes userId from authService (cp75.21)', async () => {
+            setMockInvokeResult('delete_subtitle', undefined);
+
+            await storageService.deleteSubtitle('sub-1');
+
+            expect(invoke).toHaveBeenCalledWith('delete_subtitle', {
+                id: 'sub-1',
+                userId: 'test_user',
+            });
         });
     });
 

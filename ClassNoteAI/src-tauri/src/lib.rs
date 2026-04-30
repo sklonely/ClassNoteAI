@@ -1291,8 +1291,15 @@ async fn list_courses(user_id: String) -> Result<Vec<storage::Course>, String> {
 }
 
 /// 刪除科目
+///
+/// cp75.21 — closes the non-cascade entry point's ownership gap. The
+/// cascade variant (`delete_course_cascade`) has carried `user_id` +
+/// `verify_course_ownership` since cp75.6, but this name remained
+/// exposed and unguarded. UI uses cascade today; this just brings the
+/// non-cascade path to parity so the Tauri command surface has no
+/// holes.
 #[tauri::command]
-async fn delete_course(id: String) -> Result<(), String> {
+async fn delete_course(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1300,6 +1307,9 @@ async fn delete_course(id: String) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &id, &user)?;
 
     db.delete_course(&id)
         .map_err(|e| format!("刪除科目失敗: {}", e))?;
@@ -1433,8 +1443,16 @@ async fn list_orphaned_recording_lectures(
 }
 
 /// 保存字幕
+///
+/// cp75.21 — verify the parent lecture belongs to the caller before
+/// writing. Uses the alive-only `verify_lecture_ownership`: subtitles
+/// attach to alive lectures, and a trashed lecture's subtitles
+/// shouldn't be modified through this entry point.
 #[tauri::command]
-async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
+async fn save_subtitle(
+    subtitle: storage::Subtitle,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1442,6 +1460,9 @@ async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &subtitle.lecture_id, &user)?;
 
     db.save_subtitle(&subtitle)
         .map_err(|e| format!("保存字幕失敗: {}", e))?;
@@ -1450,8 +1471,17 @@ async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
 }
 
 /// 批量保存字幕
+///
+/// cp75.21 — verify ownership of every distinct lecture_id in the
+/// batch before writing. The single-row contract for
+/// `verify_lecture_ownership` lets us short-circuit on the first cross-
+/// user row (the frontend should never assemble a mixed-owner batch in
+/// the first place; this is defense in depth).
 #[tauri::command]
-async fn save_subtitles(subtitles: Vec<storage::Subtitle>) -> Result<(), String> {
+async fn save_subtitles(
+    subtitles: Vec<storage::Subtitle>,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1459,6 +1489,18 @@ async fn save_subtitles(subtitles: Vec<storage::Subtitle>) -> Result<(), String>
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+
+    // Verify each unique lecture_id once. Avoids re-running the same
+    // SQL N times when a batch contains many rows for the same lecture
+    // (the common case during recording).
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for sub in &subtitles {
+        if seen.insert(sub.lecture_id.as_str()) {
+            verify_lecture_ownership(&db, &sub.lecture_id, &user)?;
+        }
+    }
 
     db.save_subtitles(&subtitles)
         .map_err(|e| format!("批量保存字幕失敗: {}", e))?;
@@ -1482,8 +1524,14 @@ async fn get_subtitles(lecture_id: String) -> Result<Vec<storage::Subtitle>, Str
 }
 
 /// 刪除單條字幕
+///
+/// cp75.21 — the caller only hands us a subtitle id, so we resolve the
+/// parent lecture_id via `find_subtitle_lecture` before running the
+/// usual ownership check. Missing subtitle → silent Ok (idempotent
+/// delete: deleting an already-deleted row is not an error and never
+/// has been on this entry point).
 #[tauri::command]
-async fn delete_subtitle(id: String) -> Result<(), String> {
+async fn delete_subtitle(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1491,6 +1539,16 @@ async fn delete_subtitle(id: String) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+
+    if let Some(lecture_id) = db.find_subtitle_lecture(&id) {
+        verify_lecture_ownership(&db, &lecture_id, &user)?;
+    } else {
+        // No-op — preserves the pre-cp75.21 idempotent contract for
+        // callers retrying a delete after a prior successful run.
+        return Ok(());
+    }
 
     db.delete_subtitle_by_id(&id)
         .map_err(|e| format!("刪除字幕失敗: {}", e))?;
@@ -3678,6 +3736,21 @@ fn verify_lecture_ownership_including_trashed(
     }
 }
 
+/// cp75.21 — chat-session ownership check. Refuses cross-user
+/// `save_chat_message` writes (anyone with a session_id used to be
+/// able to inject messages into another user's session).
+fn verify_chat_session_ownership(
+    db: &storage::Database,
+    session_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_chat_session_owner(session_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此對話（屬於其他帳號）".to_string()),
+        None => Err("找不到對話 session".to_string()),
+    }
+}
+
 /// Phase 7 cp74.1: user-driven permanent delete of selected trashed
 /// lectures. Backs the Trash UI's 「永久刪除選取」 button which until
 /// now was a no-op TODO toast. Returns ids that were actually purged
@@ -3793,6 +3866,9 @@ async fn get_all_chat_messages(
         .map_err(|e| format!("獲取聊天訊息失敗: {}", e))
 }
 
+/// cp75.21 — verify the target session belongs to the caller before
+/// inserting a message. Without this anyone with a leaked session_id
+/// could shove arbitrary content into another user's chat history.
 #[tauri::command]
 async fn save_chat_message(
     id: String,
@@ -3801,6 +3877,7 @@ async fn save_chat_message(
     content: String,
     sources: Option<String>,
     timestamp: String,
+    user_id: Option<String>,
 ) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
@@ -3808,6 +3885,10 @@ async fn save_chat_message(
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_chat_session_ownership(&db, &session_id, &user)?;
+
     db.save_chat_message(
         &id,
         &session_id,
@@ -3879,5 +3960,65 @@ mod tests {
 
         let resolved = resolve_stored_audio_path(&audio_dir, absolute.to_str().unwrap()).unwrap();
         assert_eq!(resolved, absolute);
+    }
+
+    // ── cp75.21 — verify_chat_session_ownership integration tests ──
+    //
+    // The lecture/course verify_*_ownership variants are exercised
+    // indirectly by the storage::database tests that drive the
+    // find_*_owner SQL helpers. The chat-session counterpart is new in
+    // cp75.21 — give it explicit Owns / Refuses / Missing coverage at
+    // the verifier layer to lock the error-message contract the
+    // frontend relies on.
+
+    use crate::storage::database::Database;
+    use crate::verify_chat_session_ownership;
+    use chrono::Utc;
+
+    fn seed_chat_session_fixture() -> Database {
+        let db = Database::open_in_memory().expect("in-memory DB");
+        let now = Utc::now().to_rfc3339();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO local_users (username, created_at, sync_status) \
+             VALUES ('userA', ?1, 'synced'), ('userB', ?1, 'synced')",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_sessions \
+                (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) \
+             VALUES \
+                ('session_a', NULL, 'userA', 'A''s session', NULL, ?1, ?1, 0)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn verify_chat_session_ownership_accepts_owner() {
+        let db = seed_chat_session_fixture();
+        assert!(verify_chat_session_ownership(&db, "session_a", "userA").is_ok());
+    }
+
+    #[test]
+    fn verify_chat_session_ownership_refuses_other_user() {
+        let db = seed_chat_session_fixture();
+        let err = verify_chat_session_ownership(&db, "session_a", "userB").unwrap_err();
+        assert!(
+            err.contains("無權"),
+            "expected '無權' in error string, got: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_chat_session_ownership_errors_on_missing_session() {
+        let db = seed_chat_session_fixture();
+        let err = verify_chat_session_ownership(&db, "does_not_exist", "userA").unwrap_err();
+        assert!(
+            err.contains("找不到"),
+            "expected '找不到' in error string, got: {err}"
+        );
     }
 }

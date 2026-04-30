@@ -141,6 +141,42 @@ impl Database {
             .ok()
     }
 
+    /// cp75.21 — ownership lookup for chat sessions. Returns the
+    /// `user_id` column directly off `chat_sessions`. Used by the
+    /// `verify_chat_session_ownership` helper to refuse cross-user
+    /// `save_chat_message` writes (anyone with a session_id could
+    /// previously inject messages into another user's session).
+    ///
+    /// We do NOT filter `is_deleted` here — a soft-deleted session is
+    /// still legitimately the owner's, and the verify helper just needs
+    /// to refuse cross-user writes; "the session is in trash" is a
+    /// separate concern handled at the message-write level (currently
+    /// not enforced — see cp75.22 follow-up).
+    pub fn find_chat_session_owner(&self, session_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT user_id FROM chat_sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.21 — resolve a subtitle's parent lecture_id so the caller
+    /// can hand it to `verify_lecture_ownership`. The `delete_subtitle`
+    /// command (Tauri side) only receives a subtitle id; we need this
+    /// to recover the lecture_id before the ownership check fires.
+    /// Returns None for missing rows.
+    pub fn find_subtitle_lecture(&self, subtitle_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT lecture_id FROM subtitles WHERE id = ?1",
+                [subtitle_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
     /// 初始化數據表
     ///
     /// `pub(crate)` so the sibling `storage::database_test` harness can

@@ -223,7 +223,10 @@ class RecordingRecoveryService {
       text_zh: seg.text_zh ?? null,
       type: seg.type,
     }));
-    await invoke('save_subtitles', { subtitles });
+    // cp75.21 — pass userId so the Rust side can verify ownership of
+    // the lecture before persisting these recovered rows.
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_subtitles', { subtitles, userId });
     return subtitles.length;
   }
 

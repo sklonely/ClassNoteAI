@@ -649,17 +649,19 @@ class StorageService {
   }
 
   /**
-   * 保存字幕
+   * 保存字幕（cp75.21: 傳 userId 給 Rust 端做 ownership check）
    */
   async saveSubtitle(subtitle: Subtitle): Promise<void> {
-    await invoke('save_subtitle', { subtitle });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_subtitle', { subtitle, userId });
   }
 
   /**
-   * 批量保存字幕
+   * 批量保存字幕（cp75.21: 傳 userId 給 Rust 端做 ownership check）
    */
   async saveSubtitles(subtitles: Subtitle[]): Promise<void> {
-    await invoke('save_subtitles', { subtitles });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_subtitles', { subtitles, userId });
   }
 
   /**
@@ -670,10 +672,11 @@ class StorageService {
   }
 
   /**
-   * 刪除單條字幕
+   * 刪除單條字幕（cp75.21: 傳 userId 給 Rust 端做 ownership check）
    */
   async deleteSubtitle(id: string): Promise<void> {
-    await invoke('delete_subtitle', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('delete_subtitle', { id, userId });
   }
 
   /**
