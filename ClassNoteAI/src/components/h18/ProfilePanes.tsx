@@ -2566,8 +2566,25 @@ export function PData() {
     const [busy, setBusy] = useState(false);
 
     const loadTrash = async () => {
+        // cp75.19 — pass the current user's id, NOT `null`.
+        //
+        // Pre-cp75.19 these calls passed `userId: null`, which the Rust
+        // handlers fall back to `'default_user'`. The cp75.3 multi-user
+        // migration then broke this silently: real users sign in with
+        // their own username (e.g. `'sk'`), so their soft-deleted rows
+        // live under `user_id = 'sk'` while the trash UI was still
+        // querying for `'default_user'` — empty bin every time.
+        //
+        // The OTHER call sites in this same component (restore /
+        // hard-delete / etc., lines further down) already use this
+        // `authService.getUser()?.username || 'default_user'` shape;
+        // only the LOAD path was missed. So when the user soft-deleted
+        // a course, the cascade fired (rows correctly went is_deleted=1
+        // under their real user_id), but the bin appeared empty.
+        const userId = authService.getUser()?.username || 'default_user';
+
         const lectures = await invoke<Lecture[]>('list_trashed_lectures', {
-            userId: null,
+            userId,
         }).catch((err) => {
             console.warn('[PData] list_trashed_lectures failed:', err);
             return [] as Lecture[];
@@ -2578,12 +2595,12 @@ export function PData() {
         const courses = await (async () => {
             try {
                 return await invoke<Course[]>('list_trashed_courses', {
-                    userId: null,
+                    userId,
                 });
             } catch {
                 try {
                     return await invoke<Course[]>('list_deleted_courses', {
-                        userId: 'default_user',
+                        userId,
                     });
                 } catch (err) {
                     console.warn('[PData] list_deleted_courses failed:', err);

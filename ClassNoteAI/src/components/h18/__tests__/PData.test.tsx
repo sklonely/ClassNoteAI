@@ -148,7 +148,12 @@ async function flush(times = 4) {
 }
 
 describe('PData · S3f trash bin', () => {
-    it('1. mount → invoke list_trashed_lectures (userId: null)', async () => {
+    it('1. mount → invoke list_trashed_lectures + courses with the logged-in user_id (cp75.19)', async () => {
+        // cp75.19 — pre-fix the load path passed `userId: null` which
+        // the Rust handler defaults to `'default_user'`. Multi-user
+        // migration (cp75.3) made real users own their rows under
+        // their actual username, so passing null silently returned
+        // an empty trash. Both list calls must now use the auth user.
         const invokeSpy = setupInvoke({});
 
         render(<PData />);
@@ -158,7 +163,19 @@ describe('PData · S3f trash bin', () => {
             ([cmd]) => cmd === 'list_trashed_lectures',
         );
         expect(lectureCall).toBeTruthy();
-        expect(lectureCall?.[1]).toEqual({ userId: null });
+        // Tests run unauthenticated → authService.getUser() returns
+        // null → falls back to 'default_user' (matches the Rust
+        // handler's own fallback). The important regression guard is
+        // that we no longer pass `null`.
+        expect(lectureCall?.[1]).toEqual({ userId: 'default_user' });
+
+        const courseCall = invokeSpy.mock.calls.find(
+            ([cmd]) =>
+                cmd === 'list_trashed_courses' ||
+                cmd === 'list_deleted_courses',
+        );
+        expect(courseCall).toBeTruthy();
+        expect(courseCall?.[1]).toEqual({ userId: 'default_user' });
     });
 
     it('2. 兩條 list 都空 → 顯示 empty 文案', async () => {

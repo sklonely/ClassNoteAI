@@ -27,8 +27,9 @@
  *     (3-10 chronological sections) on a real 90-min recording.
  */
 
-import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 interface SubtitleRow {
@@ -130,6 +131,7 @@ const segmenterSystemPrompt =
     `Sections must be in chronological order. The transcript follows.`;
 
 const apiKey = process.env.OPENAI_API_KEY;
+const useCodex = args.has('via-codex');
 const reportsDir = join(process.cwd(), 'evals', 'reports');
 mkdirSync(reportsDir, { recursive: true });
 const reportPath = join(reportsDir, `segment-summary-${Date.now()}.json`);
@@ -145,21 +147,28 @@ const baseReport = {
         last4Lines: transcriptWithTs.split('\n').slice(-4),
     },
     segmenterSystemPrompt,
-    model,
+    model: useCodex ? 'codex-cli (chatgpt-oauth)' : model,
     language,
 };
 
-if (!apiKey) {
-    console.log('=== NO OPENAI_API_KEY — skipping LLM call ===');
-    console.log('Set $env:OPENAI_API_KEY = "sk-..." to run the live segmenter.');
+if (!apiKey && !useCodex) {
+    console.log('=== NO LIVE LLM PATH AVAILABLE — skipping LLM call ===');
+    console.log('Either set OPENAI_API_KEY or pass --via-codex (uses ChatGPT subscription via codex CLI).');
     writeFileSync(reportPath, JSON.stringify(baseReport, null, 2));
     console.log(`Wrote inspection-only report to ${reportPath}`);
     process.exit(0);
 }
 
-console.log(`=== CALLING OPENAI (model=${model}, transcript=${transcriptWithTs.length} chars) ===`);
+const callerLabel = useCodex
+    ? `codex CLI (ChatGPT OAuth, model=gpt-5)`
+    : `OpenAI Chat Completions (model=${model})`;
+console.log(`=== CALLING ${callerLabel}, transcript=${transcriptWithTs.length} chars ===`);
 const startedAt = Date.now();
-runSegmenter(apiKey, model, segmenterSystemPrompt, transcriptWithTs)
+const promise = useCodex
+    ? runSegmenterViaCodex(segmenterSystemPrompt, transcriptWithTs)
+    : runSegmenter(apiKey!, model, segmenterSystemPrompt, transcriptWithTs);
+
+promise
     .then((result) => {
         const elapsedMs = Date.now() - startedAt;
         console.log(`Got ${result.sections.length} sections in ${elapsedMs}ms`);
@@ -222,9 +231,11 @@ cur = con.cursor()
 if lecture_id:
     lid = lecture_id
 else:
-    # Pick the most-recently-created lecture that has at least 50
+    # Pick the most-recently-CREATED lecture that has at least 50
     # subtitles — that's the user's most recent real recording, not a
-    # 5-second smoke test ping.
+    # 5-second smoke test ping. Ordering by updated_at would re-rank
+    # an older lecture that the user just touched (e.g. by re-running
+    # a summary on it), which is not what we want.
     row = cur.execute("""
         select l.id as lid, count(s.id) as cnt
         from lectures l
@@ -232,7 +243,7 @@ else:
         where l.is_deleted = 0
         group by l.id
         having cnt >= 50
-        order by datetime(coalesce(l.updated_at, l.created_at)) desc
+        order by datetime(l.created_at) desc
         limit 1
     """).fetchone()
     lid = row["lid"] if row else ""
@@ -272,6 +283,115 @@ function runPython(script: string, scriptArgs: string[]): string {
         'Python with sqlite3 is required to read the dev DB.\n' +
             errors.join('\n---\n'),
     );
+}
+
+/** Drive `codex exec` non-interactively to run the segmenter prompt
+ *  through the user's ChatGPT subscription (same OAuth path our app's
+ *  chatgpt-oauth provider uses). No OPENAI_API_KEY needed.
+ *
+ *  Strategy:
+ *    - Pipe the combined `<system>\n<transcript>` to codex via stdin
+ *    - `--output-schema` forces a `{sections: [...]}` JSON shape
+ *    - `--output-last-message` writes only the final agent reply to a
+ *      temp file (we don't have to parse the full event stream)
+ *    - `--sandbox read-only` + `--ephemeral` + `--skip-git-repo-check`
+ *      keep codex from doing anything besides reasoning + emitting JSON
+ *    - `--ignore-rules` + `--ignore-user-config` to dodge any user
+ *      AGENTS.md or codex policy that might inject coding-task-style
+ *      reasoning */
+async function runSegmenterViaCodex(
+    systemPrompt: string,
+    transcript: string,
+): Promise<{ sections: SegmenterSection[]; raw: string }> {
+    const schema = {
+        type: 'object',
+        properties: {
+            sections: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        timestamp: { type: 'integer' },
+                        title: { type: 'string' },
+                        summary: { type: 'string' },
+                    },
+                    required: ['timestamp', 'title'],
+                    additionalProperties: false,
+                },
+            },
+        },
+        required: ['sections'],
+        additionalProperties: false,
+    };
+    const schemaPath = join(tmpdir(), `segmenter-schema-${Date.now()}.json`);
+    const outPath = join(tmpdir(), `segmenter-out-${Date.now()}.txt`);
+    writeFileSync(schemaPath, JSON.stringify(schema));
+
+    // Codex' agent harness wants a coding-task-shaped instruction. We
+    // wrap the segmenter prompt in a clear "this is a single-shot
+    // structured-output task, do not call any tools, do not write any
+    // files" envelope so it doesn't try to be helpful.
+    const fullPrompt =
+        `You are running in a non-interactive structured-output mode.\n` +
+        `Do NOT call any tools.\n` +
+        `Do NOT write any files.\n` +
+        `Do NOT explore the codebase.\n` +
+        `Output ONLY the JSON object that matches the provided schema.\n` +
+        `\n` +
+        `=== SYSTEM PROMPT ===\n` +
+        systemPrompt +
+        `\n\n=== TRANSCRIPT ===\n` +
+        transcript;
+
+    const codexArgs = [
+        'exec',
+        '--sandbox', 'read-only',
+        '--ephemeral',
+        '--skip-git-repo-check',
+        '--ignore-rules',
+        '--ignore-user-config',
+        '--output-schema', schemaPath,
+        '--output-last-message', outPath,
+        '-', // read prompt from stdin
+    ];
+
+    const result = spawnSync('codex', codexArgs, {
+        input: fullPrompt,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        maxBuffer: 1024 * 1024 * 64,
+    });
+    try {
+        if (result.status !== 0) {
+            throw new Error(
+                `codex exec exited with status ${result.status}: ${result.stderr ?? ''}`,
+            );
+        }
+        if (!existsSync(outPath)) {
+            throw new Error('codex exec did not produce an output file');
+        }
+        const raw = readFileSync(outPath, 'utf8').trim();
+        // The output may be wrapped in fenced code block — re-use the
+        // same tolerant parser the production code uses.
+        let parsed: unknown;
+        const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(raw);
+        const txt = fenced ? fenced[1].trim() : raw;
+        try {
+            parsed = JSON.parse(txt);
+        } catch {
+            const m = /\{\s*"sections"[\s\S]*\}/.exec(txt);
+            if (!m) throw new Error(`codex output not JSON: ${txt.slice(0, 200)}`);
+            parsed = JSON.parse(m[0]);
+        }
+        const sections = (parsed as { sections?: SegmenterSection[] }).sections;
+        if (!Array.isArray(sections)) {
+            throw new Error(`codex output missing "sections" array: ${txt.slice(0, 200)}`);
+        }
+        return { sections, raw };
+    } finally {
+        try { unlinkSync(schemaPath); } catch { /* best effort */ }
+        try { unlinkSync(outPath); } catch { /* best effort */ }
+    }
 }
 
 async function runSegmenter(
