@@ -88,10 +88,21 @@ class GlobalSearchService {
 
         this.buildingPromise = (async () => {
             try {
-                const [courses, lectures] = await Promise.all([
+                const [allCourses, allLectures] = await Promise.all([
                     storageService.listCourses().catch(() => []),
                     storageService.listLectures().catch(() => []),
                 ]);
+
+                // cp75.23 — Finding 8.1: filter out soft-deleted courses
+                // before indexing, and propagate the filter to lectures so
+                // children of trashed courses don't leak into ⌘K. Backend
+                // already filters lecture-level `is_deleted=true`, but the
+                // parent-course check is purely client-side.
+                const courses = allCourses.filter((c) => !c.is_deleted);
+                const liveCourseIds = new Set(courses.map((c) => c.id));
+                const lectures = allLectures.filter(
+                    (lec) => !lec.is_deleted && liveCourseIds.has(lec.course_id),
+                );
 
                 const items: SearchItem[] = [];
 

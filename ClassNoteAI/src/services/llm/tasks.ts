@@ -853,7 +853,13 @@ function parseSegmenterOutput(raw: string, durationSec: number): Section[] {
     out.push({
       title: title.slice(0, 30),
       content: summary.slice(0, 500),
-      timestamp: Math.max(0, Math.min(durationSec || ts, Math.round(ts))),
+      // cp75.23 — `durationSec || ts` short-circuits when durationSec === 0
+      // (recovered lecture, mock test): the formula collapses to
+      // `Math.min(ts, ts) === ts`, so an over-large model-emitted timestamp
+      // is never clamped. Use an explicit ternary so the upper bound is
+      // always a real number — fall back to 0 (not ts) when duration is
+      // unknown so the clamp still produces a sane lower-bounded value.
+      timestamp: Math.max(0, Math.min(durationSec > 0 ? durationSec : 0, Math.round(ts))),
     });
   }
   if (out.length === 0) {

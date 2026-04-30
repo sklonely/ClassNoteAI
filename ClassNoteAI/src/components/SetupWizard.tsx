@@ -51,6 +51,32 @@ type WizardStep =
     | 'installing'
     | 'complete';
 
+/**
+ * cp75.23 — extracted out of the inline IIFE in the JSX so tests can pin
+ * the contract. The list drives the dot indicator at the top of the
+ * wizard; `'ai-config'` is intentionally absent because the user
+ * experience is "one thing" (configure an LLM) split across two screens
+ * for viewport reasons (collapsed onto the `'ai-provider'` dot).
+ *
+ * Finding 6.2 fix: `'canvas-integration'` was missing here, so when the
+ * wizard rendered that step the indicator showed no active dot and the
+ * `done` colouring on later dots mis-aligned. Slotted between
+ * `'recording-consent'` and `'checking'` to match the runtime flow:
+ *   recording-consent → canvas-integration → checkRequirements()
+ *                                            └─ setStep('checking')
+ */
+export const SETUP_VISUAL_STEPS: WizardStep[] = [
+    'welcome',
+    'language',
+    'ai-provider',
+    'recording-consent',
+    'canvas-integration',
+    'checking',
+    'review',
+    'installing',
+    'complete',
+];
+
 interface DriverHint {
     severity: string;
     title: string;
@@ -127,14 +153,14 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 /* detection unavailable — step still renders a CPU fallback notice */
             }
 
-            // If everything is already installed, skip past review
-            // but still show the GPU summary so the user knows what
-            // backend they're on.
-            if (setupStatus.is_complete) {
-                setStep('gpu-check');
-            } else {
-                setStep('gpu-check');
-            }
+            // cp75.23 — was dead conditional, intent was lost; collapsed.
+            // Both branches set `gpu-check`. The branching logic that
+            // routes "complete → skip review, incomplete → show review"
+            // already lives in continueFromGpuCheck (which inspects
+            // status.is_complete to decide between 'complete' and
+            // 'review'), so the gpu-check step is the correct shared
+            // landing pad regardless.
+            setStep('gpu-check');
         } catch (err) {
             setError(`環境檢查失敗: ${err}`);
             setStep('review');
@@ -1118,16 +1144,16 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     return (
         <div className="setup-wizard">
             <div className="setup-container">
-                {/* Progress indicator — the two ai-* steps share a single
-                    dot since the user experience is "one thing" (configure
-                    an LLM) split across two screens for viewport reasons. */}
+                {/* Progress indicator — driven by SETUP_VISUAL_STEPS
+                    (cp75.23). The two ai-* steps share a single dot since
+                    the user experience is "one thing" (configure an LLM)
+                    split across two screens for viewport reasons. */}
                 {(() => {
-                    const visualSteps: WizardStep[] = ['welcome', 'language', 'ai-provider', 'recording-consent', 'checking', 'review', 'installing', 'complete'];
                     const normalisedStep: WizardStep = step === 'ai-config' ? 'ai-provider' : step;
-                    const currentIdx = visualSteps.indexOf(normalisedStep);
+                    const currentIdx = SETUP_VISUAL_STEPS.indexOf(normalisedStep);
                     return (
                         <div className="step-indicator">
-                            {visualSteps.map((s, i) => (
+                            {SETUP_VISUAL_STEPS.map((s, i) => (
                                 <div
                                     key={s}
                                     className={`step-dot ${s === normalisedStep ? 'active' : currentIdx > i ? 'done' : ''}`}

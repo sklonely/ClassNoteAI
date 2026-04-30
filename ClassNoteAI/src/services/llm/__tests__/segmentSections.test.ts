@@ -184,6 +184,29 @@ describe('segmentSections — output validation', () => {
         expect(result.map((s) => s.title)).toEqual(['Good', 'Also good']);
     });
 
+    it('cp75.23 — clamps timestamp to 0 when durationSec === 0 (NOT the model-emitted ts)', async () => {
+        // Pre cp75.23: `Math.min(durationSec || ts, Math.round(ts))` short-circuits
+        // when durationSec === 0 (recovered lecture, mock test) — `||` falls through
+        // to `ts`, so `Math.min(ts, ts) === ts` and the over-large timestamp is
+        // never clamped. Defensive fix: switch to `durationSec > 0 ? durationSec : 0`
+        // so the upper bound is a real number when duration is unknown.
+        mockComplete.mockResolvedValue({
+            content: JSON.stringify([
+                { timestamp: 0, title: 'A', summary: 's' },
+                { timestamp: 999, title: 'B', summary: 's' },
+            ]),
+            usage: {},
+        });
+        const result = await segmentSections({
+            transcript: 'x',
+            language: 'en',
+            durationSec: 0,
+        });
+        // Pre cp75.23: result[1].timestamp would be 999 (no clamp because || short-circuit).
+        // Post cp75.23: result[1].timestamp must be 0 (clamped to 0 because durationSec=0).
+        expect(result[1].timestamp).toBe(0);
+    });
+
     it('clamps model-emitted timestamps to [0, durationSec]', async () => {
         mockComplete.mockResolvedValue({
             content: JSON.stringify([
