@@ -112,6 +112,112 @@
     cursor: not-allowed;
 }
 
+/* cp75.31 — top-level granular regenerate split-button cluster.
+   Sits in the heroTopRow next to .audioToggle. Vanilla CSS only,
+   no shadcn / Radix. */
+.regenWrap {
+    position: relative;
+    display: inline-flex;
+    align-items: stretch;
+    flex-shrink: 0;
+}
+
+.regenPrimary {
+    padding: 6px 10px 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: background 120ms, color 120ms;
+}
+
+.regenPrimary:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.regenPrimary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.regenChevron {
+    padding: 6px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 0 6px 6px 0;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 120ms, color 120ms;
+}
+
+.regenChevron:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.regenChevron:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.regenMenu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 180px;
+    z-index: 30;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+
+.regenMenuItem {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--h18-text);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.regenMenuItem:hover {
+    background: var(--h18-row-hover);
+}
+
+.regenMenuItem:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.regenMenuItemHint {
+    margin-left: 6px;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
 .heroTitle {
     font-size: 24px;
     font-weight: 800;

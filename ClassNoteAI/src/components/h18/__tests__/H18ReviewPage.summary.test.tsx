@@ -304,15 +304,21 @@ describe('H18ReviewPage · cancel-on-regen (S2.7)', () => {
             <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
         );
         await flushAsync();
-        switchToSummaryTab();
 
-        // Click 「✦ 重新生成」 (or 「✦ 生成摘要」 if no summary). With
-        // mockNoteWithSummary, button label is 「✦ 重新生成」.
-        const regenBtn = screen.getByRole('button', {
-            name: /重新生成|生成摘要/,
-        });
+        // cp75.31 — 「✦ 重新生成」 button moved to top-level header (split
+        // button next to ▶ 回放錄音). Click the primary half (which has
+        // visible "✦ 重新生成" text), not the chevron (aria-label only).
+        const btns = screen.getAllByRole('button');
+        const regenBtn = btns.find(
+            (b) =>
+                b.textContent != null &&
+                /^✦?\s*(重新生成|生成摘要|生成中)/.test(
+                    b.textContent.trim(),
+                ),
+        );
+        expect(regenBtn).toBeDefined();
         await act(async () => {
-            fireEvent.click(regenBtn);
+            fireEvent.click(regenBtn!);
         });
         await flushAsync();
 

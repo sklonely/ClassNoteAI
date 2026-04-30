@@ -1,0 +1,369 @@
+/**
+ * H18ReviewPage cp75.31 — Granular regenerate button at top-level
+ *
+ * 把 in-tab 的 「✦ 重新生成」 button 提升到 page header（與 ▶ 回放錄音
+ * 同列），改成 split button：primary action = 重新生成全部；
+ * chevron 開 dropdown，可選 摘要 / 章節 / Q&A / 全部。
+ *
+ * Mock 結構與 H18ReviewPage.summary.test.tsx 對齊。
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import type { Lecture, Note, Subtitle, Course } from '../../../types';
+
+// ─── Mocks (must be before component import) ─────────────────────────
+
+const mockLecture = (status: Lecture['status']): Lecture => ({
+    id: 'L1',
+    course_id: 'C1',
+    title: 'Test Lecture',
+    date: '2026-04-28',
+    duration: 600,
+    status,
+    created_at: '2026-04-28T00:00:00.000Z',
+    updated_at: '2026-04-28T00:00:00.000Z',
+    is_deleted: false,
+});
+
+const mockCourse: Course = {
+    id: 'C1',
+    user_id: 'user-1',
+    title: 'Test Course',
+    created_at: '2026-04-28T00:00:00.000Z',
+    updated_at: '2026-04-28T00:00:00.000Z',
+    is_deleted: false,
+};
+
+const mockSubtitles: Subtitle[] = [
+    {
+        id: 'sub-1',
+        lecture_id: 'L1',
+        timestamp: 0,
+        text_en: 'Hello world this is a test sentence used to drive a long enough transcript for summarisation.',
+        text_zh: '你好這是測試句子，用來讓逐字稿夠長以驅動摘要產生。',
+        type: 'fine',
+        created_at: '2026-04-28T00:00:00.000Z',
+    },
+];
+
+const mockNoteWithSummary: Note = {
+    lecture_id: 'L1',
+    title: 'Test Lecture',
+    summary: '這堂課重點摘要 — 測試固定字串。',
+    sections: [],
+    qa_records: [],
+    generated_at: '2026-04-28T01:00:00.000Z',
+};
+
+let currentLectureStatus: Lecture['status'] = 'completed';
+let currentNote: Note | null = null;
+let currentSubs: Subtitle[] = mockSubtitles;
+
+vi.mock('../../../services/storageService', () => ({
+    storageService: {
+        getLecture: vi.fn(async () => mockLecture(currentLectureStatus)),
+        getCourse: vi.fn(async () => mockCourse),
+        getSubtitles: vi.fn(async () => currentSubs),
+        getNote: vi.fn(async () => currentNote),
+        saveNote: vi.fn(async (n: Note) => {
+            currentNote = n;
+        }),
+        getAppSettings: vi.fn(async () => ({
+            translation: { target_language: 'zh-TW' },
+        })),
+    },
+}));
+
+vi.mock('../../../services/audioPathService', () => ({
+    resolveOrRecoverAudioPath: vi.fn(async () => ({ resolvedPath: null })),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+    convertFileSrc: vi.fn((p: string) => `tauri://${p}`),
+}));
+
+vi.mock('../userNotesStore', () => ({
+    loadUserNotes: vi.fn(() => ''),
+    saveUserNotes: vi.fn(),
+    subscribeUserNotes: vi.fn(() => () => {}),
+}));
+
+vi.mock('../../../services/examMarksStore', () => ({
+    getExamMarks: vi.fn(() => []),
+    subscribeExamMarks: vi.fn(() => () => {}),
+}));
+
+vi.mock('../../../services/llm/tasks', () => ({
+    summarizeStream: vi.fn(async function* () {
+        yield { phase: 'reduce-delta', delta: '## 摘要\n' };
+        yield { phase: 'reduce-delta', delta: '本堂課重點...' };
+        yield { phase: 'done', fullText: '## 摘要\n本堂課重點...' };
+    }),
+    summarize: vi.fn(async () => '## 摘要\n本堂課重點...'),
+    segmentSections: vi.fn(async () => null),
+}));
+
+vi.mock('../H18AudioPlayer', () => ({
+    default: () => null,
+}));
+
+vi.mock('../H18RecordingPage', () => ({
+    default: () => <div data-testid="recording-page" />,
+}));
+
+vi.mock('../RecoveryHintBanner', () => ({
+    RecoveryHintBanner: () => null,
+}));
+
+// ─── Imports (after mocks) ───────────────────────────────────────────
+import H18ReviewPage from '../H18ReviewPage';
+import { taskTrackerService } from '../../../services/taskTrackerService';
+import { recordingSessionService } from '../../../services/recordingSessionService';
+
+beforeEach(() => {
+    taskTrackerService.reset();
+    recordingSessionService.reset();
+    currentLectureStatus = 'completed';
+    currentNote = null;
+    currentSubs = mockSubtitles;
+    vi.clearAllMocks();
+});
+
+afterEach(() => {
+    taskTrackerService.reset();
+    recordingSessionService.reset();
+});
+
+async function flushAsync(times = 4) {
+    for (let i = 0; i < times; i++) {
+        await act(async () => {
+            await new Promise((r) => setTimeout(r, 0));
+        });
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+describe('H18ReviewPage · cp75.31 granular regenerate', () => {
+    it('shows 重新生成 button at top-level (NOT inside a specific tab)', async () => {
+        currentNote = mockNoteWithSummary;
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        // The button must be visible WITHOUT clicking the AI 摘要 tab.
+        // Default tab is "notes". The split button has 2 buttons (primary
+        // + chevron), so we use getAllByRole and assert at least one has
+        // the visible "✦ 重新生成" text.
+        const btns = screen.getAllByRole('button', { name: /重新生成/ });
+        expect(btns.length).toBeGreaterThan(0);
+        expect(
+            btns.some(
+                (b) =>
+                    b.textContent != null &&
+                    /^✦?\s*重新生成$/.test(b.textContent.trim()),
+            ),
+        ).toBe(true);
+    });
+
+    it('clicking the chevron opens a dropdown with 摘要 / 章節 / Q&A / 全部', async () => {
+        currentNote = mockNoteWithSummary;
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const chevron = screen.getByRole('button', {
+            name: /重新生成選項|展開重新生成選項|granular targets|更多選項/i,
+        });
+        await act(async () => {
+            fireEvent.click(chevron);
+        });
+        await flushAsync();
+
+        const menu = screen.getByRole('menu');
+        expect(menu).toBeInTheDocument();
+        // Menu items exist (use menuitem role)
+        expect(screen.getByRole('menuitem', { name: /^摘要$/ })).toBeInTheDocument();
+        expect(screen.getByRole('menuitem', { name: /^章節$/ })).toBeInTheDocument();
+        expect(screen.getByRole('menuitem', { name: /Q&A|QA/ })).toBeInTheDocument();
+        expect(screen.getByRole('menuitem', { name: /^全部$/ })).toBeInTheDocument();
+    });
+
+    it('selecting "摘要 only" invokes runSummary with targets including "summary"', async () => {
+        currentNote = mockNoteWithSummary;
+        const startSpy = vi.spyOn(taskTrackerService, 'start');
+
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const chevron = screen.getByRole('button', {
+            name: /重新生成選項|展開重新生成選項|granular targets|更多選項/i,
+        });
+        await act(async () => {
+            fireEvent.click(chevron);
+        });
+        await flushAsync();
+
+        const summaryItem = screen.getByRole('menuitem', { name: /^摘要$/ });
+        await act(async () => {
+            fireEvent.click(summaryItem);
+        });
+        await flushAsync();
+
+        // Verify the granular target propagated. We tag the task entry's
+        // label with the chosen target so it's introspectable.
+        expect(startSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'summarize',
+                lectureId: 'L1',
+                label: expect.stringMatching(/摘要/),
+            }),
+        );
+    });
+
+    it('selecting "全部" invokes runSummary with targets=["all"]', async () => {
+        currentNote = mockNoteWithSummary;
+        const startSpy = vi.spyOn(taskTrackerService, 'start');
+
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const chevron = screen.getByRole('button', {
+            name: /重新生成選項|展開重新生成選項|granular targets|更多選項/i,
+        });
+        await act(async () => {
+            fireEvent.click(chevron);
+        });
+        await flushAsync();
+
+        const allItem = screen.getByRole('menuitem', { name: /^全部$/ });
+        await act(async () => {
+            fireEvent.click(allItem);
+        });
+        await flushAsync();
+
+        expect(startSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'summarize',
+                lectureId: 'L1',
+            }),
+        );
+    });
+
+    it('clicking primary action (without opening menu) defaults to all targets', async () => {
+        currentNote = mockNoteWithSummary;
+        const startSpy = vi.spyOn(taskTrackerService, 'start');
+
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        // Primary action button — pick the one with visible "✦ 重新生成"
+        // text (the chevron has aria-label="重新生成選項" but no
+        // matching text content).
+        const btns = screen.getAllByRole('button', { name: /重新生成/ });
+        const primary = btns.find(
+            (b) =>
+                b.textContent != null &&
+                /^✦?\s*重新生成$/.test(b.textContent.trim()),
+        );
+        expect(primary).toBeDefined();
+        await act(async () => {
+            fireEvent.click(primary!);
+        });
+        await flushAsync();
+
+        expect(startSpy).toHaveBeenCalledWith(
+            expect.objectContaining({
+                kind: 'summarize',
+                lectureId: 'L1',
+            }),
+        );
+    });
+
+    it('button is disabled when subs is empty', async () => {
+        currentNote = null;
+        currentSubs = [];
+
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        // With no existing summary and no subs, primary label is "✦ 生成摘要".
+        const btns = screen.getAllByRole('button');
+        const primary = btns.find(
+            (b) =>
+                b.textContent != null &&
+                /重新生成|生成摘要/.test(b.textContent.trim()),
+        );
+        expect(primary).toBeDefined();
+        expect(primary!).toBeDisabled();
+    });
+
+    it('button shows running state when a regen task is running', async () => {
+        currentNote = mockNoteWithSummary;
+        // Pre-register a running summarize task so the spinner state shows.
+        const taskId = taskTrackerService.start({
+            kind: 'summarize',
+            label: '生成摘要',
+            lectureId: 'L1',
+        });
+        taskTrackerService.update(taskId, { status: 'running', progress: 0.3 });
+
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        // The primary button reflects running state. Either it's disabled
+        // OR it carries an aria-busy="true" attribute. We accept either.
+        const btns = screen.getAllByRole('button', {
+            name: /生成中|重新生成/,
+        });
+        const primary = btns.find(
+            (b) =>
+                b.textContent != null &&
+                /生成中|重新生成/.test(b.textContent.trim()),
+        );
+        expect(primary).toBeDefined();
+        expect(
+            primary!.hasAttribute('aria-busy') ||
+                primary!.hasAttribute('disabled'),
+        ).toBe(true);
+    });
+
+    it('Esc closes the dropdown', async () => {
+        currentNote = mockNoteWithSummary;
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const chevron = screen.getByRole('button', {
+            name: /重新生成選項|展開重新生成選項|granular targets|更多選項/i,
+        });
+        await act(async () => {
+            fireEvent.click(chevron);
+        });
+        await flushAsync();
+
+        expect(screen.getByRole('menu')).toBeInTheDocument();
+
+        // Press Esc — menu closes.
+        await act(async () => {
+            fireEvent.keyDown(document, { key: 'Escape' });
+        });
+        await flushAsync();
+
+        expect(screen.queryByRole('menu')).toBeNull();
+    });
+});

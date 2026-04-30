@@ -29,6 +29,7 @@ import { storageService } from '../../services/storageService';
 import { resolveOrRecoverAudioPath } from '../../services/audioPathService';
 import type { Course, Lecture, Note, Subtitle, Section } from '../../types';
 import { courseColor } from './courseColor';
+import { groupSubsBySections } from './groupSubsBySections';
 import H18AudioPlayer from './H18AudioPlayer';
 import H18RecordingPage from './H18RecordingPage';
 import { LectureEditDialog } from './LectureEditDialog';
@@ -50,6 +51,7 @@ import {
 } from '../../services/taskTrackerService';
 import { recordingSessionService } from '../../services/recordingSessionService';
 import { H18EmptyState } from './H18EmptyState';
+import { RegenerateMenu, type RegenerateTarget } from './RegenerateMenu';
 import s from './H18ReviewPage.module.css';
 
 export interface H18ReviewPageProps {
@@ -84,42 +86,7 @@ function shortDate(iso?: string): string {
     }
 }
 
-interface Para {
-    section: Section | null;
-    sectionIndex: number;
-    items: Subtitle[];
-}
-
-function groupSubsBySections(subs: Subtitle[], sections: Section[]): Para[] {
-    const sortedSubs = [...subs].sort((a, b) => a.timestamp - b.timestamp);
-    if (sections.length === 0) {
-        return sortedSubs.length > 0
-            ? [{ section: null, sectionIndex: -1, items: sortedSubs }]
-            : [];
-    }
-    const sortedSections = [...sections].sort((a, b) => a.timestamp - b.timestamp);
-    const groups: Para[] = sortedSections.map((sec, i) => ({
-        section: sec,
-        sectionIndex: i,
-        items: [],
-    }));
-    // pre-section bucket for any subs before the first section's timestamp
-    const preSection: Para = { section: null, sectionIndex: -1, items: [] };
-    for (const sub of sortedSubs) {
-        let placed = false;
-        for (let i = sortedSections.length - 1; i >= 0; i--) {
-            if (sub.timestamp >= sortedSections[i].timestamp) {
-                groups[i].items.push(sub);
-                placed = true;
-                break;
-            }
-        }
-        if (!placed) preSection.items.push(sub);
-    }
-    return preSection.items.length > 0
-        ? [preSection, ...groups.filter((g) => g.items.length > 0)]
-        : groups.filter((g) => g.items.length > 0);
-}
+// Para + groupSubsBySections extracted to ./groupSubsBySections (cp75.28).
 
 export default function H18ReviewPage({
     courseId,
@@ -432,27 +399,33 @@ export default function H18ReviewPage({
         }
     };
 
-    // Phase 7 Sprint 2 (S2.7) — cancel-on-regen. Click 「✦ 重新生成」 →
-    // cancel any active summarize task for this lecture (running or
-    // queued), then start a new tracked task and run summarize inline so
-    // the user gets streaming progress in the same tab.
-    const handleRegenerateSummary = () => {
+    // cp75.31 — granular regenerate. Defaults to ['all'] for retry path.
+    const handleRegenerateSummary = (
+        targets: RegenerateTarget[] = ['all'],
+    ) => {
         if (subs.length === 0) return;
         setSummarizeError(null);
-        // 1. cancel existing summarize tasks (running OR failed) for this
-        //    lecture so we don't leave stale rows in the tasks tray.
         taskTrackerService.getActive().forEach((t) => {
             if (t.kind === 'summarize' && t.lectureId === lectureId) {
                 taskTrackerService.cancel(t.id);
             }
         });
-        // 2. start a new tracked task and inline-run summarize.
+        const labelByTarget = (() => {
+            if (targets.includes('all')) return '重新生成摘要';
+            if (targets.length === 1 && targets[0] === 'summary')
+                return '重新生成摘要';
+            if (targets.length === 1 && targets[0] === 'sections')
+                return '重新生成章節';
+            if (targets.length === 1 && targets[0] === 'qa')
+                return '重新生成 Q&A';
+            return '重新生成摘要';
+        })();
         const newTaskId = taskTrackerService.start({
             kind: 'summarize',
-            label: '重新生成摘要',
+            label: labelByTarget,
             lectureId,
         });
-        void runSummary(newTaskId, lectureId, lecture?.title);
+        void runSummary(newTaskId, lectureId, lecture?.title, targets);
     };
 
     // Phase 7 Sprint 2 (S2.6) — retry button on failed task.
@@ -774,6 +747,13 @@ export default function H18ReviewPage({
                               ? '▶ 回放錄音'
                               : '✗ 無音訊'}
                     </button>
+                    {/* cp75.31 — top-level regenerate split-button. */}
+                    <RegenerateMenu
+                        onRegenerate={handleRegenerateSummary}
+                        disabled={subs.length === 0}
+                        running={summaryTaskRunning}
+                        hasExistingSummary={!!note?.summary}
+                    />
                 </div>
                 <div className={s.heroTitleRow}>
                     <h1 className={s.heroTitle}>{lecture.title}</h1>
@@ -1147,27 +1127,7 @@ export default function H18ReviewPage({
                                         </span>
                                     )}
                                 </span>
-                                <button
-                                    type="button"
-                                    onClick={handleRegenerateSummary}
-                                    disabled={subs.length === 0}
-                                    className={s.editBtn}
-                                    title={
-                                        subs.length === 0
-                                            ? '沒有逐字稿，沒得摘要'
-                                            : summaryTaskRunning
-                                              ? '取消當前摘要並重新生成'
-                                              : note?.summary
-                                                ? '用最新逐字稿重新生成'
-                                                : '從目前逐字稿生成摘要'
-                                    }
-                                >
-                                    {summaryTaskRunning
-                                        ? '✦ 重新生成'
-                                        : note?.summary
-                                          ? '✦ 重新生成'
-                                          : '✦ 生成摘要'}
-                                </button>
+                                {/* cp75.31 — button moved to page header. */}
                             </div>
                             {/* Phase 7 S2.4 — streaming progress hint when
                                 a summarize task is active for this lecture. */}
@@ -1424,7 +1384,14 @@ async function runSummary(
     taskId: string,
     lectureId: string,
     title?: string,
+    targets: RegenerateTarget[] = ['all'],
 ): Promise<void> {
+    // cp75.31 — derive sub-tasks. NOTE: Q&A regen is cp75.32 TODO.
+    const all = targets.includes('all');
+    const wantSummary = all || targets.includes('summary');
+    const wantSections = all || targets.includes('sections');
+    // const wantQA = all || targets.includes('qa');  // TODO cp75.32 — generateQA not yet implemented
+
     try {
         const subs = await storageService.getSubtitles(lectureId).catch(
             () => [] as Subtitle[],
@@ -1475,6 +1442,12 @@ async function runSummary(
         }
         taskTrackerService.update(taskId, { status: 'running' });
 
+        // cp75.31 — short-circuit if neither summary nor sections wanted.
+        if (!wantSummary && !wantSections) {
+            taskTrackerService.complete(taskId);
+            return;
+        }
+
         // Pick output language from the user's translation target.
         let lang: 'zh' | 'en' = 'zh';
         try {
@@ -1504,6 +1477,7 @@ async function runSummary(
         // fall-back-to-## headings on failure. IIFE wraps both sync
         // throws and async rejections.
         const segmentationPromise: Promise<Section[] | null> = (async () => {
+            if (!wantSections) return null; // cp75.31
             if (transcriptWithTs.length < 100) return null;
             try {
                 return await segmentSections({
@@ -1521,73 +1495,72 @@ async function runSummary(
         })();
 
         let full = '';
-        let mapTotal = 0;
-        let reduceChunks = 0;
-        // cp75.14 — phase-aware progress (mirrors recordingSessionService).
-        // cp75.16 — added map-section-delta to drive smooth motion within
-        // each section instead of stepping only on map-section-done.
-        const mapSectionChars: Record<number, number> = {};
-        const MAP_SECTION_PROGRESS_CAP_CHARS = 600;
-        const computeMapProgress = (): number => {
-            if (mapTotal <= 0) return 0.05;
-            let acc = 0;
-            for (let i = 1; i <= mapTotal; i++) {
-                const c = mapSectionChars[i] ?? 0;
-                acc += Math.min(1, c / MAP_SECTION_PROGRESS_CAP_CHARS);
-            }
-            const frac = Math.min(1, acc / mapTotal);
-            return 0.05 + 0.4 * frac;
-        };
+        if (wantSummary) {
+            let mapTotal = 0;
+            let reduceChunks = 0;
+            const mapSectionChars: Record<number, number> = {};
+            const MAP_SECTION_PROGRESS_CAP_CHARS = 600;
+            const computeMapProgress = (): number => {
+                if (mapTotal <= 0) return 0.05;
+                let acc = 0;
+                for (let i = 1; i <= mapTotal; i++) {
+                    const c = mapSectionChars[i] ?? 0;
+                    acc += Math.min(1, c / MAP_SECTION_PROGRESS_CAP_CHARS);
+                }
+                const frac = Math.min(1, acc / mapTotal);
+                return 0.05 + 0.4 * frac;
+            };
 
-        for await (const event of summarizeStream({
-            content: text,
-            language: lang,
-            title,
-        })) {
-            if (event.phase === 'map-start') {
-                mapTotal = event.sectionCount ?? 0;
-                taskTrackerService.update(taskId, {
-                    progress: 0.05,
-                    status: 'running',
-                });
-            } else if (
-                event.phase === 'map-section-delta' &&
-                typeof event.delta === 'string'
-            ) {
-                const idx = event.sectionIndex ?? 0;
-                if (idx > 0) {
-                    mapSectionChars[idx] =
-                        (mapSectionChars[idx] ?? 0) + event.delta.length;
+            for await (const event of summarizeStream({
+                content: text,
+                language: lang,
+                title,
+            })) {
+                if (event.phase === 'map-start') {
+                    mapTotal = event.sectionCount ?? 0;
+                    taskTrackerService.update(taskId, {
+                        progress: 0.05,
+                        status: 'running',
+                    });
+                } else if (
+                    event.phase === 'map-section-delta' &&
+                    typeof event.delta === 'string'
+                ) {
+                    const idx = event.sectionIndex ?? 0;
+                    if (idx > 0) {
+                        mapSectionChars[idx] =
+                            (mapSectionChars[idx] ?? 0) + event.delta.length;
+                        taskTrackerService.update(taskId, {
+                            progress: computeMapProgress(),
+                            status: 'running',
+                        });
+                    }
+                } else if (event.phase === 'map-section-done') {
+                    const idx = event.sectionIndex ?? 0;
+                    if (idx > 0) {
+                        mapSectionChars[idx] = MAP_SECTION_PROGRESS_CAP_CHARS;
+                    }
                     taskTrackerService.update(taskId, {
                         progress: computeMapProgress(),
                         status: 'running',
                     });
+                } else if (event.phase === 'reduce-start') {
+                    taskTrackerService.update(taskId, {
+                        progress: 0.5,
+                        status: 'running',
+                    });
+                } else if (event.phase === 'reduce-delta' && event.delta) {
+                    full += event.delta;
+                    reduceChunks += 1;
+                    const reduceShare =
+                        0.45 * (1 - 1 / (1 + reduceChunks * 0.15));
+                    taskTrackerService.update(taskId, {
+                        progress: Math.min(0.95, 0.5 + reduceShare),
+                        status: 'running',
+                    });
+                } else if (event.phase === 'done' && event.fullText) {
+                    full = event.fullText;
                 }
-            } else if (event.phase === 'map-section-done') {
-                const idx = event.sectionIndex ?? 0;
-                if (idx > 0) {
-                    mapSectionChars[idx] = MAP_SECTION_PROGRESS_CAP_CHARS;
-                }
-                taskTrackerService.update(taskId, {
-                    progress: computeMapProgress(),
-                    status: 'running',
-                });
-            } else if (event.phase === 'reduce-start') {
-                taskTrackerService.update(taskId, {
-                    progress: 0.5,
-                    status: 'running',
-                });
-            } else if (event.phase === 'reduce-delta' && event.delta) {
-                full += event.delta;
-                reduceChunks += 1;
-                const reduceShare =
-                    0.45 * (1 - 1 / (1 + reduceChunks * 0.15));
-                taskTrackerService.update(taskId, {
-                    progress: Math.min(0.95, 0.5 + reduceShare),
-                    status: 'running',
-                });
-            } else if (event.phase === 'done' && event.fullText) {
-                full = event.fullText;
             }
         }
         taskTrackerService.update(taskId, {
@@ -1598,27 +1571,33 @@ async function runSummary(
         const existing = await storageService.getNote(lectureId).catch(
             () => null,
         );
-        // cp75.17 — prefer segmenter output, fall back to summary's
-        // ## headings, then to existing sections (so retry doesn't wipe
-        // a good prior TOC if both LLM paths fail this round).
-        const segmented = await segmentationPromise;
+
+        // cp75.31 — preserve fields the user did NOT regenerate.
+        const finalSummary = wantSummary ? full : (existing?.summary ?? '');
+
         let sections: Section[];
-        if (segmented && segmented.length > 0) {
-            sections = segmented;
+        if (wantSections) {
+            const segmented = await segmentationPromise;
+            if (segmented && segmented.length > 0) {
+                sections = segmented;
+            } else {
+                const { mergeExtractedSections } = await import(
+                    '../../utils/summaryStructure'
+                );
+                sections = mergeExtractedSections(
+                    finalSummary,
+                    durationSec,
+                    existing?.sections ?? [],
+                );
+            }
         } else {
-            const { mergeExtractedSections } = await import(
-                '../../utils/summaryStructure'
-            );
-            sections = mergeExtractedSections(
-                full,
-                durationSec,
-                existing?.sections ?? [],
-            );
+            sections = existing?.sections ?? [];
         }
+
         await storageService.saveNote({
             lecture_id: lectureId,
             title: existing?.title ?? title ?? '',
-            summary: full,
+            summary: finalSummary,
             sections,
             qa_records: existing?.qa_records ?? [],
             generated_at: new Date().toISOString(),
