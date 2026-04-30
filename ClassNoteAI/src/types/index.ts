@@ -157,6 +157,13 @@ export interface Note {
   summary?: string; // 課程總結
   sections: Section[];
   qa_records: QARecord[];
+  /**
+   * cp75.32 — auto-extracted homework / due dates / "remember to do X" items
+   * the lecturer assigned to students. Generated alongside the summary at
+   * stop-time (recordingSessionService.runBackgroundSummary) and on Review
+   * page regenerate. Optional so legacy notes saved before cp75.32 still load.
+   */
+  action_items?: ActionItem[];
   generated_at: string; // ISO 8601
   is_deleted?: boolean; // Soft Delete
 }
@@ -186,6 +193,31 @@ export interface QARecord {
   question: string;
   answer: string;
   timestamp: number;
+  /**
+   * cp75.32 — Bloom's Revised Taxonomy level. Optional metadata so future
+   * UI can filter / colour-code questions by cognitive level. Not required
+   * by any current renderer, so legacy QARecords without it still display.
+   */
+  level?: 'recall' | 'comprehend' | 'apply' | 'analyze' | 'synthesize' | 'evaluate';
+}
+
+/**
+ * cp75.32 — concrete TODO / homework / deadline item the lecturer assigned
+ * to students. Auto-extracted by `extractActionItems` from the lecture
+ * transcript at stop-time. UI surface lands in cp75.33+; the schema lives
+ * here now so the persistence + generation pipelines can write to it.
+ */
+export interface ActionItem {
+  /** What the student needs to do, ≤ 80 chars (truncated by the parser). */
+  description: string;
+  /**
+   * ISO YYYY-MM-DD if the model could parse a deadline from the lecture
+   * (e.g. "next Wednesday" → resolved to a date); null when the lecturer
+   * assigned the work without a stated deadline.
+   */
+  due_date?: string | null;
+  /** When in the lecture this was mentioned (relative seconds from start). */
+  mentioned_at_timestamp: number;
 }
 
 // 應用設置類型

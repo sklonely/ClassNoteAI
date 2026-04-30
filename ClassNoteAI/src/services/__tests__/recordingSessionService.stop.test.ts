@@ -275,6 +275,11 @@ vi.mock('../llm/tasks', () => ({
     // behaviour these tests were written against. Tests that want to
     // verify segmenter wiring can override via `.mockResolvedValueOnce`.
     segmentSections: vi.fn(async () => null),
+    // cp75.32 — generateQA + extractActionItems also run in parallel.
+    // Default stubs return [] so existing tests don't see Q&A surface
+    // unless they explicitly opt in via `.mockResolvedValueOnce`.
+    generateQA: vi.fn(async () => []),
+    extractActionItems: vi.fn(async () => []),
 }));
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -880,6 +885,76 @@ describe('stop() · cp75.28 stamps lecture.duration', () => {
         expect(saved.duration).toBe(0);
         // Pipeline still succeeded — duration sourcing is best-effort.
         expect(recordingSessionService.getState().stopPhase).toBe('done');
+    });
+
+    it('cp75.32 — runBackgroundSummary populates qa_records and action_items via generateQA + extractActionItems', async () => {
+        // Long enough transcript so summarize fires. Override the Q&A +
+        // action-items stubs to return non-empty arrays so we can
+        // assert the values land on the saved Note.
+        const longSentence =
+            'lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ut enim ad minim veniam, quis nostrud exercitation';
+        storageMockState.subsForLecture = [
+            {
+                id: 'sub-x-0',
+                lecture_id: 'lecture-1',
+                timestamp: 0,
+                text_en: longSentence,
+                text_zh:
+                    '夠長的中文翻譯內容夠長的中文翻譯內容夠長的中文翻譯內容夠長的中文翻譯內容',
+                type: 'rough',
+                created_at: new Date().toISOString(),
+            },
+        ];
+        const { generateQA, extractActionItems } = await import(
+            '../llm/tasks'
+        );
+        (generateQA as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+            {
+                question: 'What is X?',
+                answer: 'X is Y.',
+                timestamp: 60,
+                level: 'recall',
+            },
+            {
+                question: 'How does X relate to Y?',
+                answer: 'Through Z.',
+                timestamp: 120,
+                level: 'comprehend',
+            },
+            {
+                question: 'Apply X to a real problem.',
+                answer: 'Step 1: ...',
+                timestamp: 180,
+                level: 'apply',
+            },
+        ]);
+        (extractActionItems as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+            {
+                description: 'Submit problem set 3',
+                due_date: '2026-05-06',
+                mentioned_at_timestamp: 1500,
+            },
+            {
+                description: 'Read chapter 5',
+                due_date: null,
+                mentioned_at_timestamp: 2400,
+            },
+        ]);
+
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        // Wait long enough for the parallel awaits in saveNote to land.
+        await new Promise((r) => setTimeout(r, 100));
+
+        expect(storageMockState.saveNoteCalls.length).toBeGreaterThanOrEqual(1);
+        const note = storageMockState.saveNoteCalls[0][0] as {
+            qa_records?: unknown[];
+            action_items?: unknown[];
+        };
+        expect(note.qa_records).toBeDefined();
+        expect(note.qa_records).toHaveLength(3);
+        expect(note.action_items).toBeDefined();
+        expect(note.action_items).toHaveLength(2);
     });
 
     it('runBackgroundSummary reads the just-stamped duration and passes it to segmentSections', async () => {

@@ -27,7 +27,15 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { storageService } from '../../services/storageService';
 import { resolveOrRecoverAudioPath } from '../../services/audioPathService';
-import type { Course, Lecture, Note, Subtitle, Section } from '../../types';
+import type {
+    Course,
+    Lecture,
+    Note,
+    Subtitle,
+    Section,
+    QARecord,
+    ActionItem,
+} from '../../types';
 import { courseColor } from './courseColor';
 import { groupSubsBySections } from './groupSubsBySections';
 import H18AudioPlayer from './H18AudioPlayer';
@@ -1386,11 +1394,11 @@ async function runSummary(
     title?: string,
     targets: RegenerateTarget[] = ['all'],
 ): Promise<void> {
-    // cp75.31 — derive sub-tasks. NOTE: Q&A regen is cp75.32 TODO.
+    // cp75.31 — derive sub-tasks. cp75.32 — wired Q&A target.
     const all = targets.includes('all');
     const wantSummary = all || targets.includes('summary');
     const wantSections = all || targets.includes('sections');
-    // const wantQA = all || targets.includes('qa');  // TODO cp75.32 — generateQA not yet implemented
+    const wantQA = all || targets.includes('qa');
 
     try {
         const subs = await storageService.getSubtitles(lectureId).catch(
@@ -1442,8 +1450,10 @@ async function runSummary(
         }
         taskTrackerService.update(taskId, { status: 'running' });
 
-        // cp75.31 — short-circuit if neither summary nor sections wanted.
-        if (!wantSummary && !wantSections) {
+        // cp75.31/32 — short-circuit if neither summary, sections, nor
+        // Q&A wanted. Action items always run alongside Q&A — no separate
+        // target until cp75.33+ adds the UI surface.
+        if (!wantSummary && !wantSections && !wantQA) {
             taskTrackerService.complete(taskId);
             return;
         }
@@ -1458,9 +1468,12 @@ async function runSummary(
             /* default zh */
         }
 
-        const { summarizeStream, segmentSections } = await import(
-            '../../services/llm/tasks'
-        );
+        const {
+            summarizeStream,
+            segmentSections,
+            generateQA,
+            extractActionItems,
+        } = await import('../../services/llm/tasks');
 
         // cp75.17 — Look up duration once up-front for segmentation
         // timestamp clamping AND post-loop fallback merge.
@@ -1491,6 +1504,42 @@ async function runSummary(
                     err,
                 );
                 return null;
+            }
+        })();
+
+        // cp75.32 — Q&A + action-items run in parallel with summary +
+        // segmentation. Both swallow their own errors → empty array
+        // fallback so Q&A regen is best-effort and never crashes the
+        // whole pipeline. Action items always fire alongside Q&A — no
+        // separate UI target yet (cp75.33+).
+        const qaPromise: Promise<QARecord[]> = (async () => {
+            if (!wantQA) return [];
+            if (transcriptWithTs.length < 100) return [];
+            try {
+                return await generateQA({
+                    transcript: transcriptWithTs,
+                    language: lang,
+                });
+            } catch (err) {
+                console.warn('[H18ReviewPage] generateQA failed:', err);
+                return [];
+            }
+        })();
+        const actionItemsPromise: Promise<ActionItem[]> = (async () => {
+            if (!wantQA) return [];
+            if (transcriptWithTs.length < 100) return [];
+            try {
+                return await extractActionItems({
+                    transcript: transcriptWithTs,
+                    language: lang,
+                    durationSec,
+                });
+            } catch (err) {
+                console.warn(
+                    '[H18ReviewPage] extractActionItems failed:',
+                    err,
+                );
+                return [];
             }
         })();
 
@@ -1594,12 +1643,31 @@ async function runSummary(
             sections = existing?.sections ?? [];
         }
 
+        // cp75.32 — fan in Q&A + action items. Both promises already
+        // swallow errors so awaiting is non-throwing. When a regen run
+        // returns empty for Q&A and we have a prior set, prefer the
+        // prior set (re-running shouldn't wipe a prior good Q&A on a
+        // flaky model output).
+        let finalQa: QARecord[];
+        let finalActionItems: ActionItem[];
+        if (wantQA) {
+            const newQa = await qaPromise;
+            finalQa = newQa.length > 0 ? newQa : existing?.qa_records ?? [];
+            const newAi = await actionItemsPromise;
+            finalActionItems =
+                newAi.length > 0 ? newAi : existing?.action_items ?? [];
+        } else {
+            finalQa = existing?.qa_records ?? [];
+            finalActionItems = existing?.action_items ?? [];
+        }
+
         await storageService.saveNote({
             lecture_id: lectureId,
             title: existing?.title ?? title ?? '',
             summary: finalSummary,
             sections,
-            qa_records: existing?.qa_records ?? [],
+            qa_records: finalQa,
+            action_items: finalActionItems,
             generated_at: new Date().toISOString(),
         });
         taskTrackerService.complete(taskId);

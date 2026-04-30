@@ -12,7 +12,7 @@ import { resolveActiveProvider } from './registry';
 import type { LLMMessage } from './types';
 import { LLMError } from './types';
 import { usageTracker, type UsageTask } from './usageTracker';
-import type { Section } from '../../types';
+import type { Section, QARecord, ActionItem } from '../../types';
 
 /**
  * Record token usage from a provider response so the UI can render
@@ -938,6 +938,400 @@ export async function segmentSections(params: SegmentSectionsParams): Promise<Se
     }
   }
   throw lastErr ?? new Error('segmentSections: unreachable retry exit');
+}
+
+// ─── Q&A generation (cp75.32) ────────────────────────────────────────
+//
+// Issue 4 from the v0.7.0-alpha.1 audit: `Note.qa_records` exists in the
+// schema and the Review page renders a "Q&A · N" badge + tab, but no
+// path actually populated it — `runBackgroundSummary` and the manual
+// `runSummary` always fell back to `existing?.qa_records ?? []`. The
+// badge was forever 0.
+//
+// generateQA fires the same time as summarise + segment (parallel,
+// `Promise.all`-style) so the user sees Q&A populated right when the
+// Review page first opens, no extra click required.
+//
+// Bloom's-Revised-Taxonomy distribution is part of the prompt because
+// research on spaced-repetition pedagogy shows mixing recall (50%) with
+// comprehend (30%) + apply/analyze (20%) produces better long-term
+// retention than pure recall flashcards. Tagging each question with its
+// Bloom level lets future UI filter / colour-code the deck.
+
+export interface GenerateQAParams {
+  /** Timestamped transcript: lines like `[00:15] sentence text`. */
+  transcript: string;
+  language: 'zh' | 'en';
+  signal?: AbortSignal;
+  /** Optional model override. Defaults to high-tier flagship. */
+  model?: string;
+  /** Soft cap on questions emitted by the model. Default 7. */
+  maxQuestions?: number;
+}
+
+function buildQASystemPrompt(language: 'zh' | 'en', maxQuestions: number): string {
+  const langName = language === 'zh' ? '繁體中文' : 'English';
+  return (
+    `You generate study questions from a lecture transcript using ` +
+    `Bloom's Revised Taxonomy. Each question must:\n` +
+    `1. Test ONE key concept actually discussed in the transcript ` +
+    `(no fluff like "when did the recording start").\n` +
+    `2. Have an answer extractable from / verifiable against the transcript.\n` +
+    `3. Be useful for active recall / spaced repetition study.\n` +
+    `4. Be tagged with a Bloom level: recall / comprehend / apply / ` +
+    `analyze / synthesize / evaluate.\n\n` +
+    `Distribute roughly: 50% recall, 30% comprehend, 15% apply, 5% analyze.\n` +
+    `Output ONLY a JSON object: {"questions": [{"question": "...", ` +
+    `"answer": "...", "timestamp": <integer seconds from [mm:ss] of the ` +
+    `line that discusses this concept>, "level": "recall"}, ...]}.\n` +
+    `No markdown fences, no preamble, no trailing commentary. ` +
+    `Both question and answer in ${langName}. ` +
+    `Target 5-${maxQuestions} questions total — fewer is fine if the ` +
+    `transcript is short or only covers one concept.`
+  );
+}
+
+const VALID_BLOOM_LEVELS: ReadonlyArray<NonNullable<QARecord['level']>> = [
+  'recall',
+  'comprehend',
+  'apply',
+  'analyze',
+  'synthesize',
+  'evaluate',
+];
+
+/** Tolerant parser. Accepts `{questions: [...]}` OR a bare array.
+ *  Returns [] (NOT throw) on unparseable input so a flaky model output
+ *  doesn't take down the whole background pipeline — Q&A is a value-add,
+ *  the summary + sections are the user's source of truth. */
+function parseQAOutput(raw: string): QARecord[] {
+  let txt = raw.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(txt);
+  if (fenced) txt = fenced[1].trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(txt);
+  } catch {
+    // Salvage: first balanced [...] OR first {questions: [...]} blob.
+    const arrMatch = /\[\s*\{[\s\S]*?\}\s*\]/.exec(txt);
+    const objMatch = /\{\s*"questions"\s*:[\s\S]*?\}\s*$/m.exec(txt);
+    const candidate = (objMatch ?? arrMatch)?.[0];
+    if (!candidate) return [];
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      return [];
+    }
+  }
+
+  let arr: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    arr = parsed;
+  } else if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { questions?: unknown }).questions)
+  ) {
+    arr = (parsed as { questions: unknown[] }).questions;
+  } else {
+    return [];
+  }
+
+  const out: QARecord[] = [];
+  for (const item of arr) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const question = typeof obj.question === 'string' ? obj.question.trim() : '';
+    const answer = typeof obj.answer === 'string' ? obj.answer.trim() : '';
+    if (!question || !answer) continue;
+    // timestamp default 0 — when the model omits it we still want the
+    // QA to surface; the badge cares about count, the renderer about
+    // text. A bad ts defaults to 0 rather than dropping the row.
+    const tsRaw =
+      typeof obj.timestamp === 'number'
+        ? obj.timestamp
+        : Number(obj.timestamp);
+    const timestamp = Number.isFinite(tsRaw) ? Math.max(0, Math.round(tsRaw)) : 0;
+
+    const levelRaw =
+      typeof obj.level === 'string'
+        ? (obj.level.toLowerCase() as QARecord['level'])
+        : undefined;
+    const level =
+      levelRaw && VALID_BLOOM_LEVELS.includes(levelRaw)
+        ? levelRaw
+        : undefined;
+
+    out.push({
+      question: question.slice(0, 300),
+      answer: answer.slice(0, 1000),
+      timestamp,
+      ...(level ? { level } : {}),
+    });
+  }
+  return out;
+}
+
+/** Generate Bloom's-Taxonomy-aware Q&A from a lecture transcript via a
+ *  single high-tier LLM call. Returns [] on empty input or on a model
+ *  output we can't salvage; throws only on persistent transient failures
+ *  or fatal auth errors (caller's `.catch()` should fall back to []). */
+export async function generateQA(params: GenerateQAParams): Promise<QARecord[]> {
+  throwIfAborted(params.signal);
+  if (!params.transcript.trim()) return [];
+
+  const maxQuestions = params.maxQuestions ?? 7;
+  const { provider, model: defaultModel, providerId } =
+    await activeProviderAndModel('high');
+  const model = params.model ?? defaultModel;
+
+  const messages: LLMMessage[] = [
+    { role: 'system', content: buildQASystemPrompt(params.language, maxQuestions) },
+    { role: 'user', content: params.transcript },
+  ];
+
+  // Same retry envelope as segmentSections (cp75.16): per-attempt
+  // timeout via inner AbortController, exponential backoff, abort
+  // propagated immediately.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+    throwIfAborted(params.signal);
+
+    const innerAc = new AbortController();
+    const propagateAbort = () => innerAc.abort();
+    params.signal?.addEventListener('abort', propagateAbort, { once: true });
+    let timedOut = false;
+    const deadlineId = setTimeout(() => {
+      timedOut = true;
+      innerAc.abort();
+    }, MAP_SECTION_TIMEOUT_MS);
+
+    try {
+      const res = await provider!.complete({
+        model,
+        messages,
+        temperature: 0.3,
+        maxTokens: 2048, // ~7 Q&A pairs × ~200 tokens each
+        jsonMode: true,
+        signal: innerAc.signal,
+      });
+      if (timedOut) {
+        const e = new Error(`generateQA timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+        e.name = 'TimeoutError';
+        throw e;
+      }
+      trackUsage(providerId, model, 'summarize', res.usage);
+      return parseQAOutput(res.content);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      const kind = classifyMapSectionError(err);
+      if (kind === 'abort') throw err;
+      lastErr = err;
+      if (kind === 'fatal' || attempt === MAP_SECTION_MAX_RETRIES) {
+        throw err;
+      }
+      const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+      await new Promise<void>((r) => setTimeout(r, backoff));
+    } finally {
+      clearTimeout(deadlineId);
+      params.signal?.removeEventListener('abort', propagateAbort);
+    }
+  }
+  throw lastErr ?? new Error('generateQA: unreachable retry exit');
+}
+
+// ─── Action-item extraction (cp75.32) ────────────────────────────────
+//
+// Companion to generateQA. The user explicitly called out wanting
+// homework / due-date capture: students' top recurring questions in
+// the AI 助教 are "今天作業是什麼？" / "什麼時候要交？" — both can be
+// answered by mining the transcript for explicit assignments.
+//
+// Action items differ from Q&A in two ways:
+//   1. Source-strict: must be something the lecturer EXPLICITLY assigned.
+//      A passing remark like "you might find it useful to read X" should
+//      NOT become an action item. The prompt enforces this.
+//   2. Optional structured deadline: ISO YYYY-MM-DD when the lecturer
+//      stated one, null otherwise. We do NOT auto-assume "next week"
+//      means 7d from the lecture date — the model may parse it if the
+//      lecture date is known, but we treat it as best-effort metadata.
+
+export interface ExtractActionItemsParams {
+  /** Timestamped transcript: lines like `[00:15] sentence text`. */
+  transcript: string;
+  language: 'zh' | 'en';
+  /** Recorded duration in seconds — used to clamp model-emitted
+   *  mentioned_at_timestamp values that fell outside the actual range. */
+  durationSec: number;
+  signal?: AbortSignal;
+  /** Optional model override. Defaults to high-tier flagship. */
+  model?: string;
+}
+
+function buildActionItemsSystemPrompt(language: 'zh' | 'en'): string {
+  const langName = language === 'zh' ? '繁體中文' : 'English';
+  return (
+    `You extract concrete TODO / homework / deadline items the lecturer ` +
+    `assigned to students from a lecture transcript.\n\n` +
+    `Each item must:\n` +
+    `1. Be something the lecturer EXPLICITLY asked students to do — ` +
+    `homework, problem sets, readings, project milestones, exam-prep ` +
+    `tasks. NOT casual background remarks ("you might find X useful") ` +
+    `and NOT instructor's own slides like "today's agenda".\n` +
+    `2. Be specific enough a student knows what to do (≤ 80 ${langName} ` +
+    `characters / words).\n` +
+    `3. Have due_date in ISO YYYY-MM-DD if the lecturer mentioned a ` +
+    `deadline (parse "next Wednesday" / "下週三" relative to the lecture ` +
+    `date if it can be inferred from context; otherwise null). NEVER ` +
+    `invent a deadline that wasn't stated.\n` +
+    `4. Have mentioned_at_timestamp = integer seconds parsed from the ` +
+    `[mm:ss] of the line where the assignment was given.\n\n` +
+    `If no clear assignments are mentioned, return {"items": []}.\n\n` +
+    `Output ONLY: {"items": [{"description": "...", ` +
+    `"due_date": "2026-05-06" | null, "mentioned_at_timestamp": 3500}, ...]}. ` +
+    `No markdown fences, no preamble. Description in ${langName}.`
+  );
+}
+
+/** Tolerant parser. Same defensive shape as parseQAOutput. */
+function parseActionItemsOutput(raw: string, durationSec: number): ActionItem[] {
+  let txt = raw.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(txt);
+  if (fenced) txt = fenced[1].trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(txt);
+  } catch {
+    const arrMatch = /\[\s*\{[\s\S]*?\}\s*\]/.exec(txt);
+    const objMatch = /\{\s*"items"\s*:[\s\S]*?\}\s*$/m.exec(txt);
+    const candidate = (objMatch ?? arrMatch)?.[0];
+    if (!candidate) return [];
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      return [];
+    }
+  }
+
+  let arr: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    arr = parsed;
+  } else if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { items?: unknown }).items)
+  ) {
+    arr = (parsed as { items: unknown[] }).items;
+  } else {
+    return [];
+  }
+
+  const out: ActionItem[] = [];
+  for (const item of arr) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const description =
+      typeof obj.description === 'string' ? obj.description.trim() : '';
+    if (!description) continue;
+
+    const tsRaw =
+      typeof obj.mentioned_at_timestamp === 'number'
+        ? obj.mentioned_at_timestamp
+        : Number(obj.mentioned_at_timestamp);
+    const tsClampedHigh = durationSec > 0 ? durationSec : Number.POSITIVE_INFINITY;
+    const mentioned_at_timestamp = Number.isFinite(tsRaw)
+      ? Math.max(0, Math.min(tsClampedHigh, Math.round(tsRaw)))
+      : 0;
+
+    let due_date: string | null | undefined;
+    if (obj.due_date == null) {
+      // Treat null and missing key alike — both surface as "no deadline".
+      due_date = null;
+    } else if (typeof obj.due_date === 'string') {
+      const trimmed = obj.due_date.trim();
+      // Only persist ISO-shaped dates. Anything else becomes null so
+      // downstream UI doesn't have to defend against "next Wednesday"
+      // strings the model stuffed through despite instructions.
+      due_date = /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+    } else {
+      due_date = null;
+    }
+
+    out.push({
+      description: description.slice(0, 80),
+      due_date,
+      mentioned_at_timestamp,
+    });
+  }
+  return out;
+}
+
+/** Extract concrete action items the lecturer assigned to students.
+ *  Returns [] on empty input or unparseable model output (graceful
+ *  degradation — like generateQA, action items are value-add and must
+ *  not crash the background pipeline). */
+export async function extractActionItems(
+  params: ExtractActionItemsParams,
+): Promise<ActionItem[]> {
+  throwIfAborted(params.signal);
+  if (!params.transcript.trim()) return [];
+
+  const { provider, model: defaultModel, providerId } =
+    await activeProviderAndModel('high');
+  const model = params.model ?? defaultModel;
+
+  const messages: LLMMessage[] = [
+    { role: 'system', content: buildActionItemsSystemPrompt(params.language) },
+    { role: 'user', content: params.transcript },
+  ];
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+    throwIfAborted(params.signal);
+
+    const innerAc = new AbortController();
+    const propagateAbort = () => innerAc.abort();
+    params.signal?.addEventListener('abort', propagateAbort, { once: true });
+    let timedOut = false;
+    const deadlineId = setTimeout(() => {
+      timedOut = true;
+      innerAc.abort();
+    }, MAP_SECTION_TIMEOUT_MS);
+
+    try {
+      const res = await provider!.complete({
+        model,
+        messages,
+        temperature: 0.1, // deterministic-ish; we want literal extraction not creativity
+        maxTokens: 1024, // typical lecture has ≤ 5 action items
+        jsonMode: true,
+        signal: innerAc.signal,
+      });
+      if (timedOut) {
+        const e = new Error(`extractActionItems timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+        e.name = 'TimeoutError';
+        throw e;
+      }
+      trackUsage(providerId, model, 'summarize', res.usage);
+      return parseActionItemsOutput(res.content, params.durationSec);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      const kind = classifyMapSectionError(err);
+      if (kind === 'abort') throw err;
+      lastErr = err;
+      if (kind === 'fatal' || attempt === MAP_SECTION_MAX_RETRIES) {
+        throw err;
+      }
+      const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+      await new Promise<void>((r) => setTimeout(r, backoff));
+    } finally {
+      clearTimeout(deadlineId);
+      params.signal?.removeEventListener('abort', propagateAbort);
+    }
+  }
+  throw lastErr ?? new Error('extractActionItems: unreachable retry exit');
 }
 
 // ─── Syllabus extraction ─────────────────────────────────────────────

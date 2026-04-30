@@ -53,6 +53,7 @@ import {
     summarizeStream,
     chatStream,
     classifyMapSectionError,
+    generateQA,
     type SummarizeStreamEvent,
 } from '../tasks';
 
@@ -817,5 +818,45 @@ describe('chatStream — W8 AbortController support', () => {
             // drain
         }
         expect(mockStream.mock.calls[0][0].signal).toBe(ac.signal);
+    });
+});
+
+// ─── cp75.32 — generateQA retry classification ──────────────────────
+//
+// generateQA reuses the segmentSections retry envelope (per-attempt
+// timeout, exponential backoff, fatal/transient classification via
+// classifyMapSectionError). Coverage here is light because the
+// classifier itself is already exhaustively tested above; we just
+// verify generateQA hits the same retry / no-retry branches.
+
+describe('generateQA — cp75.32 retry classification', () => {
+    it('transient (429) → retries once → succeeds', async () => {
+        mockComplete
+            .mockRejectedValueOnce(new Error('429 Too Many Requests'))
+            .mockResolvedValueOnce({
+                content: JSON.stringify({
+                    questions: [
+                        { question: 'q', answer: 'a', timestamp: 0 },
+                    ],
+                }),
+                usage: {},
+            });
+        const out = await generateQA({
+            transcript: '[00:00] something happened.',
+            language: 'en',
+        });
+        expect(mockComplete).toHaveBeenCalledTimes(2);
+        expect(out).toHaveLength(1);
+    });
+
+    it('fatal (401) → no retry → propagates immediately', async () => {
+        mockComplete.mockRejectedValue(new Error('401 unauthorized'));
+        await expect(
+            generateQA({
+                transcript: '[00:00] something happened.',
+                language: 'en',
+            }),
+        ).rejects.toThrow(/401/);
+        expect(mockComplete).toHaveBeenCalledTimes(1);
     });
 });

@@ -94,6 +94,9 @@ vi.mock('../../../services/examMarksStore', () => ({
     subscribeExamMarks: vi.fn(() => () => {}),
 }));
 
+// cp75.32 — added generateQA + extractActionItems stubs (default []).
+// `targets=['qa']` selection wires `generateQA` so existing tests must
+// not crash when the runtime imports it from this mock.
 vi.mock('../../../services/llm/tasks', () => ({
     summarizeStream: vi.fn(async function* () {
         yield { phase: 'reduce-delta', delta: '## 摘要\n' };
@@ -102,6 +105,8 @@ vi.mock('../../../services/llm/tasks', () => ({
     }),
     summarize: vi.fn(async () => '## 摘要\n本堂課重點...'),
     segmentSections: vi.fn(async () => null),
+    generateQA: vi.fn(async () => []),
+    extractActionItems: vi.fn(async () => []),
 }));
 
 vi.mock('../H18AudioPlayer', () => ({
@@ -339,6 +344,56 @@ describe('H18ReviewPage · cp75.31 granular regenerate', () => {
             primary!.hasAttribute('aria-busy') ||
                 primary!.hasAttribute('disabled'),
         ).toBe(true);
+    });
+
+    it('cp75.32 — selecting "Q&A" calls generateQA + extractActionItems', async () => {
+        currentNote = mockNoteWithSummary;
+        // Use a long enough subtitle so the < 100 char short-circuit
+        // doesn't skip the LLM calls. text_zh wins over text_en in the
+        // build chain, so we make THAT long (≥ 100 chars).
+        const longZh =
+            '本堂課今天會介紹神經網路的基本原理，包含感知機模型、反向傳播演算法、梯度下降，以及如何用這些工具訓練一個簡單的影像分類器。學生請於下週三前繳交作業三，下下週要交期中專題提案，包含資料來源、模型選擇、預期成果等三個面向，並準備五分鐘的口頭報告。';
+        currentSubs = [
+            {
+                id: 'sub-1',
+                lecture_id: 'L1',
+                timestamp: 0,
+                text_en: 'long english placeholder for fallback',
+                text_zh: longZh,
+                type: 'fine',
+                created_at: '2026-04-28T00:00:00.000Z',
+            },
+        ];
+
+        const { generateQA, extractActionItems } = await import(
+            '../../../services/llm/tasks'
+        );
+        (generateQA as ReturnType<typeof vi.fn>).mockClear();
+        (extractActionItems as ReturnType<typeof vi.fn>).mockClear();
+
+        render(
+            <H18ReviewPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const chevron = screen.getByRole('button', {
+            name: /重新生成選項|展開重新生成選項|granular targets|更多選項/i,
+        });
+        await act(async () => {
+            fireEvent.click(chevron);
+        });
+        await flushAsync();
+
+        const qaItem = screen.getByRole('menuitem', { name: /Q&A|QA/ });
+        await act(async () => {
+            fireEvent.click(qaItem);
+        });
+        // Wait long enough for runSummary's parallel awaits to fire.
+        await flushAsync(8);
+
+        expect(generateQA).toHaveBeenCalledTimes(1);
+        // Action items always fire alongside Q&A — see cp75.32 spec.
+        expect(extractActionItems).toHaveBeenCalledTimes(1);
     });
 
     it('Esc closes the dropdown', async () => {

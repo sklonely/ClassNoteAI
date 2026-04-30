@@ -1,5 +1,5 @@
 /**
- * RegenerateMenu · cp75.31
+ * RegenerateMenu · cp75.31 / cp75.32
  *
  * Top-level split-button for re-running the AI summary pipeline.
  * Primary action defaults to ['all']; chevron exposes 摘要 / 章節 /
@@ -7,8 +7,8 @@
  *
  * Vanilla HTML/CSS — no shadcn, no Radix. Closes on Esc + click-outside.
  *
- * NOTE: Q&A regeneration not yet implemented (cp75.32). The menu item
- * shows but is wired as a no-op so users see the upcoming option.
+ * cp75.32: Q&A target now wired through to `generateQA` +
+ * `extractActionItems` in `runSummary` / `runBackgroundSummary`.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -116,18 +116,18 @@ export function RegenerateMenu({
                     >
                         章節
                     </button>
-                    {/* TODO cp75.32 — generateQA not yet implemented; clicking
-                        this option is a no-op for now so users still see the
-                        upcoming target on the menu. */}
+                    {/* cp75.32 — Q&A target wired to generateQA +
+                        extractActionItems in runSummary. Action items
+                        always fire alongside Q&A; cp75.33+ adds the
+                        UI surface for them. */}
                     <button
                         type="button"
                         role="menuitem"
                         className={s.regenMenuItem}
                         onClick={() => fireAndClose(['qa'])}
-                        title="即將推出 — cp75.32"
+                        title="重新生成 Q&A 與作業/待辦提醒"
                     >
                         Q&A
-                        <span className={s.regenMenuItemHint}>· 即將推出</span>
                     </button>
                     <button
                         type="button"

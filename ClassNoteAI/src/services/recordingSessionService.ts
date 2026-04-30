@@ -31,7 +31,7 @@
  */
 
 import type { SubtitleState, SubtitleSegment } from '../types/subtitle';
-import type { Section } from '../types';
+import type { Section, QARecord, ActionItem } from '../types';
 
 import {
     type RecordingSessionService,
@@ -876,7 +876,8 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             // Failure of the segmenter falls back to summary's ##
             // headings (still better than empty TOC). Catch is nested
             // here so it can't take down the whole runBackgroundSummary.
-            const { segmentSections } = await import('./llm/tasks');
+            const { segmentSections, generateQA, extractActionItems } =
+                await import('./llm/tasks');
             // IIFE wrapper handles both sync throws (e.g. segmentSections
             // missing in older test stubs) and async rejections in one
             // place — the parallel call must never propagate, falling
@@ -896,6 +897,45 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                         err,
                     );
                     return null;
+                }
+            })();
+
+            // cp75.32 — Q&A + action-items extraction also run in PARALLEL
+            // with summarize / segmentSections. Three independent LLM
+            // calls firing concurrently keeps the user's wall-clock for
+            // "stop → review fully populated" close to the slowest single
+            // call rather than the sum of all four. Failures graceful-
+            // fallback to []; like sections, Q&A is best-effort and must
+            // never bring down runBackgroundSummary.
+            const qaPromise: Promise<QARecord[]> = (async () => {
+                if (transcriptWithTs.length < 100) return [];
+                try {
+                    return await generateQA({
+                        transcript: transcriptWithTs,
+                        language: summaryLang,
+                    });
+                } catch (err) {
+                    console.warn(
+                        '[recordingSession] generateQA failed:',
+                        err,
+                    );
+                    return [];
+                }
+            })();
+            const actionItemsPromise: Promise<ActionItem[]> = (async () => {
+                if (transcriptWithTs.length < 100) return [];
+                try {
+                    return await extractActionItems({
+                        transcript: transcriptWithTs,
+                        language: summaryLang,
+                        durationSec: lectureDurationSec,
+                    });
+                } catch (err) {
+                    console.warn(
+                        '[recordingSession] extractActionItems failed:',
+                        err,
+                    );
+                    return [];
                 }
             })();
 
@@ -994,12 +1034,30 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                     );
                 }
 
+                // cp75.32 — fan in Q&A + action items. Both promises
+                // already swallow their own errors, so awaiting them is
+                // never observable as a throw here. If a generation
+                // returned nothing AND we have a prior set, prefer the
+                // prior set (re-running summarise should not wipe the
+                // user's existing Q&A on a flaky model output).
+                const newQa = await qaPromise;
+                const finalQa: QARecord[] =
+                    newQa.length > 0
+                        ? newQa
+                        : existing?.qa_records ?? [];
+                const newActionItems = await actionItemsPromise;
+                const finalActionItems: ActionItem[] =
+                    newActionItems.length > 0
+                        ? newActionItems
+                        : existing?.action_items ?? [];
+
                 await storage.saveNote({
                     lecture_id: lectureId,
                     title: existing?.title ?? '',
                     summary: fullSummary,
                     sections,
-                    qa_records: existing?.qa_records ?? [],
+                    qa_records: finalQa,
+                    action_items: finalActionItems,
                     generated_at: now,
                 });
             } catch (err) {

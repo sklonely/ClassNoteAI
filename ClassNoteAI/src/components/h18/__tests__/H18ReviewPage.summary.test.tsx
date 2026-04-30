@@ -113,6 +113,10 @@ vi.mock('../../../services/examMarksStore', () => ({
 // Default: yield one delta + done; segmenter returns null so the path
 // falls back to summary's ## headings (matches pre-cp75.17 behaviour
 // these tests were written against).
+//
+// cp75.32 — added generateQA + extractActionItems stubs returning [] so
+// existing summary tests are unaffected (they only assert summary state,
+// not Q&A). Tests that want to verify Q&A wiring can override per-test.
 vi.mock('../../../services/llm/tasks', () => ({
     summarizeStream: vi.fn(async function* () {
         yield { phase: 'reduce-delta', delta: '## 摘要\n' };
@@ -121,6 +125,8 @@ vi.mock('../../../services/llm/tasks', () => ({
     }),
     summarize: vi.fn(async () => '## 摘要\n本堂課重點...'),
     segmentSections: vi.fn(async () => null),
+    generateQA: vi.fn(async () => []),
+    extractActionItems: vi.fn(async () => []),
 }));
 
 // H18AudioPlayer — heavy media component, stub.
