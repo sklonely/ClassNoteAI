@@ -668,4 +668,241 @@ mod tests {
         let purged = db.hard_delete_lectures_by_ids(&[]).unwrap();
         assert!(purged.is_empty());
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // cp75.20 — Soft-delete read-side `is_deleted = 0` filters
+    //
+    // Five P0 read endpoints in `storage::database` previously returned
+    // soft-deleted rows because their SELECT lacked `WHERE is_deleted = 0`
+    // (or a JOIN equivalent). That meant deep-link / direct-id lookups
+    // could see trash and downstream code (e.g. summary, restore) acted
+    // on it as if alive. These tests pin the filters in place so a
+    // future regression flips a row back into "leaked" state.
+    //
+    // DO NOT touch (regression-guarded by tail tests in this block):
+    //   - list_deleted_courses / list_deleted_lectures (trash UI; MUST
+    //     keep returning soft-deleted rows)
+    // ────────────────────────────────────────────────────────────────
+
+    /// Fixture: one alive course + one soft-deleted course, each with
+    /// one alive lecture and one soft-deleted lecture, each lecture
+    /// with a note (alive lecture's note alive; deleted lecture's note
+    /// flagged is_deleted=1), plus four chat sessions covering the
+    /// alive/deleted × user_id matrix.
+    fn fixture_softdelete() -> Database {
+        let db = make_test_db();
+        let now_text = Utc::now().to_rfc3339();
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let conn = db.conn();
+
+        // Two courses: alive + soft-deleted (both belong to default_user).
+        conn.execute(
+            "INSERT INTO courses \
+                (id, title, description, keywords, user_id, is_deleted, deleted_at, created_at, updated_at) \
+             VALUES \
+                ('course-alive',   'Alive Course',   NULL, NULL, 'default_user', 0, NULL, ?1, ?1), \
+                ('course-deleted', 'Deleted Course', NULL, NULL, 'default_user', 1, ?2,   ?1, ?1)",
+            rusqlite::params![now_text, now_ms],
+        )
+        .unwrap();
+
+        // Four lectures: alive course has lec-alive (alive) + lec-deleted-under-alive (trashed);
+        // deleted course has lec-orphan-alive (NOT trashed at lecture level — exercises
+        // find_lecture_owner's "course might be deleted via cascade" comment) and
+        // lec-deleted-under-deleted.
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, deleted_at, created_at, updated_at) \
+             VALUES \
+                ('lec-alive',                 'course-alive',   'Alive Lec',                 ?1, 0, 'completed', 0, NULL, ?1, ?1), \
+                ('lec-deleted-under-alive',   'course-alive',   'Deleted Lec under Alive',   ?1, 0, 'completed', 1, ?2,   ?1, ?1), \
+                ('lec-orphan-alive',          'course-deleted', 'Alive Lec under Deleted',   ?1, 0, 'completed', 0, NULL, ?1, ?1), \
+                ('lec-deleted-under-deleted', 'course-deleted', 'Deleted Lec under Deleted', ?1, 0, 'completed', 1, ?2,   ?1, ?1)",
+            rusqlite::params![now_text, now_ms],
+        )
+        .unwrap();
+
+        // Notes (PK = lecture_id). The schema has its own is_deleted column.
+        // Each lecture gets a note whose is_deleted matches the lecture's
+        // is_deleted — so cp75.20 can assert that get_note() filters by
+        // note.is_deleted (we'll only set lec-alive's note alive; the
+        // others are trash-flagged at the note row level).
+        conn.execute(
+            "INSERT INTO notes (lecture_id, title, content, generated_at, is_deleted) VALUES \
+                ('lec-alive',                 'Alive Note',                 '{}', ?1, 0), \
+                ('lec-deleted-under-alive',   'Trashed Note A',             '{}', ?1, 1), \
+                ('lec-orphan-alive',          'Note under Deleted Course',  '{}', ?1, 0), \
+                ('lec-deleted-under-deleted', 'Trashed Note B',             '{}', ?1, 1)",
+            rusqlite::params![now_text],
+        )
+        .unwrap();
+
+        // Chat sessions: two alive + two soft-deleted under default_user.
+        // (cp75.20 only filters get_all_chat_sessions; we don't need a
+        // second user here — cp75.6's user_id scoping is already covered
+        // elsewhere.)
+        conn.execute(
+            "INSERT INTO chat_sessions \
+                (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) \
+             VALUES \
+                ('sess-alive-1',   'lec-alive', 'default_user', 'Alive 1',   NULL, ?1, ?1, 0), \
+                ('sess-alive-2',   NULL,        'default_user', 'Alive 2',   NULL, ?1, ?1, 0), \
+                ('sess-deleted-1', 'lec-alive', 'default_user', 'Trashed 1', NULL, ?1, ?1, 1), \
+                ('sess-deleted-2', NULL,        'default_user', 'Trashed 2', NULL, ?1, ?1, 1)",
+            rusqlite::params![now_text],
+        )
+        .unwrap();
+
+        db
+    }
+
+    /// 1.1 — `get_course` must filter `is_deleted = 0`.
+    #[test]
+    fn cp75_20_get_course_returns_none_for_deleted_course() {
+        let db = fixture_softdelete();
+        let alive = db.get_course("course-alive").unwrap();
+        assert!(alive.is_some(), "alive course should be returned");
+        let deleted = db.get_course("course-deleted").unwrap();
+        assert!(
+            deleted.is_none(),
+            "soft-deleted course must NOT be returned by get_course \
+             (deep-link / direct-id calls would otherwise see trash)"
+        );
+    }
+
+    /// 1.2 — `get_lecture` must filter `is_deleted = 0`.
+    #[test]
+    fn cp75_20_get_lecture_returns_none_for_deleted_lecture() {
+        let db = fixture_softdelete();
+        let alive = db.get_lecture("lec-alive").unwrap();
+        assert!(alive.is_some(), "alive lecture should be returned");
+        let deleted = db.get_lecture("lec-deleted-under-alive").unwrap();
+        assert!(
+            deleted.is_none(),
+            "soft-deleted lecture must NOT be returned by get_lecture"
+        );
+    }
+
+    /// 1.3 — `get_note` must filter on the `notes.is_deleted` column.
+    /// (The notes table has its own is_deleted; we filter on the row's
+    /// own flag rather than the parent lecture, because save_note
+    /// already mirrors the lecture trash state into note.is_deleted.)
+    #[test]
+    fn cp75_20_get_note_returns_none_for_deleted_note() {
+        let db = fixture_softdelete();
+
+        // Alive lecture → note should round-trip.
+        let alive_note = db.get_note("lec-alive").unwrap();
+        assert!(alive_note.is_some(), "alive note should be returned");
+
+        // Note row flagged is_deleted=1 must be hidden.
+        let trashed_note_under_alive_lecture =
+            db.get_note("lec-deleted-under-alive").unwrap();
+        assert!(
+            trashed_note_under_alive_lecture.is_none(),
+            "note row with is_deleted=1 must NOT be returned by get_note"
+        );
+
+        let trashed_note_under_deleted_lecture =
+            db.get_note("lec-deleted-under-deleted").unwrap();
+        assert!(
+            trashed_note_under_deleted_lecture.is_none(),
+            "note row with is_deleted=1 must NOT be returned by get_note"
+        );
+    }
+
+    /// 1.4 — `get_all_chat_sessions` must exclude soft-deleted sessions.
+    #[test]
+    fn cp75_20_get_all_chat_sessions_excludes_soft_deleted() {
+        let db = fixture_softdelete();
+        let sessions = db.get_all_chat_sessions("default_user").unwrap();
+
+        let ids: Vec<String> = sessions.iter().map(|t| t.0.clone()).collect();
+        assert!(
+            ids.contains(&"sess-alive-1".to_string()),
+            "alive session sess-alive-1 should be present, got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"sess-alive-2".to_string()),
+            "alive session sess-alive-2 should be present, got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"sess-deleted-1".to_string()),
+            "soft-deleted session sess-deleted-1 must NOT be returned, got: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"sess-deleted-2".to_string()),
+            "soft-deleted session sess-deleted-2 must NOT be returned, got: {ids:?}"
+        );
+    }
+
+    /// 1.5 — `find_lecture_owner` must filter `l.is_deleted = 0`.
+    /// A soft-deleted lecture should not be looked up via the
+    /// ownership helper (the trash flow uses dedicated paths).
+    #[test]
+    fn cp75_20_find_lecture_owner_returns_none_for_deleted_lecture() {
+        let db = fixture_softdelete();
+
+        // Alive lecture: still resolves to its owner.
+        let alive_owner = db.find_lecture_owner("lec-alive");
+        assert_eq!(alive_owner.as_deref(), Some("default_user"));
+
+        // Soft-deleted lecture: filter must hide it.
+        let deleted_owner = db.find_lecture_owner("lec-deleted-under-alive");
+        assert!(
+            deleted_owner.is_none(),
+            "soft-deleted lecture should not be findable via find_lecture_owner"
+        );
+
+        // Course-cascade case: an alive lecture row whose parent course
+        // is soft-deleted must STILL resolve (we filter on l.is_deleted
+        // only — see cp75.20 spec note).
+        let orphan_owner = db.find_lecture_owner("lec-orphan-alive");
+        assert_eq!(
+            orphan_owner.as_deref(),
+            Some("default_user"),
+            "lecture row alive but parent course trashed should still resolve owner"
+        );
+    }
+
+    // ── Regression: the trash UI's reverse path MUST still see deleted rows ──
+
+    #[test]
+    fn cp75_20_list_deleted_courses_still_returns_deleted_courses() {
+        let db = fixture_softdelete();
+        let trash = db.list_deleted_courses("default_user").unwrap();
+        assert!(
+            trash.iter().any(|c| c.id == "course-deleted"),
+            "list_deleted_courses must still surface soft-deleted course"
+        );
+        assert!(
+            !trash.iter().any(|c| c.id == "course-alive"),
+            "alive course must not appear in trash list"
+        );
+    }
+
+    #[test]
+    fn cp75_20_list_deleted_lectures_still_returns_deleted_lectures() {
+        let db = fixture_softdelete();
+        let trash = db.list_deleted_lectures("default_user").unwrap();
+        let ids: Vec<&str> = trash.iter().map(|l| l.id.as_str()).collect();
+        assert!(
+            ids.contains(&"lec-deleted-under-alive"),
+            "deleted lecture under alive course must still surface, got {ids:?}"
+        );
+        // The list_deleted_lectures function does not filter by
+        // c.is_deleted, so trashed lectures under trashed courses are
+        // expected to surface as well — guard that too.
+        assert!(
+            ids.contains(&"lec-deleted-under-deleted"),
+            "deleted lecture under deleted course must still surface, got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"lec-alive"),
+            "alive lecture must not appear in trash list"
+        );
+    }
 }

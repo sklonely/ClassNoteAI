@@ -97,11 +97,15 @@ impl Database {
     /// occurred — the caller maps that to a user-facing "not found"
     /// message; deeper diagnostics live in the rusqlite Error chain).
     pub fn find_lecture_owner(&self, lecture_id: &str) -> Option<String> {
+        // cp75.20: filter soft-deleted lecture rows on the lecture
+        // table only (don't gate on c.is_deleted — the parent course
+        // may have been cascade-trashed while the caller still owns
+        // an alive lecture row, e.g. orphan-recovery flows).
         self.conn
             .query_row(
                 "SELECT c.user_id FROM lectures l \
                  JOIN courses c ON l.course_id = c.id \
-                 WHERE l.id = ?1",
+                 WHERE l.id = ?1 AND l.is_deleted = 0",
                 [lecture_id],
                 |r| r.get(0),
             )
@@ -1019,10 +1023,14 @@ impl Database {
     }
 
     /// 獲取科目
+    ///
+    /// cp75.20: filter soft-deleted rows. Deep-link / direct-id lookups
+    /// (course detail page, restore preview) must not surface trash.
+    /// The trash UI uses `list_deleted_courses` instead.
     pub fn get_course(&self, id: &str) -> SqlResult<Option<Course>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
-             FROM courses WHERE id = ?1",
+             FROM courses WHERE id = ?1 AND is_deleted = 0",
         )?;
 
         match stmt.query_row([id], |row| Course::try_from(row)) {
@@ -1148,9 +1156,13 @@ impl Database {
         // because `Lecture::try_from` reads is_deleted at index 10 and
         // video_path at index 11 — make sure the SELECT column order
         // matches that read order exactly).
+        //
+        // cp75.20: filter soft-deleted rows. Deep-link / direct-id
+        // lookups (lecture detail, summary fetch) must not surface
+        // trash. The trash UI uses `list_deleted_lectures` instead.
         let mut stmt = self.conn.prepare(
             "SELECT id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted, video_path
-             FROM lectures WHERE id = ?1",
+             FROM lectures WHERE id = ?1 AND is_deleted = 0",
         )?;
 
         match stmt.query_row([id], |row| Lecture::try_from(row)) {
@@ -1439,10 +1451,15 @@ impl Database {
     }
 
     /// 獲取筆記
+    ///
+    /// cp75.20: filter on the notes table's own `is_deleted` column.
+    /// `save_note` already mirrors the parent lecture's trash state
+    /// into note.is_deleted, so this single filter covers both
+    /// "note explicitly trashed" and "lecture cascade-trashed".
     pub fn get_note(&self, lecture_id: &str) -> SqlResult<Option<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT lecture_id, title, content, generated_at, is_deleted
-             FROM notes WHERE lecture_id = ?1",
+             FROM notes WHERE lecture_id = ?1 AND is_deleted = 0",
         )?;
 
         match stmt.query_row([lecture_id], |row| Note::try_from(row)) {
@@ -1933,9 +1950,11 @@ impl Database {
             bool,
         )>,
     > {
+        // cp75.20: filter soft-deleted sessions. Sidebar list / RAG
+        // history must not surface trashed sessions.
         let mut stmt = self.conn.prepare(
-            "SELECT id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted 
-             FROM chat_sessions WHERE user_id = ?1 ORDER BY updated_at DESC",
+            "SELECT id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted
+             FROM chat_sessions WHERE user_id = ?1 AND is_deleted = 0 ORDER BY updated_at DESC",
         )?;
         let sessions: Vec<_> = stmt
             .query_map([user_id], |row| {
