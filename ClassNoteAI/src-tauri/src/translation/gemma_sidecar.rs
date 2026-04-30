@@ -55,6 +55,23 @@ fn child_lock() -> &'static Mutex<Option<Child>> {
     CHILD.get_or_init(|| Mutex::new(None))
 }
 
+/// cp75.24 — spawn-critical-section serializer.
+///
+/// Distinct from [`CHILD`] so we can hold it across the "should-I-spawn"
+/// decision + the spawn syscall + storing the resulting `Child` handle
+/// without ever holding a `MutexGuard` across an `.await` point. The
+/// previous design read the child slot, made an async health probe, and
+/// only then locked + spawned — two concurrent `ensure_running` calls
+/// could both clear the dead-handle, both pass the probe, and both spawn
+/// a fresh `llama-server`, racing over the TCP port (1455 / 8080
+/// EADDRINUSE crash). With this lock the spawn decision is atomic w.r.t.
+/// other in-process callers.
+static SPAWN_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn spawn_lock() -> &'static Mutex<()> {
+    SPAWN_LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// True if a sidecar process is currently running under our supervision.
 /// Cheap probe; doesn't HTTP-check.
 pub fn is_running() -> bool {
@@ -262,45 +279,62 @@ pub enum BringUpResult {
     SpawnError,
 }
 
-/// Ensure a sidecar is healthy on `port`. Spawns one if needed.
+/// cp75.24 — outcome of the synchronous spawn-decision step.
 ///
-/// `model_path` must point at a `.gguf` model file readable by llama-server
-/// (e.g. `translategemma-4b_Q4_K_M.gguf`).
-/// `app_resource_dir` is the Tauri app resource directory (used for
-/// bundled-binary lookup); pass `None` to rely on dev/PATH fallbacks only.
-pub async fn ensure_running(
+/// Distinguishes "another in-process caller already raced ahead and
+/// spawned a child while we waited for the lock" (`AlreadySpawned`) from
+/// "we ourselves spawned" so the async caller can pick the right
+/// `BringUpResult`.
+enum SpawnDecision {
+    /// We spawned a fresh `Child`. Caller must `wait_for_health`.
+    JustSpawned,
+    /// A managed child was already alive when we acquired the lock —
+    /// another concurrent caller spawned it. Caller still needs to
+    /// `wait_for_health` (the child may not have finished startup yet)
+    /// but should report this as `AlreadyRunning` to the UI.
+    AlreadySpawned,
+    /// Binary couldn't be located.
+    BinaryNotFound,
+    /// `Command::spawn` failed.
+    SpawnError,
+}
+
+/// Synchronous spawn-critical section. Holds [`spawn_lock`] for the
+/// entire decision + spawn + handle-store window. **Must not call any
+/// `.await`** — `std::sync::MutexGuard` is `!Send` and tokio multi-thread
+/// runtime would refuse, but more importantly we want this section to
+/// run to completion atomically per in-process caller.
+fn try_spawn_under_lock(
     model_path: &str,
     port: u16,
-    app_resource_dir: Option<PathBuf>,
-) -> BringUpResult {
-    // 1. Already healthy? (dev started manually, or prior call kept it alive)
-    if probe_health(port).await {
-        return BringUpResult::AlreadyRunning;
+    app_resource_dir: Option<&PathBuf>,
+) -> SpawnDecision {
+    let _spawn_guard = spawn_lock().lock().unwrap_or_else(|p| p.into_inner());
+
+    // Re-check under lock: another caller may have spawned while we
+    // waited. `is_running` does its own try_wait + slot-clear, so a
+    // dead handle is reset to None and we'll respawn below.
+    if is_running() {
+        return SpawnDecision::AlreadySpawned;
     }
 
-    // 2. Don't spawn over an existing managed child that died — clear it first.
-    if !is_running() {
-        let mut guard = child_lock().lock().unwrap_or_else(|p| p.into_inner());
-        *guard = None;
-    }
-
-    // 3. Locate binary
-    let bin = match locate_binary(app_resource_dir.as_ref()) {
+    // Locate binary
+    let bin = match locate_binary(app_resource_dir) {
         Some(p) => p,
         None => {
             eprintln!(
                 "[gemma_sidecar] llama-server binary not found in any of: bundled, dev path, PATH"
             );
-            return BringUpResult::BinaryNotFound;
+            return SpawnDecision::BinaryNotFound;
         }
     };
 
-    // 4. Spawn. Capture llama-server's stderr to a file under the app
-    //    data dir so the FIRST thing we look at on a `BringUpResult::
-    //    Timeout` ticket is the actual sidecar log instead of "well it
-    //    didn't say anything". Prior behaviour was `Stdio::null()` —
-    //    every llama-server failure mode (CUDA OOM, GGUF mismatch,
-    //    port already bound, model file missing) was invisible.
+    // Spawn. Capture llama-server's stderr to a file under the app
+    // data dir so the FIRST thing we look at on a `BringUpResult::
+    // Timeout` ticket is the actual sidecar log instead of "well it
+    // didn't say anything". Prior behaviour was `Stdio::null()` —
+    // every llama-server failure mode (CUDA OOM, GGUF mismatch,
+    // port already bound, model file missing) was invisible.
     println!(
         "[gemma_sidecar] spawning {} on :{port} with model {}",
         bin.display(),
@@ -339,7 +373,7 @@ pub async fn ensure_running(
         Ok(c) => c,
         Err(e) => {
             eprintln!("[gemma_sidecar] spawn failed: {e}");
-            return BringUpResult::SpawnError;
+            return SpawnDecision::SpawnError;
         }
     };
 
@@ -348,10 +382,62 @@ pub async fn ensure_running(
         *guard = Some(child);
     }
 
-    // 5. Wait for /health
+    SpawnDecision::JustSpawned
+    // _spawn_guard dropped here — releases the spawn lock for the
+    // next concurrent caller, who will see `is_running() == true` and
+    // return `AlreadySpawned`.
+}
+
+/// Ensure a sidecar is healthy on `port`. Spawns one if needed.
+///
+/// `model_path` must point at a `.gguf` model file readable by llama-server
+/// (e.g. `translategemma-4b_Q4_K_M.gguf`).
+/// `app_resource_dir` is the Tauri app resource directory (used for
+/// bundled-binary lookup); pass `None` to rely on dev/PATH fallbacks only.
+///
+/// **cp75.24 concurrency:** the decision-and-spawn step runs under
+/// [`spawn_lock`] so two concurrent callers can't both clear the dead
+/// handle and both spawn. The async health probe runs OUTSIDE the lock
+/// (we can't hold a `std::sync::MutexGuard` across `.await`), but that's
+/// safe — the lock protects the only step that has a side-effect on the
+/// child slot.
+pub async fn ensure_running(
+    model_path: &str,
+    port: u16,
+    app_resource_dir: Option<PathBuf>,
+) -> BringUpResult {
+    // 1. Fast path — already healthy? (dev started manually, or prior
+    //    call kept it alive). Lock-free, async; safe even under
+    //    concurrent callers because at worst they all return
+    //    AlreadyRunning without spawning.
+    if probe_health(port).await {
+        return BringUpResult::AlreadyRunning;
+    }
+
+    // 2. Lock-protected spawn decision. Re-checks `is_running()` under
+    //    the lock so a racing caller can't double-spawn. Returns
+    //    synchronously; we await health below.
+    let decision = try_spawn_under_lock(model_path, port, app_resource_dir.as_ref());
+
+    match decision {
+        SpawnDecision::BinaryNotFound => return BringUpResult::BinaryNotFound,
+        SpawnDecision::SpawnError => return BringUpResult::SpawnError,
+        SpawnDecision::AlreadySpawned | SpawnDecision::JustSpawned => {
+            // Both paths still need to wait for /health — the racing
+            // caller's child may not have finished startup yet.
+        }
+    }
+
+    // 3. Wait for /health
     if wait_for_health(port).await {
         println!("[gemma_sidecar] sidecar ready on :{port}");
-        BringUpResult::Spawned
+        match decision {
+            SpawnDecision::JustSpawned => BringUpResult::Spawned,
+            SpawnDecision::AlreadySpawned => BringUpResult::AlreadyRunning,
+            // unreachable — early-returned above
+            SpawnDecision::BinaryNotFound => BringUpResult::BinaryNotFound,
+            SpawnDecision::SpawnError => BringUpResult::SpawnError,
+        }
     } else {
         eprintln!("[gemma_sidecar] /health timeout — killing sidecar");
         shutdown();
@@ -382,5 +468,108 @@ pub fn shutdown() {
         }
         let _ = child.wait();
         println!("[gemma_sidecar] sidecar shut down");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// cp75.24 — concurrency tests
+//
+// We don't spin up a real `llama-server` here (3 s startup, GPU init
+// surface, port collisions in CI all make that flaky as a unit test).
+// Instead we exercise the EXACT lock primitive `try_spawn_under_lock`
+// uses (`spawn_lock()`), with a counter standing in for the
+// "spawn child + store handle" side effect. If two concurrent threads
+// were able to both clear-and-respawn under the old design, the same
+// flaw would show up here as the counter advancing past `1` from the
+// inside of the critical section. With the lock the counter MUST be
+// observed strictly serially — exactly the property the production
+// code relies on to avoid the 1455/8080 EADDRINUSE crash.
+// ─────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod cp75_24_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// The same lock acquisition pattern used by `try_spawn_under_lock`,
+    /// but with a counter instead of a real child. If two threads ever
+    /// observe the same `snapshot` value (i.e. they were both inside
+    /// the critical section at the same time) the lock is broken.
+    fn locked_critical_section_increment(
+        counter: &AtomicUsize,
+        observed: &Arc<std::sync::Mutex<Vec<usize>>>,
+    ) {
+        let _g = spawn_lock().lock().unwrap_or_else(|p| p.into_inner());
+        // Read-modify-write inside the critical section. The sleep
+        // widens the race window so a missing lock would reliably show
+        // up rather than only on unlucky scheduling.
+        let snapshot = counter.load(Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(5));
+        counter.store(snapshot + 1, Ordering::SeqCst);
+        observed.lock().unwrap().push(snapshot);
+    }
+
+    #[test]
+    fn spawn_lock_serializes_concurrent_callers() {
+        // Reset is implicit — counter starts at 0 in this scope. The
+        // global `spawn_lock` may have been used by another test, but
+        // the lock's job is mutual exclusion of the critical section,
+        // not of state — using a fresh per-test counter is the right
+        // hygiene.
+        let counter = Arc::new(AtomicUsize::new(0));
+        let observed: Arc<std::sync::Mutex<Vec<usize>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let n_threads = 8;
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                let observed = Arc::clone(&observed);
+                thread::spawn(move || {
+                    locked_critical_section_increment(&counter, &observed);
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Every thread must have observed a UNIQUE snapshot — that's
+        // the proof of serialization. With a broken lock, two threads
+        // would both read `0`, both write `1`, and the final counter
+        // would be < n_threads (lost update).
+        let mut seen = observed.lock().unwrap().clone();
+        seen.sort();
+        let expected: Vec<usize> = (0..n_threads).collect();
+        assert_eq!(
+            seen, expected,
+            "spawn_lock failed to serialize: observed snapshots {:?}",
+            seen
+        );
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            n_threads,
+            "lost-update detected — lock didn't hold across read-modify-write"
+        );
+    }
+
+    #[test]
+    fn spawn_lock_recovers_from_poisoning() {
+        // Poison the lock from a panicking thread, then verify the
+        // production-code idiom `lock().unwrap_or_else(|p| p.into_inner())`
+        // still yields a usable guard. This mirrors what
+        // `try_spawn_under_lock` does after any prior caller panicked.
+        let panicked = thread::spawn(|| {
+            let _g = spawn_lock().lock().unwrap_or_else(|p| p.into_inner());
+            panic!("intentional poison for test");
+        })
+        .join();
+        assert!(panicked.is_err(), "panic should have propagated to join");
+
+        // Production idiom — must NOT panic even with poisoned lock.
+        let _g = spawn_lock().lock().unwrap_or_else(|p| p.into_inner());
+        // If we got here, the recovery path works.
     }
 }

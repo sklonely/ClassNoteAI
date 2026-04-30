@@ -559,8 +559,19 @@ async fn parakeet_download_model(
 
 /// Load (or swap) the Nemotron model. Different variant than what's
 /// currently loaded → drops the existing one first.
+///
+/// **cp75.24 — variant-switch safety:** refuses to swap models while a
+/// recording session is live. The engine's per-session state lives
+/// inside the active model (KV cache, step counter, sub-chunk PCM
+/// buffer); tearing it out mid-stream produces split transcripts at
+/// best and an unrecoverable session-id mismatch at worst. Surface a
+/// localized error so the UI can prompt the user to stop the recording
+/// first instead of silently producing a corrupt transcript.
 #[tauri::command]
 async fn parakeet_load_model(variant: String) -> Result<(), String> {
+    if asr::parakeet_engine::has_session() {
+        return Err("錄音進行中無法切換模型，請先停止錄音".to_string());
+    }
     let variant = variant_from_str(&variant)?;
     if !asr::parakeet_model::is_present(variant) {
         return Err(format!(
@@ -4019,6 +4030,49 @@ mod tests {
         assert!(
             err.contains("找不到"),
             "expected '找不到' in error string, got: {err}"
+        );
+    }
+
+    // ── cp75.24 — Parakeet variant-switch guard ────────────────────────
+    //
+    // `parakeet_load_model` must refuse mid-recording variant swaps.
+    // Without the guard, calling it during an active session calls
+    // `parakeet_engine::ensure_loaded`, which silently drops `active`
+    // → split transcript with no warning to the user. Lock the
+    // localized error contract here so the renderer (which surfaces
+    // the message verbatim in a toast) keeps working.
+
+    use crate::asr::parakeet_engine;
+    use crate::parakeet_load_model;
+
+    /// cp75.24 — variant-switch guard: refuses to swap models while a
+    /// recording session is live.
+    ///
+    /// We intentionally test ONLY the refusal branch. The "passes when
+    /// idle" branch falls through to `ensure_loaded`, which on a fresh
+    /// CI / dev box without a `.gguf` model on disk hits a download or
+    /// fs-walk path that hangs (60+ s) — wrong tool to verify guard
+    /// behaviour. The guard semantically gates BEFORE
+    /// `is_present` / `ensure_loaded`, so verifying refusal is enough
+    /// to prove the gate exists; the post-guard path is exercised by
+    /// integration tests in the renderer's e2e suite.
+    #[tokio::test]
+    async fn parakeet_load_model_refuses_during_active_session() {
+        // Force the engine into "session active" state without
+        // actually loading a model file (test seam — see
+        // `parakeet_engine::_test_force_session_active`).
+        parakeet_engine::_test_force_session_active(true);
+
+        let result = parakeet_load_model("int8".to_string()).await;
+
+        // ALWAYS reset before asserting so a panic here doesn't leak
+        // session state into later tests sharing the global engine.
+        parakeet_engine::_test_force_session_active(false);
+
+        let err = result.expect_err("should refuse variant switch during recording");
+        assert!(
+            err.contains("錄音進行中"),
+            "expected '錄音進行中' guard message, got: {err}"
         );
     }
 }
