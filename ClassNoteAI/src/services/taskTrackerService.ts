@@ -203,6 +203,19 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
     update(taskId: string, patch: Partial<TaskTrackerEntry>): void {
         const e = this.tasks.get(taskId);
         if (!e) return; // ignore unknown id (race-safe per contract)
+        // cp75.25 P1-A: drop late-arriving updates from a generator that
+        // didn't know its task was already terminated. Common case: the
+        // dedup logic in start() flips a sibling 'summarize' task to
+        // 'cancelled', but the underlying summarizeStream generator that's
+        // mid-yield calls update(oldTaskId, ...) on its next iteration
+        // and visually re-activates the cancelled row.
+        if (
+            e.status === 'cancelled' ||
+            e.status === 'failed' ||
+            e.status === 'done'
+        ) {
+            return;
+        }
         // Don't allow id / startedAt overrides — those are immutable
         // identity fields. Strip them out of the patch.
         const { id: _ignoreId, startedAt: _ignoreStart, ...safePatch } =

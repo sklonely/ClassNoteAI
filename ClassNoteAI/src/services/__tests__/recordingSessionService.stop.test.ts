@@ -127,6 +127,11 @@ vi.mock('../streaming/translationPipeline', () => ({
             });
         }),
         enqueue: vi.fn(),
+        // cp75.25 P1-B: recordingSessionService.pause/resume now drives
+        // these. Stub them so the existing pause/resume tests don't trip.
+        pause: vi.fn(),
+        resume: vi.fn(),
+        reset: vi.fn(),
     },
 }));
 

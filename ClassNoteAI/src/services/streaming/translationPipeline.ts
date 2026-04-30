@@ -63,6 +63,25 @@ class TranslationPipeline {
   private processing = false;
 
   /**
+   * cp75.25 P1-B: pause flag. When true, the drain loop refuses to
+   * dispatch new jobs from the queue — they accumulate (subject to the
+   * normal `maxQueueSize` cap) and resume picks them up on `resume()`.
+   *
+   * In-flight jobs are not aborted (we can't kill an HTTP request mid-
+   * call cleanly). Their results still emit on `subtitleStream`; the
+   * consumer (subtitleService) drops them by session_id mismatch when
+   * the user has moved to a new recording session.
+   */
+  private paused = false;
+  /**
+   * Promise that resolves when `resume()` is called. Lazily created on
+   * the first `pause()`; cleared on `resume()`. The drain loop awaits
+   * this when it sees `paused === true`.
+   */
+  private pauseGate: Promise<void> | null = null;
+  private pauseGateResolver: (() => void) | null = null;
+
+  /**
    * Hard cap on queued (not in-flight) translation jobs. If the
    * translator stalls (sidecar dies mid-lecture, llama-server hung) we
    * could otherwise grow `queue` unboundedly with one job per sentence
@@ -162,9 +181,63 @@ class TranslationPipeline {
    * Reset between recording sessions. No durable state to clear today
    * (no rolling context yet) — kept for forward compatibility so callers
    * don't have to start tracking a new lifecycle when context lands.
+   *
+   * cp75.25: also clears any pending pause state and drops queued (not
+   * in-flight) jobs. Without the queue drop, a paused session whose
+   * drain loop is awaiting the pauseGate would resume into the new
+   * session and dispatch stale translations.
    */
   reset(): void {
-    // intentionally empty
+    this.queue = [];
+    if (this.paused) {
+      this.paused = false;
+      if (this.pauseGateResolver) {
+        this.pauseGateResolver();
+      }
+      this.pauseGate = null;
+      this.pauseGateResolver = null;
+    }
+  }
+
+  /**
+   * cp75.25 P1-B: stop dispatching new translations from the queue.
+   * Idempotent — calling pause() multiple times without an intervening
+   * resume() is a single pause (state stays true; the gate isn't
+   * re-created).
+   *
+   * In-flight jobs (the one currently awaiting `translateRough`) finish
+   * their HTTP roundtrip and emit on subtitleStream as normal. Pause
+   * only stops *new* dispatch off the head of the queue.
+   */
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.pauseGate = new Promise<void>((resolve) => {
+      this.pauseGateResolver = resolve;
+    });
+  }
+
+  /**
+   * cp75.25 P1-B: resume dispatch. Idempotent — calling resume()
+   * without a prior pause() is a no-op.
+   *
+   * Wakes any drain loop currently awaiting the pause gate; if the
+   * loop has already exited (queue went empty during pause), the next
+   * enqueue() kicks off a fresh drain.
+   */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.pauseGateResolver) {
+      this.pauseGateResolver();
+    }
+    this.pauseGate = null;
+    this.pauseGateResolver = null;
+  }
+
+  /** Test-only: read current pause state. */
+  isPaused(): boolean {
+    return this.paused;
   }
 
   private async drain(): Promise<void> {
@@ -172,6 +245,14 @@ class TranslationPipeline {
     this.processing = true;
     try {
       while (this.queue.length > 0) {
+        // cp75.25 P1-B: gate dispatch on pause state. We re-check
+        // queue length after waking because resume() may have been
+        // followed immediately by reset() / a new session that
+        // emptied the queue.
+        if (this.paused && this.pauseGate) {
+          await this.pauseGate;
+          if (this.queue.length === 0) break;
+        }
         const job = this.queue.shift()!;
         await this.translateOne(job);
       }

@@ -371,6 +371,10 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         try {
             this.recorder?.pause();
             transcriptionService.pause();
+            // cp75.25 P1-B: also pause the translation pipeline so
+            // queued (not yet dispatched) translations don't keep
+            // arriving for ~10-15s after the user pressed pause.
+            translationPipeline.pause();
         } catch (err) {
             console.warn('[recordingSessionService] pause failed:', err);
         }
@@ -387,11 +391,42 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
 
     async resume(): Promise<void> {
         if (this.state.status !== 'paused') return;
+        // cp75.25 P1-C: surface AudioContext.resume() errors. The
+        // previous swallow (console.warn only) hid the case where
+        // the OS suspended the AudioContext (laptop lid closed,
+        // device sleep, etc.) — the user thought they were recording
+        // but no audio was captured for the rest of the session.
         try {
             await this.recorder?.resume();
             transcriptionService.resume();
+            // cp75.25 P1-B: lift the pause on the translation queue.
+            translationPipeline.resume();
         } catch (err) {
-            console.warn('[recordingSessionService] resume failed:', err);
+            // Surface to caller via toast, revert to paused state so
+            // the user can manually retry by stopping/starting again.
+            console.warn(
+                '[recordingSessionService] resume failed — surfacing toast:',
+                err,
+            );
+            try {
+                const toast = await this.toast();
+                toast.error(
+                    '錄音續錄失敗 — 麥克風 / 音訊裝置可能已斷開',
+                    '請手動重啟錄音',
+                );
+            } catch (toastErr) {
+                console.warn(
+                    '[recordingSessionService] resume toast emit failed:',
+                    toastErr,
+                );
+            }
+            // Stay in 'paused' so callers can retry / stop. Don't
+            // start the elapsed timer — we're not actually recording.
+            this.setState({
+                status: 'paused',
+                error: err instanceof Error ? err.message : String(err),
+            });
+            throw err;
         }
         // cp75.22 — fold the just-finished pause window into the
         // running paused-total so the elapsed-tick handler subtracts
