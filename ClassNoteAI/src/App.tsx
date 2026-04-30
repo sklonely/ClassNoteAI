@@ -10,6 +10,7 @@ import ConfirmDialog from "./components/ConfirmDialog";
 import AIChatWindow from "./components/AIChatWindow";
 import type { RecoverableSession } from "./services/recordingRecoveryService";
 import { storageService } from "./services/storageService";
+import { authService } from "./services/authService";
 import { setupService } from "./services/setupService";
 import { toastService } from "./services/toastService";
 import { confirmService } from "./services/confirmService";
@@ -124,6 +125,88 @@ export async function handleCloseRequest(
     // Let the toast paint before the window evaporates.
     await deps.sleep(600);
     await deps.win.close();
+}
+
+/**
+ * cp75.27 P1-F — App boot recovery → hard-delete sweep ordering.
+ *
+ * Pre-cp75.27 the orphan-recovery scan (1.5s after appState=ready) and
+ * the 30-day hard-delete sweep (5s after ready) ran on independent
+ * `setTimeout`s. Race window: a lecture flagged for crash recovery at
+ * 1.5s could ALSO match the `is_deleted = 1 AND deleted_at < cutoff`
+ * predicate at 5s, get physically deleted before the user could click
+ * "回復" in the recovery modal, then `finalize_recording` would crash
+ * with "lecture row not found" when the user finally hit OK.
+ *
+ * Fix: chain the two phases in a single async sequence — recovery scan
+ * runs first, hard-delete only fires once the scan completes (and only
+ * if the caller is still mounted). The 5s mark is replaced with a
+ * "scan done + small grace" delay; in practice that lands close to the
+ * old 5s anyway because the scan itself is ~3.5s of IPC.
+ *
+ * DI'd so we can unit-test the ordering without spinning the full App
+ * tree. The grace-period sleep is also injected (tests pass a
+ * synchronous resolver) so the suite doesn't actually wait.
+ */
+export interface BootRecoverySweepDeps {
+    /** Recovery scan + orphan cleanup. Must resolve before the sweep
+     *  fires, even if it errors — we still want trash GC to happen. */
+    runRecoveryScan: () => Promise<void>;
+    /** Hard-delete rows older than `days` for `userId`. Returns the
+     *  purged ids so the caller can toast. */
+    hardDelete: (days: number, userId: string) => Promise<string[]>;
+    /** Lookup the active user. */
+    getUserId: () => string;
+    /** Toast surface. Only `info` and `warning` paths are exercised. */
+    toast: {
+        info: (message: string, detail?: string) => void;
+    };
+    /** Injected for tests; production passes `(ms) => new Promise(...)`. */
+    sleep: (ms: number) => Promise<void>;
+    /** Cancellation guard — set to true in the effect cleanup so a fast
+     *  unmount (e.g. test teardown, login change) doesn't fire the
+     *  sweep against a torn-down App. */
+    isCancelled: () => boolean;
+    /** Grace period (ms) between scan completion and sweep. Defaults to
+     *  3500 in production so the boot toast queue (migration notice,
+     *  interrupted recording) lands first. */
+    sweepGraceMs?: number;
+}
+
+export async function runBootRecoveryThenSweep(
+    deps: BootRecoverySweepDeps,
+): Promise<void> {
+    // Phase 1: orphan-recovery scan. Errors are NOT fatal — we still
+    // want the GC to fire so the user's trash doesn't grow unboundedly
+    // just because the scan IPC happened to fail this boot.
+    try {
+        await deps.runRecoveryScan();
+    } catch (err) {
+        console.warn('[App] Crash-recovery scan failed (non-fatal):', err);
+    }
+    if (deps.isCancelled()) return;
+
+    // Phase 2: small grace period so any toast / modal triggered by the
+    // recovery scan paints before the GC toast lands on top of it.
+    const grace = deps.sweepGraceMs ?? 3500;
+    await deps.sleep(grace);
+    if (deps.isCancelled()) return;
+
+    // Phase 3: 30-day hard-delete sweep. cp75.6 — scoped to the active
+    // user_id so user B's login doesn't get blamed for purging user A's
+    // trash.
+    try {
+        const userId = deps.getUserId();
+        const ids = await deps.hardDelete(30, userId);
+        if (ids && ids.length > 0) {
+            deps.toast.info(
+                '已永久清除舊資料',
+                `${ids.length} 個 30 天以上的垃圾桶項目已清除`,
+            );
+        }
+    } catch (err) {
+        console.warn('[App] hard_delete_trashed_older_than failed:', err);
+    }
 }
 
 function App() {
@@ -324,62 +407,91 @@ function App() {
     return () => clearTimeout(t);
   }, [appState]);
 
-  // v0.5.2: crash-recovery scan on launch. If the app died mid-
-  // recording last session, there's a .pcm file on disk and a DB row
-  // stuck at status='recording'. We populate `recoverableSessions`
-  // state; `RecoveryPromptModal` renders a proper React UI when there
-  // are sessions to resolve. Cleanup of rows-without-pcm and pcm-
-  // without-rows happens silently.
+  // v0.5.2 + cp75.27: crash-recovery scan + 30-day hard-delete sweep,
+  // CHAINED. If the app died mid-recording last session, there's a .pcm
+  // file on disk and a DB row stuck at status='recording'. We populate
+  // `recoverableSessions` state; `RecoveryPromptModal` renders a proper
+  // React UI when there are sessions to resolve. Cleanup of
+  // rows-without-pcm and pcm-without-rows happens silently.
+  //
+  // cp75.27 P1-F — the hard-delete sweep used to run on its own 5s
+  // timer, racing the recovery scan. A lecture flagged for recovery at
+  // 1.5s but ALSO 30+ days into its `is_deleted = 1` window would get
+  // physically purged at 5s, leaving the recovery modal pointing at a
+  // ghost row. We now chain: scan → small grace → sweep, in
+  // `runBootRecoveryThenSweep`. The grace period replaces the old 5s
+  // mark and lets any "interrupted recording" toast paint before the
+  // GC toast lands on top.
   useEffect(() => {
-    const checkRecordingRecovery = async () => {
-      if (appState !== 'ready') return;
-      try {
-        const { recordingRecoveryService } = await import('./services/recordingRecoveryService');
-        const scan = await recordingRecoveryService.scan();
+    if (appState !== 'ready') return;
+    let cancelled = false;
 
-        if (scan.recoverable.length > 0) {
-          setRecoverableSessions(scan.recoverable);
-        }
+    const runRecoveryScan = async (): Promise<void> => {
+      const { recordingRecoveryService } = await import('./services/recordingRecoveryService');
+      const scan = await recordingRecoveryService.scan();
 
-        // Clean up any PCM orphans that have no lecture row — these are
-        // dead weight and the user has nothing to recover to.
-        for (const pcm of scan.pcmOrphansWithoutLecture) {
-          try {
-            await recordingRecoveryService.discardOrphanPcm(pcm.lectureId);
-          } catch (err) {
-            console.warn(`[App] Failed to clean orphan PCM ${pcm.lectureId}:`, err);
-          }
-        }
+      if (scan.recoverable.length > 0) {
+        setRecoverableSessions(scan.recoverable);
+      }
 
-        // And clean up lecture rows whose audio was never written to
-        // disk at all (pre-v0.5.2 sessions, or recordings that crashed
-        // before the first 5s flush): flip them to 'completed' silently
-        // rather than showing a "recover nothing" dialog.
-        for (const lec of scan.lectureOrphansWithoutPcm) {
-          try {
-            const { invoke } = await import('@tauri-apps/api/core');
-            await invoke('update_lecture_status', { id: lec.id, status: 'completed' });
-            console.log(`[App] Flipped zombie lecture ${lec.id} to completed (no audio on disk)`);
-          } catch (err) {
-            console.warn(`[App] Failed to reconcile zombie lecture ${lec.id}:`, err);
-          }
+      // Clean up any PCM orphans that have no lecture row — these are
+      // dead weight and the user has nothing to recover to.
+      for (const pcm of scan.pcmOrphansWithoutLecture) {
+        try {
+          await recordingRecoveryService.discardOrphanPcm(pcm.lectureId);
+        } catch (err) {
+          console.warn(`[App] Failed to clean orphan PCM ${pcm.lectureId}:`, err);
         }
+      }
 
-        const interruptedNotice = buildInterruptedRecordingNotice(scan.lectureOrphansWithoutPcm);
-        if (interruptedNotice) {
-          toastService.show({
-            ...interruptedNotice,
-            type: 'warning',
-            durationMs: 0,
-          });
+      // And clean up lecture rows whose audio was never written to
+      // disk at all (pre-v0.5.2 sessions, or recordings that crashed
+      // before the first 5s flush): flip them to 'completed' silently
+      // rather than showing a "recover nothing" dialog.
+      for (const lec of scan.lectureOrphansWithoutPcm) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('update_lecture_status', { id: lec.id, status: 'completed' });
+          console.log(`[App] Flipped zombie lecture ${lec.id} to completed (no audio on disk)`);
+        } catch (err) {
+          console.warn(`[App] Failed to reconcile zombie lecture ${lec.id}:`, err);
         }
-      } catch (err) {
-        console.warn('[App] Crash-recovery scan failed (non-fatal):', err);
+      }
+
+      const interruptedNotice = buildInterruptedRecordingNotice(scan.lectureOrphansWithoutPcm);
+      if (interruptedNotice) {
+        toastService.show({
+          ...interruptedNotice,
+          type: 'warning',
+          durationMs: 0,
+        });
       }
     };
-    // Fire after initial render settles so we don't block first paint.
-    const t = setTimeout(checkRecordingRecovery, 1500);
-    return () => clearTimeout(t);
+
+    // Initial 1.5s delay (legacy first-paint courtesy) before the
+    // chain kicks off. After that, runBootRecoveryThenSweep runs the
+    // scan, sleeps the grace period, then fires the 30-day GC.
+    const t = setTimeout(() => {
+      void runBootRecoveryThenSweep({
+        runRecoveryScan,
+        hardDelete: async (days, userId) => {
+          const { invoke } = await import('@tauri-apps/api/core');
+          return invoke<string[]>('hard_delete_trashed_older_than', {
+            days,
+            userId,
+          });
+        },
+        getUserId: () =>
+          authService.getUser()?.username || 'default_user',
+        toast: { info: toastService.info.bind(toastService) },
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        isCancelled: () => cancelled,
+      });
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [appState]);
 
   // S2.9 — restore persisted LLM tasks (summarize / index) from localStorage
@@ -393,39 +505,6 @@ function App() {
     const t = setTimeout(() => {
       void taskTrackerService.restoreFromPersistence();
     }, 2000);
-    return () => clearTimeout(t);
-  }, [appState]);
-
-  // Phase 7 S3.f-FE / W3 — boot-time trash-bin sweep. Hard-delete trashed
-  // rows whose deleted_at is older than 30 days; toast the lecture-id
-  // count so the user sees that "30 天後自動清空" is actually a thing.
-  // Stays silent when nothing was old enough to drop. Delayed 5s so the
-  // boot toast queue (migration / interruption notice) lands first.
-  useEffect(() => {
-    if (appState !== 'ready') return;
-    const t = setTimeout(async () => {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        const { authService } = await import('./services/authService');
-        // cp75.6 — pass userId so the boot sweep only purges THIS user's
-        // trash. Before this, sweep ran with no scope; user A's expired
-        // lecture would be physically deleted the moment user B logged
-        // in, with B getting the toast credit ("已永久清除 N 個").
-        const userId = authService.getUser()?.username || 'default_user';
-        const ids = await invoke<string[]>('hard_delete_trashed_older_than', {
-          days: 30,
-          userId,
-        });
-        if (ids && ids.length > 0) {
-          toastService.info(
-            '已永久清除舊資料',
-            `${ids.length} 個 30 天以上的垃圾桶項目已清除`,
-          );
-        }
-      } catch (err) {
-        console.warn('[App] hard_delete_trashed_older_than failed:', err);
-      }
-    }, 5000);
     return () => clearTimeout(t);
   }, [appState]);
 

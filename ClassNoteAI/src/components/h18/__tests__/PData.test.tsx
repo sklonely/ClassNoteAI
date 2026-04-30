@@ -109,6 +109,10 @@ function setupInvoke(opts: {
     lecturesError?: unknown;
     /** Optional restore_course return — count of restored lectures. */
     restoreCourseCount?: number;
+    /** cp75.27 — lectures still in trash AFTER restore_course runs.
+     *  Defaults to [] (success path). Tests for the warning toast
+     *  pass a non-empty list. */
+    remainingAfterRestore?: Lecture[];
 }) {
     return vi.spyOn(core, 'invoke').mockImplementation(
         async (cmd: string, _args?: unknown) => {
@@ -122,6 +126,12 @@ function setupInvoke(opts: {
             }
             if (cmd === 'restore_course') {
                 return (opts.restoreCourseCount ?? 0) as unknown as never;
+            }
+            if (cmd === 'list_trashed_lectures_in_course') {
+                // cp75.27 — frontend post-restore probe for stuck-in-trash
+                // lectures (independently soft-deleted before the course
+                // delete so they didn't pick up the cascade marker).
+                return (opts.remainingAfterRestore ?? []) as unknown as never;
             }
             if (cmd === 'restore_lecture') {
                 return null as unknown as never;
@@ -355,6 +365,163 @@ describe('PData · S3f trash bin', () => {
             const a = args as { id: string };
             expect(['lec-a', 'lec-b']).toContain(a.id);
         }
+    });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// cp75.27 P1-G — restore_course completeness UI
+//
+// `restore_course` only revives lectures whose `cascade_deleted_with`
+// matches the course id. Lectures that were INDEPENDENTLY trashed
+// before the course-level delete (cascade marker is NULL) stay in
+// the bin. Pre-cp75.27 the UI fired a success toast and the user got
+// confused about why some lectures didn't come back. We now probe
+// `list_trashed_lectures_in_course` after the restore and surface a
+// warning toast when anything's still stuck.
+// ════════════════════════════════════════════════════════════════════
+
+describe('PData · cp75.27 restore_course completeness', () => {
+    it('restore via lecture-confirm path: warning toast when lectures remain in trash', async () => {
+        const lec = makeLecture({
+            id: 'lec-cascaded',
+            title: 'Cascaded Lecture',
+            course_id: 'course-1',
+        });
+        const courseDead = makeCourse({ id: 'course-1', title: 'Dead Course' });
+        // After restore_course, one lecture is still in trash because
+        // it had been individually deleted before the course delete.
+        const remaining = makeLecture({
+            id: 'lec-orphan',
+            title: 'Independently Trashed',
+            course_id: 'course-1',
+        });
+        setupInvoke({
+            trashedLectures: [lec],
+            trashedCourses: [courseDead],
+            restoreCourseCount: 1,
+            remainingAfterRestore: [remaining],
+        });
+        mockConfirm.ask.mockResolvedValueOnce(true); // OK to restore
+
+        render(<PData />);
+        await flush();
+
+        // Click the lecture-row 還原 (last one — course row first).
+        const restoreBtns = screen.getAllByRole('button', { name: '還原' });
+        await act(async () => {
+            fireEvent.click(restoreBtns[restoreBtns.length - 1]);
+        });
+        await flush(8);
+
+        // Warning toast must fire (NOT the plain success toast).
+        expect(mockToast.warning).toHaveBeenCalledTimes(1);
+        const [title, detail] = mockToast.warning.mock.calls[0];
+        expect(title).toMatch(/還原/);
+        expect(title).toContain('1'); // count of remaining
+        expect(title).toMatch(/仍在垃圾桶/);
+        // Detail should explain how to recover the rest.
+        expect(detail).toMatch(/單獨/);
+
+        // Plain success toast must NOT fire — we'd be lying to the user.
+        expect(mockToast.success).not.toHaveBeenCalled();
+    });
+
+    it('restore via lecture-confirm path: success toast when nothing remains in trash', async () => {
+        const lec = makeLecture({
+            id: 'lec-cascaded',
+            title: 'Cascaded Lecture',
+            course_id: 'course-1',
+        });
+        const courseDead = makeCourse({ id: 'course-1', title: 'Dead Course' });
+        setupInvoke({
+            trashedLectures: [lec],
+            trashedCourses: [courseDead],
+            restoreCourseCount: 1,
+            remainingAfterRestore: [], // clean restore — no orphaned trash
+        });
+        mockConfirm.ask.mockResolvedValueOnce(true);
+
+        render(<PData />);
+        await flush();
+
+        const restoreBtns = screen.getAllByRole('button', { name: '還原' });
+        await act(async () => {
+            fireEvent.click(restoreBtns[restoreBtns.length - 1]);
+        });
+        await flush(8);
+
+        // The clean-restore path should fire the green success toast,
+        // not the warning toast.
+        expect(mockToast.success).toHaveBeenCalledTimes(1);
+        expect(mockToast.warning).not.toHaveBeenCalled();
+    });
+
+    it('restore_course handler probes list_trashed_lectures_in_course with the right course id', async () => {
+        const courseDead = makeCourse({ id: 'course-2', title: 'Course Two' });
+        const invokeSpy = setupInvoke({
+            trashedCourses: [courseDead],
+            restoreCourseCount: 0,
+            remainingAfterRestore: [],
+        });
+
+        render(<PData />);
+        await flush();
+
+        // Click the course-row 還原 button. With no lectures and one
+        // dead course, there should be exactly one 還原 button.
+        const restoreBtns = screen.getAllByRole('button', { name: '還原' });
+        await act(async () => {
+            fireEvent.click(restoreBtns[0]);
+        });
+        await flush(8);
+
+        const probe = invokeSpy.mock.calls.find(
+            ([cmd]) => cmd === 'list_trashed_lectures_in_course',
+        );
+        expect(probe).toBeTruthy();
+        expect(probe?.[1]).toEqual({
+            courseId: 'course-2',
+            userId: 'default_user',
+        });
+    });
+
+    it('restore_course handler tolerates list_trashed_lectures_in_course IPC failure', async () => {
+        // The probe is best-effort — if it fails, we still want the
+        // success path to fire so the user isn't left without any
+        // feedback.
+        const courseDead = makeCourse({ id: 'course-3', title: 'Course Three' });
+        vi.spyOn(core, 'invoke').mockImplementation(
+            async (cmd: string, _args?: unknown) => {
+                if (cmd === 'list_trashed_lectures') {
+                    return [] as unknown as never;
+                }
+                if (cmd === 'list_deleted_courses' || cmd === 'list_trashed_courses') {
+                    return [courseDead] as unknown as never;
+                }
+                if (cmd === 'restore_course') {
+                    return 0 as unknown as never;
+                }
+                if (cmd === 'list_trashed_lectures_in_course') {
+                    throw new Error('IPC down');
+                }
+                return null as unknown as never;
+            },
+        );
+
+        render(<PData />);
+        await flush();
+
+        const restoreBtns = screen.getAllByRole('button', { name: '還原' });
+        await act(async () => {
+            fireEvent.click(restoreBtns[0]);
+        });
+        await flush(8);
+
+        // Probe failure → fall back to success toast (remaining
+        // defaults to [] so we treat it as a clean restore). Don't
+        // throw, don't fire a confusing error toast.
+        expect(mockToast.success).toHaveBeenCalledTimes(1);
+        expect(mockToast.error).not.toHaveBeenCalled();
     });
 });
 

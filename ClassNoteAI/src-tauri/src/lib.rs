@@ -3142,6 +3142,7 @@ pub fn run() {
             delete_course_cascade,
             list_trashed_lectures,
             list_trashed_courses,
+            list_trashed_lectures_in_course,
             hard_delete_trashed_older_than,
             hard_delete_lectures_by_ids,
             // Sync Extensions (New)
@@ -3700,6 +3701,32 @@ async fn list_trashed_courses(
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     db.list_deleted_courses(&user)
         .map_err(|e| format!("列出垃圾桶課程失敗: {}", e))
+}
+
+/// cp75.27 P1-G — list every lecture still soft-deleted under a given
+/// course. Used by the Trash UI right after `restore_course` to figure
+/// out whether any lectures stayed in the bin (because they had been
+/// trashed individually before the course was deleted, so they never
+/// picked up the cascade marker).
+///
+/// Ownership-checked against `user_id` so callers can't peek into
+/// other accounts' trash. We resolve the course owner up front and
+/// reuse the same helper as the rest of the trash-bin commands.
+#[tauri::command]
+async fn list_trashed_lectures_in_course(
+    course_id: String,
+    user_id: Option<String>,
+) -> Result<Vec<storage::models::Lecture>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &course_id, &user)?;
+    db.find_trashed_lectures_in_course(&course_id)
+        .map_err(|e| format!("列出課程內垃圾桶課堂失敗: {}", e))
 }
 
 /// cp75.6 — Verify a lecture's owning course belongs to `user_id`.

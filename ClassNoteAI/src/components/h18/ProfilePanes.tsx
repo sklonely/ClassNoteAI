@@ -2693,9 +2693,9 @@ export function PData() {
                     userId: authService.getUser()?.username || 'default_user',
                 });
                 await loadTrash();
-                toastService.success(
-                    '已還原',
-                    `課程與 ${count ?? 0} 個課堂已還原`,
+                await reportRestoreCourseOutcome(
+                    lecture.course_id,
+                    count ?? 0,
                 );
                 window.dispatchEvent(
                     new CustomEvent('classnote-courses-changed'),
@@ -2732,15 +2732,65 @@ export function PData() {
                 userId: authService.getUser()?.username || 'default_user',
             });
             await loadTrash();
-            toastService.success(
-                '已還原',
-                `課程「${course.title}」與 ${count ?? 0} 個課堂已還原`,
+            await reportRestoreCourseOutcome(
+                course.id,
+                count ?? 0,
+                course.title,
             );
             window.dispatchEvent(new CustomEvent('classnote-courses-changed'));
         } catch (err) {
             toastService.error('還原失敗', String(err));
         } finally {
             setBusy(false);
+        }
+    };
+
+    /**
+     * cp75.27 P1-G — surface a warning toast (instead of the plain
+     * "課程已還原" success) when `restore_course` returned successfully
+     * but lectures that were INDEPENDENTLY trashed before the course
+     * delete remain in the bin. Pre-cp75.27 the user got a green toast
+     * and was confused about why some lectures didn't reappear.
+     *
+     * The Rust side (`list_trashed_lectures_in_course`) is the source
+     * of truth for "what's still in the bin under this course". We
+     * call it AFTER restore so the response reflects post-restore
+     * state — anything left is genuinely orphaned trash that needs a
+     * second, lecture-level restore action from the user.
+     */
+    const reportRestoreCourseOutcome = async (
+        courseId: string,
+        restoredCount: number,
+        courseTitle?: string,
+    ): Promise<void> => {
+        const userId = authService.getUser()?.username || 'default_user';
+        let remaining: Lecture[] = [];
+        try {
+            remaining = await invoke<Lecture[]>(
+                'list_trashed_lectures_in_course',
+                { courseId, userId },
+            );
+        } catch (err) {
+            // Don't block the success path on a query failure — the
+            // restore itself succeeded, the warning is best-effort.
+            console.warn(
+                '[PData] list_trashed_lectures_in_course failed:',
+                err,
+            );
+        }
+
+        if (remaining.length > 0) {
+            const titlePart = courseTitle ? `「${courseTitle}」` : '';
+            toastService.warning(
+                `課程${titlePart}已還原，但有 ${remaining.length} 堂課堂仍在垃圾桶`,
+                '這些課堂是先前單獨刪除的，需到「個人 → 資料 → 垃圾桶」單獨還原。',
+            );
+        } else {
+            const titlePart = courseTitle ? `「${courseTitle}」` : '';
+            toastService.success(
+                '已還原',
+                `課程${titlePart}與 ${restoredCount} 個課堂已還原`,
+            );
         }
     };
 

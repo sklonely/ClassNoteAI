@@ -1755,6 +1755,36 @@ impl Database {
         Ok(restored as i64)
     }
 
+    /// cp75.27 P1-G — list lectures still soft-deleted under a given
+    /// course id, regardless of why (cascaded vs. independently trashed).
+    ///
+    /// `restore_course` only resurrects rows whose `cascade_deleted_with`
+    /// matches the course id. Lectures that the user individually trashed
+    /// BEFORE the course delete (`cascade_deleted_with IS NULL` even
+    /// though `is_deleted = 1`) stay in the bin. The frontend uses this
+    /// helper to compare the post-restore lecture-trash count against the
+    /// `restore_course` return value, and surface a "still N lectures in
+    /// trash" warning when the user expected everything back.
+    ///
+    /// Returns rows in `updated_at DESC` order to match the trash-bin
+    /// list ordering.
+    pub fn find_trashed_lectures_in_course(
+        &self,
+        course_id: &str,
+    ) -> SqlResult<Vec<Lecture>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, status, \
+                    created_at, updated_at, is_deleted, video_path \
+             FROM lectures \
+             WHERE course_id = ?1 AND is_deleted = 1 \
+             ORDER BY updated_at DESC",
+        )?;
+        let lectures = stmt
+            .query_map([course_id], |row| Lecture::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(lectures)
+    }
+
     /// 還原已刪除的課堂 — guarded on parent course being alive.
     ///
     /// Phase 7 S3.f-RS-3: refuses to restore a lecture whose parent

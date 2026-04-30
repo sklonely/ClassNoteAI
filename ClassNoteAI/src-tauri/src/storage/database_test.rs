@@ -1050,6 +1050,107 @@ mod tests {
         );
     }
 
+    // ════════════════════════════════════════════════════════════════
+    // cp75.27 — App boot ordering + restore_course completeness (P1-G)
+    //
+    // restore_course's reverse-cascade only revives lectures whose
+    // `cascade_deleted_with` matches the course id. Lectures the user
+    // individually trashed BEFORE the course delete (cascade marker is
+    // NULL even though is_deleted = 1) stay in the bin. Pre-cp75.27 the
+    // UI surfaced a "課程已還原" success toast and hid the silently-
+    // remaining lectures. Frontend now needs a way to count the
+    // remaining trash for the course → this helper.
+    // ════════════════════════════════════════════════════════════════
+
+    /// cp75.27 P1-G — `restore_course` does NOT resurrect lectures that
+    /// were independently trashed before the course was deleted. (This
+    /// is the same invariant as `restore_course_brings_back_cascaded_lectures_only`
+    /// but kept here under the cp75.27 namespace for grep-ability and so
+    /// future regression hunters can find it under the cp number that
+    /// surfaced the UX bug.)
+    #[test]
+    fn cp75_27_restore_course_does_not_resurrect_independently_deleted_lectures() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        // l1 trashed independently — cascade marker stays NULL.
+        db.delete_lecture("l1").unwrap();
+        assert_eq!(lecture_cascade_marker(&db, "l1"), None);
+        // l2 picks up the cascade marker via the course-level delete.
+        db.delete_course("c1").unwrap();
+        assert_eq!(lecture_cascade_marker(&db, "l2").as_deref(), Some("c1"));
+
+        let restored = db
+            .restore_course("c1")
+            .expect("restore_course should succeed");
+
+        // Only l2 was resurrected.
+        assert_eq!(restored, 1, "only l2 (cascaded) should be restored");
+        assert_eq!(lecture_is_deleted(&db, "l2"), 0);
+        // l1 is STILL in the trash — that's the whole point.
+        assert_eq!(
+            lecture_is_deleted(&db, "l1"),
+            1,
+            "independently-trashed lecture must NOT be resurrected by restore_course",
+        );
+    }
+
+    /// cp75.27 P1-G — `find_trashed_lectures_in_course` returns the
+    /// lectures that stay in the bin after `restore_course` runs. This
+    /// is what powers the "still N lectures in trash" warning toast.
+    #[test]
+    fn cp75_27_query_remaining_trashed_lectures_in_course() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        db.delete_lecture("l1").unwrap();
+        db.delete_course("c1").unwrap();
+        db.restore_course("c1").unwrap();
+
+        let remaining = db
+            .find_trashed_lectures_in_course("c1")
+            .expect("find_trashed_lectures_in_course should succeed");
+
+        assert_eq!(
+            remaining.len(),
+            1,
+            "exactly one lecture should still be in trash (l1)",
+        );
+        assert_eq!(remaining[0].id, "l1");
+        assert!(
+            remaining[0].is_deleted,
+            "returned lecture must have is_deleted = true",
+        );
+    }
+
+    /// cp75.27 P1-G — when EVERY lecture in the course was cascade-trashed
+    /// (the "clean" restore case), `find_trashed_lectures_in_course`
+    /// returns an empty Vec so the UI knows to fire the success toast
+    /// (not the warning toast).
+    #[test]
+    fn cp75_27_no_remaining_trash_when_all_cascaded() {
+        let db = make_test_db();
+        seed_minimal(&db);
+        insert_lecture(&db, "l2", "c1");
+
+        // Both lectures alive → cascade-delete → restore. Nothing
+        // should stay in trash.
+        db.delete_course("c1").unwrap();
+        db.restore_course("c1").unwrap();
+
+        let remaining = db
+            .find_trashed_lectures_in_course("c1")
+            .expect("find_trashed_lectures_in_course should succeed");
+
+        assert!(
+            remaining.is_empty(),
+            "no lectures should remain in trash when all were cascade-restored; got {:?}",
+            remaining.iter().map(|l| &l.id).collect::<Vec<_>>(),
+        );
+    }
+
     /// cp75.21 · 2.3 — `find_subtitle_lecture` resolves the parent
     /// lecture_id off a subtitle row, so the verify helper can chain
     /// into `verify_lecture_ownership`. Missing → None.
