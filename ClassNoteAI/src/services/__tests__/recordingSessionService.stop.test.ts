@@ -84,11 +84,15 @@ vi.mock('../transcriptionService', () => ({
 // subtitleService — drives step-3 segment → Subtitle row mapping. Default
 // mock returns one segment so saveSubtitles has work to do.
 const subtitleSegments: unknown[] = [];
+// cp75.22 — track call order for clear vs. subscribe so tests can assert
+// the start-of-session clean-up happens BEFORE the subscriber hooks up.
+const subtitleCallOrder: string[] = [];
 vi.mock('../subtitleService', () => ({
     subtitleService: {
         getSegments: vi.fn(() => subtitleSegments),
         getCurrentText: vi.fn(() => ''),
         subscribe: vi.fn((cb: (s: unknown) => void) => {
+            subtitleCallOrder.push('subscribe');
             cb({
                 segments: [],
                 currentText: '',
@@ -97,6 +101,13 @@ vi.mock('../subtitleService', () => ({
                 lastUpdateTime: Date.now(),
             });
             return () => undefined;
+        }),
+        // cp75.22 — clear() wipes the underlying singleton segments
+        // array. recordingSessionService must call this on both session
+        // boundaries so the next start doesn't inherit the previous
+        // session's stale segments via the subscriber's first fire.
+        clear: vi.fn(() => {
+            subtitleCallOrder.push('clear');
         }),
     },
 }));
@@ -323,6 +334,7 @@ beforeEach(() => {
     globalSearchInvalidateThrows = false;
     summarizeShouldThrow = false;
     ragShouldThrow = false;
+    subtitleCallOrder.length = 0;
     mockRecorderInstance.finalizeToDisk = vi.fn(async (p: string) => p);
     mockRecorderInstance.start.mockClear();
     mockRecorderInstance.stop.mockClear();
@@ -1015,5 +1027,165 @@ describe('stop() · cp75.28 stamps lecture.duration', () => {
             .calls[0]?.[0] as { durationSec?: number } | undefined;
         expect(call).toBeDefined();
         expect(call?.durationSec).toBe(600);
+    });
+});
+
+// ─── cp75.22 · subtitle service cleanup on session boundary ─────────────
+//
+// Pre cp75.22 root cause (audit 3.1 + 3.2):
+//   _doStart() resets state.segments = [] AFTER attachSubtitleSubscriber()
+//   ran. The subscriber callback mirrors subtitleService.segments into
+//   state. subtitleService is a singleton and was never cleared between
+//   sessions, so the new session's first subscribe-fire arrived with the
+//   prior session's stale segments — flashed in the UI for one tick
+//   before the local state reset wiped them. Likewise, stop()'s
+//   cleanupListeners() unsubscribed but didn't clear the underlying
+//   global segments array, so the *next* start() inherited the leftover.
+//
+// Fix: clear() the subtitleService singleton on BOTH boundaries —
+// _doStart() before attachSubtitleSubscriber, and stop() after
+// cleanupListeners.
+
+describe('cp75.22 · subtitleService cleanup on session boundaries', () => {
+    it('start() clears subtitleService BEFORE attachSubtitleSubscriber', async () => {
+        const { subtitleService } = await import('../subtitleService');
+        await recordingSessionService.start('c', 'lecture-1');
+
+        // clear() was called.
+        expect(subtitleService.clear).toHaveBeenCalled();
+
+        // And it happened before the first subscribe — otherwise the
+        // subscriber's initial-state fire would carry stale segments.
+        const firstClearIdx = subtitleCallOrder.indexOf('clear');
+        const firstSubscribeIdx = subtitleCallOrder.indexOf('subscribe');
+        expect(firstClearIdx).toBeGreaterThanOrEqual(0);
+        expect(firstSubscribeIdx).toBeGreaterThanOrEqual(0);
+        expect(firstClearIdx).toBeLessThan(firstSubscribeIdx);
+    });
+
+    it('stop() clears subtitleService after cleanupListeners (so next start sees empty)', async () => {
+        const { subtitleService } = await import('../subtitleService');
+        await recordingSessionService.start('c', 'lecture-1');
+        (subtitleService.clear as ReturnType<typeof vi.fn>).mockClear();
+        await recordingSessionService.stop();
+        // Once stop has resolved, clear must have been called as part
+        // of the teardown so a future start doesn't inherit residue.
+        expect(subtitleService.clear).toHaveBeenCalled();
+    });
+
+    it('back-to-back start → stop → start: second start invokes clear() again', async () => {
+        const { subtitleService } = await import('../subtitleService');
+        await recordingSessionService.start('c', 'lecture-1');
+        await recordingSessionService.stop();
+        const callsAfterFirstCycle = (subtitleService.clear as ReturnType<typeof vi.fn>)
+            .mock.calls.length;
+        await recordingSessionService.start('c', 'lecture-2');
+        expect(
+            (subtitleService.clear as ReturnType<typeof vi.fn>).mock.calls.length,
+        ).toBeGreaterThan(callsAfterFirstCycle);
+    });
+});
+
+// ─── cp75.22 · pause/resume elapsed math ────────────────────────────────
+//
+// Pre cp75.22 root cause (audit 3.3):
+//   The elapsed-tick handler computed `elapsed = (Date.now() -
+//   sessionStartMs) / 1000` with no pause-duration accounting. Pause for
+//   5 minutes, resume → the running clock jumped 5 minutes the moment
+//   the timer restarted. The user perceives this as the recording
+//   "skipping ahead" by exactly the pause duration.
+//
+// Fix: track pauseStartedAtMs on pause(), accumulate pauseTotalMs on
+// resume(), subtract from wall-clock in the tick handler.
+
+describe('cp75.22 · pause/resume elapsed math', () => {
+    it('elapsed clock excludes pause duration', async () => {
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'l');
+
+        // Run for 60s.
+        vi.setSystemTime(t0 + 60_000);
+        vi.advanceTimersByTime(500); // tick once
+        const beforePause = recordingSessionService.getState().elapsed;
+        expect(beforePause).toBeGreaterThanOrEqual(60);
+        expect(beforePause).toBeLessThan(62);
+
+        // Pause for 60s.
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 120_000);
+
+        // Resume; another 30s passes.
+        await recordingSessionService.resume();
+        vi.setSystemTime(t0 + 150_000);
+        vi.advanceTimersByTime(500);
+
+        const after = recordingSessionService.getState().elapsed;
+        // Recording was live for 60s + 30s = 90s total. Wall clock
+        // shows 150s but pause excluded → ~90.  We allow ±2s tolerance
+        // for the 250ms tick interval plus the microtasks scattered
+        // through `_doStart` / `pause` / `resume`.
+        expect(after).toBeGreaterThanOrEqual(89);
+        expect(after).toBeLessThanOrEqual(92);
+        // Most importantly: it MUST NOT be ≥ 120, which would mean
+        // pause time was not subtracted at all (the pre-cp75.22 bug).
+        expect(after).toBeLessThan(120);
+    });
+
+    it('multiple pause/resume cycles correctly accumulate paused time', async () => {
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'l');
+
+        // Cycle 1: record 10s, pause 20s.
+        vi.setSystemTime(t0 + 10_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 30_000);
+        await recordingSessionService.resume();
+
+        // Cycle 2: record 10s, pause 30s.
+        vi.setSystemTime(t0 + 40_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 70_000);
+        await recordingSessionService.resume();
+
+        // Final stretch: 10 more seconds of recording.
+        vi.setSystemTime(t0 + 80_000);
+        vi.advanceTimersByTime(500);
+
+        const elapsed = recordingSessionService.getState().elapsed;
+        // Live recording stretches: 10 + 10 + 10 = 30s. Wall = 80s,
+        // total paused = 50s. Allow ±2s tolerance.
+        expect(elapsed).toBeGreaterThanOrEqual(29);
+        expect(elapsed).toBeLessThanOrEqual(32);
+        expect(elapsed).toBeLessThan(80);
+    });
+
+    it('start() resets paused-time accumulators (no carry-over between sessions)', async () => {
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'lecture-1');
+        vi.setSystemTime(t0 + 10_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 60_000);
+        await recordingSessionService.resume();
+        await recordingSessionService.stop();
+
+        // Second session — wall-clock origin is fresh; pause carry-over
+        // must not subtract from this session's elapsed.
+        const t1 = t0 + 100_000;
+        vi.setSystemTime(t1);
+        await recordingSessionService.start('c', 'lecture-2');
+        vi.setSystemTime(t1 + 30_000);
+        vi.advanceTimersByTime(500);
+
+        const elapsed = recordingSessionService.getState().elapsed;
+        // Second session ran 30s with no pauses; carry-over from
+        // session 1 (50s of pause) must NOT be subtracted here.
+        expect(elapsed).toBeGreaterThanOrEqual(29);
+        expect(elapsed).toBeLessThanOrEqual(32);
     });
 });

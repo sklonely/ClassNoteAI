@@ -125,6 +125,20 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
     private visibilityAttached = false;
 
     private recorder: AudioRecorder | null = null;
+
+    // cp75.22 — pause-aware elapsed accounting. The previous build
+    // computed `elapsed = (Date.now() - sessionStartMs) / 1000` with no
+    // adjustment for time spent paused, so resuming after a 5-minute
+    // pause made the running clock skip forward 5 minutes the moment
+    // the timer restarted. We now track the cumulative paused
+    // milliseconds plus the timestamp of the current pause (if any),
+    // and subtract the total in `startElapsedTimer`'s tick handler.
+    //
+    // Both fields are reset to their defaults inside `_doStart` so a
+    // second session does not inherit pause-time accumulated by the
+    // first.
+    private pauseStartedAtMs: number | null = null;
+    private totalPausedMs = 0;
     /** Lazy-imported handle to toastService. We avoid top-level import so
      *  test bundles that don't render toasts (most of them) skip pulling
      *  the React tree. */
@@ -203,6 +217,31 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         _opts?: StartRecordingOptions,
     ): Promise<void> {
         try {
+            // cp75.22 — wipe the subtitleService singleton's segment
+            // buffer BEFORE attaching the subscriber. The subscriber's
+            // first fire mirrors `subtitleService.segments` into our
+            // state.segments; if the previous session left segments in
+            // the singleton (cleanupListeners only unsubscribes, it does
+            // not clear), the new session would briefly flash the prior
+            // session's content in the UI before the local reset wiped
+            // it. Audit 3.1 + 3.2.
+            try {
+                subtitleService.clear();
+            } catch (err) {
+                console.warn(
+                    '[recordingSession] subtitleService.clear failed:',
+                    err,
+                );
+                // Non-fatal — degrades to "may flash old content for
+                // one frame", which is the pre-cp75.22 behaviour.
+            }
+
+            // cp75.22 — reset pause-time accumulators so the new
+            // session's elapsed counter does not subtract pause time
+            // accumulated by the previous session.
+            this.totalPausedMs = 0;
+            this.pauseStartedAtMs = null;
+
             // Pre-flight: subscribe to subtitleService BEFORE asking the
             // recorder for a track so the very first ASR sentence isn't
             // dropped on the floor.
@@ -335,6 +374,12 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         } catch (err) {
             console.warn('[recordingSessionService] pause failed:', err);
         }
+        // cp75.22 — record the pause start so `resume()` can add the
+        // pause window to `totalPausedMs`. Only set if we don't already
+        // have a pending pause (defensive against duplicate pauses).
+        if (this.pauseStartedAtMs === null) {
+            this.pauseStartedAtMs = Date.now();
+        }
         this.stopElapsedTimer();
         this.setState({ status: 'paused' });
         this.dispatch('pause');
@@ -347,6 +392,14 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             transcriptionService.resume();
         } catch (err) {
             console.warn('[recordingSessionService] resume failed:', err);
+        }
+        // cp75.22 — fold the just-finished pause window into the
+        // running paused-total so the elapsed-tick handler subtracts
+        // it from wall-clock. Without this, resuming caused the
+        // running clock to skip forward by exactly the pause duration.
+        if (this.pauseStartedAtMs !== null) {
+            this.totalPausedMs += Date.now() - this.pauseStartedAtMs;
+            this.pauseStartedAtMs = null;
         }
         this.startElapsedTimer();
         this.setState({ status: 'recording' });
@@ -1177,6 +1230,9 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         this.visibilityHidden = false;
         this.visibilityHiddenAt = null;
         this.storageCache = null;
+        // cp75.22 — pause-time accounting must not leak across resets.
+        this.pauseStartedAtMs = null;
+        this.totalPausedMs = 0;
         this.state = { ...INITIAL_STATE, segments: [] };
         // NOTE: subscribers Set is intentionally NOT cleared. Tests
         // that subscribe register their own cleanup; clearing here
@@ -1287,7 +1343,14 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         this.elapsedTimer = setInterval(() => {
             const t0 = this.state.sessionStartMs;
             if (typeof t0 !== 'number') return;
-            this.setState({ elapsed: Math.max(0, (Date.now() - t0) / 1000) });
+            // cp75.22 — pause-aware elapsed. wall = Date.now() - t0,
+            // live = wall − totalPausedMs. We never start the timer
+            // during `paused`, so pauseStartedAtMs is always null when
+            // this fires; the running pause window is captured in
+            // `resume()` before this resumes ticking.
+            const wallElapsed = Date.now() - t0;
+            const liveElapsed = wallElapsed - this.totalPausedMs;
+            this.setState({ elapsed: Math.max(0, liveElapsed / 1000) });
         }, ELAPSED_TICK_MS);
     }
 
@@ -1478,6 +1541,22 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         this.detachMicTrackListener();
         this.detachDeviceMonitor();
         this.detachVisibilityListener();
+        // cp75.22 — drop the subtitleService singleton's segment buffer
+        // after we have unsubscribed. Done here (rather than at the
+        // very end of stop()) so every cleanup path — happy 6-step
+        // pipeline, fatal step-2 abort, fatal step-3 abort, and the
+        // try/catch around _doStart — converges on a clean singleton.
+        // The next start() will also call clear() defensively, so this
+        // is double-belt-and-braces. Audit 3.2.
+        try {
+            subtitleService.clear();
+        } catch (err) {
+            console.warn(
+                '[recordingSession] subtitleService.clear during cleanup failed:',
+                err,
+            );
+            // Non-fatal — `_doStart` clear is the second line of defense.
+        }
     }
 
     // ─── TEST-ONLY helpers (used by recordingSessionService.test.ts) ───

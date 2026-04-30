@@ -104,6 +104,9 @@ vi.mock('../subtitleService', () => ({
             });
             return () => undefined;
         }),
+        // cp75.22 — recordingSessionService now calls clear() on session
+        // boundaries. No-op stub here so the existing tests keep passing.
+        clear: vi.fn(),
     },
 }));
 
