@@ -22,6 +22,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FileText } from 'lucide-react';
 import { convertFileSrc } from '@tauri-apps/api/core';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeSanitize from 'rehype-sanitize';
 import { storageService } from '../../services/storageService';
 import { resolveOrRecoverAudioPath } from '../../services/audioPathService';
 import type { Course, Lecture, Note, Subtitle, Section } from '../../types';
@@ -1256,7 +1259,14 @@ export default function H18ReviewPage({
                                 </div>
                             )}
                             {note?.summary ? (
-                                <div className={s.summaryBox}>{note.summary}</div>
+                                <div className={s.summaryBox}>
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        rehypePlugins={[rehypeSanitize]}
+                                    >
+                                        {note.summary}
+                                    </ReactMarkdown>
+                                </div>
                             ) : (
                                 <div className={s.tabEmpty}>
                                     尚未生成 AI 摘要。
