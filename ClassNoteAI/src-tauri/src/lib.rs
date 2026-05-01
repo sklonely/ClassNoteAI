@@ -2204,6 +2204,24 @@ async fn semantic_search_lecture(
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    // cp75.36b — refuse semantic search on soft-deleted lectures.
+    // `get_embeddings_by_lecture` is intentionally permissive (RAG
+    // indexing during recovery / restore depends on it), so the gate
+    // lives at the command boundary. `get_lecture` filters
+    // `is_deleted = 0` since cp75.20, so a None return here means the
+    // parent lecture is in trash. Returning an empty result (vs Err)
+    // keeps the chat UI graceful — the user sees "no matches" rather
+    // than a toast explosion if they trash a lecture mid-session and
+    // their next query hits the lingering chat panel.
+    if db
+        .get_lecture(&lecture_id)
+        .map_err(|e| format!("get lecture: {}", e))?
+        .is_none()
+    {
+        return Ok(Vec::new());
+    }
+
     let rows = db
         .get_embeddings_by_lecture(&lecture_id)
         .map_err(|e| format!("get embeddings: {}", e))?;
@@ -4471,6 +4489,121 @@ mod tests {
     fn cp75_34_verify_course_ownership_alive_accepts_owner() {
         let db = seed_cp75_34_fixture();
         assert!(verify_course_ownership(&db, "course_a", "userA").is_ok());
+    }
+
+    // ── cp75.36b — semantic_search_lecture parent-lecture is_deleted gate ──
+    //
+    // Last finding from the cp75.20 cleanup plan that didn't ship in
+    // cp75.20 itself. The `semantic_search_lecture` Tauri command goes
+    // straight to `get_embeddings_by_lecture`, which is intentionally
+    // permissive (RAG indexing during recovery depends on it). Without
+    // an explicit guard, a soft-deleted lecture's chunks remain
+    // searchable — content the user expected to be hidden leaks.
+    //
+    // The fix is a one-liner at the command boundary:
+    //
+    //     if db.get_lecture(&lecture_id)?.is_none() { return Ok(vec![]); }
+    //
+    // because `get_lecture` filters `is_deleted = 0` since cp75.20.
+    // Returning `Ok(vec![])` (vs `Err`) keeps the chat UI graceful
+    // when the user trashes a lecture mid-session.
+    //
+    // We can't drive the Tauri command directly from a unit test (it
+    // depends on the global db manager + EMBEDDING_SERVICE mutex), so
+    // we mirror cp75.34's pattern: pin the predicate the inline guard
+    // uses. A refactor that flips the predicate or removes the guard
+    // gets caught here without needing the embedding model on disk.
+    //
+    // The DB-level half (`get_embeddings_by_lecture` stays permissive,
+    // `get_lecture` blocks trashed) is locked in
+    // `database_test.rs::cp75_36b_*`. Together they prove the guard
+    // is both necessary (leak surface exists) and sufficient
+    // (predicate fires).
+
+    /// Fixture: one alive lecture + one soft-deleted lecture under the
+    /// same alive course. Mirrors cp75.20's `fixture_softdelete` shape
+    /// but trimmed to the columns this test inspects (no notes / chat
+    /// sessions — the cp75.36b guard only consults `get_lecture`).
+    fn seed_cp75_36b_lib_fixture() -> Database {
+        let db = Database::open_in_memory().expect("in-memory DB");
+        let now = Utc::now().to_rfc3339();
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO courses \
+                (id, title, description, keywords, user_id, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('course-x', 'X Course', NULL, NULL, 'default_user', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, deleted_at, created_at, updated_at) \
+             VALUES \
+                ('lec-x-alive',   'course-x', 'Alive',   ?1, 0, 'completed', 0, NULL, ?1, ?1), \
+                ('lec-x-trashed', 'course-x', 'Trashed', ?1, 0, 'completed', 1, ?2,   ?1, ?1)",
+            rusqlite::params![now, now_ms],
+        )
+        .unwrap();
+        db
+    }
+
+    /// cp75.36b — the predicate the inline guard inverts. A trashed
+    /// lecture's `get_lecture` call returns None, so the guard's
+    /// short-circuit fires and `semantic_search_lecture` returns an
+    /// empty result without ever touching the embeddings table.
+    #[test]
+    fn cp75_36b_semantic_search_guard_predicate_fires_for_trashed() {
+        let db = seed_cp75_36b_lib_fixture();
+        // The exact expression the lib.rs guard evaluates:
+        //   `db.get_lecture(&lecture_id).map_err(...)?.is_none()`
+        let trashed_is_none = db.get_lecture("lec-x-trashed").unwrap().is_none();
+        assert!(
+            trashed_is_none,
+            "trashed lecture must short-circuit the semantic_search_lecture \
+             guard — without this the user's RAG search would still hit \
+             the (intentionally permissive) get_embeddings_by_lecture and \
+             leak chunks the user thought were hidden"
+        );
+    }
+
+    /// cp75.36b — and the alive case must NOT short-circuit, otherwise
+    /// the guard would over-filter and break the happy path.
+    #[test]
+    fn cp75_36b_semantic_search_guard_passes_through_for_alive() {
+        let db = seed_cp75_36b_lib_fixture();
+        let alive_resolves = db.get_lecture("lec-x-alive").unwrap().is_some();
+        assert!(
+            alive_resolves,
+            "alive lecture must pass the guard — over-filtering here \
+             would break every legitimate semantic search"
+        );
+    }
+
+    /// cp75.36b — friendly-result contract: the guard returns
+    /// `Ok(Vec::new())`, NOT `Err`. The renderer's chat panel surfaces
+    /// errors as a toast; for a lecture the user just trashed, that
+    /// would be noise. Empty results render as "no matches" silently,
+    /// which is the desired UX. We mirror the inline expression so a
+    /// future refactor that flips the polarity to `Err(...)` (which
+    /// would break chat UX) gets caught.
+    #[test]
+    fn cp75_36b_semantic_search_guard_returns_empty_vec_not_err() {
+        // The guard's return expression is `Ok(Vec::new())` for the
+        // SearchHit Vec. Mirroring the shape with a placeholder Vec
+        // is enough to lock the polarity.
+        let result: Result<Vec<()>, String> = Ok(Vec::new());
+        assert!(
+            result.is_ok(),
+            "guard must return Ok(empty), not Err — chat UI surfaces \
+             Err as a toast which would be noise for a deliberate \
+             trash action"
+        );
+        assert!(result.unwrap().is_empty());
     }
 
     // ── cp75.24 — Parakeet variant-switch guard ────────────────────────

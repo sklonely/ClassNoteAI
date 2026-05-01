@@ -993,6 +993,111 @@ mod tests {
         assert_eq!(missing, None);
     }
 
+    // ── cp75.36b — semantic_search_lecture parent-lecture is_deleted gate ──
+    //
+    // The last finding from the cp75.20 cleanup plan: the
+    // `semantic_search_lecture` Tauri command bypasses the cp75.20
+    // soft-delete gate because it goes straight to
+    // `get_embeddings_by_lecture`, which is intentionally permissive
+    // (RAG indexing during recovery / restore needs to see the rows).
+    // The fix lives at the command boundary in `lib.rs`: re-check
+    // `get_lecture(lecture_id)` (alive-only since cp75.20) and bail with
+    // an empty result when the parent is in trash.
+    //
+    // These tests pin the two halves of that invariant at the DB layer
+    // so a future refactor that flips either side gets caught:
+    //   1. `get_embeddings_by_lecture` MUST stay permissive (it is the
+    //      surface that leaks if the lib.rs guard is removed — locking
+    //      it here makes the leak visible to tests).
+    //   2. `get_lecture` MUST stay alive-only (it is the predicate the
+    //      lib.rs guard depends on; cp75.20 already covers this but we
+    //      re-pin it in this namespace so the cp75.36b story is
+    //      self-contained).
+
+    /// Helper: seed an embedding row for the given lecture id. Reuses
+    /// the cp75.20 `fixture_softdelete` lectures — both alive and
+    /// deleted ids exist there, so we can prove the leak with a single
+    /// fixture.
+    fn seed_cp75_36b_embedding(db: &Database, id: &str, lecture_id: &str) {
+        let now = Utc::now().to_rfc3339();
+        // Minimal embedding: a single f32 chunk, source_type "ocr".
+        db.save_embedding(
+            id,
+            lecture_id,
+            "chunk text for cp75.36b",
+            &[0.1f32, 0.2, 0.3],
+            "ocr",
+            0,
+            None,
+            &now,
+        )
+        .expect("save_embedding seed failed");
+    }
+
+    /// 36b.1 — Embeddings for a soft-deleted lecture are STILL readable
+    /// via the raw DB API. This is by design (RAG indexing needs it),
+    /// and pinning it here makes the leak surface explicit so the
+    /// command-boundary fix can't be silently undone by deciding "we
+    /// should filter at the SQL level after all".
+    #[test]
+    fn cp75_36b_get_embeddings_by_lecture_remains_permissive_for_deleted() {
+        let db = fixture_softdelete();
+        seed_cp75_36b_embedding(&db, "emb-deleted-1", "lec-deleted-under-alive");
+        let rows = db
+            .get_embeddings_by_lecture("lec-deleted-under-alive")
+            .unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "get_embeddings_by_lecture must stay permissive — RAG \
+             indexing during recovery / restore depends on it. The \
+             trash gate lives at the semantic_search_lecture command \
+             boundary, not here."
+        );
+        assert_eq!(rows[0].lecture_id, "lec-deleted-under-alive");
+    }
+
+    /// 36b.2 — `get_lecture` returns None for the same trashed id. This
+    /// is the predicate the lib.rs guard inverts: when get_lecture is
+    /// None, semantic_search_lecture must return an empty result.
+    /// Together with 36b.1 this proves the guard is BOTH necessary
+    /// (because embeddings still exist) AND sufficient (because the
+    /// guard's predicate fires).
+    #[test]
+    fn cp75_36b_get_lecture_blocks_trashed_for_semantic_search_guard() {
+        let db = fixture_softdelete();
+        seed_cp75_36b_embedding(&db, "emb-deleted-2", "lec-deleted-under-alive");
+
+        // The lib.rs guard checks `db.get_lecture(&lecture_id).is_none()`
+        // and short-circuits with Ok(Vec::new()). Pin that predicate.
+        assert!(
+            db.get_lecture("lec-deleted-under-alive").unwrap().is_none(),
+            "soft-deleted lecture must be invisible to get_lecture so \
+             the semantic_search_lecture command-boundary guard \
+             returns an empty result"
+        );
+
+        // Sanity: alive lecture in the same fixture still resolves, so
+        // the guard does NOT degrade alive-lecture search.
+        assert!(
+            db.get_lecture("lec-alive").unwrap().is_some(),
+            "alive lecture must still be reachable — guard must not \
+             over-filter and break the happy path"
+        );
+    }
+
+    /// 36b.3 — Sanity: an alive lecture's embeddings round-trip
+    /// normally (regression guard for the happy path).
+    #[test]
+    fn cp75_36b_semantic_search_works_for_alive_lecture() {
+        let db = fixture_softdelete();
+        seed_cp75_36b_embedding(&db, "emb-alive-1", "lec-alive");
+        let rows = db.get_embeddings_by_lecture("lec-alive").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].lecture_id, "lec-alive");
+        assert!(db.get_lecture("lec-alive").unwrap().is_some());
+    }
+
     // ── cp75.21 — Cross-user write protection ───────────────────────────
     //
     // P0 ownership gaps closed in cp75.21:
