@@ -451,6 +451,20 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             return;
         }
 
+        // cp75.35 (Audit 1) — fold any pending pause window into
+        // totalPausedMs BEFORE stopping the elapsed timer. If the user
+        // clicks 停止 while in `paused`, pauseStartedAtMs is non-null
+        // and would never be folded otherwise (resume() is what normally
+        // does the fold). Without this, anything that recomputes
+        // elapsed from `(now - sessionStart - totalPausedMs) / 1000`
+        // post-stop would include the pause window as live recording
+        // time, and the saved lecture's elapsed-at-stop snapshot would
+        // drift from wall-clock instead of recording-time semantics.
+        if (this.pauseStartedAtMs !== null) {
+            this.totalPausedMs += Date.now() - this.pauseStartedAtMs;
+            this.pauseStartedAtMs = null;
+        }
+
         const lectureId = this.state.lectureId;
         const courseId = this.state.courseId;
         if (!lectureId || !courseId) {
@@ -822,6 +836,46 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
         taskId: string,
         lectureId: string,
     ): Promise<void> {
+        // cp75.35 (Audit 8) — share one AbortController across all 4
+        // parallel LLM calls. cp75.14's dedup logic in taskTrackerService
+        // matches by (kind, lectureId); cp75.32 fanned out summarize +
+        // segmentSections + generateQA + extractActionItems into 4
+        // independent promises that share THIS task entry. Without the
+        // controller, cancelling the task (via dedup or user action)
+        // only flips the task's status — the 4 underlying promises keep
+        // running and racing whatever fresh tasks the supersedor
+        // launched.
+        //
+        // We subscribe to taskTrackerService and abort the controller
+        // when this task transitions to `cancelled` or `failed`. The
+        // signal is threaded into all 4 tasks.ts call sites; tasks.ts
+        // already supports `signal` and propagates AbortError.
+        const ac = new AbortController();
+        const offTaskTrackerSub = taskTrackerService.subscribe((tasks) => {
+            const me = tasks.find((t) => t.id === taskId);
+            if (!me) return;
+            // ac.abort() is idempotent — repeat calls on an already-
+            // aborted controller are a no-op, so no need to pre-check.
+            if (me.status === 'cancelled' || me.status === 'failed') {
+                ac.abort();
+            }
+        });
+        try {
+            return await this._runBackgroundSummaryInner(
+                taskId,
+                lectureId,
+                ac.signal,
+            );
+        } finally {
+            offTaskTrackerSub();
+        }
+    }
+
+    private async _runBackgroundSummaryInner(
+        taskId: string,
+        lectureId: string,
+        signal: AbortSignal,
+    ): Promise<void> {
         try {
             const storage = await this.storage();
             const subs = await storage
@@ -978,6 +1032,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                         transcript: transcriptWithTs,
                         language: summaryLang,
                         durationSec: lectureDurationSec,
+                        signal,
                     });
                 } catch (err) {
                     console.warn(
@@ -1001,6 +1056,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                     return await generateQA({
                         transcript: transcriptWithTs,
                         language: summaryLang,
+                        signal,
                     });
                 } catch (err) {
                     console.warn(
@@ -1017,6 +1073,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
                         transcript: transcriptWithTs,
                         language: summaryLang,
                         durationSec: lectureDurationSec,
+                        signal,
                     });
                 } catch (err) {
                     console.warn(
@@ -1030,6 +1087,7 @@ class RecordingSessionServiceImpl implements RecordingSessionService {
             for await (const event of summarizeStream({
                 content: text,
                 language: summaryLang,
+                signal,
             })) {
                 if (event.phase === 'map-start') {
                     mapTotal = event.sectionCount ?? 0;

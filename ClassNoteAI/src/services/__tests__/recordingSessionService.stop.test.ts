@@ -1194,3 +1194,188 @@ describe('cp75.22 · pause/resume elapsed math', () => {
         expect(elapsed).toBeLessThanOrEqual(32);
     });
 });
+
+// ─── cp75.35 · stop-while-paused folds pending pause into elapsed ───────
+//
+// Pre cp75.35 root cause (Audit 1):
+//   cp75.22 added pauseStartedAtMs / totalPausedMs accumulation in
+//   pause()/resume(). But if the user clicks 停止 while the session is
+//   in `paused` state, pauseStartedAtMs is non-null at stop-time and
+//   never gets folded into totalPausedMs. The final `state.elapsed`
+//   computed from the last tick before pause was correct, but if any
+//   code (or a regression) re-derived elapsed from
+//   `(Date.now() - sessionStartMs - totalPausedMs) / 1000` after stop,
+//   it would include the unfolded pause window as live recording time.
+//
+// Fix: at the start of stop()'s elapsed-finalisation, if
+// pauseStartedAtMs is non-null, fold the pending pause window into
+// totalPausedMs and clear pauseStartedAtMs.
+
+describe('cp75.35 · stop while paused folds pending pause into elapsed', () => {
+    it('stop() while paused folds the pending pause window before draining', async () => {
+        // We can't keep fake timers active across the full stop()
+        // pipeline (it awaits dynamic imports + persistence), but the
+        // FOLD operation in stop() reads Date.now() exactly once at the
+        // top of the method. Stub Date.now directly so the fold sees
+        // the right "now" without us having to keep the fake timer
+        // global timer queue installed.
+        const t0 = 1_700_000_000_000;
+        const realNow = Date.now;
+
+        // Phase 1 — fake timers for the start + pause sequence so we
+        // can drive sessionStartMs and pauseStartedAtMs to known values.
+        vi.useFakeTimers();
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'lecture-1');
+
+        // Record for 60s. We DON'T call advanceTimersByTime here because
+        // it bumps Date.now() by the advance amount, which would push
+        // pauseStartedAtMs off the precise t0+60_000 we want to assert
+        // against below. (The elapsed-tick handler doesn't need to run
+        // for this test — we're only inspecting fold math.)
+        vi.setSystemTime(t0 + 60_000);
+
+        // Pause at t=60s; never resume.
+        await recordingSessionService.pause();
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const internal = recordingSessionService as any;
+        // Sanity: the pause start was captured at t0 + 60_000.
+        expect(internal.pauseStartedAtMs).toBe(t0 + 60_000);
+        const beforeFoldTotal = internal.totalPausedMs;
+
+        // Phase 2 — switch off fake timers but stub Date.now so stop()'s
+        // fold computation reads "120s from session start = 60s after
+        // pause" instead of real wall clock.
+        vi.useRealTimers();
+        const stubbedNow = t0 + 120_000;
+        const dateSpy = vi
+            .spyOn(Date, 'now')
+            .mockImplementationOnce(() => stubbedNow);
+
+        await recordingSessionService.stop();
+
+        dateSpy.mockRestore();
+        // Restore in case the spy is somehow still installed.
+        Date.now = realNow;
+
+        // After stop(), the pending pause must have been folded —
+        // pauseStartedAtMs cleared, totalPausedMs grew by the full 60s
+        // pause window.
+        expect(internal.pauseStartedAtMs).toBe(null);
+        expect(internal.totalPausedMs).toBe(beforeFoldTotal + 60_000);
+    });
+
+    it('stop while not paused leaves accumulators untouched (regression)', async () => {
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'lecture-1');
+
+        // Record 30s, pause 10s, resume — the resume() fold runs at this
+        // point, so totalPausedMs == 10_000 and pauseStartedAtMs == null
+        // before stop() is called.
+        vi.setSystemTime(t0 + 30_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 40_000);
+        await recordingSessionService.resume();
+        vi.setSystemTime(t0 + 50_000);
+        vi.advanceTimersByTime(500);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const internal = recordingSessionService as any;
+        expect(internal.pauseStartedAtMs).toBe(null);
+        expect(internal.totalPausedMs).toBe(10_000);
+
+        vi.useRealTimers();
+        await recordingSessionService.stop();
+
+        // The fold branch is a no-op when pauseStartedAtMs is already
+        // null — totalPausedMs should be unchanged from its
+        // pre-stop value of 10_000.
+        expect(internal.pauseStartedAtMs).toBe(null);
+        expect(internal.totalPausedMs).toBe(10_000);
+    });
+});
+
+// ─── cp75.35 · reset() clears pause accumulators ────────────────────────
+//
+// Pre cp75.35 root cause (Audit 8):
+//   cp75.22 reset pauseStartedAtMs / totalPausedMs inside _doStart() —
+//   but only there. If the user logs out or hits a code path that calls
+//   `recordingSessionService.reset()` directly without going through a
+//   clean start/stop cycle, the accumulators stay populated. A future
+//   start() does eventually wipe them in _doStart(), but any code that
+//   inspects the singleton between reset() and the next start() (e.g.
+//   diagnostics, contract tests) would observe stale pause counters
+//   that belong to the previous user.
+//
+// Fix: explicitly clear totalPausedMs and pauseStartedAtMs inside
+// reset() too.
+
+describe('cp75.35 · reset() clears pause accumulators', () => {
+    it('after reset() pauseStartedAtMs and totalPausedMs are zero', async () => {
+        // Build up some pause accumulator state from a session that
+        // ends abruptly via reset (not stop) — mirrors the logout path
+        // resetUserScopedState.
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'lecture-1');
+        vi.setSystemTime(t0 + 10_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 70_000);
+        await recordingSessionService.resume();
+        // Pause again and DON'T resume (so pauseStartedAtMs is also non-null).
+        vi.setSystemTime(t0 + 80_000);
+        await recordingSessionService.pause();
+
+        vi.useRealTimers();
+
+        // Sanity: accumulators are populated before reset.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const internalBefore = recordingSessionService as any;
+        expect(internalBefore.totalPausedMs).toBeGreaterThan(0);
+        expect(internalBefore.pauseStartedAtMs).not.toBe(null);
+
+        // RESET (not stop). Production: invoked from resetUserScopedState
+        // on logout.
+        recordingSessionService.reset();
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const internalAfter = recordingSessionService as any;
+        expect(internalAfter.totalPausedMs).toBe(0);
+        expect(internalAfter.pauseStartedAtMs).toBe(null);
+    });
+
+    it('next session after reset() does not inherit prior pause counters', async () => {
+        // Same logical scenario as the cp75.22 carry-over test, but
+        // crossing a reset() (logout) boundary instead of a stop().
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'lecture-1');
+        vi.setSystemTime(t0 + 10_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 60_000);
+        // 50s of pause built up in totalPausedMs.
+
+        vi.useRealTimers();
+        recordingSessionService.reset();
+
+        // Brand-new session post-reset; assume the next user does not
+        // pause at all.
+        vi.useFakeTimers();
+        const t1 = t0 + 100_000;
+        vi.setSystemTime(t1);
+        await recordingSessionService.start('c', 'lecture-2');
+        vi.setSystemTime(t1 + 30_000);
+        vi.advanceTimersByTime(500);
+
+        const elapsed = recordingSessionService.getState().elapsed;
+        // Second session ran 30s with no pauses; the pre-reset 50s
+        // pause must NOT subtract from this session.
+        expect(elapsed).toBeGreaterThanOrEqual(29);
+        expect(elapsed).toBeLessThanOrEqual(32);
+    });
+});

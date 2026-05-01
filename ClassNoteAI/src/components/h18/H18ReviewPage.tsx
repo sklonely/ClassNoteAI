@@ -1415,6 +1415,22 @@ async function runSummary(
     const wantSections = all || targets.includes('sections');
     const wantQA = all || targets.includes('qa');
 
+    // cp75.35 (Audit 8) — share one AbortController across all 4 LLM
+    // calls. taskTracker dedup (cp75.14) + cancel cancel only the
+    // wrapper task; without a shared signal the parallel summarize /
+    // segmentSections / generateQA / extractActionItems calls would
+    // keep running and race a fresh regen task. Subscribe to the
+    // tracker; abort when this task transitions to cancelled / failed.
+    const ac = new AbortController();
+    const offTaskTrackerSub = taskTrackerService.subscribe((tasks) => {
+        const me = tasks.find((t) => t.id === taskId);
+        if (!me) return;
+        // ac.abort() is idempotent — repeat calls on an already-aborted
+        // controller are a no-op, so no need to pre-check.
+        if (me.status === 'cancelled' || me.status === 'failed') {
+            ac.abort();
+        }
+    });
     try {
         const subs = await storageService.getSubtitles(lectureId).catch(
             () => [] as Subtitle[],
@@ -1512,6 +1528,7 @@ async function runSummary(
                     transcript: transcriptWithTs,
                     language: lang,
                     durationSec,
+                    signal: ac.signal,
                 });
             } catch (err) {
                 console.warn(
@@ -1534,6 +1551,7 @@ async function runSummary(
                 return await generateQA({
                     transcript: transcriptWithTs,
                     language: lang,
+                    signal: ac.signal,
                 });
             } catch (err) {
                 console.warn('[H18ReviewPage] generateQA failed:', err);
@@ -1548,6 +1566,7 @@ async function runSummary(
                     transcript: transcriptWithTs,
                     language: lang,
                     durationSec,
+                    signal: ac.signal,
                 });
             } catch (err) {
                 console.warn(
@@ -1579,6 +1598,7 @@ async function runSummary(
                 content: text,
                 language: lang,
                 title,
+                signal: ac.signal,
             })) {
                 if (event.phase === 'map-start') {
                     mapTotal = event.sectionCount ?? 0;
@@ -1689,6 +1709,13 @@ async function runSummary(
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         taskTrackerService.fail(taskId, msg);
+    } finally {
+        // cp75.35 — always tear down the tracker subscription so we
+        // don't leak a closure capturing `ac` for the lifetime of the
+        // process. Idempotent (the unsub fn returned by subscribe is
+        // safe to call multiple times — Set.delete is a no-op for
+        // missing entries).
+        offTaskTrackerSub();
     }
 }
 
