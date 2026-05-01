@@ -1,5 +1,22 @@
 import { invoke } from '@tauri-apps/api/core';
 
+// cp75.34 — Avoid a top-level `import { authService } from './authService'`.
+// authService.ts imports this module at module load (to register the
+// AUTH_REGISTER processor). A static import here would either (a) break
+// the cycle in jest/vitest (authService binding is undefined at the
+// time `new AuthService()` runs, blowing up offlineQueueService.registerProcessor),
+// or (b) under ESM with hoisting still hand us back an in-construction
+// stub. Using a setter-injection seam keeps the module decoupled.
+type AuthFacade = { getUser(): { username: string } | null };
+let authFacade: AuthFacade | null = null;
+export function _setAuthFacade(facade: AuthFacade | null): void {
+    // TEST-ONLY hook (also used by authService at construction time).
+    authFacade = facade;
+}
+function currentUserIdOrDefault(): string {
+    return authFacade?.getUser()?.username || 'default_user';
+}
+
 export type ActionType =
     | 'AUTH_REGISTER'
     | 'PURGE_ITEM'
@@ -45,10 +62,12 @@ class OfflineQueueService {
         for (const action of actions) {
             if (action.status === 'processing') {
                 // Reset to pending - was interrupted
+                // cp75.34 — userId required for Rust-side defense-in-depth gate.
                 await invoke('update_pending_action', {
                     id: action.id,
                     status: 'pending',
-                    retryCount: action.retryCount
+                    retryCount: action.retryCount,
+                    userId: currentUserIdOrDefault()
                 });
                 console.log(`[OfflineQueue] Reset stuck task: ${action.actionType} (${action.id})`);
             }
@@ -92,10 +111,12 @@ class OfflineQueueService {
         const id = crypto.randomUUID();
         const payloadStr = JSON.stringify(payload);
 
+        // cp75.34 — userId required for Rust-side defense-in-depth gate.
         await invoke('add_pending_action', {
             id,
             actionType,
-            payload: payloadStr
+            payload: payloadStr,
+            userId: currentUserIdOrDefault()
         });
 
         console.log(`[OfflineQueue] Enqueued: ${actionType} (${id})`);
@@ -162,10 +183,12 @@ class OfflineQueueService {
                     }
 
                     // Mark as processing
+                    // cp75.34 — userId required for Rust-side gate.
                     await invoke('update_pending_action', {
                         id: action.id,
                         status: 'processing',
-                        retryCount: action.retryCount
+                        retryCount: action.retryCount,
+                        userId: currentUserIdOrDefault()
                     });
 
                     try {
@@ -180,19 +203,22 @@ class OfflineQueueService {
                         console.error(`[OfflineQueue] Failed: ${action.actionType} (${action.id})`, error);
 
                         const newRetryCount = action.retryCount + 1;
+                        // cp75.34 — userId required for Rust-side gate.
                         if (newRetryCount >= this.maxRetries) {
                             // Max retries reached, mark as failed permanently
                             await invoke('update_pending_action', {
                                 id: action.id,
                                 status: 'failed',
-                                retryCount: newRetryCount
+                                retryCount: newRetryCount,
+                                userId: currentUserIdOrDefault()
                             });
                         } else {
                             // Reset to pending for retry
                             await invoke('update_pending_action', {
                                 id: action.id,
                                 status: 'pending',
-                                retryCount: newRetryCount
+                                retryCount: newRetryCount,
+                                userId: currentUserIdOrDefault()
                             });
 
                             // Exponential backoff delay before next retry

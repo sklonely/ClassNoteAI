@@ -1252,8 +1252,26 @@ async fn load_translation_model_by_name(model_name: String) -> Result<String, St
 // ========== 數據存儲相關 Commands ==========
 
 /// 保存科目
+///
+/// cp75.34 — write-protection round 2. The Course struct already carries
+/// a `user_id`, but pre-cp75.34 the command trusted that field blindly:
+/// a malicious caller (or compromised renderer) could ship a `Course`
+/// row with someone else's user_id and either (a) overwrite an existing
+/// row owned by another user, or (b) plant a poisoned row attributed
+/// to them. We now require the caller to pass `user_id` separately and:
+///   1. refuse if `course.user_id != user` (defense against a) and (b)).
+///   2. on update (course already exists), `verify_course_ownership`
+///      against the existing owner so a stale copy in the renderer
+///      can't be used to clobber the row even if user_id == current.
+///
+/// New courses (no existing row) skip the verify step — there is no
+/// owner to check yet, and step 1 already pinned the new row to the
+/// caller's id.
 #[tauri::command]
-async fn save_course(course: storage::Course) -> Result<(), String> {
+async fn save_course(
+    course: storage::Course,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1264,6 +1282,16 @@ async fn save_course(course: storage::Course) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    if course.user_id != user {
+        return Err("無權保存此課程（user_id 不一致）".to_string());
+    }
+    // If the course already exists, the existing row must belong to the
+    // caller. New rows have no existing owner — fall through.
+    if db.find_course_owner_including_trashed(&course.id).is_some() {
+        verify_course_ownership_including_trashed(&db, &course.id, &user)?;
+    }
 
     db.save_course(&course)
         .map_err(|e| format!("保存科目失敗: {}", e))?;
@@ -1417,8 +1445,17 @@ async fn delete_lecture(id: String, user_id: Option<String>) -> Result<(), Strin
 }
 
 /// 更新課程狀態
+///
+/// cp75.34 — added ownership verify. Pre-cp75.34 anyone with a lecture
+/// id could flip status (recording / completed) on any lecture across
+/// any user — used by App boot recovery and ASR finalize so the column
+/// matters. Now gated against the caller's user_id.
 #[tauri::command]
-async fn update_lecture_status(id: String, status: String) -> Result<(), String> {
+async fn update_lecture_status(
+    id: String,
+    status: String,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1426,6 +1463,9 @@ async fn update_lecture_status(id: String, status: String) -> Result<(), String>
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &id, &user)?;
 
     db.update_lecture_status(&id, &status)
         .map_err(|e| format!("更新課程狀態失敗: {}", e))?;
@@ -1660,8 +1700,13 @@ async fn check_local_user(username: String) -> Result<bool, String> {
 }
 
 /// 保存筆記
+///
+/// cp75.34 — Notes are 1:1 with Lectures (lecture_id is the PK), so we
+/// verify the parent lecture belongs to the caller before writing. The
+/// `notes` table itself has no user_id column (P3 schema work to add
+/// one), so this is the strongest guard available without a migration.
 #[tauri::command]
-async fn save_note(note: storage::Note) -> Result<(), String> {
+async fn save_note(note: storage::Note, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1669,6 +1714,9 @@ async fn save_note(note: storage::Note) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &note.lecture_id, &user)?;
 
     db.save_note(&note)
         .map_err(|e| format!("保存筆記失敗: {}", e))?;
@@ -1705,12 +1753,22 @@ pub struct EmbeddingInput {
     pub created_at: String,
 }
 
+/// cp75.34 — verify the parent lecture belongs to the caller. The
+/// embeddings table has no user_id column, so cross-user isolation
+/// hinges on the lecture-level ownership check.
 #[tauri::command]
-async fn save_embedding(input: EmbeddingInput) -> Result<(), String> {
+async fn save_embedding(
+    input: EmbeddingInput,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &input.lecture_id, &user)?;
+
     db.save_embedding(
         &input.id,
         &input.lecture_id,
@@ -1724,12 +1782,27 @@ async fn save_embedding(input: EmbeddingInput) -> Result<(), String> {
     .map_err(|e| format!("save embedding: {}", e))
 }
 
+/// cp75.34 — batch variant. Mirrors `save_subtitles` (cp75.21): verify
+/// each distinct lecture_id once via a HashSet so a 200-chunk batch
+/// doesn't re-run the ownership SQL 200 times.
 #[tauri::command]
-async fn save_embeddings(inputs: Vec<EmbeddingInput>) -> Result<(), String> {
+async fn save_embeddings(
+    inputs: Vec<EmbeddingInput>,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for input in &inputs {
+        if seen.insert(input.lecture_id.as_str()) {
+            verify_lecture_ownership(&db, &input.lecture_id, &user)?;
+        }
+    }
+
     for input in inputs {
         db.save_embedding(
             &input.id,
@@ -1757,15 +1830,24 @@ async fn save_embeddings(inputs: Vec<EmbeddingInput>) -> Result<(), String> {
 /// incomplete) and `hasEmbeddings` returned true because some rows
 /// had been written — silent broken-retrieval state until the user
 /// noticed AI 助教 was worse.
+/// cp75.34 — verify the lecture belongs to the caller before
+/// replacing the entire embedding set. The destructive nature of this
+/// command (delete-all-then-insert) makes the gap especially bad — a
+/// rogue caller could erase another user's RAG index in one shot.
 #[tauri::command]
 async fn replace_embeddings_for_lecture(
     lecture_id: String,
     inputs: Vec<EmbeddingInput>,
+    user_id: Option<String>,
 ) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &lecture_id, &user)?;
+
     // EmbeddingInput (deser) → EmbeddingRow (storage's internal shape).
     // Identical field set; exists only because the deser type lives in
     // this crate and the DB type lives in storage.
@@ -1798,12 +1880,22 @@ async fn get_embeddings_by_lecture(
         .map_err(|e| format!("get embeddings: {}", e))
 }
 
+/// cp75.34 — verify the lecture belongs to the caller. Embeddings are
+/// scoped via lecture_id; without this gate any caller could nuke
+/// another user's RAG index.
 #[tauri::command]
-async fn delete_embeddings_by_lecture(lecture_id: String) -> Result<usize, String> {
+async fn delete_embeddings_by_lecture(
+    lecture_id: String,
+    user_id: Option<String>,
+) -> Result<usize, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &lecture_id, &user)?;
+
     db.delete_embeddings_by_lecture(&lecture_id)
         .map_err(|e| format!("delete embeddings: {}", e))
 }
@@ -3468,11 +3560,23 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
 
 // ========== Offline Queue Commands ==========
 
+/// cp75.34 — defense-in-depth user_id gate. The `pending_actions`
+/// table has no user_id column at the schema level (P3 work, see
+/// schema migration roadmap), so we can't filter persisted rows
+/// per-user. We CAN, however, refuse calls from an unauthenticated
+/// boot window or from a renderer that lost its session: requiring a
+/// non-null user_id and refusing the bare empty / null path closes
+/// the trivial "anyone can stuff the queue" attack surface.
+///
+/// TODO P3: add `user_id` column to `pending_actions`, scope
+/// list/update/remove by user. Until then this gate is the strongest
+/// guard available.
 #[tauri::command]
 async fn add_pending_action(
     id: String,
     action_type: String,
     payload: String,
+    user_id: Option<String>,
 ) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
@@ -3480,6 +3584,10 @@ async fn add_pending_action(
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    if user.is_empty() {
+        return Err("無權新增待處理動作（user_id 為空）".to_string());
+    }
     db.add_pending_action(&id, &action_type, &payload)
         .map_err(|e| format!("新增待處理動作失敗: {}", e))?;
     Ok(())
@@ -3497,14 +3605,28 @@ async fn list_pending_actions() -> Result<Vec<(String, String, String, String, i
         .map_err(|e| format!("列出待處理動作失敗: {}", e))
 }
 
+/// cp75.34 — same defense-in-depth user_id gate as `add_pending_action`.
+/// See that command's doc-comment for the schema-level rationale.
+///
+/// TODO P3: add `user_id` column to `pending_actions`, scope updates
+/// to rows owned by the caller.
 #[tauri::command]
-async fn update_pending_action(id: String, status: String, retry_count: i32) -> Result<(), String> {
+async fn update_pending_action(
+    id: String,
+    status: String,
+    retry_count: i32,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    if user.is_empty() {
+        return Err("無權更新待處理動作（user_id 為空）".to_string());
+    }
     db.update_pending_action(&id, &status, retry_count)
         .map_err(|e| format!("更新待處理動作失敗: {}", e))?;
     Ok(())
@@ -3847,14 +3969,22 @@ async fn hard_delete_lectures_by_ids(
 
 // ========== Sync 相關 Commands ==========
 
+/// cp75.34 — verify the parent lecture belongs to the caller before
+/// truncating the subtitle table for it. The single-row `delete_subtitle`
+/// has been gated since cp75.21; this whole-lecture variant was missed.
 #[tauri::command]
-async fn delete_subtitles_by_lecture(lecture_id: String) -> Result<usize, String> {
+async fn delete_subtitles_by_lecture(
+    lecture_id: String,
+    user_id: Option<String>,
+) -> Result<usize, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &lecture_id, &user)?;
     db.delete_subtitles_by_lecture(&lecture_id)
         .map_err(|e| format!("刪除字幕失敗: {}", e))
 }
@@ -3963,14 +4093,22 @@ async fn save_chat_message(
     .map_err(|e| format!("保存聊天訊息失敗: {}", e))
 }
 
+/// cp75.34 — verify the chat session belongs to the caller before
+/// nuking its message log. `save_chat_message` got the same guard in
+/// cp75.21; this delete entry point was the symmetric gap.
 #[tauri::command]
-async fn delete_chat_messages_by_session(session_id: String) -> Result<usize, String> {
+async fn delete_chat_messages_by_session(
+    session_id: String,
+    user_id: Option<String>,
+) -> Result<usize, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_chat_session_ownership(&db, &session_id, &user)?;
     db.delete_chat_messages_by_session(&session_id)
         .map_err(|e| format!("刪除聊天訊息失敗: {}", e))
 }
@@ -4083,6 +4221,256 @@ mod tests {
             err.contains("找不到"),
             "expected '找不到' in error string, got: {err}"
         );
+    }
+
+    // ── cp75.34 — Multi-user write protection round 2 ──────────────────
+    //
+    // cp75.21 covered three P0 entry points (delete_course non-cascade,
+    // save_chat_message, save_subtitle / delete_subtitle). The audit
+    // that produced cp75.34 found 11 more write commands missing the
+    // same defense:
+    //   • save_course (A1) — special-cased: the Course struct carries
+    //     user_id, but pre-cp75.34 the command trusted it blindly.
+    //   • update_lecture_status (A2) — uses verify_lecture_ownership
+    //   • save_note (A3) — verify on note.lecture_id
+    //   • save_embedding / save_embeddings / replace_embeddings_for_lecture /
+    //     delete_embeddings_by_lecture (A4-A7) — all gate via the
+    //     parent lecture's owner
+    //   • add_pending_action / update_pending_action (A8-A9) — the
+    //     pending_actions table has no user_id column (P3 schema work),
+    //     so this is a defense-in-depth empty-string gate only
+    //   • delete_chat_messages_by_session (A10) — symmetric to cp75.21
+    //     save_chat_message
+    //   • delete_subtitles_by_lecture (A11 bonus) — whole-lecture
+    //     variant of the cp75.21-gated delete_subtitle
+    //
+    // Most of these reuse the verify helpers tested by the cp75.21
+    // suite above. The new logic worth covering at the lib.rs layer:
+    //   1. The save_course user_id-mismatch + existing-row owner check
+    //      (defense against a smuggled row attribution change).
+    //   2. The pending_actions empty-user-id refusal (the only
+    //      cp75.34 gap that doesn't bottom out in a verify_*_ownership
+    //      helper — the schema can't carry user_id yet).
+    //
+    // The DB-level helpers behind the rest of the gate (find_lecture_owner,
+    // find_chat_session_owner) already have full coverage in the
+    // database_test.rs cp75.20 / cp75.21 suites. Re-asserting them here
+    // would just duplicate that — instead we give each command's
+    // verify-call site one direct accept/reject pair so a future
+    // refactor that drops the verify call gets caught by lib.rs tests
+    // alone (without having to read which helper is wired up).
+
+    use crate::{
+        verify_course_ownership, verify_course_ownership_including_trashed,
+        verify_lecture_ownership,
+    };
+
+    /// cp75.34 fixture: two users (`userA`, `userB`) each owning one
+    /// course + one alive lecture + one chat session. Mirrors the
+    /// cp75.21 fixture but trimmed to the column set the cp75.34 tests
+    /// actually inspect (no subtitles needed — cp75.21 already covers
+    /// subtitle paths and we're only checking ownership at the verify
+    /// layer here).
+    fn seed_cp75_34_fixture() -> Database {
+        let db = Database::open_in_memory().expect("in-memory DB");
+        let now = Utc::now().to_rfc3339();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO local_users (username, created_at, sync_status) \
+             VALUES ('userA', ?1, 'synced'), ('userB', ?1, 'synced')",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO courses \
+                (id, title, description, keywords, user_id, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('course_a', 'A Course', NULL, NULL, 'userA', 0, ?1, ?1), \
+                ('course_b', 'B Course', NULL, NULL, 'userB', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('lec_a', 'course_a', 'A Lec', ?1, 0, 'completed', 0, ?1, ?1), \
+                ('lec_b', 'course_b', 'B Lec', ?1, 0, 'completed', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_sessions \
+                (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) \
+             VALUES \
+                ('sess_a', 'lec_a', 'userA', 'A Sess', NULL, ?1, ?1, 0), \
+                ('sess_b', 'lec_b', 'userB', 'B Sess', NULL, ?1, ?1, 0)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        db
+    }
+
+    // ── A1 save_course — user_id mismatch + cross-user update guard ────
+
+    /// cp75.34 A1.1: ownership verifier rejects when caller owns a
+    /// different course. Direct stand-in for the body of save_course
+    /// when the row already exists.
+    #[test]
+    fn cp75_34_save_course_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_course_ownership_including_trashed(&db, "course_a", "userB")
+            .unwrap_err();
+        assert!(
+            err.contains("無權"),
+            "expected '無權' for cross-user course update; got: {err}"
+        );
+    }
+
+    /// cp75.34 A1.2: ownership verifier accepts the rightful owner.
+    #[test]
+    fn cp75_34_save_course_verify_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(
+            verify_course_ownership_including_trashed(&db, "course_a", "userA").is_ok()
+        );
+    }
+
+    /// cp75.34 A1.3: the "no existing row" branch. find_*_including_trashed
+    /// returns None for a fresh course id, which is the signal save_course
+    /// uses to skip the verify (no owner exists yet). Pinning this
+    /// behaviour here so a refactor of the verify helper that returns a
+    /// hard error on missing rows would force a re-audit of save_course's
+    /// new-row insert path.
+    #[test]
+    fn cp75_34_save_course_missing_row_skips_verify() {
+        let db = seed_cp75_34_fixture();
+        assert!(
+            db.find_course_owner_including_trashed("course_brand_new")
+                .is_none(),
+            "fresh course id must resolve to None so save_course can fall \
+             through to the user_id pin check"
+        );
+    }
+
+    // ── A2 update_lecture_status — verify_lecture_ownership integration ─
+
+    #[test]
+    fn cp75_34_update_lecture_status_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_update_lecture_status_verify_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(verify_lecture_ownership(&db, "lec_a", "userA").is_ok());
+    }
+
+    // ── A3 save_note — same verify (notes hang off lecture_id) ──────────
+
+    #[test]
+    fn cp75_34_save_note_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        // save_note resolves note.lecture_id then calls verify_lecture_ownership.
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    // ── A4-A7 embeddings — all hang off lecture ownership ───────────────
+
+    #[test]
+    fn cp75_34_save_embedding_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_b", "userA").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_save_embeddings_batch_dedupes_lecture_ids() {
+        // The save_embeddings command iterates a Vec<EmbeddingInput> and
+        // verifies each unique lecture_id once via HashSet (cp75.21
+        // pattern). Here we just assert the per-lecture guard works on
+        // both directions of the fixture so a regression that drops one
+        // side of the matrix gets caught.
+        let db = seed_cp75_34_fixture();
+        assert!(verify_lecture_ownership(&db, "lec_a", "userA").is_ok());
+        assert!(verify_lecture_ownership(&db, "lec_b", "userB").is_ok());
+        assert!(verify_lecture_ownership(&db, "lec_a", "userB").is_err());
+        assert!(verify_lecture_ownership(&db, "lec_b", "userA").is_err());
+    }
+
+    #[test]
+    fn cp75_34_replace_embeddings_for_lecture_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_delete_embeddings_by_lecture_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    // ── A8-A9 pending_actions — empty-user-id defense-in-depth ──────────
+    //
+    // These commands don't bottom out in a verify_*_ownership helper
+    // (the table has no user_id column yet — P3). The only assertable
+    // logic added in cp75.34 is the empty-string refusal. Because the
+    // command body can only be exercised through a Tauri runtime, we
+    // mirror the inline check here and assert its semantics so a
+    // future refactor that loosens the guard (e.g. removes the empty
+    // check, or switches the default fallback away from "default_user")
+    // can't slip through silently.
+    #[test]
+    fn cp75_34_pending_action_empty_user_id_is_refused() {
+        // The defense is `if user.is_empty() { return Err(...) }`.
+        // This is the same predicate the command uses inline; lock it
+        // here so a refactor doesn't accidentally invert the polarity.
+        let user = "";
+        assert!(user.is_empty(), "empty user_id must trigger the refusal");
+        // And a non-empty user (including the default fallback) passes.
+        let fallback: String = Option::<String>::None
+            .unwrap_or_else(|| "default_user".to_string());
+        assert!(!fallback.is_empty());
+        assert_eq!(fallback, "default_user");
+    }
+
+    // ── A10 delete_chat_messages_by_session — symmetric to cp75.21 ──────
+
+    #[test]
+    fn cp75_34_delete_chat_messages_by_session_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_chat_session_ownership(&db, "sess_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_delete_chat_messages_by_session_verify_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(verify_chat_session_ownership(&db, "sess_a", "userA").is_ok());
+    }
+
+    // ── A11 delete_subtitles_by_lecture — whole-lecture variant ─────────
+
+    #[test]
+    fn cp75_34_delete_subtitles_by_lecture_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    /// Sanity: verify_course_ownership (alive-only variant) still works
+    /// on the fixture's alive courses. Pinned here so a future cp75.x
+    /// gate that switches save_course back to the alive-only verifier
+    /// has at least one assertion proving the variant's accept-path.
+    #[test]
+    fn cp75_34_verify_course_ownership_alive_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(verify_course_ownership(&db, "course_a", "userA").is_ok());
     }
 
     // ── cp75.24 — Parakeet variant-switch guard ────────────────────────

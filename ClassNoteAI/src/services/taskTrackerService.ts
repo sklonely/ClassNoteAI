@@ -32,6 +32,7 @@ import {
     type TaskKind,
     type TaskStatus,
 } from './__contracts__/taskTrackerService.contract';
+import { authService } from './authService';
 
 // Re-export contract symbols so callers don't have to know we live
 // behind a contract dir. Same pattern recordingSessionService follows.
@@ -87,8 +88,19 @@ const TWEEN_CAP = 0.95;
  * synchronous from the user's perspective and isn't worth resuming
  * after an unclean shutdown — the underlying file artefact may not
  * even still be valid.
+ *
+ * cp75.34 — keys are now user-scoped via the cp75.3 composite-key
+ * pattern (`<userIdSegment>::<base>:<taskId>`). Pre-cp75.34 every
+ * persisted task landed under a single global prefix, so User A's
+ * pending summarize/index work survived logout and showed up in
+ * User B's task tray on next login. The persistedKeys mirror records
+ * the FULL key (already prefixed) so enumeration in
+ * `restoreFromPersistence` can keep its current shape.
  */
-const PERSIST_KEY_PREFIX = 'classnote-task-tracker:';
+const PERSIST_KEY_BASE = 'classnote-task-tracker';
+function getPersistKeyPrefix(): string {
+    return `${authService.getUserIdSegment()}::${PERSIST_KEY_BASE}:`;
+}
 
 interface PersistedTaskRow {
     id: string;
@@ -541,7 +553,7 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
             lectureId: t.lectureId,
             startedAt: t.startedAt,
         };
-        const key = `${PERSIST_KEY_PREFIX}${t.id}`;
+        const key = `${getPersistKeyPrefix()}${t.id}`;
         try {
             localStorage.setItem(key, JSON.stringify(row));
             this.persistedKeys.add(key);
@@ -556,7 +568,7 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
      * are swallowed.
      */
     private removePersisted(taskId: string): void {
-        const key = `${PERSIST_KEY_PREFIX}${taskId}`;
+        const key = `${getPersistKeyPrefix()}${taskId}`;
         try {
             localStorage.removeItem(key);
         } catch {
@@ -581,6 +593,13 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
      */
     async restoreFromPersistence(): Promise<void> {
         try {
+            // cp75.34 — only enumerate the CURRENT user's prefix so a
+            // logout-then-login as a different user doesn't drag the prior
+            // user's pending tasks into the new account's tray. The legacy
+            // (unprefixed) "classnote-task-tracker:" key bucket is
+            // intentionally NOT migrated — there's no way to know which
+            // user owned that data.
+            const currentPrefix = getPersistKeyPrefix();
             const keys = new Set<string>();
             // Source 1: Web Storage API enumeration (production / jsdom).
             // Wrapped in a defensive guard because the minimal localStorage
@@ -590,7 +609,7 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
                 if (typeof len === 'number') {
                     for (let i = 0; i < len; i++) {
                         const k = (localStorage as Storage).key(i);
-                        if (k && k.startsWith(PERSIST_KEY_PREFIX)) {
+                        if (k && k.startsWith(currentPrefix)) {
                             keys.add(k);
                         }
                     }
@@ -604,8 +623,12 @@ class TaskTrackerServiceImpl implements TaskTrackerService {
             // Source 2: in-memory mirror — needed for tests that seed via
             // localStorage.setItem directly (no Web Storage iteration
             // available on the mock). In production this is a strict
-            // subset of Source 1 and adds nothing.
-            for (const k of this.persistedKeys) keys.add(k);
+            // subset of Source 1 and adds nothing. Filter to the current
+            // user's prefix only so a stale mirror entry from a previous
+            // user can't bleed through.
+            for (const k of this.persistedKeys) {
+                if (k.startsWith(currentPrefix)) keys.add(k);
+            }
             let restored = 0;
             for (const k of keys) {
                 try {

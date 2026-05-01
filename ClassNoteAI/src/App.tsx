@@ -451,7 +451,10 @@ function App() {
       for (const lec of scan.lectureOrphansWithoutPcm) {
         try {
           const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('update_lecture_status', { id: lec.id, status: 'completed' });
+          // cp75.34 — userId required by the now-gated update_lecture_status.
+          const { authService } = await import('./services/authService');
+          const userId = authService.getUser()?.username || 'default_user';
+          await invoke('update_lecture_status', { id: lec.id, status: 'completed', userId });
           console.log(`[App] Flipped zombie lecture ${lec.id} to completed (no audio on disk)`);
         } catch (err) {
           console.warn(`[App] Failed to reconcile zombie lecture ${lec.id}:`, err);

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { offlineQueueService } from './offlineQueueService';
+import { offlineQueueService, _setAuthFacade } from './offlineQueueService';
 
 export interface User {
     username: string;
@@ -17,6 +17,13 @@ class AuthService {
     constructor() {
         this.loadUser();
         this.registerProcessors();
+        // cp75.34 — hand offlineQueueService a facade it can call back
+        // into for the current user_id. We use setter-injection (not
+        // a static import inside offlineQueueService) because that
+        // module is loaded BEFORE this constructor runs (it's at the
+        // top of authService's import list above), so the static
+        // binding wouldn't exist yet.
+        _setAuthFacade({ getUser: () => this.currentUser });
     }
 
     private registerProcessors(): void {

@@ -26,7 +26,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { taskTrackerService } from '../taskTrackerService';
 
-const PERSIST_KEY_PREFIX = 'classnote-task-tracker:';
+// cp75.34 — persist keys are user-scoped via the cp75.3 composite-key
+// pattern (`<userIdSegment>::<base>:<taskId>`). With no user logged in
+// (the default in this suite — beforeEach clears localStorage), the
+// id-segment falls back to 'default_user'.
+const PERSIST_KEY_PREFIX = 'default_user::classnote-task-tracker:';
 
 /**
  * The minimal localStorage mock in test/setup.ts only implements

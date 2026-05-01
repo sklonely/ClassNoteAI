@@ -50,7 +50,11 @@ describe('StorageService', () => {
 
             await storageService.saveCourse(mockCourse);
 
-            expect(invoke).toHaveBeenCalledWith('save_course', { course: mockCourse });
+            // cp75.34 — userId tagged for the Rust-side ownership verify.
+            expect(invoke).toHaveBeenCalledWith('save_course', {
+                course: mockCourse,
+                userId: 'test_user',
+            });
         });
 
         it('should get course by id', async () => {
@@ -264,9 +268,11 @@ describe('StorageService', () => {
 
             await storageService.updateLectureStatus('lecture-1', 'completed');
 
+            // cp75.34 — userId tagged for the Rust-side ownership verify.
             expect(invoke).toHaveBeenCalledWith('update_lecture_status', {
                 id: 'lecture-1',
                 status: 'completed',
+                userId: 'test_user',
             });
         });
     });

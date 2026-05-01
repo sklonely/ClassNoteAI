@@ -514,7 +514,8 @@ class StorageService {
       user_id: currentUser,
       is_deleted: course.is_deleted ?? false,
     };
-    await invoke('save_course', { course: courseToSave });
+    // cp75.34 — pass userId for the Rust-side ownership verify on update.
+    await invoke('save_course', { course: courseToSave, userId: currentUser });
     // Broadcast so any open CourseDetailView / CourseListView / Home rail /
     // Home calendar that's already mounted can refetch.
     //   - `classnote-course-updated` (with detail.courseId) → page-level
@@ -642,10 +643,11 @@ class StorageService {
   }
 
   /**
-   * 更新課程狀態
+   * 更新課程狀態（cp75.34: 傳 userId 給 Rust 端做 ownership check）
    */
   async updateLectureStatus(id: string, status: 'recording' | 'completed'): Promise<void> {
-    await invoke('update_lecture_status', { id, status });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('update_lecture_status', { id, status, userId });
   }
 
   /**
@@ -983,7 +985,9 @@ class StorageService {
     };
 
     try {
-      await invoke('save_note', { note: dbNote });
+      // cp75.34 — userId for the Rust-side lecture-ownership verify.
+      const userId = authService.getUser()?.username || 'default_user';
+      await invoke('save_note', { note: dbNote, userId });
       console.log('[StorageService] Note saved successfully');
     } catch (error) {
       console.error('[StorageService] Rust save_note failed:', error);

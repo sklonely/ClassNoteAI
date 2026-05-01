@@ -226,7 +226,11 @@ class RecordingRecoveryService {
       }
     }
 
-    await invoke('update_lecture_status', { id: lectureId, status: 'completed' });
+    // cp75.34 — userId for the now-gated update_lecture_status.
+    {
+      const userId = authService.getUser()?.username || 'default_user';
+      await invoke('update_lecture_status', { id: lectureId, status: 'completed', userId });
+    }
     // Caller is expected to refresh any lecture lists / audio path
     // caches — we intentionally don't reach into storageService here
     // to keep this service dependency-free for tests.
@@ -330,7 +334,9 @@ class RecordingRecoveryService {
     if (hasPcm) {
       await invoke('discard_orphaned_recording', { lectureId });
     }
-    await invoke('update_lecture_status', { id: lectureId, status: 'completed' });
+    // cp75.34 — userId for the now-gated update_lecture_status.
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('update_lecture_status', { id: lectureId, status: 'completed', userId });
   }
 
   /** For pcm orphans without a lecture row: the `.pcm` file references
