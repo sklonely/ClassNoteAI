@@ -949,6 +949,50 @@ mod tests {
         );
     }
 
+    // ── cp75.33 — Mirror of cp75.20 / cp75.20.1 for COURSE ownership ────
+    //
+    // `find_course_owner` (the alive-only default) lacked the
+    // `AND is_deleted = 0` filter — every non-trash callsite that funnels
+    // through `verify_course_ownership` would happily accept a soft-
+    // deleted course as if it were alive (cross-user edit on trashed row,
+    // delete_course-cascade re-runs on already-trashed course, etc.).
+    //
+    // Trash-bin commands (restore_course, purge_course) legitimately need
+    // to operate on soft-deleted course rows, so we add the trash-aware
+    // sibling `find_course_owner_including_trashed` for them — same shape
+    // as cp75.20.1 did for lectures.
+
+    /// 2.1 — alive-only `find_course_owner` MUST hide soft-deleted rows.
+    #[test]
+    fn cp75_33_find_course_owner_returns_none_for_deleted_course() {
+        let db = fixture_softdelete();
+        let alive_owner = db.find_course_owner("course-alive");
+        assert_eq!(alive_owner.as_deref(), Some("default_user"));
+        let deleted_owner = db.find_course_owner("course-deleted");
+        assert!(
+            deleted_owner.is_none(),
+            "soft-deleted course must not be findable via the alive-only find_course_owner"
+        );
+    }
+
+    /// 2.2 — trash-aware `find_course_owner_including_trashed` MUST
+    /// resolve the owner for both alive and soft-deleted course rows.
+    #[test]
+    fn cp75_33_find_course_owner_including_trashed_returns_owner_for_deleted_course() {
+        let db = fixture_softdelete();
+        let alive_owner = db.find_course_owner_including_trashed("course-alive");
+        assert_eq!(alive_owner, Some("default_user".to_string()));
+        let deleted_owner =
+            db.find_course_owner_including_trashed("course-deleted");
+        assert_eq!(
+            deleted_owner,
+            Some("default_user".to_string()),
+            "trash-aware lookup must return owner of soft-deleted course"
+        );
+        let missing = db.find_course_owner_including_trashed("does-not-exist");
+        assert_eq!(missing, None);
+    }
+
     // ── cp75.21 — Cross-user write protection ───────────────────────────
     //
     // P0 ownership gaps closed in cp75.21:

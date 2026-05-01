@@ -158,7 +158,13 @@ class RecordingRecoveryService {
     //    save_subtitles command rejects a row), we abort and let the
     //    user retry — the audio + JSONL stay on disk, the lecture row
     //    stays at status='recording'.
-    await this.recoverTranscript(lectureId);
+    //
+    // cp75.33 — also returns the LAST imported segment's timestamp so we
+    // can backfill `lecture.duration` (step 4 below). The non-recovery
+    // stop() pipeline stamps duration in step 6 (cp75.28); the recovery
+    // path used to skip it entirely → review-page sectioning treated
+    // every recovered lecture as 0s long.
+    const lastSubtitleTs = await this.recoverTranscriptReturningLastTs(lectureId);
 
     // 2. Wrap PCM as WAV at the canonical audio path. Removes .pcm and
     //    .meta.json; transcript JSONL is intentionally retained.
@@ -177,11 +183,99 @@ class RecordingRecoveryService {
       );
     }
 
+    // 4. cp75.33 — stamp lecture.duration from the last subtitle's
+    //    timestamp BEFORE flipping status to 'completed'. We do nothing
+    //    when there's no JSONL on disk (lastSubtitleTs == null) — there's
+    //    nothing reliable to compute from in that case, and downstream
+    //    code already tolerates duration=0 (just degrades the
+    //    review-page sectioning UX, which is acceptable for a transcript-
+    //    less recovered lecture).
+    if (lastSubtitleTs != null && lastSubtitleTs > 0) {
+      try {
+        const lecture = await invoke<{
+          id: string;
+          course_id: string;
+          title: string;
+          date: string;
+          duration: number;
+          status: string;
+          created_at: string;
+          updated_at: string;
+          is_deleted?: boolean;
+          [k: string]: unknown;
+        } | null>('get_lecture', { id: lectureId });
+        if (lecture) {
+          const userId = authService.getUser()?.username || 'default_user';
+          await invoke('save_lecture', {
+            lecture: {
+              ...lecture,
+              duration: Math.round(lastSubtitleTs),
+              is_deleted: lecture.is_deleted ?? false,
+            },
+            userId,
+          });
+        }
+      } catch (err) {
+        // Non-fatal: status flip + audio finalize already happened, so
+        // the lecture is usable. Worst case we end up with duration=0
+        // and the review page falls back to its no-duration code path.
+        console.warn(
+          `[recovery] failed to stamp duration for ${lectureId}:`,
+          err,
+        );
+      }
+    }
+
     await invoke('update_lecture_status', { id: lectureId, status: 'completed' });
     // Caller is expected to refresh any lecture lists / audio path
     // caches — we intentionally don't reach into storageService here
     // to keep this service dependency-free for tests.
     return finalPath;
+  }
+
+  /** cp75.33 — internal helper: same as `recoverTranscript` but returns
+   *  the maximum timestamp across the imported segments (or null if no
+   *  JSONL was on disk / nothing got imported). The public
+   *  `recoverTranscript` keeps its existing `Promise<number>` shape so
+   *  current callers / tests aren't disturbed. */
+  private async recoverTranscriptReturningLastTs(
+    lectureId: string,
+  ): Promise<number | null> {
+    const segments = await invoke<PersistedTranscriptSegment[]>(
+      'read_orphaned_transcript',
+      { lectureId },
+    ).catch((err) => {
+      console.warn(
+        `[recovery] read_orphaned_transcript failed for ${lectureId}:`,
+        err,
+      );
+      return [] as PersistedTranscriptSegment[];
+    });
+    if (!segments || segments.length === 0) return null;
+
+    const dedup = new Map<string, PersistedTranscriptSegment>();
+    for (const seg of segments) dedup.set(seg.id, seg);
+
+    const subtitles = Array.from(dedup.values()).map((seg) => ({
+      id: seg.id,
+      lecture_id: lectureId,
+      timestamp: seg.timestamp,
+      text_en: seg.text_en,
+      text_zh: seg.text_zh ?? null,
+      type: seg.type,
+    }));
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_subtitles', { subtitles, userId });
+
+    // Take the max timestamp rather than the array's last element —
+    // dedup might reorder (Map preserves insertion order, but two
+    // segments with id collision get folded). Robust against future
+    // recoveries that sort.
+    let maxTs = 0;
+    for (const s of subtitles) {
+      if (s.timestamp > maxTs) maxTs = s.timestamp;
+    }
+    return maxTs;
   }
 
   /** Read the transcript JSONL (if any) and insert each segment into

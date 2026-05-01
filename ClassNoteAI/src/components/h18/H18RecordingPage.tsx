@@ -174,7 +174,17 @@ export default function H18RecordingPage({
 
     const handlePauseResume = () => {
         if (session.status === 'recording') void session.pause();
-        else if (session.status === 'paused') void session.resume();
+        else if (session.status === 'paused') {
+            // cp75.33 — DO NOT swallow with `void`. cp75.25 made
+            // recordingSessionService.resume() propagate audio-recorder
+            // errors (audioContext failed, getUserMedia rejected). The
+            // service already fires a user-facing toast, so the UI just
+            // needs to log + consume the rejection here so it doesn't
+            // become an unhandled promise.
+            session.resume().catch((err) => {
+                console.warn('[H18RecordingPage] resume failed:', err);
+            });
+        }
     };
 
     const handleAddMark = () => {

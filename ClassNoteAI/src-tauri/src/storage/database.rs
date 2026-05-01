@@ -131,7 +131,29 @@ impl Database {
             .ok()
     }
 
+    /// cp75.33 — alive-only owner lookup for COURSES. Mirrors the
+    /// `find_lecture_owner` (cp75.20) gate: every non-trash callsite that
+    /// funnels through `verify_course_ownership` should be hidden from
+    /// soft-deleted rows. Trash-bin commands use the
+    /// `_including_trashed` variant below.
     pub fn find_course_owner(&self, course_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT user_id FROM courses WHERE id = ?1 AND is_deleted = 0",
+                [course_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.33 — trash-aware ownership lookup for COURSES.
+    ///
+    /// Same as `find_course_owner` but does NOT filter `is_deleted`.
+    /// Used by `restore_course` / `purge_course` and any future
+    /// trash-management course command that legitimately needs to verify
+    /// ownership of a soft-deleted course row. Mirror of cp75.20.1's
+    /// `find_lecture_owner_including_trashed`.
+    pub fn find_course_owner_including_trashed(&self, course_id: &str) -> Option<String> {
         self.conn
             .query_row(
                 "SELECT user_id FROM courses WHERE id = ?1",

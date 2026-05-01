@@ -434,3 +434,52 @@ describe('H18RecordingPage · S3h — 結束按鈕 confirm gate', () => {
         expect(stopSpy).toHaveBeenCalledTimes(1);
     });
 });
+
+describe('H18RecordingPage · cp75.33 — resume() failure does NOT bubble to React', () => {
+    it('paused → click 繼續錄 → session.resume() rejects → no unhandled rejection (warn-logged)', async () => {
+        // cp75.25 made recordingSessionService.resume() propagate audio-recorder
+        // errors; cp75.33 ensures the H18RecordingPage button handler does NOT
+        // swallow the rejection with bare `void` (which would silently lose the
+        // signal). Toast is fired inside the service; UI must catch + log only.
+        recordingSessionService._setStateForTest({
+            status: 'paused',
+            lectureId: 'L1',
+            courseId: 'C1',
+            elapsed: 30,
+            sessionStartMs: Date.now() - 30_000,
+        });
+        const resumeErr = new Error('audioContext failed');
+        const resumeSpy = vi
+            .spyOn(recordingSessionService, 'resume')
+            .mockRejectedValue(resumeErr);
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+        render(
+            <H18RecordingPage courseId="C1" lectureId="L1" onBack={() => {}} />,
+        );
+        await flushAsync();
+
+        const resumeBtn = screen.getByRole('button', { name: '繼續錄' });
+        resumeBtn.click();
+
+        // Yield twice for: (1) the click handler to call resume(), (2) the
+        // .catch handler to fire after the rejection settles.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(resumeSpy).toHaveBeenCalledTimes(1);
+        // The error MUST have been observed in some form — i.e. NOT swallowed
+        // by `void`. We assert console.warn was called with the rejection.
+        const warnedWithErr = warnSpy.mock.calls.some((c) =>
+            c.some(
+                (arg) =>
+                    arg === resumeErr ||
+                    (arg instanceof Error && arg.message === 'audioContext failed'),
+            ),
+        );
+        expect(warnedWithErr).toBe(true);
+
+        warnSpy.mockRestore();
+    });
+});

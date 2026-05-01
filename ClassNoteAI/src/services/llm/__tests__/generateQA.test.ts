@@ -136,7 +136,7 @@ describe('generateQA — happy path', () => {
         ]);
     });
 
-    it('respects abort signal — throws AbortError before any LLM call', async () => {
+    it('respects abort signal — throws AbortError before any LLM call (pre-flight gate)', async () => {
         const ac = new AbortController();
         ac.abort();
         await expect(
@@ -147,6 +147,54 @@ describe('generateQA — happy path', () => {
             }),
         ).rejects.toMatchObject({ name: 'AbortError' });
         expect(mockComplete).not.toHaveBeenCalled();
+    });
+
+    it('cp75.33 — respects abort signal MID-FLIGHT (provider.complete in progress)', async () => {
+        // Tautology guard: the original pre-flight-only test passed even
+        // when generateQA stopped propagating the abort signal into
+        // provider.complete. This test exercises the in-flight path:
+        //   1. provider.complete is called and awaits a real promise
+        //   2. user aborts AFTER mockComplete was invoked (mid-flight)
+        //   3. mockComplete observes the propagated abort on its inner
+        //      signal and rejects with AbortError
+        //   4. generateQA must surface that AbortError, not retry
+        const ac = new AbortController();
+        let providerSignal: AbortSignal | undefined;
+        mockComplete.mockImplementation(async (args: { signal?: AbortSignal }) => {
+            providerSignal = args.signal;
+            return await new Promise((_resolve, reject) => {
+                // Simulate a real network call that the inner abort cancels.
+                args.signal?.addEventListener('abort', () => {
+                    const err = new Error('aborted');
+                    err.name = 'AbortError';
+                    reject(err);
+                }, { once: true });
+                // Otherwise we'd hang forever; bail out after a tick if abort
+                // didn't fire (proves the signal wasn't wired through).
+                setTimeout(() => reject(new Error('signal-not-propagated')), 200);
+            });
+        });
+
+        const promise = generateQA({
+            transcript: sampleTranscript,
+            language: 'en',
+            signal: ac.signal,
+        });
+
+        // Yield once so mockComplete's promise actually starts and the
+        // inner-AC `addEventListener('abort')` is wired.
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mockComplete).toHaveBeenCalledTimes(1);
+        expect(providerSignal).toBeDefined();
+
+        // Now fire the abort mid-flight.
+        ac.abort();
+
+        await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
+        // It propagated to the provider's signal — i.e. the provider was
+        // CALLED, then cancelled (vs the pre-flight test which asserts
+        // it was NOT called).
+        expect(mockComplete).toHaveBeenCalledTimes(1);
     });
 });
 

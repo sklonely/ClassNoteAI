@@ -3565,7 +3565,11 @@ async fn restore_course(id: String, user_id: Option<String>) -> Result<i64, Stri
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     let user = user_id.unwrap_or_else(|| "default_user".to_string());
-    verify_course_ownership(&db, &id, &user)?;
+    // cp75.33 — `verify_course_ownership` now filters `is_deleted=0`
+    // (mirror of cp75.20 for lectures). A course in trash is by
+    // definition soft-deleted, so we MUST use the trash-aware verifier
+    // or the call would fail with "找不到此課程".
+    verify_course_ownership_including_trashed(&db, &id, &user)?;
     db.restore_course(&id)
         .map_err(|e| format!("還原課程失敗: {}", e))
 }
@@ -3598,7 +3602,10 @@ async fn purge_course(id: String, user_id: Option<String>) -> Result<(), String>
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
     let user = user_id.unwrap_or_else(|| "default_user".to_string());
-    verify_course_ownership(&db, &id, &user)?;
+    // cp75.33 — `purge_course` only ever runs on trashed courses; use
+    // the trash-aware verifier so the (now-gated) alive-only
+    // `verify_course_ownership` doesn't reject with "找不到此課程".
+    verify_course_ownership_including_trashed(&db, &id, &user)?;
     db.purge_course(&id)
         .map_err(|e| format!("永久刪除課程失敗: {}", e))?;
     Ok(())
@@ -3771,6 +3778,24 @@ fn verify_lecture_ownership_including_trashed(
         Some(o) if o == user_id => Ok(()),
         Some(_) => Err("無權操作此課堂（屬於其他帳號）".to_string()),
         None => Err("找不到此課堂".to_string()),
+    }
+}
+
+/// cp75.33 — same as `verify_course_ownership` but uses the trash-aware
+/// DB lookup. Required for `restore_course` / `purge_course`, where the
+/// course row is necessarily soft-deleted; the alive-only
+/// `find_course_owner` (now gated on `AND is_deleted = 0`) would
+/// otherwise return None and the verifier would abort with
+/// "找不到此課程".
+fn verify_course_ownership_including_trashed(
+    db: &storage::Database,
+    course_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_course_owner_including_trashed(course_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課程（屬於其他帳號）".to_string()),
+        None => Err("找不到此課程".to_string()),
     }
 }
 
