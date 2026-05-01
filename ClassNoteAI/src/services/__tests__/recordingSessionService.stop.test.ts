@@ -1168,6 +1168,80 @@ describe('cp75.22 · pause/resume elapsed math', () => {
         expect(elapsed).toBeLessThan(80);
     });
 
+    // cp75.37 · 5.2 — three-cycle pause/resume regression. The existing
+    // 2-cycle test catches "totalPausedMs is plain assigned not added";
+    // this 3-cycle variant additionally catches "first cycle is dropped"
+    // / "last cycle is dropped" off-by-one accumulator bugs that 2
+    // cycles can't disambiguate (the failing pattern would still match
+    // the spec arithmetic on 2 cycles by coincidence).
+    it('cp75.37 — three-cycle pause/resume correctly accumulates totalPausedMs', async () => {
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'l');
+
+        // Cycle 1: record 30s, pause 30s.
+        vi.setSystemTime(t0 + 30_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 60_000);
+        await recordingSessionService.resume();
+
+        // Cycle 2: record 30s, pause 30s.
+        vi.setSystemTime(t0 + 90_000);
+        await recordingSessionService.pause();
+        vi.setSystemTime(t0 + 120_000);
+        await recordingSessionService.resume();
+
+        // Cycle 3: record 30s.
+        vi.setSystemTime(t0 + 150_000);
+        vi.advanceTimersByTime(500);
+
+        const elapsed = recordingSessionService.getState().elapsed;
+        // Live recording stretches: 30 + 30 + 30 = 90s. Wall = 150s,
+        // total paused = 60s. Allow ±2s for the 250ms tick interval.
+        expect(elapsed).toBeGreaterThanOrEqual(89);
+        expect(elapsed).toBeLessThanOrEqual(92);
+        // Must subtract BOTH pauses, not just one (if either fold was
+        // dropped, elapsed would land at ≥119, well outside our band).
+        expect(elapsed).toBeLessThan(120);
+    });
+
+    // cp75.37 · 5.2 — pause-while-already-paused must not double-count
+    // the pause window. The early return in pause() (status !== 'recording')
+    // is what guarantees this; if a future refactor swaps the guard for
+    // a setState() that also restamps pauseStartedAtMs, the SECOND pause
+    // would overwrite the FIRST's timestamp and the resume() fold would
+    // under-count by however long the first pause window ran.
+    it('cp75.37 — pause while already paused is a no-op (idempotent)', async () => {
+        vi.useFakeTimers();
+        const t0 = 1_700_000_000_000;
+        vi.setSystemTime(t0);
+        await recordingSessionService.start('c', 'l');
+
+        // Record 10s, pause.
+        vi.setSystemTime(t0 + 10_000);
+        await recordingSessionService.pause();
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const internal = recordingSessionService as any;
+        const firstPauseAt = internal.pauseStartedAtMs;
+        expect(firstPauseAt).toBe(t0 + 10_000);
+
+        // Advance 20s into the paused window, then "pause" again. The
+        // second pause must NOT restamp pauseStartedAtMs — otherwise the
+        // 20s already elapsed would silently disappear from the
+        // resume() fold.
+        vi.setSystemTime(t0 + 30_000);
+        await recordingSessionService.pause();
+        expect(internal.pauseStartedAtMs).toBe(firstPauseAt);
+
+        // Resume at t0+40s → fold should be 30s (10s..40s), not 10s.
+        vi.setSystemTime(t0 + 40_000);
+        await recordingSessionService.resume();
+        expect(internal.pauseStartedAtMs).toBe(null);
+        expect(internal.totalPausedMs).toBe(30_000);
+    });
+
     it('start() resets paused-time accumulators (no carry-over between sessions)', async () => {
         vi.useFakeTimers();
         const t0 = 1_700_000_000_000;

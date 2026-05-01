@@ -1323,4 +1323,75 @@ mod tests {
             "missing subtitle id must return None"
         );
     }
+
+    // ── cp75.37 · regression: list_lectures / list_courses still surface
+    // ── the alive rows after the cp75.20 `is_deleted = 0` filter landed.
+    //
+    // cp75.20 added `AND is_deleted = 0` to a number of read paths so
+    // soft-deleted rows stop bleeding into the live UI. Existing tests
+    // verify the EXCLUSION direction (deleted rows are hidden). They
+    // don't verify the INCLUSION direction — i.e. that a regression
+    // isn't accidentally about to also exclude the alive rows. These
+    // two tests close that gap. Both use the existing
+    // `fixture_softdelete()` helper which seeds a mix of alive and
+    // soft-deleted courses + lectures.
+
+    /// cp75.37 · 5.1 — `list_lectures` MUST still return every alive
+    /// lecture whose parent course is also alive. Pre-cp75.20 this was
+    /// the default behaviour; post-cp75.20 we want a regression guard
+    /// so a future filter tweak can't quietly hide the live rows too.
+    #[test]
+    fn cp75_37_list_lectures_returns_alive_lectures_unchanged_post_cp75_20() {
+        let db = fixture_softdelete();
+        let lectures = db
+            .list_lectures("default_user")
+            .expect("list_lectures must not fail");
+        let ids: Vec<&str> = lectures.iter().map(|l| l.id.as_str()).collect();
+
+        // The fixture seeds:
+        //   lec-alive                 — course alive,   lec alive   ✓ visible
+        //   lec-deleted-under-alive   — course alive,   lec deleted ✗
+        //   lec-orphan-alive          — course deleted, lec alive   ✗ (cascade)
+        //   lec-deleted-under-deleted — both deleted               ✗
+        //
+        // list_lectures filters BOTH `l.is_deleted = 0` and
+        // `c.is_deleted = 0`, so only `lec-alive` is expected.
+        assert!(
+            ids.contains(&"lec-alive"),
+            "alive lecture under alive course MUST appear in list_lectures, got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"lec-deleted-under-alive"),
+            "soft-deleted lecture must not appear, got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"lec-orphan-alive"),
+            "alive lecture under deleted course must not appear (course cascade), got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"lec-deleted-under-deleted"),
+            "deleted lecture under deleted course must not appear, got {ids:?}"
+        );
+    }
+
+    /// cp75.37 · 5.1 — same regression shape for `list_courses`. The
+    /// fixture seeds one alive + one soft-deleted course; the alive
+    /// one MUST still come back.
+    #[test]
+    fn cp75_37_list_courses_returns_alive_courses_post_cp75_20() {
+        let db = fixture_softdelete();
+        let courses = db
+            .list_courses("default_user")
+            .expect("list_courses must not fail");
+        let ids: Vec<&str> = courses.iter().map(|c| c.id.as_str()).collect();
+
+        assert!(
+            ids.contains(&"course-alive"),
+            "alive course MUST appear in list_courses, got {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"course-deleted"),
+            "soft-deleted course must not appear, got {ids:?}"
+        );
+    }
 }

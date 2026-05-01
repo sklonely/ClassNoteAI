@@ -16,6 +16,19 @@
  *
  * vi.resetModules between tests so the module-level `usageTracker`
  * singleton picks up the fresh authService mock for each scenario.
+ *
+ * cp75.37 · 5.6 — note on the vi.resetModules() pattern.
+ *
+ * usageTracker is a module-level singleton; its constructor reads from
+ * localStorage and binds the (then-current) `authService.getUserIdSegment`
+ * exactly once. Per-test mock re-assignment of `userIdSegmentMock`
+ * therefore has NO effect on an already-imported singleton. The fix is
+ * `vi.resetModules()` followed by a fresh `await import('../usageTracker')`
+ * — every test that needs a different segment MUST use this pattern.
+ *
+ * Constraint: do NOT replace this with a top-of-file `import { usageTracker }`
+ * — that would freeze the singleton at the very first segment we set.
+ * The current per-test dynamic-import is intentional, not fragile.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

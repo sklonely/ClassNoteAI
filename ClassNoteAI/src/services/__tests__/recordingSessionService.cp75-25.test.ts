@@ -82,7 +82,20 @@ vi.mock('../subtitleService', () => ({
 // translationPipeline mock — capture pause/resume calls for assertion.
 // Use vi.hoisted so the factory below can reference these closures even
 // after vitest hoists the vi.mock() call to top-of-file.
-const { translationPipelineMock, toastCalls } = vi.hoisted(() => ({
+//
+// cp75.37 · 5.8 — toast assertions used to push into a manually-managed
+// `toastCalls` map and the test reset that map by hand in beforeEach
+// (`toastCalls.success.length = 0`). That worked but duplicated state
+// vi.fn() already tracks for free. Replaced by hoisted vi.fn() refs
+// (`toastSuccessMock` / etc.); tests assert via `.mock.calls` and
+// reset via the standard `.mockClear()` pattern. No behaviour change.
+const {
+    translationPipelineMock,
+    toastSuccessMock,
+    toastErrorMock,
+    toastWarningMock,
+    toastInfoMock,
+} = vi.hoisted(() => ({
     translationPipelineMock: {
         pause: vi.fn(),
         resume: vi.fn(),
@@ -91,12 +104,10 @@ const { translationPipelineMock, toastCalls } = vi.hoisted(() => ({
         awaitDrain: vi.fn(async () => undefined),
         isPaused: vi.fn(() => false),
     },
-    toastCalls: {
-        success: [] as Array<{ message: string; detail?: string }>,
-        error: [] as Array<{ message: string; detail?: string }>,
-        warning: [] as Array<{ message: string; detail?: string }>,
-        info: [] as Array<{ message: string; detail?: string }>,
-    },
+    toastSuccessMock: vi.fn(),
+    toastErrorMock: vi.fn(),
+    toastWarningMock: vi.fn(),
+    toastInfoMock: vi.fn(),
 }));
 
 vi.mock('../streaming/translationPipeline', () => ({
@@ -105,18 +116,10 @@ vi.mock('../streaming/translationPipeline', () => ({
 
 vi.mock('../toastService', () => ({
     toastService: {
-        success: vi.fn((message: string, detail?: string) => {
-            toastCalls.success.push({ message, detail });
-        }),
-        error: vi.fn((message: string, detail?: string) => {
-            toastCalls.error.push({ message, detail });
-        }),
-        warning: vi.fn((message: string, detail?: string) => {
-            toastCalls.warning.push({ message, detail });
-        }),
-        info: vi.fn((message: string, detail?: string) => {
-            toastCalls.info.push({ message, detail });
-        }),
+        success: toastSuccessMock,
+        error: toastErrorMock,
+        warning: toastWarningMock,
+        info: toastInfoMock,
     },
 }));
 
@@ -144,10 +147,10 @@ beforeEach(() => {
     mockRecorderInstance.pause.mockReset();
     translationPipelineMock.pause.mockClear();
     translationPipelineMock.resume.mockClear();
-    toastCalls.success.length = 0;
-    toastCalls.error.length = 0;
-    toastCalls.warning.length = 0;
-    toastCalls.info.length = 0;
+    toastSuccessMock.mockClear();
+    toastErrorMock.mockClear();
+    toastWarningMock.mockClear();
+    toastInfoMock.mockClear();
     recordingSessionService.reset();
 });
 
@@ -190,9 +193,13 @@ describe('recordingSessionService — cp75.25 P1-C (resume failure surfacing)', 
             /AudioContext suspended/,
         );
 
-        expect(toastCalls.error.length).toBe(1);
-        expect(toastCalls.error[0].message).toContain('錄音續錄失敗');
-        expect(toastCalls.error[0].detail).toContain('請手動重啟錄音');
+        expect(toastErrorMock).toHaveBeenCalledTimes(1);
+        const [message, detail] = toastErrorMock.mock.calls[0] as [
+            string,
+            string | undefined,
+        ];
+        expect(message).toContain('錄音續錄失敗');
+        expect(detail).toContain('請手動重啟錄音');
     });
 
     it('resume() failure leaves state at paused (not recording)', async () => {
@@ -219,7 +226,7 @@ describe('recordingSessionService — cp75.25 P1-C (resume failure surfacing)', 
 
         await recordingSessionService.resume();
 
-        expect(toastCalls.error.length).toBe(0);
+        expect(toastErrorMock).not.toHaveBeenCalled();
         expect(recordingSessionService.getState().status).toBe('recording');
     });
 });

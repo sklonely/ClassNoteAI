@@ -351,6 +351,60 @@ describe('useAIHistory · cp75.30 fallback grounding when RAG empty', () => {
         expect(sys).not.toContain('摘要已截斷');
     });
 
+    // cp75.37 · 5.4 — deepest empty path. After cp75.36a, when
+    // getNote() returns null we skip the subtitles fetch entirely
+    // (regression: deleted-lecture leak via subs table). So the
+    // "everything empty" path means: RAG empty + getNote null + the
+    // subs fetch never happens. The resulting system prompt must be
+    // exactly the bare SYSTEM_PROMPT — no fallback grounding header,
+    // no transcript window, no summary section. This pins that the
+    // fail-soft path stays clean (i.e. doesn't accidentally inject a
+    // truncation warning or empty grounding wrapper).
+    it('cp75.37 — when lecture context but note + subs both empty, system prompt has no grounding', async () => {
+        retrieveContextMock.mockResolvedValue({ chunks: [], formattedContext: '' });
+        getNoteMock.mockResolvedValue(null);
+        // Per cp75.36a, getSubtitles should NOT even be invoked when
+        // note is null and we are not recording — we mock it anyway so
+        // a regression that DOES call it would still produce
+        // deterministic output instead of an undefined-rejection.
+        getSubtitlesMock.mockResolvedValue([]);
+
+        const getMessages = captureChatStreamMessages();
+
+        const { result } = renderHook(() => useAIHistory());
+        await act(async () => {
+            await result.current.send('hello', {
+                kind: 'lecture',
+                lectureId: 'L1',
+                courseId: 'C1',
+                label: 'ML',
+            });
+        });
+
+        await waitFor(() => {
+            expect(getMessages()).not.toBeNull();
+        });
+
+        const captured = getMessages()!;
+        expect(captured[0].role).toBe('system');
+        const sys = captured[0].content;
+        // Exactly the base SYSTEM_PROMPT — no grounding header
+        // ("以下是…的課堂資料節錄"), no truncation warnings, no
+        // summary or transcript markers.
+        expect(sys).not.toContain('以下是');
+        expect(sys).not.toContain('課堂資料節錄');
+        expect(sys).not.toContain('【課程摘要】');
+        expect(sys).not.toContain('【完整逐字稿】');
+        expect(sys).not.toContain('【最近 60 秒');
+        expect(sys).not.toContain('截斷');
+        // And confirm the fallback fetch path was actually exercised:
+        // getNote was called (i.e. RAG empty + lecture ctx triggered
+        // the fallback branch), and getSubtitles was correctly skipped
+        // because note is null (cp75.36a gate).
+        expect(getNoteMock).toHaveBeenCalledWith('L1');
+        expect(getSubtitlesMock).not.toHaveBeenCalled();
+    });
+
     it('truncates fallback transcript to last 60s when isRecording=true', async () => {
         retrieveContextMock.mockResolvedValue({ chunks: [], formattedContext: '' });
         getNoteMock.mockResolvedValue(null);

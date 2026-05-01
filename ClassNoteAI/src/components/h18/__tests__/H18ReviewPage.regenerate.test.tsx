@@ -56,9 +56,32 @@ const mockNoteWithSummary: Note = {
     generated_at: '2026-04-28T01:00:00.000Z',
 };
 
+// cp75.37 · 5.9 — fixture state lives in module-level mutable variables
+// because the storageService mock (declared inside vi.mock(...) below)
+// is hoisted to top-of-file by vitest BEFORE any test-file code runs.
+// The mocked accessors close over these refs by name, so the only way
+// to thread per-test state into them is to mutate these vars from
+// beforeEach. `setupFixture()` is the single place where the defaults
+// are applied — every test that needs different state should call it
+// (or set the relevant field) explicitly so the intent stays obvious.
 let currentLectureStatus: Lecture['status'] = 'completed';
 let currentNote: Note | null = null;
 let currentSubs: Subtitle[] = mockSubtitles;
+
+/**
+ * Reset per-test fixture state to the defaults the test file was
+ * originally written against. Centralising the assignments here makes
+ * it impossible for a test that reaches in to mutate `currentNote`
+ * mid-run to leak state into the next test (the next test's
+ * beforeEach calls this and overwrites everything). All three vars
+ * MUST be touched on every reset — partial resets are how this kind
+ * of fixture goes flaky.
+ */
+function setupFixture(): void {
+    currentLectureStatus = 'completed';
+    currentNote = null;
+    currentSubs = mockSubtitles;
+}
 
 vi.mock('../../../services/storageService', () => ({
     storageService: {
@@ -129,9 +152,7 @@ import { recordingSessionService } from '../../../services/recordingSessionServi
 beforeEach(() => {
     taskTrackerService.reset();
     recordingSessionService.reset();
-    currentLectureStatus = 'completed';
-    currentNote = null;
-    currentSubs = mockSubtitles;
+    setupFixture();
     vi.clearAllMocks();
 });
 

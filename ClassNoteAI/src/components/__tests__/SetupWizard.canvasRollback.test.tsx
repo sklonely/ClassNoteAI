@@ -141,6 +141,26 @@ async function navigateToCanvasStep() {
 }
 
 beforeEach(() => {
+    // cp75.37 · 5.7 — mockClear() vs mockReset() rationale.
+    //
+    //   - saveAppSettingsMock / getAppSettingsMock / toastErrorMock are
+    //     declared in vi.hoisted() with stable default impls (the
+    //     getAppSettingsMock impl returns a baseline AppSettings shape
+    //     used by every test). We want to keep those defaults — only
+    //     clear the call HISTORY between tests. mockClear() is correct.
+    //     Tests that need a different impl explicitly call mockReset()
+    //     + mockResolvedValue/mockRejectedValue inside the test body
+    //     (see the rollback / failure cases below).
+    //
+    //   - checkStatusMock is created bare (`vi.fn()`), so it has no
+    //     stable default. Every test that touches it sets its own impl
+    //     via mockResolvedValue/mockRejectedValue. mockReset() here is
+    //     correct: clears history AND impl so a stale impl from the
+    //     previous test can't bleed through.
+    //
+    // Don't blanket-swap these to mockReset — doing so wipes the
+    // hoisted default impl on getAppSettingsMock and the entire
+    // navigation harness collapses on the language-step save.
     saveAppSettingsMock.mockClear();
     getAppSettingsMock.mockClear();
     checkStatusMock.mockReset();
