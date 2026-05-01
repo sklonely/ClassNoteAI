@@ -220,6 +220,137 @@ describe('useAIHistory · cp75.30 fallback grounding when RAG empty', () => {
         expect(getSubtitlesMock).not.toHaveBeenCalled();
     });
 
+    // ─── cp75.36 — gating + truncation disclosure ──────────────────
+
+    it('cp75.36 — when note is null (lecture in trash), does NOT fetch subtitles', async () => {
+        // RAG empty AND get_note returns null — cp75.20 already gates
+        // get_note on is_deleted=0, so a null here means the lecture was
+        // soft-deleted. The fallback must NOT then go grab the orphaned
+        // subtitle rows (subtitles table has no is_deleted column yet)
+        // and inject the deleted lecture's transcript as grounding.
+        retrieveContextMock.mockResolvedValue({ chunks: [], formattedContext: '' });
+        getNoteMock.mockResolvedValue(null);
+        getSubtitlesMock.mockResolvedValue([
+            {
+                id: 's1',
+                lecture_id: 'L1',
+                timestamp: 0,
+                text_en: 'leaked transcript content',
+                type: 'rough',
+                created_at: '2026-04-28T00:00:00.000Z',
+            },
+        ]);
+
+        const getMessages = captureChatStreamMessages();
+
+        const { result } = renderHook(() => useAIHistory());
+        await act(async () => {
+            await result.current.send('hello', {
+                kind: 'lecture',
+                lectureId: 'L1',
+                courseId: 'C1',
+            });
+        });
+
+        await waitFor(() => {
+            expect(getMessages()).not.toBeNull();
+        });
+
+        expect(getNoteMock).toHaveBeenCalledWith('L1');
+        // Subtitles fetch must be skipped when note is null.
+        expect(getSubtitlesMock).not.toHaveBeenCalled();
+        // And the transcript content must NOT have leaked into the
+        // system prompt as grounding.
+        const sys = getMessages()![0].content;
+        expect(sys).not.toContain('leaked transcript content');
+    });
+
+    it('cp75.36 — when transcript > 30000 chars, system prompt includes truncation warning', async () => {
+        retrieveContextMock.mockResolvedValue({ chunks: [], formattedContext: '' });
+        getNoteMock.mockResolvedValue({
+            lecture_id: 'L1',
+            title: 'ML',
+            summary: 'short summary',
+            sections: [],
+            qa_records: [],
+            generated_at: '2026-04-28T00:00:00.000Z',
+        });
+        // Build a transcript whose joined text comfortably exceeds the
+        // 30000-char cap. 200 subs × ~200 chars each = ~40000 chars.
+        const longLine = 'x'.repeat(200);
+        const subs = Array.from({ length: 200 }, (_, i) => ({
+            id: `s${i}`,
+            lecture_id: 'L1',
+            timestamp: i,
+            text_en: `${longLine}-${i}`,
+            type: 'rough' as const,
+            created_at: '2026-04-28T00:00:00.000Z',
+        }));
+        getSubtitlesMock.mockResolvedValue(subs);
+
+        const getMessages = captureChatStreamMessages();
+
+        const { result } = renderHook(() => useAIHistory());
+        await act(async () => {
+            await result.current.send('hello', {
+                kind: 'lecture',
+                lectureId: 'L1',
+                courseId: 'C1',
+            });
+        });
+
+        await waitFor(() => {
+            expect(getMessages()).not.toBeNull();
+        });
+
+        const sys = getMessages()![0].content;
+        // Truncation marker must be present and reference the cap.
+        expect(sys).toContain('逐字稿已截斷');
+        expect(sys).toContain('30000');
+    });
+
+    it('cp75.36 — when transcript fits, no truncation warning in system prompt', async () => {
+        retrieveContextMock.mockResolvedValue({ chunks: [], formattedContext: '' });
+        getNoteMock.mockResolvedValue({
+            lecture_id: 'L1',
+            title: 'ML',
+            summary: 'short summary',
+            sections: [],
+            qa_records: [],
+            generated_at: '2026-04-28T00:00:00.000Z',
+        });
+        getSubtitlesMock.mockResolvedValue([
+            {
+                id: 's1',
+                lecture_id: 'L1',
+                timestamp: 0,
+                text_en: 'a short transcript that fits well under the cap',
+                type: 'rough',
+                created_at: '2026-04-28T00:00:00.000Z',
+            },
+        ]);
+
+        const getMessages = captureChatStreamMessages();
+
+        const { result } = renderHook(() => useAIHistory());
+        await act(async () => {
+            await result.current.send('hello', {
+                kind: 'lecture',
+                lectureId: 'L1',
+                courseId: 'C1',
+            });
+        });
+
+        await waitFor(() => {
+            expect(getMessages()).not.toBeNull();
+        });
+
+        const sys = getMessages()![0].content;
+        expect(sys).toContain('a short transcript that fits well under the cap');
+        expect(sys).not.toContain('逐字稿已截斷');
+        expect(sys).not.toContain('摘要已截斷');
+    });
+
     it('truncates fallback transcript to last 60s when isRecording=true', async () => {
         retrieveContextMock.mockResolvedValue({ chunks: [], formattedContext: '' });
         getNoteMock.mockResolvedValue(null);

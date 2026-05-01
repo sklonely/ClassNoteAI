@@ -203,10 +203,10 @@ export function useAIHistory() {
                     const note = await storageService
                         .getNote(ctx.lectureId)
                         .catch(() => null);
-                    const subs = await storageService
-                        .getSubtitles(ctx.lectureId)
-                        .catch(() => []);
 
+                    // Resolve the recording state up-front — we need it both
+                    // for the cp75.36 gate below and for the transcript
+                    // window calc below.
                     let isRecording = false;
                     try {
                         const st = recordingSessionService.getState();
@@ -217,9 +217,42 @@ export function useAIHistory() {
                         /* swallow — defaults to false */
                     }
 
+                    // cp75.36 — if the note is missing (lecture is in trash
+                    // per cp75.20's is_deleted gate on get_note), skip the
+                    // subtitle fetch too. Otherwise we'd inject a deleted
+                    // lecture's transcript as fallback grounding, leaking
+                    // content the user expects to be hidden. (Subtitles
+                    // table has no is_deleted column at schema level — that
+                    // cleanup is queued P3 work, so we gate here in TS.)
+                    //
+                    // Exception: during an active recording the note row
+                    // legitimately doesn't exist yet (it's persisted at
+                    // stop-time), so we still want to ground on the live
+                    // transcript window in that case.
+                    const subs =
+                        note || isRecording
+                            ? await storageService
+                                  .getSubtitles(ctx.lectureId)
+                                  .catch(() => [])
+                            : [];
+
                     const lines: string[] = [];
                     if (note?.summary) {
-                        lines.push('【課程摘要】', note.summary.slice(0, 8000));
+                        // cp75.36 — silent truncation kills user trust on
+                        // long lectures. Mark when we sliced so the AI can
+                        // disclose its limited view.
+                        const SUMMARY_CAP = 8000;
+                        const summaryTruncated = note.summary.length > SUMMARY_CAP;
+                        lines.push(
+                            '【課程摘要】',
+                            note.summary.slice(0, SUMMARY_CAP),
+                        );
+                        if (summaryTruncated) {
+                            lines.push(
+                                `（注意：摘要已截斷至前 ${SUMMARY_CAP} 字 / 共 ${note.summary.length} 字。` +
+                                    `如使用者問的內容可能在後段，請明確告知「我只看到前段摘要」。）`,
+                            );
+                        }
                     }
                     if (note?.sections?.length) {
                         lines.push(
@@ -236,11 +269,22 @@ export function useAIHistory() {
                                   return s.timestamp >= lastTs - 60;
                               })
                             : subs;
-                        const transcriptText = window
+                        const fullTranscript = window
                             .map((s) => s.text_en || s.text_zh || '')
                             .filter(Boolean)
-                            .join('\n')
-                            .slice(0, 30000);
+                            .join('\n');
+                        // cp75.36 — same disclosure pattern for transcript.
+                        // 4-hour lectures (~65K chars) drop 50%+ at this cap;
+                        // we'd rather have the AI tell the user "I only see
+                        // the first half" than silently hand back partial
+                        // answers the user can't tell are partial.
+                        const TRANSCRIPT_CAP = 30_000;
+                        const transcriptText = fullTranscript.slice(
+                            0,
+                            TRANSCRIPT_CAP,
+                        );
+                        const transcriptTruncated =
+                            !isRecording && fullTranscript.length > TRANSCRIPT_CAP;
                         if (transcriptText) {
                             lines.push(
                                 isRecording
@@ -248,6 +292,12 @@ export function useAIHistory() {
                                     : '【完整逐字稿】',
                                 transcriptText,
                             );
+                            if (transcriptTruncated) {
+                                lines.push(
+                                    `（注意：逐字稿已截斷至前 ${TRANSCRIPT_CAP} 字 / 共 ${fullTranscript.length} 字。` +
+                                        `如使用者問的內容可能在後段，請明確告知「我只看到前段內容」。）`,
+                                );
+                            }
                         }
                     }
                     if (lines.length > 0) ragGrounding = lines.join('\n\n');

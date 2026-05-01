@@ -1323,7 +1323,17 @@ export default function H18ReviewPage({
                                             <div className={s.qaQuestion}>
                                                 Q · {fmtTime(qa.timestamp)}
                                             </div>
+                                            {/* cp75.36 — question stays plain
+                                                text (it's typically a short
+                                                "What is X?" prompt; we don't
+                                                want unintended ** / # / `
+                                                characters to render). */}
                                             <div className={s.qaAnswer}>{qa.question}</div>
+                                            {/* cp75.36 — answer is Markdown
+                                                (generateQA may emit code
+                                                fences, bullets, bold etc.).
+                                                Same render stack as the
+                                                summary box (cp75.29). */}
                                             <div
                                                 className={s.qaAnswer}
                                                 style={{
@@ -1331,7 +1341,12 @@ export default function H18ReviewPage({
                                                     color: 'var(--h18-text-mid)',
                                                 }}
                                             >
-                                                {qa.answer}
+                                                <ReactMarkdown
+                                                    remarkPlugins={[remarkGfm]}
+                                                    rehypePlugins={[rehypeSanitize]}
+                                                >
+                                                    {qa.answer}
+                                                </ReactMarkdown>
                                             </div>
                                         </div>
                                     ))}
