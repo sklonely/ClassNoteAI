@@ -48,7 +48,7 @@ export default function LoginScreen({ onComplete }: LoginScreenProps) {
     };
 
     return (
-        <div className={s.root}>
+        <div data-agent-id="auth.login" className={s.root}>
             <div className={s.card}>
                 <div className={s.head}>
                     <div className={s.avatar}>
@@ -60,6 +60,7 @@ export default function LoginScreen({ onComplete }: LoginScreenProps) {
 
                 <div className={s.field}>
                     <input
+                        data-agent-id="auth.username"
                         type="text"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
@@ -78,6 +79,7 @@ export default function LoginScreen({ onComplete }: LoginScreenProps) {
                 )}
 
                 <button
+                    data-agent-id="auth.submit"
                     onClick={handleLogin}
                     disabled={isLoading || !username.trim()}
                     className={s.btn}

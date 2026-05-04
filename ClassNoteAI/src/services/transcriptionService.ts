@@ -127,6 +127,8 @@ class TranscriptionService {
               endTime: this.startTimeWall + event.audioEndSec * 1000,
               source: 'rough',
               translationSource: undefined,
+              speakerRole: event.speakerRole,
+              speakerId: event.speakerId,
               text: event.textEn,
             });
             break;
@@ -152,6 +154,7 @@ class TranscriptionService {
           case 'session_ended':
           case 'translation_failed':
           case 'session_started':
+          case 'pipeline_status':
             // No UI side-effect needed here; consumers that care
             // subscribe to subtitleStream directly.
             break;

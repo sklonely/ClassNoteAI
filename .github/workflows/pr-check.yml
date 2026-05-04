@@ -125,15 +125,6 @@ jobs:
       # Rust pipeline (expensive — only runs after frontend passes).
       # ============================================================
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Enable sccache for rustc
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-        shell: bash
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
@@ -260,15 +251,6 @@ jobs:
       # Rust pipeline.
       # ============================================================
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Enable sccache for rustc
-        run: |
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-        shell: bash
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
@@ -329,7 +311,7 @@ jobs:
           # lib.rs unconditionally calls EmbeddingService::{extract_representative_sentences,
           # batch_cosine_similarity} at lines 1276/1351/1423 which only exist
           # under that feature. So the "speedup" was actually breaking every
-          # PR check on Windows. sccache alone keeps most of the win.
+          # PR check on Windows.
           # Follow-up: feature-gate those call sites, then re-add --no-default-features.
           #
           # ci-check profile (inherits dev, debug=0) strips debuginfo from

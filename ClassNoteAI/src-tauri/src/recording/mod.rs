@@ -36,7 +36,7 @@ pub mod video_import;
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Default assumptions if no sidecar is present. Matches what the frontend
@@ -105,6 +105,10 @@ pub struct PersistedTranscriptSegment {
     /// allowed to drop on crash without data loss).
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(default)]
+    pub speaker_role: Option<String>,
+    #[serde(default)]
+    pub speaker_id: Option<String>,
 }
 
 /// Validates a lecture_id is a plain UUID-ish identifier with no
@@ -316,6 +320,32 @@ pub fn wrap_pcm_as_wav(pcm: &[u8], sample_rate: u32, channels: u16) -> Vec<u8> {
     out
 }
 
+fn write_wav_header<W: Write>(
+    out: &mut W,
+    data_size: u32,
+    sample_rate: u32,
+    channels: u16,
+) -> std::io::Result<()> {
+    let byte_rate = sample_rate * channels as u32 * BITS_PER_SAMPLE as u32 / 8;
+    let block_align = channels * BITS_PER_SAMPLE / 8;
+    let riff_size = 36 + data_size;
+
+    out.write_all(b"RIFF")?;
+    out.write_all(&riff_size.to_le_bytes())?;
+    out.write_all(b"WAVE")?;
+    out.write_all(b"fmt ")?;
+    out.write_all(&16u32.to_le_bytes())?;
+    out.write_all(&1u16.to_le_bytes())?;
+    out.write_all(&channels.to_le_bytes())?;
+    out.write_all(&sample_rate.to_le_bytes())?;
+    out.write_all(&byte_rate.to_le_bytes())?;
+    out.write_all(&block_align.to_le_bytes())?;
+    out.write_all(&BITS_PER_SAMPLE.to_le_bytes())?;
+    out.write_all(b"data")?;
+    out.write_all(&data_size.to_le_bytes())?;
+    Ok(())
+}
+
 /// Read the in-progress PCM, wrap as WAV, write to `final_path`, delete
 /// the scratch. Returns the bytes of the finalized WAV file.
 pub fn finalize_recording_inner(
@@ -327,15 +357,27 @@ pub fn finalize_recording_inner(
     let p = pcm_path(in_progress_dir, lecture_id);
     let meta = read_meta_or_default(in_progress_dir, lecture_id);
 
-    let mut pcm = Vec::new();
-    File::open(&p)?.read_to_end(&mut pcm)?;
-
-    let wav = wrap_pcm_as_wav(&pcm, meta.sample_rate, meta.channels);
+    let data_size = fs::metadata(&p)?.len();
+    if data_size > u32::MAX as u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "recording is too large for a single WAV file",
+        ));
+    }
 
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(final_path, &wav)?;
+    let mut input = File::open(&p)?;
+    let mut output = File::create(final_path)?;
+    write_wav_header(
+        &mut output,
+        data_size as u32,
+        meta.sample_rate,
+        meta.channels,
+    )?;
+    std::io::copy(&mut input, &mut output)?;
+    output.flush()?;
 
     // Clean up the scratch files. Best-effort — the finalized WAV is
     // already safely on disk, so partial cleanup won't lose anything.
@@ -345,7 +387,7 @@ pub fn finalize_recording_inner(
     let _ = fs::remove_file(&p);
     let _ = fs::remove_file(meta_path(in_progress_dir, lecture_id));
 
-    Ok(wav.len() as u64)
+    Ok(44 + data_size)
 }
 
 /// List every in-progress `.pcm` file with a companion meta if present,
@@ -623,6 +665,22 @@ mod tests {
     }
 
     #[test]
+    fn find_orphaned_recordings_ignores_temp_pcm_sibling_dir() {
+        let tmp = TempDir::new().unwrap();
+        let in_progress = tmp.path().join("audio").join("in-progress");
+        let temp_pcm = tmp.path().join("temp_pcm");
+        fs::create_dir_all(&in_progress).unwrap();
+        fs::create_dir_all(&temp_pcm).unwrap();
+        fs::write(temp_pcm.join("import.pcm"), [0u8; 4]).unwrap();
+
+        let orphans = find_orphaned_recordings_inner(&in_progress).unwrap();
+        assert!(
+            orphans.is_empty(),
+            "import temp PCM must not look like interrupted recording audio"
+        );
+    }
+
+    #[test]
     fn discard_removes_both_pcm_and_meta() {
         let (_tmp, dir) = fresh();
         append_pcm_chunk_inner(&dir, "gone", &[9i16], 16_000, 1).unwrap();
@@ -713,6 +771,8 @@ mod tests {
             text_en: text.to_string(),
             text_zh: None,
             kind: "rough".to_string(),
+            speaker_role: None,
+            speaker_id: None,
         }
     }
 
@@ -735,6 +795,8 @@ mod tests {
             text_en: "world".to_string(),
             text_zh: Some("世界".to_string()),
             kind: "fine".to_string(),
+            speaker_role: Some("teacher".to_string()),
+            speaker_id: Some("speaker-0".to_string()),
         };
         append_transcript_segment_inner(&dir, "lec-r", &s1).unwrap();
         append_transcript_segment_inner(&dir, "lec-r", &s2).unwrap();
@@ -745,6 +807,8 @@ mod tests {
         assert_eq!(segs[1].id, "b");
         assert_eq!(segs[1].text_zh.as_deref(), Some("世界"));
         assert_eq!(segs[1].kind, "fine");
+        assert_eq!(segs[1].speaker_role.as_deref(), Some("teacher"));
+        assert_eq!(segs[1].speaker_id.as_deref(), Some("speaker-0"));
     }
 
     #[test]
@@ -803,7 +867,10 @@ mod tests {
             .unwrap();
         }
         let orphans = find_orphaned_recordings_inner(&dir).unwrap();
-        let lec = orphans.iter().find(|o| o.lecture_id == "lec-with-tx").unwrap();
+        let lec = orphans
+            .iter()
+            .find(|o| o.lecture_id == "lec-with-tx")
+            .unwrap();
         assert_eq!(lec.transcript_segments, 3);
     }
 
@@ -870,7 +937,10 @@ mod tests {
     fn append_transcript_rejects_lecture_id_with_path_traversal() {
         let (_tmp, dir) = fresh();
         let r = append_transcript_segment_inner(&dir, "../escape", &sample_segment("x", "y"));
-        assert!(r.is_err(), "transcript append must reject path-traversal id");
+        assert!(
+            r.is_err(),
+            "transcript append must reject path-traversal id"
+        );
     }
 
     #[test]

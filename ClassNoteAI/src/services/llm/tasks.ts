@@ -9,6 +9,7 @@
  */
 
 import { resolveActiveProvider } from './registry';
+import { readPreferredProviderId } from './providerState';
 import type { LLMMessage } from './types';
 import { LLMError } from './types';
 import { usageTracker, type UsageTask } from './usageTracker';
@@ -101,7 +102,7 @@ function pickModelForTier(models: { id: string }[], tier: ModelTier): string {
 async function activeProviderAndModel(
   tier: ModelTier = 'high',
 ): Promise<{ providerId: string; model: string; provider: Awaited<ReturnType<typeof resolveActiveProvider>> }> {
-  const provider = await resolveActiveProvider(preferredProvider());
+  const provider = await resolveActiveProvider(await readPreferredProviderId());
   if (!provider) {
     throw new LLMError(
       '尚未設定雲端 AI 提供商，請到「個人頁 → 雲端 AI 助理」設一個。',

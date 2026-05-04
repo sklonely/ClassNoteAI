@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Film, ClipboardPaste, X, Loader2, ArrowLeft } from 'lucide-react';
 import { useTauriFileDrop } from '../hooks/useTauriFileDrop';
 import { storageService } from '../services/storageService';
+import { isSupportedMediaPath } from '../utils/mediaFileTypes';
 
 /**
  * v0.6.0 — unified "匯入" entry point for the Notes view.
@@ -55,8 +56,6 @@ interface Props {
     onSubmitPaste: (submission: PasteSubmission) => void;
 }
 
-const MEDIA_EXT = /\.(mp4|m4v|mkv|webm|mov|avi|wav|mp3|m4a|aac|flac|ogg|opus)$/i;
-
 export default function ImportModal({
     open,
     isBusy,
@@ -101,7 +100,7 @@ export default function ImportModal({
         zoneRef: modalRef,
         enabled: open && !isBusy,
         onDrop: (paths) => {
-            const video = paths.find((p) => MEDIA_EXT.test(p));
+            const video = paths.find(isSupportedMediaPath);
             if (video) {
                 onDropVideo(video, {
                     language: videoLang,

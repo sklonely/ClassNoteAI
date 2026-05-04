@@ -19,6 +19,9 @@ import { audioDeviceService } from "./services/audioDeviceService";
 import { recordingSessionService } from "./services/recordingSessionService";
 import type { RecordingSessionState } from "./services/recordingSessionService";
 import { taskTrackerService } from "./services/taskTrackerService";
+import { useAgentAutomationBridge } from "./services/agentAutomationService";
+import { useAgentAiStateBridge } from "./services/agentAiStateService";
+import { useAgentWorkflowBridge } from "./services/agentWorkflowService";
 import { useAuth } from "./contexts/AuthContext";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -213,6 +216,9 @@ function App() {
   const [appState, setAppState] = useState<AppState>('loading');
   const [recoverableSessions, setRecoverableSessions] = useState<RecoverableSession[]>([]);
   const { user } = useAuth();
+  useAgentAutomationBridge();
+  useAgentAiStateBridge();
+  useAgentWorkflowBridge();
 
   // Detached AI 助教 webview: spawned by openDetachedAiTutor with the
   // `?aiTutorWindow=1` query flag. That window shares this bundle

@@ -115,11 +115,11 @@ rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
 # Date and time handling
 chrono = { version = "0.4", features = ["serde"] }
 # UUID generation
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 # ZIP file extraction for model downloads
 zip = "0.6"
 # Regular expressions for text preprocessing
-regex = "1.10"
+regex = "1.12"
 # URL encoding for Google Translate unofficial API
 urlencoding = "2.1"
 # ct2rs removed in the v2 streaming refactor. Translation moved to the
@@ -150,6 +150,7 @@ tauri-plugin-process = "2"
 # exactly 2.0.0-rc.12 and pre-release semver doesn't allow rc.9 →
 # rc.12 promotion automatically).
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+libloading = "0.8"
 ndarray = "0.15"
 # Phase 3 of speech-pipeline-v0.6.5 (#53): compression-ratio guard
 # against Whisper repetition-loop hallucinations. Already transitive

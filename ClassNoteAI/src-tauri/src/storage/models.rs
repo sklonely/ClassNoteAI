@@ -173,6 +173,10 @@ pub struct Subtitle {
     #[serde(rename = "type")]
     pub subtitle_type: String, // "rough" | "fine" - 序列化為 "type"
     pub confidence: Option<f64>,
+    #[serde(default)]
+    pub speaker_role: Option<String>,
+    #[serde(default)]
+    pub speaker_id: Option<String>,
     pub created_at: String,
 
     // ─── Phase 7 cp74.1 (subtitle two-axis schema) ────────────────────
@@ -211,6 +215,8 @@ impl Subtitle {
             text_zh,
             subtitle_type,
             confidence,
+            speaker_role: None,
+            speaker_id: None,
             created_at: Utc::now().to_rfc3339(),
             source: default_subtitle_source(),
             fine_text: None,
@@ -233,9 +239,6 @@ impl TryFrom<&Row<'_>> for Subtitle {
             subtitle_type: row.get(5)?,
             confidence: row.get(6)?,
             created_at: row.get(7)?,
-            // Source defaults to 'live' if NULL on legacy rows; the v9
-            // migration backfills NOT NULL DEFAULT but old rows pre-
-            // migration may still surface here briefly.
             source: row
                 .get::<_, Option<String>>(8)
                 .unwrap_or(None)
@@ -243,6 +246,8 @@ impl TryFrom<&Row<'_>> for Subtitle {
             fine_text: row.get(9).unwrap_or(None),
             fine_translation: row.get(10).unwrap_or(None),
             fine_confidence: row.get(11).unwrap_or(None),
+            speaker_role: row.get::<_, Option<String>>(12).unwrap_or(None),
+            speaker_id: row.get::<_, Option<String>>(13).unwrap_or(None),
         })
     }
 }

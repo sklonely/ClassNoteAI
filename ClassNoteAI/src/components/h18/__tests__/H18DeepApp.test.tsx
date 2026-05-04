@@ -67,7 +67,9 @@ vi.mock('../../../services/transcriptionService', () => ({
 // storageService — minimum surface H18DeepApp's startNewLectureFor needs.
 // `getLecture` returns a stub for the live-session label lookup; the rest
 // stand in for the same-day-collision path so the helper doesn't blow up.
-const mockStorage = {
+// Hoisted so the providerState import (added in v0.7.1 merge) doesn't read
+// storageService at module-load time before this is initialised.
+const mockStorage = vi.hoisted(() => ({
     getLecture: vi.fn(async (id: string) => ({
         id,
         course_id: 'c1',
@@ -81,7 +83,9 @@ const mockStorage = {
     })),
     listLecturesByCourse: vi.fn(async () => []),
     saveLecture: vi.fn(async () => undefined),
-};
+    getSetting: vi.fn(async () => null),
+    setSetting: vi.fn(async () => undefined),
+}));
 vi.mock('../../../services/storageService', () => ({
     storageService: mockStorage,
 }));

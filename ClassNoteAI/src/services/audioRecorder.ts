@@ -44,6 +44,7 @@ export class AudioRecorder {
 
   // 測試用途：存儲錄製的音頻數據
   private recordedChunks: Int16Array[] = [];
+  private recordedSampleCount: number = 0;
   private recordingSampleRate: number = 0;
 
   // Crash-safe persistence (v0.5.2): while a lecture is being recorded,
@@ -57,12 +58,12 @@ export class AudioRecorder {
   private persistTimer: ReturnType<typeof setInterval> | null = null;
   /** Consecutive flush failures. After N in a row we disable persistence
    *  for the rest of the session instead of silently accumulating samples
-   *  in JS heap until the tab OOMs. The session's in-memory
-   *  `recordedChunks` → `getWavData()` fallback still works on Stop. */
+   *  in JS heap until the tab OOMs. */
   private persistConsecutiveFailures = 0;
   private persistDisabled = false;
   private static readonly PERSIST_FLUSH_MS = 5_000;
   private static readonly PERSIST_MAX_CONSECUTIVE_FAILURES = 5;
+  private static readonly IN_MEMORY_FALLBACK_SECONDS = 120;
   /** Hard cap on how many samples we'll hold in memory waiting to be
    *  flushed. ~10 minutes of 48 kHz mono i16 = ~55 MB; above that we
    *  refuse to retry and fall back to in-memory-only persistence so
@@ -212,6 +213,23 @@ export class AudioRecorder {
   /**
    * 處理音頻數據
    */
+  private rememberRecordedChunk(chunk: Int16Array): void {
+    this.recordedChunks.push(chunk);
+    this.recordedSampleCount += chunk.length;
+
+    if (!this.persistLectureId) {
+      return;
+    }
+
+    const sampleRate = this.recordingSampleRate || this.config.sampleRate;
+    const maxSamples = sampleRate * AudioRecorder.IN_MEMORY_FALLBACK_SECONDS;
+    while (this.recordedSampleCount > maxSamples && this.recordedChunks.length > 1) {
+      const removed = this.recordedChunks.shift();
+      if (!removed) break;
+      this.recordedSampleCount -= removed.length;
+    }
+  }
+
   private handleAudioProcess = (event: AudioProcessingEvent) => {
     if (this.status !== 'recording') {
       return;
@@ -239,10 +257,10 @@ export class AudioRecorder {
       const sample = Math.max(-1, Math.min(1, inputData[i]));
       originalPcmData[i] = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
     }
-    this.recordedChunks.push(originalPcmData);
     if (this.recordingSampleRate === 0) {
       this.recordingSampleRate = inputBuffer.sampleRate;
     }
+    this.rememberRecordedChunk(originalPcmData);
     // Queue a copy for crash-safe disk flush. The queue is drained by
     // the periodic timer; we don't invoke Tauri per chunk because that
     // would bombard the IPC bus every ~20-40ms.
@@ -317,8 +335,7 @@ export class AudioRecorder {
    *  cause the pending array to grow without bound — each 5s tick
    *  re-serialising the whole thing and ballooning memory until the tab
    *  died. After the hard cap, persistence is disabled for the rest of
-   *  the session; recording continues in-memory and the old
-   *  `getWavData()` path on Stop still saves the audio. */
+   *  the session; recording continues with bounded in-memory fallback. */
   private async flushPersistPending(): Promise<void> {
     if (!this.persistLectureId || this.persistDisabled) return;
     if (this.persistPending.length === 0) return;
@@ -351,8 +368,7 @@ export class AudioRecorder {
       );
 
       // Decide whether to retry. Retrying means putting samples back at
-      // the head; giving up means dropping them from the persist queue
-      // (they remain in `recordedChunks` for the in-memory WAV fallback).
+      // the head; giving up means dropping them from the persist queue.
       const hitFailureCap =
         this.persistConsecutiveFailures >= AudioRecorder.PERSIST_MAX_CONSECUTIVE_FAILURES;
       const projectedPending =
@@ -363,10 +379,10 @@ export class AudioRecorder {
         console.error(
           `[AudioRecorder] Giving up on disk persistence for this session ` +
             `(failures=${this.persistConsecutiveFailures}, pending_samples=${projectedPending}). ` +
-            `Recording continues in memory; Stop will still produce a WAV via the in-memory fallback.`,
+            `Recording will keep only the recent in-memory fallback window.`,
         );
         this.persistDisabled = true;
-        // Drop the merged samples — they're already in recordedChunks.
+        // Drop the merged samples; the bounded fallback window may still have recent audio.
         return;
       }
 
@@ -486,6 +502,7 @@ export class AudioRecorder {
 
       // 測試用途：重置錄製數據
       this.recordedChunks = [];
+      this.recordedSampleCount = 0;
       this.recordingSampleRate = 0;
 
       // 更新狀態
@@ -636,7 +653,7 @@ export class AudioRecorder {
     }
 
     // 合併所有音頻塊
-    const totalLength = this.recordedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const totalLength = this.recordedSampleCount;
     const mergedData = new Int16Array(totalLength);
     let offset = 0;
     for (const chunk of this.recordedChunks) {
@@ -720,11 +737,11 @@ export class AudioRecorder {
    * 測試用途：獲取錄製的音頻信息
    */
   getRecordingInfo(): { duration: number; sampleRate: number; chunks: number } | null {
-    if (this.recordedChunks.length === 0) {
+    if (this.recordedSampleCount === 0) {
       return null;
     }
 
-    const totalSamples = this.recordedChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const totalSamples = this.recordedSampleCount;
     const sampleRate = this.recordingSampleRate || this.config.sampleRate;
     const duration = totalSamples / sampleRate;
 
@@ -761,6 +778,7 @@ export class AudioRecorder {
     this.onStatusChangeCallback = null;
     this.onErrorCallback = null;
     this.recordedChunks = [];
+    this.recordedSampleCount = 0;
     this.recordingSampleRate = 0;
 
     console.log('[AudioRecorder] 實例已銷毀');

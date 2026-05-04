@@ -59,7 +59,7 @@
       "resources/ort/*": "./resources/ort/"
     },
     "macOS": {
-      "entitlements": null,
+      "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],
       "providerShortName": null,

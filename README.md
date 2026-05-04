@@ -23,6 +23,8 @@ ClassNote AI is built for real classrooms: live lectures, imported recordings, s
 | Live recording | Record a class and generate transcript captions while the session is running. |
 | Media import | Import lecture videos or audio-only recordings and process them through the same note pipeline. |
 | Translation | Produce Chinese subtitles from English lecture audio, with final transcript text used for stable translation. |
+| Speaker context | Preserve speaker attribution when available so teacher speech and student questions can be reviewed separately. |
+| Long-session safety | Keep long recordings recoverable, bound memory use, and warn or stop when a session appears forgotten. |
 | Course memory | Search across lecture transcripts, PDFs, notes, and course material. |
 | AI assistant | Ask questions about a lecture or course using your configured AI provider. |
 | Local-first data | Store lecture data, subtitles, notes, and indexes on your machine. |
@@ -66,6 +68,8 @@ cd ClassNoteAI
 npm install
 npm run tauri:dev
 ```
+
+The app workspace also includes an opt-in agent CLI for local debugging, smoke checks, and high-level workflow validation.
 
 ## License
 

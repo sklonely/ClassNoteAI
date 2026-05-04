@@ -126,6 +126,7 @@ class TranslationPipeline {
       return; // dropped — never enters the queue
     }
     this.queue.push(job);
+    this.emitStatus(job.sessionId);
     void this.drain();
   }
 
@@ -254,7 +255,9 @@ class TranslationPipeline {
           if (this.queue.length === 0) break;
         }
         const job = this.queue.shift()!;
+        this.emitStatus(job.sessionId);
         await this.translateOne(job);
+        this.emitStatus(job.sessionId);
       }
     } finally {
       this.processing = false;
@@ -334,6 +337,16 @@ class TranslationPipeline {
       id: job.id,
       sessionId: job.sessionId,
       error: String((lastError as { message?: string })?.message ?? lastError),
+    });
+  }
+
+  private emitStatus(sessionId: string): void {
+    const oldest = this.queue[0];
+    subtitleStream.emit({
+      kind: 'pipeline_status',
+      sessionId,
+      translationQueueDepth: this.queue.length,
+      oldestTranslationAgeMs: oldest ? Math.max(0, Date.now() - oldest.enqueuedAt) : 0,
     });
   }
 }

@@ -3,6 +3,7 @@ import { asrPipeline } from './streaming/asrPipeline';
 import { subtitleStream, type SubtitleEvent } from './streaming/subtitleStream';
 import { storageService } from './storageService';
 import type { Lecture, Subtitle } from '../types';
+import { isAudioOnlyMediaPath } from '../utils/mediaFileTypes';
 
 export type ImportStage =
     | 'staging'
@@ -38,10 +39,8 @@ interface PcmExtractResult {
 
 const ASR_CHUNK_SAMPLES = 8_960;
 const IMPORT_SLICE_SAMPLES = ASR_CHUNK_SAMPLES * 10; // 5.6 s of audio
-const AUDIO_EXT = /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i;
-
 function isAudioOnly(path: string): boolean {
-    return AUDIO_EXT.test(path);
+    return isAudioOnlyMediaPath(path);
 }
 
 function delay(ms: number): Promise<void> {
@@ -68,6 +67,8 @@ function subtitleFromEvent(
         type: 'rough',
         source: 'imported',
         confidence: undefined,
+        speaker_role: event.speakerRole,
+        speaker_id: event.speakerId,
         created_at: new Date().toISOString(),
     };
 }

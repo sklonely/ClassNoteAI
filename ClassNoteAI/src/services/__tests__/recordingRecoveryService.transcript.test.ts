@@ -39,7 +39,15 @@ describe('recordingRecoveryService.recoverTranscript', () => {
 
   it('imports every well-formed segment into sqlite via save_subtitles', async () => {
     setMockInvokeResult('read_orphaned_transcript', [
-      { id: 'a', timestamp: 1.0, text_en: 'hello', text_zh: null, type: 'rough' },
+      {
+        id: 'a',
+        timestamp: 1.0,
+        text_en: 'hello',
+        text_zh: null,
+        type: 'rough',
+        speaker_role: 'teacher',
+        speaker_id: 'speaker-0',
+      },
       { id: 'b', timestamp: 2.0, text_en: 'world', text_zh: '世界', type: 'rough' },
       { id: 'c', timestamp: 3.0, text_en: 'goodbye', text_zh: null, type: 'rough' },
     ]);
@@ -52,8 +60,17 @@ describe('recordingRecoveryService.recoverTranscript', () => {
       .mocked(invoke)
       .mock.calls.find(([cmd]) => cmd === 'save_subtitles');
     expect(saveCall).toBeDefined();
-    const subtitles = (saveCall![1] as { subtitles: unknown[] }).subtitles;
+    const subtitles = (saveCall![1] as {
+      subtitles: Array<{
+        id: string;
+        speaker_role?: string;
+        speaker_id?: string;
+      }>;
+    }).subtitles;
     expect(subtitles).toHaveLength(3);
+    expect(subtitles[0].speaker_role).toBe('teacher');
+    expect(subtitles[0].speaker_id).toBe('speaker-0');
+    expect(subtitles[1].speaker_role).toBe('unknown');
   });
 
   it('dedupes by id and keeps the latest entry (with translation populated)', async () => {

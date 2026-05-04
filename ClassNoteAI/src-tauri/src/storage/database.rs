@@ -649,10 +649,31 @@ impl Database {
                 type TEXT NOT NULL,
                 confidence REAL,
                 created_at TEXT NOT NULL,
+                speaker_role TEXT NOT NULL DEFAULT 'unknown',
+                speaker_id TEXT,
                 FOREIGN KEY (lecture_id) REFERENCES lectures(id) ON DELETE CASCADE
             )",
             [],
         )?;
+
+        let mut stmt = self.conn.prepare("PRAGMA table_info(subtitles)")?;
+        let subtitle_columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|name| name.ok())
+            .collect::<Vec<_>>();
+        drop(stmt);
+        if !subtitle_columns.iter().any(|name| name == "speaker_role") {
+            println!("Migrating subtitles table: adding speaker_role column");
+            self.conn.execute(
+                "ALTER TABLE subtitles ADD COLUMN speaker_role TEXT NOT NULL DEFAULT 'unknown'",
+                [],
+            )?;
+        }
+        if !subtitle_columns.iter().any(|name| name == "speaker_id") {
+            println!("Migrating subtitles table: adding speaker_id column");
+            self.conn
+                .execute("ALTER TABLE subtitles ADD COLUMN speaker_id TEXT", [])?;
+        }
 
         // 創建索引以提升查詢性能
         self.conn.execute(
@@ -1377,8 +1398,8 @@ impl Database {
         self.conn.execute(
             "INSERT OR REPLACE INTO subtitles \
              (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, \
-              source, fine_text, fine_translation, fine_confidence) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+              source, fine_text, fine_translation, fine_confidence, speaker_role, speaker_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 subtitle.id,
                 subtitle.lecture_id,
@@ -1392,6 +1413,12 @@ impl Database {
                 subtitle.fine_text,
                 subtitle.fine_translation,
                 subtitle.fine_confidence,
+                subtitle
+                    .speaker_role
+                    .as_deref()
+                    .filter(|role| matches!(*role, "teacher" | "student" | "unknown"))
+                    .unwrap_or("unknown"),
+                subtitle.speaker_id,
             ],
         )?;
         Ok(())
@@ -1487,7 +1514,7 @@ impl Database {
     pub fn get_subtitles(&self, lecture_id: &str) -> SqlResult<Vec<Subtitle>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, \
-                    source, fine_text, fine_translation, fine_confidence \
+                    source, fine_text, fine_translation, fine_confidence, speaker_role, speaker_id \
              FROM subtitles WHERE lecture_id = ?1 ORDER BY timestamp ASC",
         )?;
 
@@ -2507,7 +2534,7 @@ mod tests {
         let lecture = Lecture::new(course.id.clone(), "Lecture".to_string(), None);
         db.save_lecture(&lecture, "test_user").unwrap();
 
-        let sub1 = Subtitle::new(
+        let mut sub1 = Subtitle::new(
             lecture.id.clone(),
             0.0,
             "Hello".to_string(),
@@ -2515,6 +2542,8 @@ mod tests {
             "rough".to_string(),
             Some(0.95),
         );
+        sub1.speaker_role = Some("teacher".to_string());
+        sub1.speaker_id = Some("speaker-0".to_string());
         let sub2 = Subtitle::new(
             lecture.id.clone(),
             1.5,
@@ -2530,7 +2559,11 @@ mod tests {
         let subtitles = db.get_subtitles(&lecture.id).unwrap();
         assert_eq!(subtitles.len(), 2);
         assert_eq!(subtitles[0].text_en, "Hello");
+        assert_eq!(subtitles[0].speaker_role.as_deref(), Some("teacher"));
+        assert_eq!(subtitles[0].speaker_id.as_deref(), Some("speaker-0"));
         assert_eq!(subtitles[1].text_en, "World");
+        assert_eq!(subtitles[1].speaker_role.as_deref(), Some("unknown"));
+        assert_eq!(subtitles[1].speaker_id, None);
     }
 
     #[test]

@@ -11,6 +11,7 @@ This README is for the app workspace. For the project overview, release links, a
 - Create or open a course.
 - Start a lecture recording from the desktop app.
 - Watch captions appear during the session.
+- Keep recording through long classes with disk-backed recovery and safety prompts if the session appears forgotten.
 - Stop the session to commit the final transcript and translation state.
 
 ### Import Media
@@ -22,8 +23,16 @@ This README is for the app workspace. For the project overview, release links, a
 ### Review And Search
 
 - Review transcript captions and translations in the lecture view.
+- See speaker labels when attribution is available, so teacher speech and student questions can stay distinguishable.
 - Add PDFs, notes, or syllabus material to the course.
 - Search across course material and ask the AI assistant contextual questions.
+
+### Agent-Assisted Debugging
+
+- Launch the desktop app with an opt-in automation bridge for local debugging.
+- Inspect app state, recent events, logs, task progress, and visible UI controls.
+- Run high-level app workflows such as media import, course indexing, and lecture summaries from the agent CLI.
+- Use dry runs when validating automation contracts without changing app data.
 
 ## Local Data
 
@@ -64,6 +73,22 @@ Run a production frontend build:
 ```bash
 npm run build
 ```
+
+Run the agent CLI handshake:
+
+```bash
+npm run agent:handshake
+```
+
+Validate the app bridge contract without changing app data:
+
+```bash
+npm run agent:smoke:app -- --dry-run
+```
+
+When you need a real desktop smoke, run the same profile with `--launch-app`; it starts the app with the local bridge enabled, checks status/logs/events/UI/workflow paths, then stops the app it launched.
+
+For workflow debugging, `app ai-status` reports whether the running app has a configured AI provider for text or vision tasks without exposing credentials.
 
 Rust checks live under `src-tauri`:
 

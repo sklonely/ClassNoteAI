@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { mediaDialogExtensions } from "../utils/mediaFileTypes";
 
 /**
  * 選擇 PDF 文件並讀取其內容
@@ -46,7 +47,7 @@ export async function selectVideoFile(): Promise<string | null> {
       filters: [
         {
           name: 'Video or Audio',
-          extensions: ['mp4', 'mkv', 'webm', 'mov', 'm4v', 'avi', 'wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus'],
+          extensions: mediaDialogExtensions(),
         },
       ],
       title: '選擇影片檔案',

@@ -23,6 +23,7 @@ mod setup;
 pub mod paths;
 // 統一下載管理模塊
 pub mod diagnostics;
+pub mod agent_bridge;
 pub mod downloads;
 // 同步模塊
 // Localhost OAuth callback listener (for ChatGPT OAuth sign-in)
@@ -3049,6 +3050,10 @@ pub fn run() {
                 }
             });
 
+            if let Err(e) = agent_bridge::maybe_start(app.handle().clone()) {
+                eprintln!("[agent_bridge] startup skipped/failed: {e}");
+            }
+
             // Auto-load the Nemotron model in the background if any
             // variant is already on disk. INT8 wins over FP32 if both
             // are present (faster, similar accuracy). We never trigger
@@ -3130,6 +3135,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_devtools,
             close_devtools,
+            agent_bridge::agent_bridge_update_ui_state,
+            agent_bridge::agent_bridge_update_ai_state,
+            agent_bridge::agent_bridge_complete_ui_action,
+            agent_bridge::agent_bridge_workflow_progress,
+            agent_bridge::agent_bridge_complete_workflow,
             read_recent_log,
             open_log_folder,
             export_diagnostic_package,
