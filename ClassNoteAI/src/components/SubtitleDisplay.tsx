@@ -7,6 +7,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { Trash2 } from 'lucide-react';
 import { subtitleService } from '../services/subtitleService';
 import type { SubtitleState } from '../types/subtitle';
+import { buildSpeakerLabel } from '../utils/speakerLabels';
 
 interface SubtitleDisplayProps {
   maxLines?: number;
@@ -139,6 +140,7 @@ export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: Subti
                 `${centis.toString().padStart(2, '0')}`;
 
             const isActive = index === activeIdx;
+            const speakerLabel = buildSpeakerLabel(segment.speakerRole, segment.speakerId);
 
             return (
               <div
@@ -155,12 +157,19 @@ export default function SubtitleDisplay({ onSeek, currentTime, baseTime }: Subti
                 `}
                 style={{ zIndex: 10 }}
               >
-                <div className="flex items-start justify-between mb-1">
-                  <span className="text-xs text-gray-500 dark:text-gray-400">
-                    {timeString}
-                  </span>
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      {timeString}
+                    </span>
+                    {speakerLabel && (
+                      <span className={`px-1.5 py-0.5 border rounded text-[11px] leading-tight font-medium ${speakerLabel.className}`}>
+                        {speakerLabel.text}
+                      </span>
+                    )}
+                  </div>
                   {segment.language && (
-                    <span className="text-xs text-gray-400 dark:text-gray-500">
+                    <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0">
                       {segment.language}
                     </span>
                   )}

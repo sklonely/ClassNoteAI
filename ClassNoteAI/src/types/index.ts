@@ -54,6 +54,8 @@ export interface Subtitle {
   text_zh?: string;
   type: "rough" | "fine"; // 對應後端的 subtitle_type 字段
   confidence?: number;
+  speaker_role?: "teacher" | "student" | "unknown";
+  speaker_id?: string;
   created_at: string; // ISO 8601 - 必需字段
 }
 
