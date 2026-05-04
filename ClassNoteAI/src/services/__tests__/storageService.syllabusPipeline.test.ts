@@ -152,9 +152,12 @@ describe('saveCourseWithSyllabus — background failure path', () => {
         const failedCourse = (failedCall![1] as { course: Course }).course;
         const meta = failedCourse.syllabus_info as Record<string, unknown>;
         expect(meta['_classnote_error_message']).toContain('rate limit');
+        // Production toast signature evolved to (title, description, action?).
+        // Match title + description, ignore the navRequest action object.
         expect(mockedToast.error).toHaveBeenCalledWith(
             '課程大綱生成失敗',
             expect.stringContaining('rate limit'),
+            expect.objectContaining({ label: '重新生成' }),
         );
     });
 });

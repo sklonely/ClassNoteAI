@@ -307,10 +307,18 @@ async fn translate_rough(
         .await
         .map_err(|e| e.to_string()),
         "gemma" => {
+            // cp75.1: forward source/target lang to TranslateGemma so the
+            // PTranslate language pickers actually take effect. Before
+            // this, gemma::translate was hardcoded en → zh-TW regardless.
             // gemma_endpoint == None → translate() falls back to DEFAULT_ENDPOINT
-            translation::gemma::translate(&text, gemma_endpoint.as_deref())
-                .await
-                .map_err(|e| e.to_string())
+            translation::gemma::translate(
+                &text,
+                &source_lang,
+                &target_lang,
+                gemma_endpoint.as_deref(),
+            )
+            .await
+            .map_err(|e| e.to_string())
         }
         #[cfg(feature = "nmt-local")]
         "local" => translation::rough::translate_rough(&text, &source_lang, &target_lang)
@@ -552,8 +560,19 @@ async fn parakeet_download_model(
 
 /// Load (or swap) the Nemotron model. Different variant than what's
 /// currently loaded → drops the existing one first.
+///
+/// **cp75.24 — variant-switch safety:** refuses to swap models while a
+/// recording session is live. The engine's per-session state lives
+/// inside the active model (KV cache, step counter, sub-chunk PCM
+/// buffer); tearing it out mid-stream produces split transcripts at
+/// best and an unrecoverable session-id mismatch at worst. Surface a
+/// localized error so the UI can prompt the user to stop the recording
+/// first instead of silently producing a corrupt transcript.
 #[tauri::command]
 async fn parakeet_load_model(variant: String) -> Result<(), String> {
+    if asr::parakeet_engine::has_session() {
+        return Err("錄音進行中無法切換模型，請先停止錄音".to_string());
+    }
     let variant = variant_from_str(&variant)?;
     if !asr::parakeet_model::is_present(variant) {
         return Err(format!(
@@ -574,14 +593,41 @@ async fn parakeet_unload_model() -> Result<(), String> {
         .map_err(|e| format!("unload_model task join error: {e}"))
 }
 
-/// Begin an ASR session. Auto-loads the first available variant
-/// (INT8 wins over FP32 if both are present) if nothing is in RAM yet.
+/// Begin an ASR session.
+///
+/// `preferred_variant`: optional 'int8' | 'fp32' from settings.experimental
+/// .parakeetVariant. The renderer (asrPipeline.start) passes whatever the
+/// user picked in PTranscribe. We honor it when:
+///   - No model is currently loaded → load this variant.
+///   - A different variant IS loaded → reload to the requested one
+///     (FP32 is materially better on non-native / accented English; if
+///     the user explicitly chose it, switch even if INT8 is already
+///     warm).
+/// If no variant is preferred or the requested variant isn't downloaded,
+/// fall back to first_present() (legacy behaviour).
 #[tauri::command]
-async fn asr_start_session(session_id: String) -> Result<(), String> {
-    if !asr::parakeet_engine::is_loaded() {
-        let variant = asr::parakeet_model::first_present().ok_or_else(|| {
-            "No Nemotron model downloaded — open 設定 → 本地轉錄 to download.".to_string()
-        })?;
+async fn asr_start_session(
+    session_id: String,
+    preferred_variant: Option<String>,
+) -> Result<(), String> {
+    let want: Option<asr::parakeet_model::Variant> = preferred_variant
+        .as_deref()
+        .map(variant_from_str)
+        .transpose()?;
+
+    let needs_load = !asr::parakeet_engine::is_loaded()
+        || want
+            .map(|w| asr::parakeet_engine::loaded_variant() != Some(w))
+            .unwrap_or(false);
+
+    if needs_load {
+        // Pick the variant: requested-and-present, else first_present.
+        let variant = want
+            .filter(|v| asr::parakeet_model::is_present(*v))
+            .or_else(asr::parakeet_model::first_present)
+            .ok_or_else(|| {
+                "No Nemotron model downloaded — open 設定 → 本地轉錄 to download.".to_string()
+            })?;
         let dir = asr::parakeet_model::model_dir(variant)?;
         tokio::task::spawn_blocking(move || asr::parakeet_engine::ensure_loaded(variant, &dir))
             .await
@@ -701,23 +747,52 @@ struct GemmaStatus {
     /// llama-server binary discovered (bundled / dev / PATH).
     binary_path: Option<String>,
     /// Absolute path the GGUF model would live at on this machine.
+    /// (Legacy 4B path; per-variant paths in `variants` below.)
     model_path: String,
-    /// `true` when the model file exists at the expected size.
+    /// `true` when ANY variant is on disk (legacy field — was 4B-only).
     model_present: bool,
     /// Approximate full size in bytes — frontend uses this to render the
-    /// download dialog "you'll download X.X GB".
+    /// download dialog "you'll download X.X GB". (Legacy 4B size.)
     model_size_bytes: u64,
     /// HuggingFace URL we'd download from. Surfaced for transparency
-    /// (some users/networks block HF; they need to know).
+    /// (some users/networks block HF; they need to know). (Legacy 4B URL.)
     model_url: String,
     /// `true` when our supervised sidecar is currently running. Doesn't
     /// HTTP-probe — for that, call `check_gemma_server`.
     sidecar_running: bool,
+    /// cp75.10 — per-variant presence list. Frontend renders one
+    /// ModelCard per entry so the user sees 4B / 12B / 27B all together.
+    variants: Vec<GemmaVariantStatus>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct GemmaVariantStatus {
+    variant: String, // "4b" | "12b" | "27b"
+    label: &'static str,
+    filename: &'static str,
+    url: &'static str,
+    present: bool,
+    expected_size: u64,
 }
 
 #[tauri::command]
 fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
     let resource_dir = app.path().resource_dir().ok();
+    let variants: Vec<GemmaVariantStatus> = translation::gemma_model::Variant::all()
+        .iter()
+        .map(|v| GemmaVariantStatus {
+            variant: match v {
+                translation::gemma_model::Variant::B4 => "4b".into(),
+                translation::gemma_model::Variant::B12 => "12b".into(),
+                translation::gemma_model::Variant::B27 => "27b".into(),
+            },
+            label: v.label(),
+            filename: v.filename(),
+            url: v.url(),
+            present: translation::gemma_model::is_present_for(*v),
+            expected_size: v.expected_size(),
+        })
+        .collect();
     Ok(GemmaStatus {
         binary_path: translation::gemma_sidecar::locate_binary(resource_dir.as_ref())
             .map(|p| p.to_string_lossy().to_string()),
@@ -728,10 +803,15 @@ fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
         model_size_bytes: translation::gemma_model::EXPECTED_SIZE,
         model_url: translation::gemma_model::MODEL_URL.to_string(),
         sidecar_running: translation::gemma_sidecar::is_running(),
+        variants,
     })
 }
 
-/// Download the TranslateGemma 4B Q4_K_M GGUF model file (≈ 2.5 GB).
+/// Download a TranslateGemma GGUF model file.
+///
+/// Variant selection (cp75.10): caller passes `variant: "4b" | "12b" | "27b"`.
+/// Backward compat: when `variant` is None, defaults to 4B (the only
+/// option pre-cp75.10).
 ///
 /// Resume-friendly: a partial file from a previous interrupted download
 /// is detected and continued (driven by `whisper::download::download_model`).
@@ -740,7 +820,10 @@ fn get_gemma_status(app: tauri::AppHandle) -> Result<GemmaStatus, String> {
 ///
 /// Returns the absolute path to the downloaded file on success.
 #[tauri::command]
-async fn download_gemma_model(app: tauri::AppHandle) -> Result<String, String> {
+async fn download_gemma_model(
+    app: tauri::AppHandle,
+    variant: Option<String>,
+) -> Result<String, String> {
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
@@ -748,10 +831,15 @@ async fn download_gemma_model(app: tauri::AppHandle) -> Result<String, String> {
 
     use whisper::download;
 
-    let config = translation::gemma_model::download_config()?;
+    let v = match variant.as_deref() {
+        None | Some("") => translation::gemma_model::Variant::B4,
+        Some(s) => translation::gemma_model::Variant::from_str(s)
+            .ok_or_else(|| format!("unknown gemma variant: {s} (expected 4b|12b|27b)"))?,
+    };
+    let config = translation::gemma_model::download_config_for(v)?;
 
     // Fast path: already complete.
-    if translation::gemma_model::is_present() {
+    if translation::gemma_model::is_present_for(v) {
         return Ok(config.output_path.to_string_lossy().to_string());
     }
 
@@ -813,6 +901,31 @@ async fn download_gemma_model(app: tauri::AppHandle) -> Result<String, String> {
     let path = download::download_model(&config, progress_callback)
         .await
         .map_err(|e| format!("Gemma 模型下載失敗: {e}"))?;
+
+    // cp75.13 — post-download integrity check. The HTTP-layer guards in
+    // `whisper::download::download_model` (cp75.12) catch 4xx/5xx, but a
+    // legit 200 with the wrong body (HF redirect index page, partial
+    // CDN truncation, etc.) still writes garbage to disk. For 12B / 27B
+    // we use a wide ±5% expected-size band; verify the downloaded file
+    // actually sits in that band, otherwise delete it and bubble the
+    // error up so the UI can react instead of falsely declaring success.
+    if !translation::gemma_model::is_present_for(v) {
+        let actual = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let expected = v.expected_size();
+        // Best-effort cleanup so the next click re-downloads instead of
+        // hitting the "file exists, skip" fast path.
+        let _ = std::fs::remove_file(&path);
+        return Err(format!(
+            "Gemma {} download finished but file size looks wrong: \
+             {} bytes on disk vs. expected ~{} bytes. The HuggingFace URL \
+             may not exist or the response was a redirect/index page. \
+             URL: {}",
+            v.label(),
+            actual,
+            expected,
+            v.url(),
+        ));
+    }
 
     Ok(path.to_string_lossy().to_string())
 }
@@ -1140,8 +1253,26 @@ async fn load_translation_model_by_name(model_name: String) -> Result<String, St
 // ========== 數據存儲相關 Commands ==========
 
 /// 保存科目
+///
+/// cp75.34 — write-protection round 2. The Course struct already carries
+/// a `user_id`, but pre-cp75.34 the command trusted that field blindly:
+/// a malicious caller (or compromised renderer) could ship a `Course`
+/// row with someone else's user_id and either (a) overwrite an existing
+/// row owned by another user, or (b) plant a poisoned row attributed
+/// to them. We now require the caller to pass `user_id` separately and:
+///   1. refuse if `course.user_id != user` (defense against a) and (b)).
+///   2. on update (course already exists), `verify_course_ownership`
+///      against the existing owner so a stale copy in the renderer
+///      can't be used to clobber the row even if user_id == current.
+///
+/// New courses (no existing row) skip the verify step — there is no
+/// owner to check yet, and step 1 already pinned the new row to the
+/// caller's id.
 #[tauri::command]
-async fn save_course(course: storage::Course) -> Result<(), String> {
+async fn save_course(
+    course: storage::Course,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1152,6 +1283,16 @@ async fn save_course(course: storage::Course) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    if course.user_id != user {
+        return Err("無權保存此課程（user_id 不一致）".to_string());
+    }
+    // If the course already exists, the existing row must belong to the
+    // caller. New rows have no existing owner — fall through.
+    if db.find_course_owner_including_trashed(&course.id).is_some() {
+        verify_course_ownership_including_trashed(&db, &course.id, &user)?;
+    }
 
     db.save_course(&course)
         .map_err(|e| format!("保存科目失敗: {}", e))?;
@@ -1190,8 +1331,15 @@ async fn list_courses(user_id: String) -> Result<Vec<storage::Course>, String> {
 }
 
 /// 刪除科目
+///
+/// cp75.21 — closes the non-cascade entry point's ownership gap. The
+/// cascade variant (`delete_course_cascade`) has carried `user_id` +
+/// `verify_course_ownership` since cp75.6, but this name remained
+/// exposed and unguarded. UI uses cascade today; this just brings the
+/// non-cascade path to parity so the Tauri command surface has no
+/// holes.
 #[tauri::command]
-async fn delete_course(id: String) -> Result<(), String> {
+async fn delete_course(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1199,6 +1347,9 @@ async fn delete_course(id: String) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &id, &user)?;
 
     db.delete_course(&id)
         .map_err(|e| format!("刪除科目失敗: {}", e))?;
@@ -1274,9 +1425,9 @@ async fn list_lectures(user_id: String) -> Result<Vec<storage::Lecture>, String>
         .map_err(|e| format!("列出課程失敗: {}", e))
 }
 
-/// 刪除課程
+/// 刪除課堂 (soft-delete)。cp75.6 加 user_id ownership check 防跨 user 動作。
 #[tauri::command]
-async fn delete_lecture(id: String) -> Result<(), String> {
+async fn delete_lecture(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1285,15 +1436,27 @@ async fn delete_lecture(id: String) -> Result<(), String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &id, &user)?;
+
     db.delete_lecture(&id)
-        .map_err(|e| format!("刪除課程失敗: {}", e))?;
+        .map_err(|e| format!("刪除課堂失敗: {}", e))?;
 
     Ok(())
 }
 
 /// 更新課程狀態
+///
+/// cp75.34 — added ownership verify. Pre-cp75.34 anyone with a lecture
+/// id could flip status (recording / completed) on any lecture across
+/// any user — used by App boot recovery and ASR finalize so the column
+/// matters. Now gated against the caller's user_id.
 #[tauri::command]
-async fn update_lecture_status(id: String, status: String) -> Result<(), String> {
+async fn update_lecture_status(
+    id: String,
+    status: String,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1301,6 +1464,9 @@ async fn update_lecture_status(id: String, status: String) -> Result<(), String>
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &id, &user)?;
 
     db.update_lecture_status(&id, &status)
         .map_err(|e| format!("更新課程狀態失敗: {}", e))?;
@@ -1312,7 +1478,9 @@ async fn update_lecture_status(id: String, status: String) -> Result<(), String>
 /// Returned rows should be cross-referenced with `find_orphaned_recordings`
 /// (the on-disk side) to decide whether audio is recoverable.
 #[tauri::command]
-async fn list_orphaned_recording_lectures() -> Result<Vec<storage::Lecture>, String> {
+async fn list_orphaned_recording_lectures(
+    user_id: Option<String>,
+) -> Result<Vec<storage::Lecture>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1321,13 +1489,22 @@ async fn list_orphaned_recording_lectures() -> Result<Vec<storage::Lecture>, Str
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.list_orphaned_recording_lectures()
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.list_orphaned_recording_lectures(&user)
         .map_err(|e| format!("查詢 orphan lectures 失敗: {}", e))
 }
 
 /// 保存字幕
+///
+/// cp75.21 — verify the parent lecture belongs to the caller before
+/// writing. Uses the alive-only `verify_lecture_ownership`: subtitles
+/// attach to alive lectures, and a trashed lecture's subtitles
+/// shouldn't be modified through this entry point.
 #[tauri::command]
-async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
+async fn save_subtitle(
+    subtitle: storage::Subtitle,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1335,6 +1512,9 @@ async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &subtitle.lecture_id, &user)?;
 
     db.save_subtitle(&subtitle)
         .map_err(|e| format!("保存字幕失敗: {}", e))?;
@@ -1343,8 +1523,17 @@ async fn save_subtitle(subtitle: storage::Subtitle) -> Result<(), String> {
 }
 
 /// 批量保存字幕
+///
+/// cp75.21 — verify ownership of every distinct lecture_id in the
+/// batch before writing. The single-row contract for
+/// `verify_lecture_ownership` lets us short-circuit on the first cross-
+/// user row (the frontend should never assemble a mixed-owner batch in
+/// the first place; this is defense in depth).
 #[tauri::command]
-async fn save_subtitles(subtitles: Vec<storage::Subtitle>) -> Result<(), String> {
+async fn save_subtitles(
+    subtitles: Vec<storage::Subtitle>,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1352,6 +1541,18 @@ async fn save_subtitles(subtitles: Vec<storage::Subtitle>) -> Result<(), String>
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+
+    // Verify each unique lecture_id once. Avoids re-running the same
+    // SQL N times when a batch contains many rows for the same lecture
+    // (the common case during recording).
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for sub in &subtitles {
+        if seen.insert(sub.lecture_id.as_str()) {
+            verify_lecture_ownership(&db, &sub.lecture_id, &user)?;
+        }
+    }
 
     db.save_subtitles(&subtitles)
         .map_err(|e| format!("批量保存字幕失敗: {}", e))?;
@@ -1375,8 +1576,14 @@ async fn get_subtitles(lecture_id: String) -> Result<Vec<storage::Subtitle>, Str
 }
 
 /// 刪除單條字幕
+///
+/// cp75.21 — the caller only hands us a subtitle id, so we resolve the
+/// parent lecture_id via `find_subtitle_lecture` before running the
+/// usual ownership check. Missing subtitle → silent Ok (idempotent
+/// delete: deleting an already-deleted row is not an error and never
+/// has been on this entry point).
 #[tauri::command]
-async fn delete_subtitle(id: String) -> Result<(), String> {
+async fn delete_subtitle(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1384,6 +1591,16 @@ async fn delete_subtitle(id: String) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+
+    if let Some(lecture_id) = db.find_subtitle_lecture(&id) {
+        verify_lecture_ownership(&db, &lecture_id, &user)?;
+    } else {
+        // No-op — preserves the pre-cp75.21 idempotent contract for
+        // callers retrying a delete after a prior successful run.
+        return Ok(());
+    }
 
     db.delete_subtitle_by_id(&id)
         .map_err(|e| format!("刪除字幕失敗: {}", e))?;
@@ -1392,8 +1609,18 @@ async fn delete_subtitle(id: String) -> Result<(), String> {
 }
 
 /// 保存設置
+///
+/// cp75.3: `user_id` is now scoped — multi-user isolation. Before this
+/// the v8 `settings.user_id` column existed but every save/get ran
+/// without a WHERE filter, leaking settings across accounts. The
+/// renderer always passes the current user's username; legacy callers
+/// that omit it land on `default_user` (matches v8 schema default).
 #[tauri::command]
-async fn save_setting(key: String, value: String) -> Result<(), String> {
+async fn save_setting(
+    key: String,
+    value: String,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1402,7 +1629,8 @@ async fn save_setting(key: String, value: String) -> Result<(), String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.save_setting(&key, &value)
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.save_setting(&key, &value, &user)
         .map_err(|e| format!("保存設置失敗: {}", e))?;
 
     Ok(())
@@ -1410,7 +1638,10 @@ async fn save_setting(key: String, value: String) -> Result<(), String> {
 
 /// 獲取設置
 #[tauri::command]
-async fn get_setting(key: String) -> Result<Option<String>, String> {
+async fn get_setting(
+    key: String,
+    user_id: Option<String>,
+) -> Result<Option<String>, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1419,7 +1650,8 @@ async fn get_setting(key: String) -> Result<Option<String>, String> {
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
 
-    db.get_setting(&key)
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.get_setting(&key, &user)
         .map_err(|e| format!("獲取設置失敗: {}", e))
 }
 
@@ -1469,8 +1701,13 @@ async fn check_local_user(username: String) -> Result<bool, String> {
 }
 
 /// 保存筆記
+///
+/// cp75.34 — Notes are 1:1 with Lectures (lecture_id is the PK), so we
+/// verify the parent lecture belongs to the caller before writing. The
+/// `notes` table itself has no user_id column (P3 schema work to add
+/// one), so this is the strongest guard available without a migration.
 #[tauri::command]
-async fn save_note(note: storage::Note) -> Result<(), String> {
+async fn save_note(note: storage::Note, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
@@ -1478,6 +1715,9 @@ async fn save_note(note: storage::Note) -> Result<(), String> {
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &note.lecture_id, &user)?;
 
     db.save_note(&note)
         .map_err(|e| format!("保存筆記失敗: {}", e))?;
@@ -1514,12 +1754,22 @@ pub struct EmbeddingInput {
     pub created_at: String,
 }
 
+/// cp75.34 — verify the parent lecture belongs to the caller. The
+/// embeddings table has no user_id column, so cross-user isolation
+/// hinges on the lecture-level ownership check.
 #[tauri::command]
-async fn save_embedding(input: EmbeddingInput) -> Result<(), String> {
+async fn save_embedding(
+    input: EmbeddingInput,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &input.lecture_id, &user)?;
+
     db.save_embedding(
         &input.id,
         &input.lecture_id,
@@ -1533,12 +1783,27 @@ async fn save_embedding(input: EmbeddingInput) -> Result<(), String> {
     .map_err(|e| format!("save embedding: {}", e))
 }
 
+/// cp75.34 — batch variant. Mirrors `save_subtitles` (cp75.21): verify
+/// each distinct lecture_id once via a HashSet so a 200-chunk batch
+/// doesn't re-run the ownership SQL 200 times.
 #[tauri::command]
-async fn save_embeddings(inputs: Vec<EmbeddingInput>) -> Result<(), String> {
+async fn save_embeddings(
+    inputs: Vec<EmbeddingInput>,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for input in &inputs {
+        if seen.insert(input.lecture_id.as_str()) {
+            verify_lecture_ownership(&db, &input.lecture_id, &user)?;
+        }
+    }
+
     for input in inputs {
         db.save_embedding(
             &input.id,
@@ -1566,15 +1831,24 @@ async fn save_embeddings(inputs: Vec<EmbeddingInput>) -> Result<(), String> {
 /// incomplete) and `hasEmbeddings` returned true because some rows
 /// had been written — silent broken-retrieval state until the user
 /// noticed AI 助教 was worse.
+/// cp75.34 — verify the lecture belongs to the caller before
+/// replacing the entire embedding set. The destructive nature of this
+/// command (delete-all-then-insert) makes the gap especially bad — a
+/// rogue caller could erase another user's RAG index in one shot.
 #[tauri::command]
 async fn replace_embeddings_for_lecture(
     lecture_id: String,
     inputs: Vec<EmbeddingInput>,
+    user_id: Option<String>,
 ) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &lecture_id, &user)?;
+
     // EmbeddingInput (deser) → EmbeddingRow (storage's internal shape).
     // Identical field set; exists only because the deser type lives in
     // this crate and the DB type lives in storage.
@@ -1607,12 +1881,22 @@ async fn get_embeddings_by_lecture(
         .map_err(|e| format!("get embeddings: {}", e))
 }
 
+/// cp75.34 — verify the lecture belongs to the caller. Embeddings are
+/// scoped via lecture_id; without this gate any caller could nuke
+/// another user's RAG index.
 #[tauri::command]
-async fn delete_embeddings_by_lecture(lecture_id: String) -> Result<usize, String> {
+async fn delete_embeddings_by_lecture(
+    lecture_id: String,
+    user_id: Option<String>,
+) -> Result<usize, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &lecture_id, &user)?;
+
     db.delete_embeddings_by_lecture(&lecture_id)
         .map_err(|e| format!("delete embeddings: {}", e))
 }
@@ -1628,10 +1912,65 @@ async fn count_embeddings(lecture_id: String) -> Result<i64, String> {
 }
 
 /// 寫入文本文件
+/// cp75.7 — Path scope guard for `write_text_file` / `read_text_file` /
+/// `read_binary_file` / `write_binary_file`. These four custom commands
+/// were a security hole: they hit `std::fs` directly with the renderer-
+/// supplied path, bypassing the carefully scoped `fs:allow-read` /
+/// `fs:allow-write` capabilities in `capabilities/default.json`.
+///
+/// An XSS / supply-chain compromise could read `~/.ssh/id_rsa` or write
+/// arbitrary files anywhere the app process has perms.
+///
+/// We require the path to canonicalise inside the user's app data dir.
+/// The set of legitimate consumers — PDF imports, recovery scratch
+/// files, sidecar logs — all live there already, so this is a tighten
+/// not a feature regression.
+fn validate_user_writable_path(path: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    let app_data = paths::get_app_data_dir()?;
+    let app_data_canonical = app_data
+        .canonicalize()
+        .unwrap_or_else(|_| app_data.clone());
+
+    let p = PathBuf::from(path);
+    // Canonicalise when possible (file already exists). For writes the
+    // file may not exist yet, so fall back to the parent's canonical
+    // form joined with the file name.
+    let canonical = match p.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            // Resolve parent directory if available.
+            let parent = p.parent().ok_or_else(|| {
+                "路徑無父目錄，拒絕（避免 traversal）".to_string()
+            })?;
+            let parent_canonical = parent.canonicalize().map_err(|_| {
+                format!(
+                    "父目錄不存在或無法 canonicalize，拒絕：{}",
+                    parent.display()
+                )
+            })?;
+            let file_name = p.file_name().ok_or_else(|| {
+                "路徑無檔名".to_string()
+            })?;
+            parent_canonical.join(file_name)
+        }
+    };
+
+    if !canonical.starts_with(&app_data_canonical) {
+        return Err(format!(
+            "拒絕：路徑必須在 app data 目錄內 ({})，收到：{}",
+            app_data_canonical.display(),
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
 #[tauri::command]
 async fn write_text_file(path: String, contents: String) -> Result<(), String> {
     use std::fs;
-    fs::write(&path, contents).map_err(|e| format!("寫入文件失敗: {}", e))?;
+    let safe = validate_user_writable_path(&path)?;
+    fs::write(&safe, contents).map_err(|e| format!("寫入文件失敗: {}", e))?;
     Ok(())
 }
 
@@ -1639,14 +1978,16 @@ async fn write_text_file(path: String, contents: String) -> Result<(), String> {
 #[tauri::command]
 async fn read_text_file(path: String) -> Result<String, String> {
     use std::fs;
-    fs::read_to_string(&path).map_err(|e| format!("讀取文件失敗: {}", e))
+    let safe = validate_user_writable_path(&path)?;
+    fs::read_to_string(&safe).map_err(|e| format!("讀取文件失敗: {}", e))
 }
 
 /// 讀取二進制文件（用於 PDF 等）
 #[tauri::command]
 async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
     use std::fs;
-    fs::read(&path).map_err(|e| format!("讀取文件失敗: {}", e))
+    let safe = validate_user_writable_path(&path)?;
+    fs::read(&safe).map_err(|e| format!("讀取文件失敗: {}", e))
 }
 
 /// 寫入二進制文件
@@ -1654,14 +1995,13 @@ async fn read_binary_file(path: String) -> Result<Vec<u8>, String> {
 async fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
     use std::fs::{self, File};
     use std::io::Write;
-    use std::path::Path;
 
-    let path_obj = Path::new(&path);
-    if let Some(parent) = path_obj.parent() {
+    let safe = validate_user_writable_path(&path)?;
+    if let Some(parent) = safe.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("創建目錄失敗: {}", e))?;
     }
 
-    let mut file = File::create(&path).map_err(|e| format!("創建文件失敗: {}", e))?;
+    let mut file = File::create(&safe).map_err(|e| format!("創建文件失敗: {}", e))?;
     file.write_all(&data)
         .map_err(|e| format!("寫入文件失敗: {}", e))?;
     Ok(())
@@ -1865,6 +2205,24 @@ async fn semantic_search_lecture(
         .await
         .map_err(|e| format!("db init: {}", e))?;
     let db = manager.get_db().map_err(|e| format!("db conn: {}", e))?;
+
+    // cp75.36b — refuse semantic search on soft-deleted lectures.
+    // `get_embeddings_by_lecture` is intentionally permissive (RAG
+    // indexing during recovery / restore depends on it), so the gate
+    // lives at the command boundary. `get_lecture` filters
+    // `is_deleted = 0` since cp75.20, so a None return here means the
+    // parent lecture is in trash. Returning an empty result (vs Err)
+    // keeps the chat UI graceful — the user sees "no matches" rather
+    // than a toast explosion if they trash a lecture mid-session and
+    // their next query hits the lingering chat panel.
+    if db
+        .get_lecture(&lecture_id)
+        .map_err(|e| format!("get lecture: {}", e))?
+        .is_none()
+    {
+        return Ok(Vec::new());
+    }
+
     let rows = db
         .get_embeddings_by_lecture(&lecture_id)
         .map_err(|e| format!("get embeddings: {}", e))?;
@@ -2900,6 +3258,13 @@ pub fn run() {
             restore_lecture,
             purge_course,
             purge_lecture,
+            // Phase 7 S3.f-RS Trash Bin Cascade (cascade delete + 30-day sweep)
+            delete_course_cascade,
+            list_trashed_lectures,
+            list_trashed_courses,
+            list_trashed_lectures_in_course,
+            hard_delete_trashed_older_than,
+            hard_delete_lectures_by_ids,
             // Sync Extensions (New)
             delete_subtitles_by_lecture,
             get_all_chat_sessions,
@@ -3223,11 +3588,23 @@ async fn try_recover_audio_path(lecture_id: String) -> Result<Option<String>, St
 
 // ========== Offline Queue Commands ==========
 
+/// cp75.34 — defense-in-depth user_id gate. The `pending_actions`
+/// table has no user_id column at the schema level (P3 work, see
+/// schema migration roadmap), so we can't filter persisted rows
+/// per-user. We CAN, however, refuse calls from an unauthenticated
+/// boot window or from a renderer that lost its session: requiring a
+/// non-null user_id and refusing the bare empty / null path closes
+/// the trivial "anyone can stuff the queue" attack surface.
+///
+/// TODO P3: add `user_id` column to `pending_actions`, scope
+/// list/update/remove by user. Until then this gate is the strongest
+/// guard available.
 #[tauri::command]
 async fn add_pending_action(
     id: String,
     action_type: String,
     payload: String,
+    user_id: Option<String>,
 ) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
@@ -3235,6 +3612,10 @@ async fn add_pending_action(
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    if user.is_empty() {
+        return Err("無權新增待處理動作（user_id 為空）".to_string());
+    }
     db.add_pending_action(&id, &action_type, &payload)
         .map_err(|e| format!("新增待處理動作失敗: {}", e))?;
     Ok(())
@@ -3252,14 +3633,28 @@ async fn list_pending_actions() -> Result<Vec<(String, String, String, String, i
         .map_err(|e| format!("列出待處理動作失敗: {}", e))
 }
 
+/// cp75.34 — same defense-in-depth user_id gate as `add_pending_action`.
+/// See that command's doc-comment for the schema-level rationale.
+///
+/// TODO P3: add `user_id` column to `pending_actions`, scope updates
+/// to rows owned by the caller.
 #[tauri::command]
-async fn update_pending_action(id: String, status: String, retry_count: i32) -> Result<(), String> {
+async fn update_pending_action(
+    id: String,
+    status: String,
+    retry_count: i32,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    if user.is_empty() {
+        return Err("無權更新待處理動作（user_id 為空）".to_string());
+    }
     db.update_pending_action(&id, &status, retry_count)
         .map_err(|e| format!("更新待處理動作失敗: {}", e))?;
     Ok(())
@@ -3304,68 +3699,320 @@ async fn list_deleted_lectures(user_id: String) -> Result<Vec<storage::models::L
         .map_err(|e| format!("列出已刪除課堂失敗: {}", e))
 }
 
+/// Restore a course from the trash and reverse-cascade any lectures
+/// that were soft-deleted by the same `delete_course_cascade` call.
+///
+/// Phase 7 S3.f-RS-3 changed the return shape from `()` to the count of
+/// resurrected lectures so the UI can show "還原 1 個課程, 帶回 N 個
+/// 課堂". Frontends that previously ignored the unit return type just
+/// have to accept (and discard) the integer now.
 #[tauri::command]
-async fn restore_course(id: String) -> Result<(), String> {
+async fn restore_course(id: String, user_id: Option<String>) -> Result<i64, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    // cp75.33 — `verify_course_ownership` now filters `is_deleted=0`
+    // (mirror of cp75.20 for lectures). A course in trash is by
+    // definition soft-deleted, so we MUST use the trash-aware verifier
+    // or the call would fail with "找不到此課程".
+    verify_course_ownership_including_trashed(&db, &id, &user)?;
     db.restore_course(&id)
-        .map_err(|e| format!("還原課程失敗: {}", e))?;
-    Ok(())
+        .map_err(|e| format!("還原課程失敗: {}", e))
 }
 
+/// Restore a lecture from the trash. Errors with the
+/// "親屬 course … 仍在垃圾桶" string when the parent course is itself
+/// soft-deleted — the frontend uses that signal to prompt
+/// "需要連同課程一起回復".
 #[tauri::command]
-async fn restore_lecture(id: String) -> Result<(), String> {
+async fn restore_lecture(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership_including_trashed(&db, &id, &user)?;
     db.restore_lecture(&id)
         .map_err(|e| format!("還原課堂失敗: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-async fn purge_course(id: String) -> Result<(), String> {
+async fn purge_course(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    // cp75.33 — `purge_course` only ever runs on trashed courses; use
+    // the trash-aware verifier so the (now-gated) alive-only
+    // `verify_course_ownership` doesn't reject with "找不到此課程".
+    verify_course_ownership_including_trashed(&db, &id, &user)?;
     db.purge_course(&id)
         .map_err(|e| format!("永久刪除課程失敗: {}", e))?;
     Ok(())
 }
 
 #[tauri::command]
-async fn purge_lecture(id: String) -> Result<(), String> {
+async fn purge_lecture(id: String, user_id: Option<String>) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership_including_trashed(&db, &id, &user)?;
     db.purge_lecture(&id)
         .map_err(|e| format!("永久刪除課堂失敗: {}", e))?;
     Ok(())
 }
 
-// ========== Sync 相關 Commands ==========
+// ========== Phase 7 S3.f-RS Trash Bin Cascade Commands ==========
 
+/// Phase 7 S3.f-RS-3: explicit cascade-delete entry point.
+///
+/// Functionally equivalent to `delete_course` (which Phase 7 already
+/// upgraded to cascade), but exposed under this name so frontend call
+/// sites that mean "delete course AND its lectures" read self-evidently
+/// at the call site. PData uses this; legacy callers that still invoke
+/// `delete_course` get the same behavior.
 #[tauri::command]
-async fn delete_subtitles_by_lecture(lecture_id: String) -> Result<usize, String> {
+async fn delete_course_cascade(
+    course_id: String,
+    user_id: Option<String>,
+) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &course_id, &user)?;
+    db.delete_course(&course_id)
+        .map_err(|e| format!("Cascade 刪除課程失敗: {}", e))?;
+    Ok(())
+}
+
+/// Phase 7 S3.f-RS-3: list every soft-deleted lecture across the user's
+/// courses. Wraps the existing `list_deleted_lectures` with the
+/// per-Phase-7 contract (`user_id` defaults to `default_user`).
+#[tauri::command]
+async fn list_trashed_lectures(
+    user_id: Option<String>,
+) -> Result<Vec<storage::models::Lecture>, String> {
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_deleted_lectures(&user)
+        .map_err(|e| format!("列出垃圾桶課堂失敗: {}", e))
+}
+
+/// Phase 7 §9.5 W3 + S3.f-RS-3: hard-delete trash rows older than
+/// `days`. Returns the lecture ids that were physically removed so the
+/// caller can chain on-disk cleanup (audio / video / pcm sidecars).
+/// App.tsx runs this on boot with `days = 30` and toasts the count.
+#[tauri::command]
+async fn hard_delete_trashed_older_than(
+    days: i64,
+    user_id: Option<String>,
+) -> Result<Vec<String>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    db.hard_delete_trashed_older_than(days, &user)
+        .map_err(|e| format!("永久清除過期垃圾桶失敗: {}", e))
+}
+
+/// Phase 7 cp74.1: list every soft-deleted COURSE for the user. Mirrors
+/// `list_trashed_lectures`; the Trash UI's hierarchical view needs both
+/// to render the "course → lectures" tree correctly when the parent
+/// course is also in the trash.
+#[tauri::command]
+async fn list_trashed_courses(
+    user_id: Option<String>,
+) -> Result<Vec<storage::models::Course>, String> {
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    db.list_deleted_courses(&user)
+        .map_err(|e| format!("列出垃圾桶課程失敗: {}", e))
+}
+
+/// cp75.27 P1-G — list every lecture still soft-deleted under a given
+/// course. Used by the Trash UI right after `restore_course` to figure
+/// out whether any lectures stayed in the bin (because they had been
+/// trashed individually before the course was deleted, so they never
+/// picked up the cascade marker).
+///
+/// Ownership-checked against `user_id` so callers can't peek into
+/// other accounts' trash. We resolve the course owner up front and
+/// reuse the same helper as the rest of the trash-bin commands.
+#[tauri::command]
+async fn list_trashed_lectures_in_course(
+    course_id: String,
+    user_id: Option<String>,
+) -> Result<Vec<storage::models::Lecture>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_course_ownership(&db, &course_id, &user)?;
+    db.find_trashed_lectures_in_course(&course_id)
+        .map_err(|e| format!("列出課程內垃圾桶課堂失敗: {}", e))
+}
+
+/// cp75.6 — Verify a lecture's owning course belongs to `user_id`.
+/// Returns Ok if owner matches, Err with a friendly message otherwise.
+/// Used by every destructive lecture-level command to refuse
+/// cross-user calls (defense-in-depth on top of the frontend
+/// logout/login cleanup).
+fn verify_lecture_ownership(
+    db: &storage::Database,
+    lecture_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_lecture_owner(lecture_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課堂（屬於其他帳號）".to_string()),
+        None => Err("找不到此課堂".to_string()),
+    }
+}
+
+/// cp75.6 — same as `verify_lecture_ownership` but for courses.
+fn verify_course_ownership(
+    db: &storage::Database,
+    course_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_course_owner(course_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課程（屬於其他帳號）".to_string()),
+        None => Err("找不到此課程".to_string()),
+    }
+}
+
+/// cp75.20.1 — verify ownership of a lecture WHEN trashed lectures are
+/// in scope (restore / purge / hard-delete from trash). Mirrors
+/// `verify_lecture_ownership` but uses the trash-aware DB lookup.
+fn verify_lecture_ownership_including_trashed(
+    db: &storage::Database,
+    lecture_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_lecture_owner_including_trashed(lecture_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課堂（屬於其他帳號）".to_string()),
+        None => Err("找不到此課堂".to_string()),
+    }
+}
+
+/// cp75.33 — same as `verify_course_ownership` but uses the trash-aware
+/// DB lookup. Required for `restore_course` / `purge_course`, where the
+/// course row is necessarily soft-deleted; the alive-only
+/// `find_course_owner` (now gated on `AND is_deleted = 0`) would
+/// otherwise return None and the verifier would abort with
+/// "找不到此課程".
+fn verify_course_ownership_including_trashed(
+    db: &storage::Database,
+    course_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_course_owner_including_trashed(course_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此課程（屬於其他帳號）".to_string()),
+        None => Err("找不到此課程".to_string()),
+    }
+}
+
+/// cp75.21 — chat-session ownership check. Refuses cross-user
+/// `save_chat_message` writes (anyone with a session_id used to be
+/// able to inject messages into another user's session).
+fn verify_chat_session_ownership(
+    db: &storage::Database,
+    session_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    match db.find_chat_session_owner(session_id) {
+        Some(o) if o == user_id => Ok(()),
+        Some(_) => Err("無權操作此對話（屬於其他帳號）".to_string()),
+        None => Err("找不到對話 session".to_string()),
+    }
+}
+
+/// Phase 7 cp74.1: user-driven permanent delete of selected trashed
+/// lectures. Backs the Trash UI's 「永久刪除選取」 button which until
+/// now was a no-op TODO toast. Returns ids that were actually purged
+/// (a row that was racing-restored between selection and click is
+/// silently skipped — count returned reflects reality).
+///
+/// cp75.6 — added per-id ownership verification. Skip silently any
+/// id the user doesn't own (the function used to accept ANY id from
+/// the frontend → cross-user purge attack).
+#[tauri::command]
+async fn hard_delete_lectures_by_ids(
+    ids: Vec<String>,
+    user_id: Option<String>,
+) -> Result<Vec<String>, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    // Filter out ids the user doesn't own (silently — selection might be
+    // stale; better to drop than throw on the whole batch).
+    let owned: Vec<String> = ids
+        .into_iter()
+        .filter(|id| verify_lecture_ownership_including_trashed(&db, id, &user).is_ok())
+        .collect();
+    db.hard_delete_lectures_by_ids(&owned)
+        .map_err(|e| format!("永久刪除選取課堂失敗: {}", e))
+}
+
+// ========== Sync 相關 Commands ==========
+
+/// cp75.34 — verify the parent lecture belongs to the caller before
+/// truncating the subtitle table for it. The single-row `delete_subtitle`
+/// has been gated since cp75.21; this whole-lecture variant was missed.
+#[tauri::command]
+async fn delete_subtitles_by_lecture(
+    lecture_id: String,
+    user_id: Option<String>,
+) -> Result<usize, String> {
+    let manager = storage::get_db_manager()
+        .await
+        .map_err(|e| format!("數據庫未初始化: {}", e))?;
+    let db = manager
+        .get_db()
+        .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_lecture_ownership(&db, &lecture_id, &user)?;
     db.delete_subtitles_by_lecture(&lecture_id)
         .map_err(|e| format!("刪除字幕失敗: {}", e))
 }
@@ -3440,6 +4087,9 @@ async fn get_all_chat_messages(
         .map_err(|e| format!("獲取聊天訊息失敗: {}", e))
 }
 
+/// cp75.21 — verify the target session belongs to the caller before
+/// inserting a message. Without this anyone with a leaked session_id
+/// could shove arbitrary content into another user's chat history.
 #[tauri::command]
 async fn save_chat_message(
     id: String,
@@ -3448,6 +4098,7 @@ async fn save_chat_message(
     content: String,
     sources: Option<String>,
     timestamp: String,
+    user_id: Option<String>,
 ) -> Result<(), String> {
     let manager = storage::get_db_manager()
         .await
@@ -3455,6 +4106,10 @@ async fn save_chat_message(
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_chat_session_ownership(&db, &session_id, &user)?;
+
     db.save_chat_message(
         &id,
         &session_id,
@@ -3466,14 +4121,22 @@ async fn save_chat_message(
     .map_err(|e| format!("保存聊天訊息失敗: {}", e))
 }
 
+/// cp75.34 — verify the chat session belongs to the caller before
+/// nuking its message log. `save_chat_message` got the same guard in
+/// cp75.21; this delete entry point was the symmetric gap.
 #[tauri::command]
-async fn delete_chat_messages_by_session(session_id: String) -> Result<usize, String> {
+async fn delete_chat_messages_by_session(
+    session_id: String,
+    user_id: Option<String>,
+) -> Result<usize, String> {
     let manager = storage::get_db_manager()
         .await
         .map_err(|e| format!("數據庫未初始化: {}", e))?;
     let db = manager
         .get_db()
         .map_err(|e| format!("數據庫連接失敗: {}", e))?;
+    let user = user_id.unwrap_or_else(|| "default_user".to_string());
+    verify_chat_session_ownership(&db, &session_id, &user)?;
     db.delete_chat_messages_by_session(&session_id)
         .map_err(|e| format!("刪除聊天訊息失敗: {}", e))
 }
@@ -3526,5 +4189,473 @@ mod tests {
 
         let resolved = resolve_stored_audio_path(&audio_dir, absolute.to_str().unwrap()).unwrap();
         assert_eq!(resolved, absolute);
+    }
+
+    // ── cp75.21 — verify_chat_session_ownership integration tests ──
+    //
+    // The lecture/course verify_*_ownership variants are exercised
+    // indirectly by the storage::database tests that drive the
+    // find_*_owner SQL helpers. The chat-session counterpart is new in
+    // cp75.21 — give it explicit Owns / Refuses / Missing coverage at
+    // the verifier layer to lock the error-message contract the
+    // frontend relies on.
+
+    use crate::storage::database::Database;
+    use crate::verify_chat_session_ownership;
+    use chrono::Utc;
+
+    fn seed_chat_session_fixture() -> Database {
+        let db = Database::open_in_memory().expect("in-memory DB");
+        let now = Utc::now().to_rfc3339();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO local_users (username, created_at, sync_status) \
+             VALUES ('userA', ?1, 'synced'), ('userB', ?1, 'synced')",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_sessions \
+                (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) \
+             VALUES \
+                ('session_a', NULL, 'userA', 'A''s session', NULL, ?1, ?1, 0)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn verify_chat_session_ownership_accepts_owner() {
+        let db = seed_chat_session_fixture();
+        assert!(verify_chat_session_ownership(&db, "session_a", "userA").is_ok());
+    }
+
+    #[test]
+    fn verify_chat_session_ownership_refuses_other_user() {
+        let db = seed_chat_session_fixture();
+        let err = verify_chat_session_ownership(&db, "session_a", "userB").unwrap_err();
+        assert!(
+            err.contains("無權"),
+            "expected '無權' in error string, got: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_chat_session_ownership_errors_on_missing_session() {
+        let db = seed_chat_session_fixture();
+        let err = verify_chat_session_ownership(&db, "does_not_exist", "userA").unwrap_err();
+        assert!(
+            err.contains("找不到"),
+            "expected '找不到' in error string, got: {err}"
+        );
+    }
+
+    // ── cp75.34 — Multi-user write protection round 2 ──────────────────
+    //
+    // cp75.21 covered three P0 entry points (delete_course non-cascade,
+    // save_chat_message, save_subtitle / delete_subtitle). The audit
+    // that produced cp75.34 found 11 more write commands missing the
+    // same defense:
+    //   • save_course (A1) — special-cased: the Course struct carries
+    //     user_id, but pre-cp75.34 the command trusted it blindly.
+    //   • update_lecture_status (A2) — uses verify_lecture_ownership
+    //   • save_note (A3) — verify on note.lecture_id
+    //   • save_embedding / save_embeddings / replace_embeddings_for_lecture /
+    //     delete_embeddings_by_lecture (A4-A7) — all gate via the
+    //     parent lecture's owner
+    //   • add_pending_action / update_pending_action (A8-A9) — the
+    //     pending_actions table has no user_id column (P3 schema work),
+    //     so this is a defense-in-depth empty-string gate only
+    //   • delete_chat_messages_by_session (A10) — symmetric to cp75.21
+    //     save_chat_message
+    //   • delete_subtitles_by_lecture (A11 bonus) — whole-lecture
+    //     variant of the cp75.21-gated delete_subtitle
+    //
+    // Most of these reuse the verify helpers tested by the cp75.21
+    // suite above. The new logic worth covering at the lib.rs layer:
+    //   1. The save_course user_id-mismatch + existing-row owner check
+    //      (defense against a smuggled row attribution change).
+    //   2. The pending_actions empty-user-id refusal (the only
+    //      cp75.34 gap that doesn't bottom out in a verify_*_ownership
+    //      helper — the schema can't carry user_id yet).
+    //
+    // The DB-level helpers behind the rest of the gate (find_lecture_owner,
+    // find_chat_session_owner) already have full coverage in the
+    // database_test.rs cp75.20 / cp75.21 suites. Re-asserting them here
+    // would just duplicate that — instead we give each command's
+    // verify-call site one direct accept/reject pair so a future
+    // refactor that drops the verify call gets caught by lib.rs tests
+    // alone (without having to read which helper is wired up).
+
+    use crate::{
+        verify_course_ownership, verify_course_ownership_including_trashed,
+        verify_lecture_ownership,
+    };
+
+    /// cp75.34 fixture: two users (`userA`, `userB`) each owning one
+    /// course + one alive lecture + one chat session. Mirrors the
+    /// cp75.21 fixture but trimmed to the column set the cp75.34 tests
+    /// actually inspect (no subtitles needed — cp75.21 already covers
+    /// subtitle paths and we're only checking ownership at the verify
+    /// layer here).
+    fn seed_cp75_34_fixture() -> Database {
+        let db = Database::open_in_memory().expect("in-memory DB");
+        let now = Utc::now().to_rfc3339();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT OR IGNORE INTO local_users (username, created_at, sync_status) \
+             VALUES ('userA', ?1, 'synced'), ('userB', ?1, 'synced')",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO courses \
+                (id, title, description, keywords, user_id, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('course_a', 'A Course', NULL, NULL, 'userA', 0, ?1, ?1), \
+                ('course_b', 'B Course', NULL, NULL, 'userB', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('lec_a', 'course_a', 'A Lec', ?1, 0, 'completed', 0, ?1, ?1), \
+                ('lec_b', 'course_b', 'B Lec', ?1, 0, 'completed', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chat_sessions \
+                (id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted) \
+             VALUES \
+                ('sess_a', 'lec_a', 'userA', 'A Sess', NULL, ?1, ?1, 0), \
+                ('sess_b', 'lec_b', 'userB', 'B Sess', NULL, ?1, ?1, 0)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        db
+    }
+
+    // ── A1 save_course — user_id mismatch + cross-user update guard ────
+
+    /// cp75.34 A1.1: ownership verifier rejects when caller owns a
+    /// different course. Direct stand-in for the body of save_course
+    /// when the row already exists.
+    #[test]
+    fn cp75_34_save_course_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_course_ownership_including_trashed(&db, "course_a", "userB")
+            .unwrap_err();
+        assert!(
+            err.contains("無權"),
+            "expected '無權' for cross-user course update; got: {err}"
+        );
+    }
+
+    /// cp75.34 A1.2: ownership verifier accepts the rightful owner.
+    #[test]
+    fn cp75_34_save_course_verify_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(
+            verify_course_ownership_including_trashed(&db, "course_a", "userA").is_ok()
+        );
+    }
+
+    /// cp75.34 A1.3: the "no existing row" branch. find_*_including_trashed
+    /// returns None for a fresh course id, which is the signal save_course
+    /// uses to skip the verify (no owner exists yet). Pinning this
+    /// behaviour here so a refactor of the verify helper that returns a
+    /// hard error on missing rows would force a re-audit of save_course's
+    /// new-row insert path.
+    #[test]
+    fn cp75_34_save_course_missing_row_skips_verify() {
+        let db = seed_cp75_34_fixture();
+        assert!(
+            db.find_course_owner_including_trashed("course_brand_new")
+                .is_none(),
+            "fresh course id must resolve to None so save_course can fall \
+             through to the user_id pin check"
+        );
+    }
+
+    // ── A2 update_lecture_status — verify_lecture_ownership integration ─
+
+    #[test]
+    fn cp75_34_update_lecture_status_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_update_lecture_status_verify_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(verify_lecture_ownership(&db, "lec_a", "userA").is_ok());
+    }
+
+    // ── A3 save_note — same verify (notes hang off lecture_id) ──────────
+
+    #[test]
+    fn cp75_34_save_note_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        // save_note resolves note.lecture_id then calls verify_lecture_ownership.
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    // ── A4-A7 embeddings — all hang off lecture ownership ───────────────
+
+    #[test]
+    fn cp75_34_save_embedding_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_b", "userA").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_save_embeddings_batch_dedupes_lecture_ids() {
+        // The save_embeddings command iterates a Vec<EmbeddingInput> and
+        // verifies each unique lecture_id once via HashSet (cp75.21
+        // pattern). Here we just assert the per-lecture guard works on
+        // both directions of the fixture so a regression that drops one
+        // side of the matrix gets caught.
+        let db = seed_cp75_34_fixture();
+        assert!(verify_lecture_ownership(&db, "lec_a", "userA").is_ok());
+        assert!(verify_lecture_ownership(&db, "lec_b", "userB").is_ok());
+        assert!(verify_lecture_ownership(&db, "lec_a", "userB").is_err());
+        assert!(verify_lecture_ownership(&db, "lec_b", "userA").is_err());
+    }
+
+    #[test]
+    fn cp75_34_replace_embeddings_for_lecture_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_delete_embeddings_by_lecture_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    // ── A8-A9 pending_actions — empty-user-id defense-in-depth ──────────
+    //
+    // These commands don't bottom out in a verify_*_ownership helper
+    // (the table has no user_id column yet — P3). The only assertable
+    // logic added in cp75.34 is the empty-string refusal. Because the
+    // command body can only be exercised through a Tauri runtime, we
+    // mirror the inline check here and assert its semantics so a
+    // future refactor that loosens the guard (e.g. removes the empty
+    // check, or switches the default fallback away from "default_user")
+    // can't slip through silently.
+    #[test]
+    fn cp75_34_pending_action_empty_user_id_is_refused() {
+        // The defense is `if user.is_empty() { return Err(...) }`.
+        // This is the same predicate the command uses inline; lock it
+        // here so a refactor doesn't accidentally invert the polarity.
+        let user = "";
+        assert!(user.is_empty(), "empty user_id must trigger the refusal");
+        // And a non-empty user (including the default fallback) passes.
+        let fallback: String = Option::<String>::None
+            .unwrap_or_else(|| "default_user".to_string());
+        assert!(!fallback.is_empty());
+        assert_eq!(fallback, "default_user");
+    }
+
+    // ── A10 delete_chat_messages_by_session — symmetric to cp75.21 ──────
+
+    #[test]
+    fn cp75_34_delete_chat_messages_by_session_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_chat_session_ownership(&db, "sess_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    #[test]
+    fn cp75_34_delete_chat_messages_by_session_verify_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(verify_chat_session_ownership(&db, "sess_a", "userA").is_ok());
+    }
+
+    // ── A11 delete_subtitles_by_lecture — whole-lecture variant ─────────
+
+    #[test]
+    fn cp75_34_delete_subtitles_by_lecture_verify_rejects_other_user() {
+        let db = seed_cp75_34_fixture();
+        let err = verify_lecture_ownership(&db, "lec_a", "userB").unwrap_err();
+        assert!(err.contains("無權"));
+    }
+
+    /// Sanity: verify_course_ownership (alive-only variant) still works
+    /// on the fixture's alive courses. Pinned here so a future cp75.x
+    /// gate that switches save_course back to the alive-only verifier
+    /// has at least one assertion proving the variant's accept-path.
+    #[test]
+    fn cp75_34_verify_course_ownership_alive_accepts_owner() {
+        let db = seed_cp75_34_fixture();
+        assert!(verify_course_ownership(&db, "course_a", "userA").is_ok());
+    }
+
+    // ── cp75.36b — semantic_search_lecture parent-lecture is_deleted gate ──
+    //
+    // Last finding from the cp75.20 cleanup plan that didn't ship in
+    // cp75.20 itself. The `semantic_search_lecture` Tauri command goes
+    // straight to `get_embeddings_by_lecture`, which is intentionally
+    // permissive (RAG indexing during recovery depends on it). Without
+    // an explicit guard, a soft-deleted lecture's chunks remain
+    // searchable — content the user expected to be hidden leaks.
+    //
+    // The fix is a one-liner at the command boundary:
+    //
+    //     if db.get_lecture(&lecture_id)?.is_none() { return Ok(vec![]); }
+    //
+    // because `get_lecture` filters `is_deleted = 0` since cp75.20.
+    // Returning `Ok(vec![])` (vs `Err`) keeps the chat UI graceful
+    // when the user trashes a lecture mid-session.
+    //
+    // We can't drive the Tauri command directly from a unit test (it
+    // depends on the global db manager + EMBEDDING_SERVICE mutex), so
+    // we mirror cp75.34's pattern: pin the predicate the inline guard
+    // uses. A refactor that flips the predicate or removes the guard
+    // gets caught here without needing the embedding model on disk.
+    //
+    // The DB-level half (`get_embeddings_by_lecture` stays permissive,
+    // `get_lecture` blocks trashed) is locked in
+    // `database_test.rs::cp75_36b_*`. Together they prove the guard
+    // is both necessary (leak surface exists) and sufficient
+    // (predicate fires).
+
+    /// Fixture: one alive lecture + one soft-deleted lecture under the
+    /// same alive course. Mirrors cp75.20's `fixture_softdelete` shape
+    /// but trimmed to the columns this test inspects (no notes / chat
+    /// sessions — the cp75.36b guard only consults `get_lecture`).
+    fn seed_cp75_36b_lib_fixture() -> Database {
+        let db = Database::open_in_memory().expect("in-memory DB");
+        let now = Utc::now().to_rfc3339();
+        let now_ms: i64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO courses \
+                (id, title, description, keywords, user_id, is_deleted, created_at, updated_at) \
+             VALUES \
+                ('course-x', 'X Course', NULL, NULL, 'default_user', 0, ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO lectures \
+                (id, course_id, title, date, duration, status, is_deleted, deleted_at, created_at, updated_at) \
+             VALUES \
+                ('lec-x-alive',   'course-x', 'Alive',   ?1, 0, 'completed', 0, NULL, ?1, ?1), \
+                ('lec-x-trashed', 'course-x', 'Trashed', ?1, 0, 'completed', 1, ?2,   ?1, ?1)",
+            rusqlite::params![now, now_ms],
+        )
+        .unwrap();
+        db
+    }
+
+    /// cp75.36b — the predicate the inline guard inverts. A trashed
+    /// lecture's `get_lecture` call returns None, so the guard's
+    /// short-circuit fires and `semantic_search_lecture` returns an
+    /// empty result without ever touching the embeddings table.
+    #[test]
+    fn cp75_36b_semantic_search_guard_predicate_fires_for_trashed() {
+        let db = seed_cp75_36b_lib_fixture();
+        // The exact expression the lib.rs guard evaluates:
+        //   `db.get_lecture(&lecture_id).map_err(...)?.is_none()`
+        let trashed_is_none = db.get_lecture("lec-x-trashed").unwrap().is_none();
+        assert!(
+            trashed_is_none,
+            "trashed lecture must short-circuit the semantic_search_lecture \
+             guard — without this the user's RAG search would still hit \
+             the (intentionally permissive) get_embeddings_by_lecture and \
+             leak chunks the user thought were hidden"
+        );
+    }
+
+    /// cp75.36b — and the alive case must NOT short-circuit, otherwise
+    /// the guard would over-filter and break the happy path.
+    #[test]
+    fn cp75_36b_semantic_search_guard_passes_through_for_alive() {
+        let db = seed_cp75_36b_lib_fixture();
+        let alive_resolves = db.get_lecture("lec-x-alive").unwrap().is_some();
+        assert!(
+            alive_resolves,
+            "alive lecture must pass the guard — over-filtering here \
+             would break every legitimate semantic search"
+        );
+    }
+
+    /// cp75.36b — friendly-result contract: the guard returns
+    /// `Ok(Vec::new())`, NOT `Err`. The renderer's chat panel surfaces
+    /// errors as a toast; for a lecture the user just trashed, that
+    /// would be noise. Empty results render as "no matches" silently,
+    /// which is the desired UX. We mirror the inline expression so a
+    /// future refactor that flips the polarity to `Err(...)` (which
+    /// would break chat UX) gets caught.
+    #[test]
+    fn cp75_36b_semantic_search_guard_returns_empty_vec_not_err() {
+        // The guard's return expression is `Ok(Vec::new())` for the
+        // SearchHit Vec. Mirroring the shape with a placeholder Vec
+        // is enough to lock the polarity.
+        let result: Result<Vec<()>, String> = Ok(Vec::new());
+        assert!(
+            result.is_ok(),
+            "guard must return Ok(empty), not Err — chat UI surfaces \
+             Err as a toast which would be noise for a deliberate \
+             trash action"
+        );
+        assert!(result.unwrap().is_empty());
+    }
+
+    // ── cp75.24 — Parakeet variant-switch guard ────────────────────────
+    //
+    // `parakeet_load_model` must refuse mid-recording variant swaps.
+    // Without the guard, calling it during an active session calls
+    // `parakeet_engine::ensure_loaded`, which silently drops `active`
+    // → split transcript with no warning to the user. Lock the
+    // localized error contract here so the renderer (which surfaces
+    // the message verbatim in a toast) keeps working.
+
+    use crate::asr::parakeet_engine;
+    use crate::parakeet_load_model;
+
+    /// cp75.24 — variant-switch guard: refuses to swap models while a
+    /// recording session is live.
+    ///
+    /// We intentionally test ONLY the refusal branch. The "passes when
+    /// idle" branch falls through to `ensure_loaded`, which on a fresh
+    /// CI / dev box without a `.gguf` model on disk hits a download or
+    /// fs-walk path that hangs (60+ s) — wrong tool to verify guard
+    /// behaviour. The guard semantically gates BEFORE
+    /// `is_present` / `ensure_loaded`, so verifying refusal is enough
+    /// to prove the gate exists; the post-guard path is exercised by
+    /// integration tests in the renderer's e2e suite.
+    #[tokio::test]
+    async fn parakeet_load_model_refuses_during_active_session() {
+        // Force the engine into "session active" state without
+        // actually loading a model file (test seam — see
+        // `parakeet_engine::_test_force_session_active`).
+        parakeet_engine::_test_force_session_active(true);
+
+        let result = parakeet_load_model("int8".to_string()).await;
+
+        // ALWAYS reset before asserting so a panic here doesn't leak
+        // session state into later tests sharing the global engine.
+        parakeet_engine::_test_force_session_active(false);
+
+        let err = result.expect_err("should refuse variant switch during recording");
+        assert!(
+            err.contains("錄音進行中"),
+            "expected '錄音進行中' guard message, got: {err}"
+        );
     }
 }

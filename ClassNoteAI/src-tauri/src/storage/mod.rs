@@ -1,6 +1,9 @@
 pub mod database;
 pub mod models;
 
+#[cfg(test)]
+mod database_test;
+
 pub use database::{drain_migration_notices, Database, EmbeddingRow};
 pub use models::{Course, Lecture, Note, Setting, Subtitle};
 

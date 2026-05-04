@@ -1,0 +1,1266 @@
+/* ============================================================
+ * H18 ProfilePage · v0.7.0 Phase 6.7
+ *
+ * 對應 docs/design/h18-deep/h18-nav-pages.jsx ProfilePage L990+。
+ * 取代 SettingsView / ProfileView / TrashView。
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: flex;
+    background: var(--h18-surface);
+    overflow: hidden;
+    min-height: 0;
+    font-family: var(--h18-font-sans);
+}
+
+/* Sidebar ────────────────────────────────────────────────────── */
+.sidebar {
+    width: 230px;
+    flex-shrink: 0;
+    background: var(--h18-surface2);
+    border-right: 1px solid var(--h18-border);
+    padding: 20px 14px 20px 18px;
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+}
+
+.backBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    align-self: flex-start;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    margin-bottom: 18px;
+}
+
+.backBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.userRow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+
+.avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    background: #c48a2c;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 14px;
+    font-weight: 800;
+    flex-shrink: 0;
+}
+
+.userName {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.userEmail {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sectionHead {
+    margin-top: 18px;
+    margin-bottom: 6px;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.tab {
+    padding: 7px 10px;
+    font-size: 12px;
+    border-radius: 6px;
+    color: var(--h18-text-mid);
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    text-align: left;
+    cursor: pointer;
+    margin-bottom: 2px;
+    font-family: inherit;
+    font-weight: 500;
+    width: 100%;
+}
+
+.tab:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.tabActive {
+    color: var(--h18-text);
+    background: var(--h18-sel-bg);
+    border-left-color: var(--h18-sel-border);
+    font-weight: 700;
+}
+
+.tabHint {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-weight: 400;
+    margin-top: 1px;
+}
+
+/* Content ────────────────────────────────────────────────────── */
+.content {
+    flex: 1;
+    overflow: auto;
+    padding: 28px 44px 60px;
+    min-width: 0;
+}
+
+/* PHeader / PHead / PRow primitives ─────────────────────────── */
+.pageHeader {
+    margin-bottom: 20px;
+}
+
+.pageTitle {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.02em;
+    margin: 0;
+}
+
+.pageHint {
+    font-size: 12px;
+    color: var(--h18-text-dim);
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
+.pHead {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin-top: 24px;
+    margin-bottom: 2px;
+}
+
+.pHeadFirst {
+    margin-top: 6px;
+}
+
+.row {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--h18-border-soft);
+}
+
+.rowMain {
+    flex: 1;
+    min-width: 0;
+}
+
+.rowLabel {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--h18-text);
+}
+
+.rowHint {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    margin-top: 3px;
+    line-height: 1.55;
+}
+
+.rowRight {
+    flex-shrink: 0;
+}
+
+/* small controls ──────────────────────────────────────────────── */
+.select {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--h18-text);
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    font-family: inherit;
+    cursor: pointer;
+    outline: none;
+    min-width: 120px;
+}
+
+.toggle {
+    width: 36px;
+    height: 20px;
+    border-radius: 10px;
+    cursor: pointer;
+    background: var(--h18-border);
+    position: relative;
+    transition: background 160ms;
+    flex-shrink: 0;
+    border: none;
+    padding: 0;
+}
+
+.toggleOn {
+    background: var(--h18-accent);
+}
+
+.toggleKnob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    background: #fff;
+    transition: left 160ms;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.toggleOn .toggleKnob {
+    left: 18px;
+}
+
+.btn {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 120ms;
+}
+
+.btn:hover {
+    background: var(--h18-row-hover);
+}
+
+.btnPrimary {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+}
+
+.btnPrimary:hover {
+    filter: brightness(1.05);
+    background: var(--h18-invert);
+}
+
+.btnDanger {
+    color: var(--h18-hot);
+    border-color: var(--h18-hot);
+}
+
+.btnDanger:hover {
+    background: var(--h18-hot-bg);
+    color: var(--h18-hot);
+}
+
+.input {
+    padding: 6px 10px;
+    font-size: 12px;
+    color: var(--h18-text);
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    outline: none;
+    font-family: inherit;
+    min-width: 140px;
+}
+
+.inputMono {
+    font-family: var(--h18-font-mono);
+}
+
+.inputWide {
+    min-width: 240px;
+}
+
+.input:focus {
+    border-color: var(--h18-accent);
+}
+
+.seg {
+    display: flex;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 7px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+}
+
+.segBtn {
+    padding: 5px 11px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.segBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+/* Misc shared ─────────────────────────────────────────────────── */
+.statusOK {
+    font-size: 11px;
+    color: var(--h18-accent);
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+    padding: 3px 8px;
+    background: var(--h18-chip-bg);
+    border-radius: 4px;
+}
+
+.statusGreen {
+    font-size: 11px;
+    color: #22c55e;
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+    padding: 3px 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.statusGreenDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: #22c55e;
+}
+
+.statusGray {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.kvCard {
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+}
+
+.providerGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+
+.providerCard {
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface2);
+    min-width: 0;
+    transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.providerCard:hover {
+    border-color: color-mix(in srgb, var(--h18-accent) 50%, var(--h18-border-soft));
+}
+
+.providerCardActive {
+    border-color: var(--h18-accent);
+    background: var(--h18-chip-bg);
+}
+
+.providerHead {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.providerIcon {
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    color: var(--h18-text);
+}
+
+.providerHeadText {
+    flex: 1;
+    min-width: 0;
+}
+
+.providerSubInline {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    margin-top: 2px;
+}
+
+.providerName {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.providerDefaultPill {
+    font-size: 8px;
+    padding: 2px 6px;
+    background: var(--h18-accent);
+    color: #fff;
+    border-radius: 3px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.08em;
+    margin-left: 6px;
+}
+
+.providerDesc {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    margin-top: 6px;
+    line-height: 1.55;
+}
+
+.providerMeta {
+    margin-top: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.providerStatusRow {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.providerStatusGood {
+    font-size: 10px;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+}
+
+.providerStatusOff {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+}
+
+.usageGrid {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+}
+
+.usageCard {
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+}
+
+.usageLabel {
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: var(--h18-text-dim);
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+}
+
+.usageValue {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--h18-text);
+    font-family: var(--h18-font-mono);
+    margin-top: 3px;
+    letter-spacing: -0.02em;
+}
+
+.usageSub {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    margin-top: 1px;
+}
+
+/* Overview ────────────────────────────────────────────────────── */
+.heroCard {
+    margin-bottom: 24px;
+    padding: 20px 24px;
+    border-radius: 12px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    display: flex;
+    align-items: center;
+    gap: 18px;
+}
+
+.heroAvatar {
+    width: 64px;
+    height: 64px;
+    border-radius: 32px;
+    background: #c48a2c;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 24px;
+    font-weight: 800;
+    flex-shrink: 0;
+}
+
+.heroBody {
+    flex: 1;
+    min-width: 0;
+}
+
+.heroName {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    margin: 0;
+}
+
+.heroSub {
+    font-size: 12px;
+    color: var(--h18-text-dim);
+    margin-top: 2px;
+    font-family: var(--h18-font-mono);
+}
+
+.logoutBtn {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--h18-text-dim);
+    border: 1px solid var(--h18-border);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    transition: background 140ms, color 140ms, border-color 140ms;
+    font-family: inherit;
+}
+
+.logoutBtn:hover {
+    background: var(--h18-surface2);
+    color: var(--h18-hot);
+    border-color: color-mix(in srgb, var(--h18-hot) 35%, transparent);
+}
+
+.statsGrid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+/* PAppearance — SVG preview + 3-card switcher (per prototype L2722+) */
+.layoutPreviewBox {
+    margin-top: 6px;
+    margin-bottom: 12px;
+    padding: 16px;
+    border-radius: 10px;
+    border: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface2);
+}
+
+.layoutPreviewInner {
+    max-width: 480px;
+    margin: 0 auto;
+    animation: layoutFade 320ms var(--h18-ease-spring);
+}
+
+@keyframes layoutFade {
+    from {
+        opacity: 0;
+        transform: scale(0.985);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.layoutPreviewCaption {
+    margin-top: 12px;
+    text-align: center;
+}
+
+.layoutPreviewEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.layoutPreviewTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    margin-top: 4px;
+    letter-spacing: -0.01em;
+}
+
+.layoutPreviewDesc {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    margin-top: 3px;
+}
+
+.layoutCards {
+    display: flex;
+    gap: 6px;
+}
+
+.layoutCard {
+    flex: 1;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    cursor: pointer;
+    font-family: inherit;
+    color: var(--h18-text);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    transition: all 160ms var(--h18-ease-spring);
+}
+
+.layoutCard:hover {
+    border-color: var(--h18-text-faint);
+}
+
+.layoutCardActive {
+    border-color: var(--h18-accent);
+    background: var(--h18-chip-bg);
+}
+
+.layoutCardLetter {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-dim);
+}
+
+.layoutCardActive .layoutCardLetter {
+    color: var(--h18-accent);
+}
+
+.layoutCardTitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--h18-text);
+}
+
+/* "你已經累積了 N 小時的學習" hero — 對應 prototype POverview L1255+ */
+.bigHero {
+    margin: 24px 0 28px;
+    text-align: center;
+}
+
+.bigHeroEyebrow {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.bigHeroNumber {
+    font-size: 96px;
+    font-weight: 800;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    letter-spacing: -0.03em;
+    line-height: 1;
+    margin: 8px 0 4px;
+    font-variant-numeric: tabular-nums;
+}
+
+.bigHeroUnit {
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    margin-top: 8px;
+    display: inline-flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+    font-family: var(--h18-font-mono);
+}
+
+.bigHeroUnitVal {
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
+.statCard {
+    padding: 14px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+}
+
+.statLabel {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.statValue {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--h18-text);
+    font-family: var(--h18-font-mono);
+    letter-spacing: -0.02em;
+    margin-top: 4px;
+}
+
+.statSub {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    margin-top: 2px;
+    font-family: var(--h18-font-mono);
+}
+
+/* PAbout — hero update card (對齊 prototype L2934+) */
+.aboutHero {
+    margin-top: 8px;
+    padding: 20px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.aboutHeroBadge {
+    width: 60px;
+    height: 60px;
+    border-radius: 14px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    display: grid;
+    place-items: center;
+    font-size: 28px;
+    font-weight: 800;
+    flex-shrink: 0;
+}
+
+.aboutHeroBody {
+    flex: 1;
+    min-width: 0;
+}
+
+.aboutHeroTitle {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    margin: 0;
+}
+
+.aboutHeroVersion {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aboutHeroSystem {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aboutHeroBtn {
+    flex-shrink: 0;
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 700;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: filter 120ms;
+}
+
+.aboutHeroBtn:hover {
+    filter: brightness(1.08);
+}
+
+.aboutHeroBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.aboutUpdateBanner {
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--h18-chip-bg);
+    border: 1px solid var(--h18-accent);
+    font-size: 12px;
+    color: var(--h18-text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.aboutUpdateBannerIcon {
+    color: var(--h18-accent);
+    font-size: 14px;
+}
+
+.aboutUpdateBannerLabel {
+    font-weight: 700;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    font-size: 11px;
+}
+
+.aboutUpdateBannerSpacer {
+    flex: 1;
+}
+
+/* Trash list (in PData) ──────────────────────────────────────── */
+.trashList {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.trashRow {
+    padding: 8px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface2);
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 10px;
+    align-items: center;
+    font-size: 12px;
+}
+
+.trashTitle {
+    color: var(--h18-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.trashMeta {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.usageTaskRow {
+    display: grid;
+    grid-template-columns: 1fr 60px 80px 80px;
+    gap: 10px;
+    padding: 7px 0;
+    align-items: center;
+    border-bottom: 1px solid var(--h18-border-soft);
+    font-size: 11px;
+}
+
+.usageTaskRow:last-child {
+    border-bottom: none;
+}
+
+.usageTaskName {
+    color: var(--h18-text);
+}
+
+.usageTaskNum {
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    text-align: right;
+}
+
+/* Provider setup modal ───────────────────────────────────────────── */
+.modalScrim {
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, var(--h18-bg) 70%, transparent);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: grid;
+    place-items: center;
+    z-index: 100;
+    padding: 24px;
+    animation: modalScrimFade 120ms ease;
+}
+
+@keyframes modalScrimFade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.modalCard {
+    width: min(560px, 100%);
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 14px;
+    box-shadow: var(--h18-shadow);
+    padding: 22px;
+    animation: modalCardRise 160ms ease;
+}
+
+@keyframes modalCardRise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.modalHead {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--h18-border-soft);
+}
+
+.modalHeadText {
+    flex: 1;
+    min-width: 0;
+}
+
+.modalTitle {
+    font-size: 17px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+}
+
+.modalSub {
+    font-size: 12px;
+    color: var(--h18-text-dim);
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
+.modalClose {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid var(--h18-border-soft);
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-size: 13px;
+    display: grid;
+    place-items: center;
+}
+
+.modalClose:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.modalChoiceGrid {
+    margin-top: 16px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+@media (max-width: 540px) {
+    .modalChoiceGrid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.modalChoiceCard {
+    text-align: left;
+    padding: 14px;
+    border-radius: 10px;
+    border: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.modalChoiceCard:hover {
+    border-color: var(--h18-accent);
+    transform: translateY(-1px);
+}
+
+.modalChoiceTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.005em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.modalChoiceBadge {
+    font-size: 9px;
+    padding: 2px 6px;
+    background: color-mix(in srgb, var(--h18-accent) 16%, transparent);
+    color: var(--h18-accent);
+    border-radius: 4px;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.modalErrorBox {
+    padding: 8px 12px;
+    background: var(--h18-hot-bg);
+    border: 1px solid var(--h18-hot);
+    color: var(--h18-text);
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.modalChoiceDesc {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.55;
+}
+
+.modalChoicePill {
+    margin-top: auto;
+    align-self: flex-start;
+    font-size: 9px;
+    padding: 2px 8px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-accent);
+    border-radius: 999px;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.modalForm {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.modalField {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.modalLabel {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+}
+
+.modalHelp {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.55;
+    margin: 0;
+}
+
+.modalActions {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.modalOauthBox {
+    padding: 14px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.modalOauthTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+}
+
+.modalOauthDesc {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.55;
+}
+
+.modalOauthHint {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+/* ───────── PKeyboard (S3a-2) — keyboard shortcut rows ───────── */
+
+.kbdList {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.kbdRow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--h18-border);
+    border-radius: 8px;
+    background: var(--h18-surface2);
+}
+
+.kbdRow:hover {
+    background: var(--h18-row-hover);
+}
+
+.kbdLabel {
+    flex: 1;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--h18-text);
+}
+
+.kbdChip {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    color: var(--h18-text);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    min-width: 64px;
+    text-align: center;
+    transition: background 120ms, border-color 120ms;
+}
+
+.kbdChip:hover {
+    background: var(--h18-row-hover);
+    border-color: var(--h18-accent);
+}
+
+.kbdCapturing {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--h18-accent);
+    background: var(--h18-chip-bg);
+    border: 1px dashed var(--h18-accent);
+    border-radius: 6px;
+    min-width: 64px;
+    text-align: center;
+}
+
+.kbdReset {
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--h18-text-dim);
+    background: transparent;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 120ms, border-color 120ms;
+}
+
+.kbdReset:hover {
+    color: var(--h18-hot);
+    border-color: var(--h18-hot);
+}

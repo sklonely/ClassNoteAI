@@ -1,0 +1,244 @@
+/* ============================================================
+ * H18Inbox · v0.7.0 Phase 6.2
+ *
+ * 對應 docs/design/h18-deep/h18-inbox-preview.jsx L78-135.
+ * P6.2 留白：reminders schema 沒做，filter pills + group headings
+ * 都顯示 0；底層渲染明確 empty state。
+ * ============================================================ */
+
+.inbox {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: var(--h18-surface);
+    overflow: hidden;
+    font-family: var(--h18-font-sans);
+}
+
+.filters {
+    display: flex;
+    gap: 6px;
+    padding: 10px 16px 8px;
+    border-bottom: 1px solid var(--h18-border);
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.pill {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border: 1px solid var(--h18-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 140ms, color 140ms, border-color 140ms;
+}
+
+.pill:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.pillActive {
+    border-color: var(--h18-invert);
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.pillActive:hover {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.fetching {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+/* Row styles moved to InboxRow.module.css. */
+
+.errorBox {
+    margin: 12px 16px;
+    padding: 8px 10px;
+    background: var(--h18-hot-bg);
+    border: 1px solid var(--h18-hot);
+    border-radius: 6px;
+    color: var(--h18-text);
+    font-size: 11px;
+    line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.body {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ─── Sticky next-class row ──────────────────────────────── */
+.nextClass {
+    margin: 10px 12px 4px;
+    padding: 10px 12px 11px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border);
+    border-left: 3px solid var(--h18-accent);
+    border-radius: 8px;
+    color: var(--h18-text);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    width: calc(100% - 24px);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: background 120ms, border-color 120ms;
+    flex-shrink: 0;
+}
+
+.nextClass:hover {
+    background: var(--h18-row-hover);
+    border-color: var(--h18-accent);
+}
+
+.nextClassEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--h18-accent);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    text-transform: uppercase;
+}
+
+.nextClassRow {
+    display: grid;
+    grid-template-columns: 8px 1fr auto;
+    align-items: center;
+    gap: 10px;
+}
+
+.nextClassDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.nextClassMain {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.nextClassTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nextClassMeta {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nextClassMetaDot {
+    color: var(--h18-text-faint);
+}
+
+.nextClassLoc {
+    color: var(--h18-text-mid);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.nextClassCta {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 5px 10px;
+    border-radius: 6px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+.groupHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px 5px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    font-weight: 800;
+    color: var(--h18-text-dim);
+    text-transform: uppercase;
+    font-family: var(--h18-font-mono);
+    flex-shrink: 0;
+}
+
+.groupCount {
+    color: var(--h18-text-faint);
+}
+
+.groupRule {
+    flex: 1;
+    height: 1px;
+    background: var(--h18-border);
+}
+
+/* empty state for留白 */
+.empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 28px;
+    text-align: center;
+    color: var(--h18-text-dim);
+    gap: 10px;
+}
+
+.emptyIcon {
+    font-size: 28px;
+    color: var(--h18-text-faint);
+    line-height: 1;
+}
+
+.emptyTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text-mid);
+    letter-spacing: -0.01em;
+    margin: 0;
+}
+
+.emptyHint {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.6;
+    max-width: 280px;
+    margin: 0;
+    white-space: pre-line;
+}

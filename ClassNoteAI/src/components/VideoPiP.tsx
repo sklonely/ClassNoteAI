@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useRef, useState } from 'react';
 import { GripVertical } from 'lucide-react';
+import s from './VideoPiP.module.css';
 
 /**
  * v0.6.0 — "picture-in-picture" floating video for lectures that have
@@ -66,25 +67,20 @@ const VideoPiP = forwardRef<HTMLVideoElement, Props>(
         return (
             <div
                 ref={containerRef}
-                className="absolute z-30 rounded-lg shadow-2xl bg-black overflow-hidden border border-gray-700"
+                className={s.shell}
                 style={{
                     top: pos.y,
                     right: pos.x < 0 ? undefined : pos.x,
                     left: pos.x < 0 ? Math.abs(pos.x) : undefined,
-                    width: 360,
                 }}
             >
-                {/* Drag handle — a slim bar across the top. Using a
-                    dedicated handle instead of "drag anywhere on the
-                    video" keeps the native <video> controls usable
-                    (click to pause doesn't start a drag). */}
                 <div
                     onMouseDown={beginDrag}
-                    className="flex items-center justify-center gap-1 bg-gray-900/90 text-gray-400 text-[10px] py-1 cursor-grab active:cursor-grabbing select-none"
+                    className={s.handle}
                     title="拖動"
                 >
                     <GripVertical size={10} />
-                    <span>拖動</span>
+                    <span>DRAG</span>
                 </div>
                 <video
                     ref={ref}
@@ -93,7 +89,7 @@ const VideoPiP = forwardRef<HTMLVideoElement, Props>(
                     onLoadedMetadata={onLoadedMetadata}
                     onEnded={onEnded}
                     controls
-                    className="w-full block bg-black"
+                    className={s.video}
                 />
             </div>
         );

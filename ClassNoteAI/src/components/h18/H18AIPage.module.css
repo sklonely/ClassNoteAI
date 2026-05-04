@@ -1,0 +1,306 @@
+/* ============================================================
+ * H18AIPage · v0.7.0 Phase 6.6
+ * 對應 docs/design/h18-deep/h18-nav-pages.jsx L604+ (AIPage)。
+ * Layout：左 260px 對話列表 ｜ 右 1fr 主對話區。
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    background: var(--h18-border);
+    gap: 1px;
+    overflow: hidden;
+    min-height: 0;
+    font-family: var(--h18-font-sans);
+}
+
+/* Left ────────────────────────────────────────────────────────── */
+.sidebar {
+    background: var(--h18-surface);
+    padding: 14px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.backBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    align-self: flex-start;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.backBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.sectionHead {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin: 14px 0 6px;
+}
+
+.session {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: transparent;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    font-family: inherit;
+    border-top: none;
+    border-right: none;
+    border-bottom: none;
+    width: 100%;
+}
+
+.sessionActive {
+    background: var(--h18-sel-bg);
+    border-left: 3px solid var(--h18-sel-border);
+}
+
+.sessionTitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--h18-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sessionPreview {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sessionMeta {
+    font-size: 9px;
+    color: var(--h18-text-faint);
+    margin-top: 2px;
+    font-family: var(--h18-font-mono);
+}
+
+.newBtn {
+    margin-top: auto;
+    padding: 10px 14px;
+    font-size: 12px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 700;
+    transition: filter 120ms;
+}
+
+.newBtn:hover {
+    filter: brightness(1.08);
+}
+
+/* Right ───────────────────────────────────────────────────────── */
+.main {
+    background: var(--h18-surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.head {
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--h18-border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.headIcon {
+    font-size: 14px;
+    color: var(--h18-accent);
+}
+
+.headTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+}
+
+.headSub {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+}
+
+.headBadge {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    padding: 2px 8px;
+    border: 1px solid var(--h18-border);
+    border-radius: 4px;
+}
+
+.body {
+    flex: 1;
+    overflow: auto;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.empty {
+    align-self: center;
+    text-align: center;
+    color: var(--h18-text-dim);
+    font-size: 13px;
+    margin-top: 40px;
+    line-height: 1.7;
+}
+
+.emptyIcon {
+    font-size: 28px;
+    margin-bottom: 8px;
+    color: var(--h18-accent);
+}
+
+.msgUser {
+    align-self: flex-end;
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.msgAI {
+    align-self: flex-start;
+    max-width: 85%;
+    padding: 12px 16px;
+    border-radius: 14px;
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border-soft);
+    font-size: 13px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.msgHint {
+    align-self: stretch;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px dashed var(--h18-border-soft);
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    line-height: 1.6;
+}
+
+.thinking {
+    display: inline-flex;
+    gap: 3px;
+    margin-right: 6px;
+}
+
+.thinkingDot {
+    width: 5px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--h18-text-dim);
+    animation: aidotPulse 1.2s infinite ease-in-out;
+}
+
+.thinkingDot:nth-child(2) { animation-delay: 0.2s; }
+.thinkingDot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes aidotPulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.9; }
+}
+
+.foot {
+    padding: 12px 24px;
+    border-top: 1px solid var(--h18-border);
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.inputBox {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+}
+
+.inputBox:focus-within {
+    border-color: var(--h18-accent);
+}
+
+.input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--h18-text);
+    outline: none;
+    font-size: 13px;
+    font-family: inherit;
+    padding: 0;
+}
+
+.inputKbd {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.sendBtn {
+    padding: 0 16px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.sendBtn:hover {
+    filter: brightness(1.05);
+}
+
+.sendBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}

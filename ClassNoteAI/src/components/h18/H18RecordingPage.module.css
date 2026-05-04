@@ -1,0 +1,907 @@
+/* ============================================================
+ * H18RecordingPage · v0.7.0 Phase 6.5+
+ *
+ * 對應 docs/design/h18-deep/h18-recording-v2.jsx (RecordingPage +
+ * RV2LayoutA + RV2Transport + RV2FinishingOverlay).
+ *
+ * Layout A：
+ *   ┌───────────────────────── Hero (LIVE) ─────────────────────────┐
+ *   │ 86px Slide  │  1fr Slide viewer  │  460px Subtitle stream    │
+ *   ├──────────────────── Bottom Transport (52px) ──────────────────┤
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+    font-family: var(--h18-font-sans);
+    position: relative;
+    background: var(--h18-bg);
+}
+
+/* Hero ────────────────────────────────────────────────────────── */
+.hero {
+    flex-shrink: 0;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--h18-font-mono);
+}
+
+.crumbBack {
+    padding: 4px 10px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.crumbBack:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.crumbCourse {
+    font-size: 11px;
+    color: var(--h18-text-mid);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.crumbDivider {
+    color: var(--h18-text-faint);
+}
+
+.crumbLecture {
+    font-size: 13px;
+    color: var(--h18-text);
+    font-weight: 700;
+    font-family: var(--h18-font-sans);
+    letter-spacing: -0.01em;
+}
+
+.pauseTag {
+    margin-left: 4px;
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-dim);
+    border: 1px solid var(--h18-border);
+    border-radius: 4px;
+    font-family: var(--h18-font-mono);
+}
+
+.heroSpacer {
+    flex: 1;
+}
+
+/* Layout switcher (雙欄/字幕專注/影片) */
+.layoutSwitcher {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.layoutBtn {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 120ms, color 120ms;
+}
+
+.layoutBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.layoutBtn:not(.layoutBtnActive):hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+/* hero 筆記 / 匯入 buttons */
+.heroBtn {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms, color 120ms;
+}
+
+.heroBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.heroBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+}
+
+.heroBtnActive:hover {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.heroBtnKbd {
+    font-size: 9px;
+    opacity: 0.7;
+    font-family: var(--h18-font-mono);
+    margin-left: 2px;
+}
+
+.heroBtnDashed {
+    composes: heroBtn;
+    border-style: dashed;
+}
+
+/* Body grid (Layout A) ─────────────────────────────────────────── */
+.body {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 86px 1fr 460px;
+    background: var(--h18-border);
+    gap: 1px;
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* Layout B: 字幕專注 — 1fr subs / right 200px slide thumbs */
+.bodyB {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 200px;
+    background: var(--h18-border);
+    gap: 1px;
+    overflow: hidden;
+    min-height: 0;
+}
+
+.slideStripWide {
+    background: var(--h18-surface2);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.slideStripWideEmpty {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-faint);
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    text-align: center;
+    line-height: 1.7;
+    padding: 16px;
+}
+
+/* Layout C: 影片 + subs sidebar + timeline scrubber bottom */
+.bodyC {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+    background: var(--h18-bg);
+}
+
+.bodyCTop {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 1px;
+    background: var(--h18-border);
+    overflow: hidden;
+    min-height: 0;
+}
+
+.videoPanel {
+    background: #000;
+    display: grid;
+    place-items: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.videoRecTag {
+    position: absolute;
+    top: 12px;
+    left: 16px;
+    padding: 4px 10px;
+    background: rgba(0, 0, 0, 0.65);
+    color: #fff;
+    border-radius: 4px;
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.08em;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.videoRecDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: #ff4b4b;
+    animation: rv2rec 1.2s var(--h18-ease-spring) infinite;
+}
+
+.videoElapsed {
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.videoEmpty {
+    color: #fff;
+    text-align: center;
+    font-family: var(--h18-font-mono);
+}
+
+.videoEmptyIcon {
+    font-size: 48px;
+    opacity: 0.4;
+}
+
+.videoEmptyMeta {
+    font-size: 11px;
+    opacity: 0.5;
+    margin-top: 8px;
+    letter-spacing: 0.14em;
+    line-height: 1.6;
+}
+
+.videoSubOverlay {
+    position: absolute;
+    bottom: 20px;
+    left: 8%;
+    right: 8%;
+    padding: 10px 18px;
+    background: rgba(0, 0, 0, 0.72);
+    border-radius: 6px;
+    color: #fff;
+    text-align: center;
+    font-size: 14px;
+    line-height: 1.4;
+    font-weight: 500;
+}
+
+.subPaneMini .subStream {
+    padding: 10px 12px;
+    gap: 6px;
+}
+
+.subPaneMini .subRow {
+    border-left-width: 2px;
+    padding-left: 8px;
+}
+
+.subPaneMini .subEn {
+    font-size: 11px;
+}
+
+.subPaneFocus .subStream {
+    padding: 40px 80px;
+    gap: 16px;
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.subPaneFocus .subEn {
+    font-size: 16px;
+    line-height: 1.7;
+}
+
+.subPaneFocus .subZh {
+    font-size: 13px;
+    margin-top: 6px;
+}
+
+/* Timeline scrubber */
+.timeline {
+    flex-shrink: 0;
+    padding: 10px 20px;
+    background: var(--h18-surface2);
+    border-top: 1px solid var(--h18-border);
+}
+
+.timelineHead {
+    font-size: 9px;
+    letter-spacing: 0.14em;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.timelineTrack {
+    position: relative;
+    height: 32px;
+    background: var(--h18-border);
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.timelineFill {
+    position: absolute;
+    inset: 0;
+    background: color-mix(in srgb, var(--h18-accent) 18%, transparent);
+}
+
+.timelineMarker {
+    position: absolute;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--h18-text-faint);
+    opacity: 0.7;
+}
+
+.timelinePlayhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--h18-accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--h18-accent) 18%, transparent);
+}
+
+/* Slide strip ─────────────────────────────────────────────────── */
+.slideStrip {
+    background: var(--h18-surface2);
+    overflow: auto;
+    padding: 8px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.slideThumb {
+    width: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 4px;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border-soft);
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-faint);
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    cursor: pointer;
+    transition: border-color 120ms;
+}
+
+.slideThumb:hover {
+    border-color: var(--h18-accent);
+}
+
+.slideThumbActive {
+    border-color: var(--h18-accent);
+    box-shadow: 0 0 0 2px var(--h18-bg), 0 0 0 4px var(--h18-accent);
+}
+
+.slideStripEmpty {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    color: var(--h18-text-faint);
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    line-height: 1.6;
+    padding: 12px 4px;
+}
+
+/* Main slide ──────────────────────────────────────────────────── */
+.slideMain {
+    background: var(--h18-surface);
+    padding: 24px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.slideEmpty {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    border: 2px dashed var(--h18-border);
+    border-radius: 12px;
+    color: var(--h18-text-dim);
+    text-align: center;
+    line-height: 1.7;
+    font-size: 13px;
+    padding: 40px;
+}
+
+.slideEmptyIcon {
+    font-size: 36px;
+    color: var(--h18-text-faint);
+    margin-bottom: 12px;
+}
+
+.slideEmptyHint {
+    margin-top: 10px;
+    font-size: 11px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+.slideImportBtn {
+    margin-top: 16px;
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 700;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+/* Subtitle stream ─────────────────────────────────────────────── */
+.subPane {
+    background: var(--h18-surface);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.subHead {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--h18-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.subHeadEyebrow {
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.subHeadCount {
+    font-size: 9px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    margin-left: auto;
+}
+
+.subStream {
+    flex: 1;
+    overflow: auto;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.subEmpty {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-faint);
+    font-size: 12px;
+    text-align: center;
+    line-height: 1.6;
+    padding: 24px;
+}
+
+.subRow {
+    border-left: 3px solid var(--h18-accent);
+    padding-left: 12px;
+}
+
+.subTime {
+    font-size: 9px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+    margin-bottom: 3px;
+}
+
+.subEn {
+    font-size: 13px;
+    color: var(--h18-text);
+    line-height: 1.55;
+}
+
+.subZh {
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    line-height: 1.55;
+    margin-top: 3px;
+    font-style: italic;
+}
+
+.subCurrent {
+    border-left: 3px solid var(--h18-dot);
+    padding-left: 12px;
+    background: var(--h18-sel-bg);
+    border-radius: 0 4px 4px 0;
+    padding: 8px 10px 8px 12px;
+}
+
+.subCurrentEyebrow {
+    font-size: 9px;
+    color: var(--h18-dot);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.16em;
+    font-weight: 800;
+    margin-bottom: 2px;
+}
+
+.subCurrentText {
+    font-size: 13px;
+    color: var(--h18-text);
+    line-height: 1.6;
+}
+
+/* Transport bar ───────────────────────────────────────────────── */
+.transport {
+    flex-shrink: 0;
+    padding: 12px 20px;
+    border-top: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* Recording dot + elapsed (replaces big mic circle) */
+.recIndicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.recDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 5px;
+    background: var(--h18-text-dim);
+}
+
+.recDotLive {
+    background: #ff3b30;
+    box-shadow: 0 0 0 4px rgba(255, 59, 48, 0.2);
+    animation: rv2rec 1.4s var(--h18-ease-spring) infinite;
+}
+
+@keyframes rv2rec {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+.recTime {
+    font-size: 15px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text);
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+}
+
+.transportBtn {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.transportBtn:hover {
+    background: var(--h18-row-hover);
+}
+
+.transportBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* Pause-state 繼續錄 — red fill */
+.transportBtnRedFill {
+    background: #ff3b30;
+    color: #fff;
+    border-color: #ff3b30;
+    padding: 8px 16px;
+    font-weight: 700;
+    font-size: 12px;
+}
+
+.transportBtnRedFill:hover {
+    background: #ff3b30;
+    filter: brightness(1.08);
+}
+
+/* Recording-state 暫停 — invert (黑底白字) */
+.transportBtnInvert {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+    padding: 8px 16px;
+    font-weight: 700;
+    font-size: 12px;
+}
+
+.transportBtnInvert:hover {
+    background: var(--h18-invert);
+    filter: brightness(1.05);
+}
+
+/* 跟隨模式 active state */
+.transportBtnFollow {
+    background: var(--h18-chip-bg);
+    color: var(--h18-accent);
+    border-color: var(--h18-accent);
+}
+
+.transportBtnFollow:hover {
+    background: var(--h18-chip-bg);
+}
+
+.followDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--h18-text-faint);
+}
+
+/* 結束 · 儲存 — primary red right side */
+.transportBtnFinish {
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    background: #e8412e;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+    transition: filter 120ms, transform 100ms;
+}
+
+.transportBtnFinish:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.transportBtnFinish:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    transform: none;
+    filter: none;
+}
+
+.transportSpacer {
+    flex: 1;
+}
+
+.transportError {
+    font-size: 11px;
+    color: var(--h18-hot);
+    font-family: var(--h18-font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+}
+
+.transportStatus {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+/* RV2 Finishing Overlay ──────────────────────────────────────── */
+.finishScrim {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    background: rgba(20, 18, 14, 0.55);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    display: grid;
+    place-items: center;
+    font-family: var(--h18-font-sans);
+}
+
+.finishCard {
+    width: 480px;
+    max-width: calc(100vw - 60px);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 14px;
+    box-shadow: var(--h18-shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.finishHead {
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid var(--h18-border-soft);
+}
+
+.finishEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--h18-accent);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.finishTitle {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    margin: 4px 0 0;
+}
+
+.finishSub {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    margin-top: 4px;
+}
+
+.finishSteps {
+    padding: 14px 22px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.stepRow {
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    gap: 10px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    transition: color 200ms;
+}
+
+.stepDone {
+    color: var(--h18-text);
+}
+
+.stepActive {
+    color: var(--h18-text);
+}
+
+.stepIcon {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    border: 1.5px solid var(--h18-border);
+    background: var(--h18-surface2);
+    color: var(--h18-text-faint);
+    font-size: 11px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.stepDone .stepIcon {
+    border-color: var(--h18-accent);
+    background: var(--h18-accent);
+    color: #fff;
+}
+
+.stepActive .stepIcon {
+    border-color: var(--h18-accent);
+    background: transparent;
+    color: var(--h18-accent);
+    animation: stepspin 1.3s linear infinite;
+}
+
+@keyframes stepspin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.stepLabel {
+    font-weight: 600;
+}
+
+.stepHint {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.finishFoot {
+    padding: 12px 22px 18px;
+    border-top: 1px solid var(--h18-border-soft);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--h18-surface2);
+}
+
+.finishHint {
+    flex: 1;
+    font-size: 11px;
+    color: var(--h18-text-dim);
+}
+
+.finishBtn {
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.finishBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}

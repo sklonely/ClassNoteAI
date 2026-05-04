@@ -1,0 +1,259 @@
+/* ============================================================
+ * CourseUrlAgentPanel · v0.7.x
+ * ============================================================ */
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 4px;
+}
+
+.inputRow {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.urlInput {
+    flex: 1;
+    padding: 9px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-bg);
+    color: var(--h18-text);
+    font-size: 12px;
+    font-family: var(--h18-font-mono);
+    outline: none;
+    transition: border-color 120ms ease;
+}
+
+.urlInput:focus {
+    border-color: var(--h18-accent);
+}
+
+.urlInput:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.btnPrimary {
+    padding: 8px 14px;
+    background: var(--h18-accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+
+.btnPrimary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btnPrimary:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.btnGhost {
+    padding: 8px 14px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+
+.btnGhost:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.hint {
+    margin: 0;
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.6;
+}
+
+.hint strong {
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
+/* ─── Progress list ─────────────────────────────────────── */
+.progressList {
+    margin-top: 4px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.progressRow {
+    display: grid;
+    grid-template-columns: 16px auto 1fr;
+    align-items: baseline;
+    column-gap: 8px;
+    font-size: 11.5px;
+    line-height: 1.55;
+}
+
+.progressIcon {
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-faint);
+    font-weight: 700;
+    text-align: center;
+}
+
+.progressMsg {
+    color: var(--h18-text);
+    font-weight: 600;
+}
+
+.progressCount {
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 500;
+}
+
+.progressDetail {
+    color: var(--h18-text-faint);
+    font-size: 10.5px;
+    font-family: var(--h18-font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.progressRowDone .progressIcon {
+    color: var(--h18-accent);
+}
+
+.progressRowActive .progressIcon {
+    color: var(--h18-accent);
+    animation: spin 1.4s linear infinite;
+    display: inline-block;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.progressRowError .progressIcon {
+    color: var(--h18-hot);
+}
+
+.progressRowError .progressMsg {
+    color: var(--h18-hot);
+}
+
+/* ─── Error box ─────────────────────────────────────────── */
+.errorBox {
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: var(--h18-hot-bg);
+    border: 1px solid var(--h18-hot);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.errorTitle {
+    font-size: 12.5px;
+    font-weight: 800;
+    color: var(--h18-text);
+}
+
+.errorMessage {
+    font-size: 11.5px;
+    color: var(--h18-text);
+    line-height: 1.55;
+}
+
+.errorActions {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+/* ─── Result preview box ─────────────────────────────────── */
+.resultBox {
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--h18-accent) 8%, var(--h18-surface));
+    border: 1px solid color-mix(in srgb, var(--h18-accent) 35%, transparent);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.resultEyebrow {
+    font-size: 9px;
+    color: var(--h18-accent);
+    letter-spacing: 0.18em;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    text-transform: uppercase;
+}
+
+.resultRow {
+    display: grid;
+    grid-template-columns: 60px 1fr;
+    column-gap: 10px;
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.resultLabel {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding-top: 1px;
+}
+
+.resultValue {
+    color: var(--h18-text);
+    word-break: break-word;
+}
+
+.resultMuted {
+    color: var(--h18-text-faint);
+    font-size: 10.5px;
+}
+
+.resultOverview {
+    margin-top: 4px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--h18-surface2);
+    color: var(--h18-text-mid);
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+}
+
+.resultFoot {
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}

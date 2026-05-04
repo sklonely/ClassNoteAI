@@ -218,6 +218,27 @@ async fn download_model_internal(
 
     let status = response.status();
 
+    // cp75.12 — fail-fast on HTTP error responses. Without this guard
+    // a 404 / 410 / 500 from the model host silently writes the error
+    // body (typically a few KB of HTML) to disk and returns Ok, so the
+    // UI shows "下載完成" while the file is garbage. Distinct from the
+    // 206 partial-content branch below (which is a SUCCESS variant).
+    if !status.is_success() && status != 206 {
+        let snippet = response
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect::<String>();
+        return Err(anyhow::anyhow!(
+            "HTTP {} from {} — refused to write error body to disk. Response head: {}",
+            status,
+            config.url,
+            snippet,
+        ));
+    }
+
     // 檢查是否支持斷點續傳
     if downloaded > 0 && status != 206 {
         // 服務器不支持 Range 請求，重新下載

@@ -70,8 +70,141 @@ impl Database {
         Ok(db)
     }
 
+    /// Test-only: open an in-memory SQLite DB and run the same
+    /// `init_tables` migration path as production. Used by the
+    /// reusable harness in `storage::database_test` (Phase 7 Sprint 0
+    /// task S0.4) so cascade-delete / restore / hard_delete tests can
+    /// run without touching the filesystem.
+    #[cfg(test)]
+    pub(crate) fn open_in_memory() -> SqlResult<Self> {
+        let conn = Connection::open_in_memory()?;
+        let db = Database { conn };
+        db.init_tables()?;
+        Ok(db)
+    }
+
+    /// Test-only: borrow the underlying rusqlite connection so the
+    /// harness in a sibling `database_test` module can issue raw
+    /// SELECT/INSERT for assertions and seeding. Production code should
+    /// keep using the public CRUD methods on `Database`.
+    #[cfg(test)]
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// cp75.7 — public ownership lookups for the Tauri-command verifier
+    /// helpers. Returns None when the row doesn't exist (or DB error
+    /// occurred — the caller maps that to a user-facing "not found"
+    /// message; deeper diagnostics live in the rusqlite Error chain).
+    pub fn find_lecture_owner(&self, lecture_id: &str) -> Option<String> {
+        // cp75.20: filter soft-deleted lecture rows on the lecture
+        // table only (don't gate on c.is_deleted — the parent course
+        // may have been cascade-trashed while the caller still owns
+        // an alive lecture row, e.g. orphan-recovery flows).
+        self.conn
+            .query_row(
+                "SELECT c.user_id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.id = ?1 AND l.is_deleted = 0",
+                [lecture_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.20.1 — trash-aware ownership lookup.
+    ///
+    /// Same as `find_lecture_owner` but does NOT filter `is_deleted`. Used
+    /// by trash-management commands (restore_lecture, purge_lecture,
+    /// hard_delete_lectures_by_ids) that legitimately need to operate on
+    /// soft-deleted rows. The "alive-only" `find_lecture_owner` (cp75.20)
+    /// stays the default for every other destructive operation.
+    pub fn find_lecture_owner_including_trashed(&self, lecture_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT c.user_id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.id = ?1",
+                [lecture_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.33 — alive-only owner lookup for COURSES. Mirrors the
+    /// `find_lecture_owner` (cp75.20) gate: every non-trash callsite that
+    /// funnels through `verify_course_ownership` should be hidden from
+    /// soft-deleted rows. Trash-bin commands use the
+    /// `_including_trashed` variant below.
+    pub fn find_course_owner(&self, course_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT user_id FROM courses WHERE id = ?1 AND is_deleted = 0",
+                [course_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.33 — trash-aware ownership lookup for COURSES.
+    ///
+    /// Same as `find_course_owner` but does NOT filter `is_deleted`.
+    /// Used by `restore_course` / `purge_course` and any future
+    /// trash-management course command that legitimately needs to verify
+    /// ownership of a soft-deleted course row. Mirror of cp75.20.1's
+    /// `find_lecture_owner_including_trashed`.
+    pub fn find_course_owner_including_trashed(&self, course_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT user_id FROM courses WHERE id = ?1",
+                [course_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.21 — ownership lookup for chat sessions. Returns the
+    /// `user_id` column directly off `chat_sessions`. Used by the
+    /// `verify_chat_session_ownership` helper to refuse cross-user
+    /// `save_chat_message` writes (anyone with a session_id could
+    /// previously inject messages into another user's session).
+    ///
+    /// We do NOT filter `is_deleted` here — a soft-deleted session is
+    /// still legitimately the owner's, and the verify helper just needs
+    /// to refuse cross-user writes; "the session is in trash" is a
+    /// separate concern handled at the message-write level (currently
+    /// not enforced — see cp75.22 follow-up).
+    pub fn find_chat_session_owner(&self, session_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT user_id FROM chat_sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// cp75.21 — resolve a subtitle's parent lecture_id so the caller
+    /// can hand it to `verify_lecture_ownership`. The `delete_subtitle`
+    /// command (Tauri side) only receives a subtitle id; we need this
+    /// to recover the lecture_id before the ownership check fires.
+    /// Returns None for missing rows.
+    pub fn find_subtitle_lecture(&self, subtitle_id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT lecture_id FROM subtitles WHERE id = ?1",
+                [subtitle_id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
     /// 初始化數據表
-    fn init_tables(&self) -> SqlResult<()> {
+    ///
+    /// `pub(crate)` so the sibling `storage::database_test` harness can
+    /// re-invoke the migration to assert idempotency. Production code
+    /// keeps calling it implicitly via `Database::new` / `open_in_memory`.
+    pub(crate) fn init_tables(&self) -> SqlResult<()> {
         // 開啟外鍵約束（SQLite 默認關閉）
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
 
@@ -233,6 +366,50 @@ impl Database {
                 "CREATE INDEX IF NOT EXISTS idx_courses_is_deleted ON courses(is_deleted)",
                 [],
             )?;
+        }
+
+        // 1.6 v0.7.x: courses 表加 canvas_course_id 列 (Canvas LMS pairing)
+        let mut stmt = self.conn.prepare("PRAGMA table_info(courses)")?;
+        let has_canvas_course_id = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| name.unwrap_or_default() == "canvas_course_id");
+        drop(stmt);
+
+        if !has_canvas_course_id {
+            println!("Migrating courses table: adding canvas_course_id column");
+            self.conn.execute(
+                "ALTER TABLE courses ADD COLUMN canvas_course_id TEXT",
+                [],
+            )?;
+            // Index for the lookup path: rail/preview filter events by
+            // canvas_course_id constantly. Sparse index — most existing
+            // rows have NULL until the user runs the pairing wizard.
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_courses_canvas_course_id ON courses(canvas_course_id) WHERE canvas_course_id IS NOT NULL",
+                [],
+            )?;
+
+            // One-time migration of legacy stash: any course whose
+            // syllabus_info JSON has `_classnote_canvas_course_id` (the
+            // pre-Rust-schema fallback) gets promoted to the new column.
+            // We only fix rows where the new column is NULL to avoid
+            // clobbering anything written through the new path.
+            // This uses SQLite's json_extract — courses.syllabus_info is
+            // already serialized as a JSON text blob.
+            let migrated = self.conn.execute(
+                "UPDATE courses
+                    SET canvas_course_id = json_extract(syllabus_info, '$._classnote_canvas_course_id')
+                    WHERE canvas_course_id IS NULL
+                      AND syllabus_info IS NOT NULL
+                      AND json_extract(syllabus_info, '$._classnote_canvas_course_id') IS NOT NULL",
+                [],
+            ).unwrap_or(0);
+            if migrated > 0 {
+                println!(
+                    "  → promoted {} legacy syllabus_info._classnote_canvas_course_id rows",
+                    migrated
+                );
+            }
         }
 
         // 1.4 創建 local_users 表
@@ -659,7 +836,247 @@ impl Database {
             ));
         }
 
+        // ===== v0.8.0 (Phase 7 Sprint 3.f-RS-2) schema migration =====
+        // PLAN §8.2: lectures + notes + settings + subtitles 一次到位。
+        //
+        // Why a single TRANSACTION: SQLite ALTER TABLE ADD COLUMN can't
+        // be rolled back partway, but if any of the data-touching steps
+        // (UPDATE notes / UPDATE subtitles) fail we still want to leave
+        // the columns in a consistent state. The transaction wraps the
+        // full batch — `unchecked_transaction` because we're inside an
+        // immutable `&self` method (the connection lives behind a
+        // non-mutable borrow but rusqlite knows it owns the conn).
+        //
+        // Idempotent: every step checks PRAGMA table_info first OR uses
+        // ALTER TABLE inside an `if !has_column` guard. Re-running on a
+        // already-migrated DB is a no-op. This is the same pattern used
+        // by all the prior migration blocks in this function.
+        self.run_v8_migration()?;
+        self.run_v9_migration()?;
+
         Ok(())
+    }
+
+    /// v0.8.1 schema migration — Phase 7 cp74.1.
+    ///
+    /// Subtitle two-axis schema:
+    ///   - new `source TEXT NOT NULL DEFAULT 'live'`
+    ///       'live' | 'imported' | 'edited'
+    ///   - new `fine_text`, `fine_translation`, `fine_confidence`
+    ///       columns to persist LLM-refined versions WITHOUT overwriting
+    ///       the rough originals
+    ///
+    /// Also reverses v8's incorrect `type='live'` rewrite. v8 collapsed
+    /// rough/fine `type` semantics into a 'live' marker because the
+    /// original V11 plan was to drop the rough/fine distinction. After
+    /// user feedback (preserve both layers), we restore: `type` = tier
+    /// ('rough' | 'fine'), `source` = provenance ('live' | 'imported' |
+    /// 'edited'). Any row with type='live' was a v8-mislabeled rough
+    /// row — flip it back to 'rough' and stamp source='live'.
+    ///
+    /// Idempotent via PRAGMA table_info.
+    fn run_v9_migration(&self) -> SqlResult<()> {
+        let cols = self.column_names("subtitles")?;
+        let needs_source = !cols.iter().any(|c| c == "source");
+        let needs_fine_text = !cols.iter().any(|c| c == "fine_text");
+        let needs_fine_translation = !cols.iter().any(|c| c == "fine_translation");
+        let needs_fine_confidence = !cols.iter().any(|c| c == "fine_confidence");
+
+        // Schema-side ALTERs only need to run once (idempotency = column
+        // presence check). Data-side UPDATE has to run every init_tables
+        // because legacy callers (or tests) may insert type='live' rows
+        // AFTER the schema migration completed once.
+        let any_schema_pending =
+            needs_source || needs_fine_text || needs_fine_translation || needs_fine_confidence;
+
+        if any_schema_pending {
+            println!("[Database] Running v0.8.1 subtitle two-axis migration (cp74.1)…");
+
+            let tx = self.conn.unchecked_transaction()?;
+            if needs_source {
+                tx.execute(
+                    "ALTER TABLE subtitles ADD COLUMN source TEXT NOT NULL DEFAULT 'live'",
+                    [],
+                )?;
+            }
+            if needs_fine_text {
+                tx.execute("ALTER TABLE subtitles ADD COLUMN fine_text TEXT", [])?;
+            }
+            if needs_fine_translation {
+                tx.execute(
+                    "ALTER TABLE subtitles ADD COLUMN fine_translation TEXT",
+                    [],
+                )?;
+            }
+            if needs_fine_confidence {
+                tx.execute("ALTER TABLE subtitles ADD COLUMN fine_confidence REAL", [])?;
+            }
+            tx.commit()?;
+            println!("[Database] v0.8.1 subtitle two-axis migration complete.");
+        }
+
+        // Always-run data fix: reverse v8's `type='live'` collapse. Cheap
+        // (~1 row update or 0). Catches both first-run migration and rows
+        // inserted later via legacy code paths.
+        self.conn.execute(
+            "UPDATE subtitles SET type = 'rough', source = 'live' WHERE type = 'live'",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    /// v0.8.0 schema migration — Phase 7 §8.2.
+    ///
+    /// Adds the columns Phase 7 needs across `lectures`, `notes`,
+    /// `settings` and one data fix on `subtitles.type`. Idempotent
+    /// (each ALTER guarded by PRAGMA table_info), safe to call on every
+    /// `init_tables` invocation. Wraps the whole batch in a single
+    /// transaction so a mid-batch failure rolls back the data UPDATEs
+    /// (the schema ALTERs themselves are non-rollbackable in SQLite, but
+    /// guarded by the column-presence check on the next run).
+    fn run_v8_migration(&self) -> SqlResult<()> {
+        // --- Detect which columns are already present ---
+        let lecture_cols = self.column_names("lectures")?;
+        let notes_cols = self.column_names("notes")?;
+        let settings_cols = self.column_names("settings")?;
+
+        let needs_started_at_ms = !lecture_cols.iter().any(|c| c == "started_at_ms");
+        let needs_summary_status = !lecture_cols.iter().any(|c| c == "summary_status");
+        let needs_summary_provider = !lecture_cols.iter().any(|c| c == "summary_provider");
+        let needs_import_source = !lecture_cols.iter().any(|c| c == "import_source");
+        let needs_cascade_deleted_with = !lecture_cols.iter().any(|c| c == "cascade_deleted_with");
+        let needs_lecture_deleted_at = !lecture_cols.iter().any(|c| c == "deleted_at");
+
+        let course_cols = self.column_names("courses")?;
+        let needs_course_deleted_at = !course_cols.iter().any(|c| c == "deleted_at");
+
+        let needs_note_summary = !notes_cols.iter().any(|c| c == "summary");
+        let needs_note_status = !notes_cols.iter().any(|c| c == "status");
+        let needs_note_provider = !notes_cols.iter().any(|c| c == "provider");
+
+        let needs_settings_user_id = !settings_cols.iter().any(|c| c == "user_id");
+
+        // Fast-path: nothing to do.
+        let any_pending = needs_started_at_ms
+            || needs_summary_status
+            || needs_summary_provider
+            || needs_import_source
+            || needs_cascade_deleted_with
+            || needs_lecture_deleted_at
+            || needs_course_deleted_at
+            || needs_note_summary
+            || needs_note_status
+            || needs_note_provider
+            || needs_settings_user_id;
+
+        if !any_pending {
+            // Subtitle type re-label is data-only and cheap, but skip it
+            // when the schema is already done — we already ran it once.
+            return Ok(());
+        }
+
+        println!("[Database] Running v0.8.0 schema migration (Phase 7 §8.2)…");
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        if needs_started_at_ms {
+            tx.execute("ALTER TABLE lectures ADD COLUMN started_at_ms INTEGER", [])?;
+        }
+        if needs_summary_status {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN summary_status TEXT NOT NULL DEFAULT 'pending'",
+                [],
+            )?;
+        }
+        if needs_summary_provider {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN summary_provider TEXT",
+                [],
+            )?;
+        }
+        if needs_import_source {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN import_source TEXT NOT NULL DEFAULT 'live'",
+                [],
+            )?;
+        }
+        if needs_cascade_deleted_with {
+            tx.execute(
+                "ALTER TABLE lectures ADD COLUMN cascade_deleted_with TEXT",
+                [],
+            )?;
+        }
+        // `deleted_at` is INTEGER ms-since-epoch — used by
+        // `hard_delete_trashed_older_than` (Phase 7 S3.f-RS-3) so we can
+        // compare against `now - days*86400000`. Existing soft-deletes
+        // only stamped `updated_at` (RFC3339 text) which is awkward to
+        // compare numerically.
+        if needs_lecture_deleted_at {
+            tx.execute("ALTER TABLE lectures ADD COLUMN deleted_at INTEGER", [])?;
+        }
+        if needs_course_deleted_at {
+            tx.execute("ALTER TABLE courses ADD COLUMN deleted_at INTEGER", [])?;
+        }
+
+        if needs_note_summary {
+            tx.execute("ALTER TABLE notes ADD COLUMN summary TEXT", [])?;
+        }
+        if needs_note_status {
+            tx.execute(
+                "ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'",
+                [],
+            )?;
+        }
+        if needs_note_provider {
+            tx.execute("ALTER TABLE notes ADD COLUMN provider TEXT", [])?;
+        }
+        // One-shot: lift summary out of the legacy `content` JSON blob so
+        // the new `notes.summary` column has data on day one.
+        if needs_note_summary {
+            tx.execute(
+                "UPDATE notes SET summary = json_extract(content, '$.summary') \
+                 WHERE content LIKE '%\"summary\"%'",
+                [],
+            )?;
+        }
+
+        if needs_settings_user_id {
+            tx.execute(
+                "ALTER TABLE settings ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default_user'",
+                [],
+            )?;
+        }
+
+        // Subtitle type re-label: `rough` → `live`. PLAN §8.2 keeps the
+        // column nullable text; we only flip the literal that the new TS
+        // union type rejects. Idempotent — running twice changes 0 rows.
+        tx.execute("UPDATE subtitles SET type = 'live' WHERE type = 'rough'", [])?;
+
+        // Index for the trash bin sweep — `hard_delete_trashed_older_than`
+        // hits this filter every app boot.
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_lectures_deleted_at ON lectures(deleted_at)",
+            [],
+        )?;
+
+        tx.commit()?;
+        println!("[Database] v0.8.0 schema migration complete.");
+        Ok(())
+    }
+
+    /// Helper: list column names of a table via `PRAGMA table_info`.
+    /// Used by `run_v8_migration` to keep the ALTER TABLE chain
+    /// idempotent on re-launch.
+    pub(crate) fn column_names(&self, table: &str) -> SqlResult<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info({})", table))?;
+        let cols = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(cols)
     }
 
     // --- Course CRUD ---
@@ -676,8 +1093,8 @@ impl Database {
     pub fn save_course(&self, course: &Course) -> SqlResult<()> {
         let syllabus_str = course.syllabus_info.as_ref().map(|v| v.to_string());
         self.conn.execute(
-            "INSERT INTO courses (id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO courses (id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 title = excluded.title,
@@ -685,7 +1102,8 @@ impl Database {
                 keywords = excluded.keywords,
                 syllabus_info = excluded.syllabus_info,
                 updated_at = excluded.updated_at,
-                is_deleted = excluded.is_deleted",
+                is_deleted = excluded.is_deleted,
+                canvas_course_id = excluded.canvas_course_id",
             rusqlite::params![
                 course.id,
                 course.user_id,
@@ -695,17 +1113,22 @@ impl Database {
                 syllabus_str,
                 course.created_at,
                 course.updated_at,
-                course.is_deleted // Persist is_deleted
+                course.is_deleted, // Persist is_deleted
+                course.canvas_course_id, // v0.7.x: Canvas LMS pairing
             ],
         )?;
         Ok(())
     }
 
     /// 獲取科目
+    ///
+    /// cp75.20: filter soft-deleted rows. Deep-link / direct-id lookups
+    /// (course detail page, restore preview) must not surface trash.
+    /// The trash UI uses `list_deleted_courses` instead.
     pub fn get_course(&self, id: &str) -> SqlResult<Option<Course>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
-             FROM courses WHERE id = ?1",
+            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
+             FROM courses WHERE id = ?1 AND is_deleted = 0",
         )?;
 
         match stmt.query_row([id], |row| Course::try_from(row)) {
@@ -718,7 +1141,7 @@ impl Database {
     /// 列出指定使用者的所有科目 (不包含已刪除)
     pub fn list_courses(&self, user_id: &str) -> SqlResult<Vec<Course>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
+            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
              FROM courses WHERE user_id = ?1 AND is_deleted = 0 ORDER BY created_at DESC",
         )?;
 
@@ -728,13 +1151,34 @@ impl Database {
         Ok(courses)
     }
 
-    /// 刪除科目 (軟刪除)
+    /// 刪除科目 (軟刪除 + cascade)
+    ///
+    /// Phase 7 S3.f-RS-3: a single SQLite TRANSACTION soft-deletes the
+    /// course AND all its non-deleted lectures, stamping each lecture's
+    /// `cascade_deleted_with = course_id` so `restore_course` can later
+    /// reverse exactly the rows this call touched (and not accidentally
+    /// pull back lectures that were already individually trashed before
+    /// the parent course was deleted).
     pub fn delete_course(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE courses SET is_deleted = 1, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+        let now_text = Utc::now().to_rfc3339();
+        let now_ms = now_unix_ms();
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "UPDATE courses SET is_deleted = 1, updated_at = ?2, deleted_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, now_text, now_ms],
         )?;
+
+        // Mark only currently-alive lectures so a later restore_course
+        // doesn't resurrect previously-deleted siblings.
+        tx.execute(
+            "UPDATE lectures \
+             SET is_deleted = 1, updated_at = ?2, deleted_at = ?3, cascade_deleted_with = ?1 \
+             WHERE course_id = ?1 AND is_deleted = 0",
+            rusqlite::params![id, now_text, now_ms],
+        )?;
+
+        tx.commit()?;
         Ok(())
     }
 
@@ -784,8 +1228,7 @@ impl Database {
                 audio_path = excluded.audio_path,
                 video_path = excluded.video_path,
                 status = excluded.status,
-                updated_at = excluded.updated_at,
-                is_deleted = excluded.is_deleted",
+                updated_at = excluded.updated_at",
             rusqlite::params![
                 lecture.id,
                 lecture.course_id,
@@ -811,9 +1254,13 @@ impl Database {
         // because `Lecture::try_from` reads is_deleted at index 10 and
         // video_path at index 11 — make sure the SELECT column order
         // matches that read order exactly).
+        //
+        // cp75.20: filter soft-deleted rows. Deep-link / direct-id
+        // lookups (lecture detail, summary fetch) must not surface
+        // trash. The trash UI uses `list_deleted_lectures` instead.
         let mut stmt = self.conn.prepare(
             "SELECT id, course_id, title, date, duration, pdf_path, audio_path, status, created_at, updated_at, is_deleted, video_path
-             FROM lectures WHERE id = ?1",
+             FROM lectures WHERE id = ?1 AND is_deleted = 0",
         )?;
 
         match stmt.query_row([id], |row| Lecture::try_from(row)) {
@@ -860,11 +1307,18 @@ impl Database {
     }
 
     /// 刪除課程 (軟刪除)
+    ///
+    /// Phase 7 S3.f-RS-3: also stamps `deleted_at` (ms epoch) so the
+    /// 30-day trash sweep can compare numerically. Does NOT set
+    /// `cascade_deleted_with` — that's reserved for cascade deletes
+    /// triggered by `delete_course`. Restoring an individually-deleted
+    /// lecture only requires the parent course to be alive.
     pub fn delete_lecture(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
+        let now_text = Utc::now().to_rfc3339();
+        let now_ms = now_unix_ms();
         self.conn.execute(
-            "UPDATE lectures SET is_deleted = 1, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+            "UPDATE lectures SET is_deleted = 1, updated_at = ?2, deleted_at = ?3 WHERE id = ?1",
+            rusqlite::params![id, now_text, now_ms],
         )?;
         Ok(())
     }
@@ -888,16 +1342,25 @@ impl Database {
     /// `.pcm` files via `recording::find_orphaned_recordings` to decide
     /// whether audio can be recovered or whether only metadata-level
     /// cleanup is possible.
-    pub fn list_orphaned_recording_lectures(&self) -> SqlResult<Vec<Lecture>> {
+    pub fn list_orphaned_recording_lectures(
+        &self,
+        user_id: &str,
+    ) -> SqlResult<Vec<Lecture>> {
+        // cp75.7 — added user_id filter via courses JOIN. Before this,
+        // user B's first launch surfaced user A's mid-session crash as a
+        // recovery candidate; if B clicked "recover" the recording got
+        // attached to B's view (confused-deputy attack on the recovery
+        // prompt).
         let mut stmt = self.conn.prepare(
-            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, \
-                    status, is_deleted, created_at, updated_at \
-             FROM lectures \
-             WHERE status = 'recording' AND is_deleted = 0 \
-             ORDER BY created_at ASC",
+            "SELECT l.id, l.course_id, l.title, l.date, l.duration, l.pdf_path, l.audio_path, \
+                    l.status, l.is_deleted, l.created_at, l.updated_at \
+             FROM lectures l \
+             JOIN courses c ON l.course_id = c.id \
+             WHERE l.status = 'recording' AND l.is_deleted = 0 AND c.user_id = ?1 \
+             ORDER BY l.created_at ASC",
         )?;
         let lectures = stmt
-            .query_map([], |row| {
+            .query_map([user_id], |row| {
                 Ok(Lecture {
                     id: row.get(0)?,
                     course_id: row.get(1)?,
@@ -933,8 +1396,10 @@ impl Database {
     /// 保存字幕
     pub fn save_subtitle(&self, subtitle: &Subtitle) -> SqlResult<()> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO subtitles (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, speaker_role, speaker_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT OR REPLACE INTO subtitles \
+             (id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, \
+              source, fine_text, fine_translation, fine_confidence, speaker_role, speaker_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             rusqlite::params![
                 subtitle.id,
                 subtitle.lecture_id,
@@ -944,12 +1409,16 @@ impl Database {
                 subtitle.subtitle_type,
                 subtitle.confidence,
                 subtitle.created_at,
+                subtitle.source,
+                subtitle.fine_text,
+                subtitle.fine_translation,
+                subtitle.fine_confidence,
                 subtitle
                     .speaker_role
                     .as_deref()
                     .filter(|role| matches!(*role, "teacher" | "student" | "unknown"))
                     .unwrap_or("unknown"),
-                subtitle.speaker_id
+                subtitle.speaker_id,
             ],
         )?;
         Ok(())
@@ -994,13 +1463,37 @@ impl Database {
             .unwrap_or(false);
 
         if !course_exists {
-            // 自動創建缺失的 Course
+            // cp75.5 — race-recovery path: parent course was deleted while
+            // the recording's stop pipeline was still running. We auto-
+            // recreate the course shell so the subtitles aren't lost. The
+            // owning user_id is read from the lecture's own row (lectures
+            // were soft-deleted with the course but the rows still exist
+            // and carry the original course_id; in the rare bare race
+            // where lecture has no surviving FK trail we fall back to a
+            // sentinel that an admin can later reassign).
+            //
+            // Before this fix the auto-recreate hardcoded user_id =
+            // 'default_user' which silently misattributed everyone's
+            // race-recovered subtitles to the default account.
             let now = chrono::Utc::now().to_rfc3339();
+            // Best-effort user_id discovery — try to find ANY trashed
+            // course row with the same id (cascade-delete keeps the row
+            // until 30-day purge, so this usually succeeds).
+            let owner: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT user_id FROM courses WHERE id = ?1",
+                    [&course_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            let owner = owner.unwrap_or_else(|| "default_user".to_string());
             self.conn.execute(
                 "INSERT OR IGNORE INTO courses (id, user_id, title, description, keywords, created_at, updated_at)
-                 VALUES (?1, 'default_user', ?2, ?3, ?4, ?5, ?6)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     course_id,
+                    owner,
                     "自動修復的課程",
                     "",
                     "",
@@ -1020,7 +1513,8 @@ impl Database {
     /// 獲取課程的所有字幕
     pub fn get_subtitles(&self, lecture_id: &str) -> SqlResult<Vec<Subtitle>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, speaker_role, speaker_id
+            "SELECT id, lecture_id, timestamp, text_en, text_zh, type, confidence, created_at, \
+                    source, fine_text, fine_translation, fine_confidence, speaker_role, speaker_id \
              FROM subtitles WHERE lecture_id = ?1 ORDER BY timestamp ASC",
         )?;
 
@@ -1061,10 +1555,15 @@ impl Database {
     }
 
     /// 獲取筆記
+    ///
+    /// cp75.20: filter on the notes table's own `is_deleted` column.
+    /// `save_note` already mirrors the parent lecture's trash state
+    /// into note.is_deleted, so this single filter covers both
+    /// "note explicitly trashed" and "lecture cascade-trashed".
     pub fn get_note(&self, lecture_id: &str) -> SqlResult<Option<Note>> {
         let mut stmt = self.conn.prepare(
             "SELECT lecture_id, title, content, generated_at, is_deleted
-             FROM notes WHERE lecture_id = ?1",
+             FROM notes WHERE lecture_id = ?1 AND is_deleted = 0",
         )?;
 
         match stmt.query_row([lecture_id], |row| Note::try_from(row)) {
@@ -1081,28 +1580,84 @@ impl Database {
         Ok(())
     }
 
-    /// 保存設置
-    pub fn save_setting(&self, key: &str, value: &str) -> SqlResult<()> {
+    /// cp75.3 — composite-key helper for per-user settings isolation.
+    /// The settings table's primary key is (key) alone; v8 added a
+    /// `user_id` column but adding it to the PK would have required a
+    /// table rebuild. Instead we namespace inside the key column itself:
+    /// `<userId>::<originalKey>`. The column `user_id` is still set so a
+    /// future migration can split into two real columns without losing
+    /// the mapping.
+    fn scoped_setting_key(key: &str, user_id: &str) -> String {
+        format!("{}::{}", user_id, key)
+    }
+
+    /// 保存設置 — per-user via composite key.
+    pub fn save_setting(&self, key: &str, value: &str, user_id: &str) -> SqlResult<()> {
         let updated_at = Utc::now().to_rfc3339();
+        let scoped = Self::scoped_setting_key(key, user_id);
         self.conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value, updated_at)
-             VALUES (?1, ?2, ?3)",
-            rusqlite::params![key, value, updated_at],
+            "INSERT OR REPLACE INTO settings (key, value, updated_at, user_id) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![scoped, value, updated_at, user_id],
         )?;
         Ok(())
     }
 
-    /// 獲取設置
-    pub fn get_setting(&self, key: &str) -> SqlResult<Option<String>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT value FROM settings WHERE key = ?1")?;
-
-        match stmt.query_row([key], |row| row.get::<_, String>(0)) {
-            Ok(value) => Ok(Some(value)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
+    /// 獲取設置 — per-user via composite key, with a graceful fallback
+    /// for legacy single-user rows that pre-dated cp75.3 (those have
+    /// the bare key string and `user_id = 'default_user'`).
+    pub fn get_setting(&self, key: &str, user_id: &str) -> SqlResult<Option<String>> {
+        // Primary lookup: scoped key for this user.
+        let scoped = Self::scoped_setting_key(key, user_id);
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT value FROM settings WHERE key = ?1")?;
+            match stmt.query_row([scoped.as_str()], |row| row.get::<_, String>(0)) {
+                Ok(value) => return Ok(Some(value)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    // fall through to legacy lookup below
+                }
+                Err(e) => return Err(e),
+            }
         }
+
+        // Legacy fallback: pre-cp75.3 rows used the bare key with
+        // user_id='default_user'. Migrate-on-read for the default user
+        // so subsequent saves use the new scoped form. For non-default
+        // users, do NOT read default_user's data — that would re-leak
+        // settings across accounts.
+        if user_id != "default_user" {
+            return Ok(None);
+        }
+        let legacy = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT value FROM settings WHERE key = ?1")?;
+            match stmt.query_row([key], |row| row.get::<_, String>(0)) {
+                Ok(value) => Some(value),
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(e),
+            }
+        };
+
+        // cp75.9 — migrate-on-read: when we hit a legacy row, write it
+        // back under the scoped key SO THE NEXT GET HITS THE PRIMARY
+        // PATH. Without this, every save through the new scoped path
+        // creates an *empty* scoped row (when the user's first edit
+        // doesn't include all the legacy fields), and after that the
+        // primary lookup wins → the legacy value (e.g. Calendar RSS URL)
+        // becomes invisible. Idempotent: re-running on an already-
+        // migrated row is a no-op (same value).
+        if let Some(value) = &legacy {
+            let updated_at = Utc::now().to_rfc3339();
+            let _ = self.conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at, user_id) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![scoped, value, updated_at, user_id],
+            );
+        }
+        Ok(legacy)
     }
 
     /// 獲取所有設置
@@ -1196,7 +1751,7 @@ impl Database {
     /// 列出已刪除的課程
     pub fn list_deleted_courses(&self, user_id: &str) -> SqlResult<Vec<Course>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted
+            "SELECT id, user_id, title, description, keywords, syllabus_info, created_at, updated_at, is_deleted, canvas_course_id
              FROM courses WHERE user_id = ?1 AND is_deleted = 1 ORDER BY updated_at DESC",
         )?;
         let courses = stmt
@@ -1219,24 +1774,228 @@ impl Database {
         Ok(lectures)
     }
 
-    /// 還原已刪除的課程
-    pub fn restore_course(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
+    /// 還原已刪除的課程 — cascade reverse.
+    ///
+    /// Phase 7 S3.f-RS-3: in a single TRANSACTION, un-deletes the course
+    /// AND any lectures that were soft-deleted by the cascading
+    /// `delete_course` call (i.e. rows where `cascade_deleted_with`
+    /// matches this course id). Lectures that were individually trashed
+    /// before the cascade — `cascade_deleted_with IS NULL` even though
+    /// `is_deleted = 1` — stay in the trash. Returns the count of
+    /// lectures that were resurrected so callers can show "still N
+    /// lectures in this course's trash" if useful.
+    pub fn restore_course(&self, id: &str) -> SqlResult<i64> {
+        let now_text = Utc::now().to_rfc3339();
+        let tx = self.conn.unchecked_transaction()?;
+
+        tx.execute(
+            "UPDATE courses SET is_deleted = 0, updated_at = ?2, deleted_at = NULL WHERE id = ?1",
+            rusqlite::params![id, now_text],
+        )?;
+
+        let restored = tx.execute(
+            "UPDATE lectures \
+             SET is_deleted = 0, updated_at = ?2, deleted_at = NULL, cascade_deleted_with = NULL \
+             WHERE cascade_deleted_with = ?1 AND is_deleted = 1",
+            rusqlite::params![id, now_text],
+        )?;
+
+        tx.commit()?;
+        Ok(restored as i64)
+    }
+
+    /// cp75.27 P1-G — list lectures still soft-deleted under a given
+    /// course id, regardless of why (cascaded vs. independently trashed).
+    ///
+    /// `restore_course` only resurrects rows whose `cascade_deleted_with`
+    /// matches the course id. Lectures that the user individually trashed
+    /// BEFORE the course delete (`cascade_deleted_with IS NULL` even
+    /// though `is_deleted = 1`) stay in the bin. The frontend uses this
+    /// helper to compare the post-restore lecture-trash count against the
+    /// `restore_course` return value, and surface a "still N lectures in
+    /// trash" warning when the user expected everything back.
+    ///
+    /// Returns rows in `updated_at DESC` order to match the trash-bin
+    /// list ordering.
+    pub fn find_trashed_lectures_in_course(
+        &self,
+        course_id: &str,
+    ) -> SqlResult<Vec<Lecture>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, course_id, title, date, duration, pdf_path, audio_path, status, \
+                    created_at, updated_at, is_deleted, video_path \
+             FROM lectures \
+             WHERE course_id = ?1 AND is_deleted = 1 \
+             ORDER BY updated_at DESC",
+        )?;
+        let lectures = stmt
+            .query_map([course_id], |row| Lecture::try_from(row))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(lectures)
+    }
+
+    /// 還原已刪除的課堂 — guarded on parent course being alive.
+    ///
+    /// Phase 7 S3.f-RS-3: refuses to restore a lecture whose parent
+    /// course is still soft-deleted, returning a typed error so the
+    /// frontend can prompt "需要連同課程一起回復". Also wipes the
+    /// `cascade_deleted_with` marker if present, so a later
+    /// `delete_course` followed by `restore_course` won't double-restore
+    /// this lecture.
+    pub fn restore_lecture(&self, id: &str) -> SqlResult<()> {
+        // Look up the parent course id.
+        let course_id: String = self.conn.query_row(
+            "SELECT course_id FROM lectures WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )?;
+
+        // Course must be alive for an individual restore.
+        let course_deleted: i64 = self
+            .conn
+            .query_row(
+                "SELECT is_deleted FROM courses WHERE id = ?1",
+                rusqlite::params![&course_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        if course_deleted != 0 {
+            // Reuse the SQLite "constraint" error category so the Tauri
+            // command layer can `.map_err` to a stable string. We don't
+            // have a custom error enum in this module yet; falling back
+            // to `Error::SqliteFailure` with a synthetic code keeps the
+            // wire format consistent with other rusqlite errors.
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                    extended_code: 0,
+                },
+                Some(format!(
+                    "親屬 course {} 仍在垃圾桶，請先還原 course",
+                    course_id
+                )),
+            ));
+        }
+
+        let now_text = Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE courses SET is_deleted = 0, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+            "UPDATE lectures \
+             SET is_deleted = 0, updated_at = ?2, deleted_at = NULL, cascade_deleted_with = NULL \
+             WHERE id = ?1",
+            rusqlite::params![id, now_text],
         )?;
         Ok(())
     }
 
-    /// 還原已刪除的課堂
-    pub fn restore_lecture(&self, id: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE lectures SET is_deleted = 0, updated_at = ?2 WHERE id = ?1",
-            rusqlite::params![id, now],
+    /// Hard-delete trash rows older than `days`.
+    ///
+    /// Phase 7 S3.f-RS-3 + §9.5 W3: scans both `lectures` and `courses`
+    /// for `is_deleted = 1 AND deleted_at < cutoff_ms`, deletes them in
+    /// a single transaction, and returns the lecture ids that were
+    /// purged so the caller can chain a filesystem cleanup pass.
+    /// `subtitles`, `notes` and `embeddings` cascade through the FK
+    /// `ON DELETE CASCADE`, so we only DELETE FROM the parent tables.
+    /// Idempotent: a repeat call after the rows are gone returns an
+    /// empty Vec.
+    pub fn hard_delete_trashed_older_than(
+        &self,
+        days: i64,
+        user_id: &str,
+    ) -> SqlResult<Vec<String>> {
+        // cp75.6 — added `user_id` filter. Before this, the boot-time
+        // sweep ran with no scope, so user A's 31-day-old trash got
+        // physically deleted the moment user B logged in (App.tsx fires
+        // 5s after `appState=ready`). Worse: B saw a toast "已永久清除
+        // N 個" and assumed it was their own.
+        //
+        // The filter joins lectures→courses→user_id (lectures themselves
+        // don't carry user_id; the trust boundary is the courses table).
+        let cutoff = now_unix_ms() - days.saturating_mul(86_400_000);
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Snapshot the lecture ids first — once DELETE runs the rows are
+        // gone and we can't enumerate them anymore. Done in its own
+        // scope so the prepared statement drops before the next
+        // `tx.execute`.
+        let purged: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT l.id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.is_deleted = 1 \
+                   AND l.deleted_at IS NOT NULL \
+                   AND l.deleted_at < ?1 \
+                   AND c.user_id = ?2",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![cutoff, user_id], |r| {
+                r.get::<_, String>(0)
+            })?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        // Delete lectures owned by THIS user only.
+        tx.execute(
+            "DELETE FROM lectures WHERE id IN ( \
+                 SELECT l.id FROM lectures l \
+                 JOIN courses c ON l.course_id = c.id \
+                 WHERE l.is_deleted = 1 \
+                   AND l.deleted_at IS NOT NULL \
+                   AND l.deleted_at < ?1 \
+                   AND c.user_id = ?2 \
+             )",
+            rusqlite::params![cutoff, user_id],
         )?;
-        Ok(())
+        tx.execute(
+            "DELETE FROM courses WHERE is_deleted = 1 \
+             AND deleted_at IS NOT NULL AND deleted_at < ?1 \
+             AND user_id = ?2",
+            rusqlite::params![cutoff, user_id],
+        )?;
+
+        tx.commit()?;
+        Ok(purged)
+    }
+
+    /// Phase 7 cp74.1 (S3.f-RS-3 補): hard-delete a specific list of
+    /// lectures by id. Mirrors `hard_delete_trashed_older_than` in
+    /// transactional safety but is user-driven (Trash UI 「永久刪除選取」
+    /// button) instead of time-based.
+    ///
+    /// Constraints:
+    ///   - Only purges rows where `is_deleted = 1`. Live lectures are
+    ///     refused (would be a UX disaster — the bulk-delete UI never
+    ///     sees them, but defensive-deny in case of malformed input).
+    ///   - Returns the actually-purged ids so the caller (frontend
+    ///     toast) can report a real count, not the requested count.
+    ///   - FK ON DELETE CASCADE handles subtitles / notes / embeddings.
+    pub fn hard_delete_lectures_by_ids(&self, ids: &[String]) -> SqlResult<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        let mut purged: Vec<String> = Vec::new();
+        for id in ids {
+            // Confirm trashed before purge.
+            let trashed: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM lectures WHERE id = ?1 AND is_deleted = 1)",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !trashed {
+                continue;
+            }
+            tx.execute(
+                "DELETE FROM lectures WHERE id = ?1 AND is_deleted = 1",
+                [id],
+            )?;
+            purged.push(id.clone());
+        }
+
+        tx.commit()?;
+        Ok(purged)
     }
 
     /// 永久刪除課程 (物理刪除)
@@ -1325,9 +2084,11 @@ impl Database {
             bool,
         )>,
     > {
+        // cp75.20: filter soft-deleted sessions. Sidebar list / RAG
+        // history must not surface trashed sessions.
         let mut stmt = self.conn.prepare(
-            "SELECT id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted 
-             FROM chat_sessions WHERE user_id = ?1 ORDER BY updated_at DESC",
+            "SELECT id, lecture_id, user_id, title, summary, created_at, updated_at, is_deleted
+             FROM chat_sessions WHERE user_id = ?1 AND is_deleted = 0 ORDER BY updated_at DESC",
         )?;
         let sessions: Vec<_> = stmt
             .query_map([user_id], |row| {
@@ -1546,6 +2307,17 @@ pub struct EmbeddingRow {
     pub position: i64,
     pub page_number: Option<i64>,
     pub created_at: String,
+}
+
+/// Current unix epoch in milliseconds, saturating to 0 on the
+/// (impossible-in-practice) clock-pre-1970 case. Used by Phase 7
+/// soft-delete `deleted_at` stamping and the trash-bin cutoff math
+/// in `hard_delete_trashed_older_than`.
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn pack_f32_le(vec: &[f32]) -> Vec<u8> {
@@ -1833,14 +2605,14 @@ mod tests {
     fn test_save_and_get_setting() {
         let (db, _temp) = create_test_db();
 
-        db.save_setting("theme", "dark").unwrap();
+        db.save_setting("theme", "dark", "default_user").unwrap();
 
-        let value = db.get_setting("theme").unwrap();
+        let value = db.get_setting("theme", "default_user").unwrap();
         assert_eq!(value, Some("dark".to_string()));
 
         // Update
-        db.save_setting("theme", "light").unwrap();
-        let value = db.get_setting("theme").unwrap();
+        db.save_setting("theme", "light", "default_user").unwrap();
+        let value = db.get_setting("theme", "default_user").unwrap();
         assert_eq!(value, Some("light".to_string()));
     }
 
@@ -1848,11 +2620,55 @@ mod tests {
     fn test_get_all_settings() {
         let (db, _temp) = create_test_db();
 
-        db.save_setting("key1", "value1").unwrap();
-        db.save_setting("key2", "value2").unwrap();
+        db.save_setting("key1", "value1", "default_user").unwrap();
+        db.save_setting("key2", "value2", "default_user").unwrap();
 
         let settings = db.get_all_settings().unwrap();
         assert!(settings.len() >= 2); // May include defaults
+    }
+
+    #[test]
+    fn test_settings_are_isolated_per_user() {
+        // cp75.3 — same key under different users must not collide.
+        let (db, _temp) = create_test_db();
+
+        db.save_setting("theme", "dark", "alice").unwrap();
+        db.save_setting("theme", "light", "bob").unwrap();
+
+        assert_eq!(
+            db.get_setting("theme", "alice").unwrap(),
+            Some("dark".to_string())
+        );
+        assert_eq!(
+            db.get_setting("theme", "bob").unwrap(),
+            Some("light".to_string())
+        );
+        // Unknown user reads back nothing rather than leaking another's.
+        assert_eq!(db.get_setting("theme", "carol").unwrap(), None);
+    }
+
+    #[test]
+    fn test_settings_legacy_default_user_fallback() {
+        // cp75.3 — pre-migration rows had the bare key + user_id='default_user'.
+        // get_setting('default_user', ..) must still find them.
+        let (db, _temp) = create_test_db();
+
+        // Hand-write a legacy row directly (no scoped key prefix).
+        db.conn
+            .execute(
+                "INSERT INTO settings (key, value, updated_at, user_id) \
+                 VALUES ('legacy_key', 'legacy_value', '2026-01-01T00:00:00Z', 'default_user')",
+                [],
+            )
+            .unwrap();
+
+        // Default user can read it via the legacy fallback path.
+        assert_eq!(
+            db.get_setting("legacy_key", "default_user").unwrap(),
+            Some("legacy_value".to_string())
+        );
+        // Other users must NOT see legacy data (would be a cross-user leak).
+        assert_eq!(db.get_setting("legacy_key", "alice").unwrap(), None);
     }
 
     // ===== Note Tests =====
@@ -2061,7 +2877,7 @@ mod tests {
         completed.status = "completed".into();
         db.save_lecture(&completed, "u").unwrap();
 
-        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        let orphans = db.list_orphaned_recording_lectures("u").unwrap();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].id, recording.id);
         assert_eq!(orphans[0].title, "zombie");
@@ -2082,7 +2898,7 @@ mod tests {
         db.save_lecture(&gone, "u").unwrap();
         db.delete_lecture(&gone.id).unwrap();
 
-        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        let orphans = db.list_orphaned_recording_lectures("u").unwrap();
         assert!(orphans.is_empty());
     }
 
@@ -2101,7 +2917,7 @@ mod tests {
 
         db.update_lecture_status(&l.id, "completed").unwrap();
 
-        let orphans = db.list_orphaned_recording_lectures().unwrap();
+        let orphans = db.list_orphaned_recording_lectures("u").unwrap();
         assert!(orphans.is_empty());
     }
 }

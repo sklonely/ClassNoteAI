@@ -1,0 +1,292 @@
+/* ============================================================
+ * H18Calendar · v0.7.x
+ *
+ * Week grid view (mon..sun × 0:00..23:00 hour rows, scrollable).
+ * 對應 docs/design/h18-deep/h18-parts.jsx L163-268.
+ * v0.7.x adds: toolbar with week navigation + week-of-semester counter.
+ * ============================================================ */
+
+.cal {
+    display: grid;
+    grid-template-columns: 36px repeat(var(--days, 7), 1fr);
+    flex: 1;
+    overflow: hidden;
+    min-height: 0;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    background: var(--h18-surface);
+    font-feature-settings: 'tnum';
+    font-family: var(--h18-font-sans);
+}
+
+/* ─── Toolbar (上下週切換 + 第 N 週) ───────────────────────── */
+.toolbar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    flex-shrink: 0;
+    height: 28px;
+}
+
+/* Ghost arrow button — no border, hover background only (H18 idiom) */
+.navBtn {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    color: var(--h18-text-faint);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    line-height: 1;
+    display: grid;
+    place-items: center;
+    transition: background 100ms ease, color 100ms ease;
+}
+
+.navBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+/* Centered week label row: 「第 N 週 · 04/27 – 05/03 [回本週]」 */
+.weekLabel {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 0 4px;
+}
+
+.weekLabelMain {
+    font-size: 10.5px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: 0.04em;
+    font-family: var(--h18-font-mono);
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.weekLabelDot {
+    color: var(--h18-text-faint);
+    font-size: 10px;
+}
+
+.weekLabelRange {
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-dim);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+/* Inline "回本週" button — appears next to label only when off current week */
+.navBtnTextual {
+    flex-shrink: 0;
+    padding: 1px 7px;
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--h18-accent) 50%, transparent);
+    color: var(--h18-accent);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 9px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.08em;
+    margin-left: 4px;
+    line-height: 1.5;
+    transition: background 100ms ease;
+}
+
+.navBtnTextual:hover {
+    background: color-mix(in srgb, var(--h18-accent) 14%, transparent);
+}
+
+.cornerCell {
+    border-right: 1px solid var(--h18-border);
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+}
+
+.dayHeader {
+    padding: 5px 7px;
+    border-right: 1px solid var(--h18-border);
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--h18-text-dim);
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.dayHeader > * {
+    flex-shrink: 0;
+}
+
+.dayHeaderToday {
+    background: var(--h18-today-bg);
+}
+
+.dayDate {
+    font-size: 13px;
+    color: var(--h18-text);
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+}
+
+.dayHeaderToday .dayDate {
+    color: var(--h18-today-text);
+}
+
+.todayBadge {
+    font-size: 8px;
+    padding: 1px 5px;
+    background: var(--h18-dot);
+    color: #fff;
+    border-radius: 999px;
+    margin-left: auto;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    font-family: var(--h18-font-mono);
+}
+
+/* lower body — sub-grid of hour rows */
+.body {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    overflow: auto;
+    position: relative;
+}
+
+.hourCol {
+    border-right: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+}
+
+.hourLabel {
+    height: var(--row-h, 30px);
+    font-size: 9px;
+    color: var(--h18-text-faint);
+    text-align: right;
+    padding-right: 5px;
+    padding-top: 2px;
+    font-family: var(--h18-font-mono);
+    border-bottom: 1px dashed var(--h18-grid-line-soft);
+}
+
+.dayCol {
+    border-right: 1px solid var(--h18-border);
+    position: relative;
+}
+
+.dayColToday {
+    background: var(--h18-today-bg);
+}
+
+.hourSlot {
+    height: var(--row-h, 30px);
+    border-bottom: 1px dashed var(--h18-grid-line-soft);
+}
+
+/* "now" line — only in today's column */
+.nowLine {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 0;
+    border-top: 2px solid var(--h18-accent);
+    z-index: 3;
+}
+
+.nowDot {
+    position: absolute;
+    left: 2px;
+    top: -4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--h18-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--h18-accent) 20%, transparent);
+}
+
+.nowLabel {
+    position: absolute;
+    right: 3px;
+    top: -11px;
+    font-size: 8px;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    background: var(--h18-surface);
+    padding: 0 3px;
+}
+
+/* event chip */
+.event {
+    position: absolute;
+    left: 3px;
+    right: 3px;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 9px;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    cursor: pointer;
+    overflow: hidden;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+    transition: transform 100ms var(--h18-ease-spring), filter 120ms;
+}
+
+.event:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.05);
+}
+
+.eventTitle {
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.eventMeta {
+    font-size: 8px;
+    opacity: 0.85;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* empty hint when no syllabus events at all */
+.emptyHint {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-dim);
+    font-size: 11px;
+    padding: 14px;
+    text-align: center;
+    line-height: 1.5;
+    pointer-events: none;
+}

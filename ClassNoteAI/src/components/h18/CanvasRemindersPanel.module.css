@@ -1,0 +1,106 @@
+/* ============================================================
+ * CanvasRemindersPanel · v0.7.x
+ * Per-course Canvas integration mini-panel.
+ * ============================================================ */
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.sectionHead {
+    margin-top: 16px;
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    letter-spacing: 0.16em;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    text-transform: uppercase;
+}
+
+.sectionHead:first-child {
+    margin-top: 0;
+}
+
+.sectionFetching {
+    font-size: 9px;
+    color: var(--h18-accent);
+    font-weight: 600;
+    margin-left: 4px;
+    letter-spacing: 0.02em;
+    font-family: var(--h18-font-mono);
+}
+
+.list {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.row {
+    padding: 7px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--h18-border-soft);
+    background: transparent;
+    display: grid;
+    grid-template-columns: 16px 1fr auto;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--h18-text);
+    text-align: left;
+    font-family: inherit;
+    cursor: default;
+    width: 100%;
+    transition: background 120ms, border-color 120ms;
+    text-decoration: none;
+}
+
+.rowAction {
+    cursor: pointer;
+}
+
+.rowAction:hover {
+    background: var(--h18-row-hover);
+    border-color: var(--h18-border);
+}
+
+.rowIcon {
+    color: var(--h18-accent);
+    font-size: 11px;
+    text-align: center;
+}
+
+.rowTitle {
+    font-weight: 600;
+    color: var(--h18-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.rowMeta {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 50%;
+}
+
+.errorBox {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--h18-hot-bg);
+    border: 1px solid var(--h18-hot);
+    color: var(--h18-text);
+    font-size: 11px;
+    line-height: 1.5;
+}

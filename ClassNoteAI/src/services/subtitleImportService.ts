@@ -161,6 +161,19 @@ export const subtitleImportService = {
         // up English-only on dev/Gemma builds.
         let translations: string[] = new Array(cues.length).fill('');
         if (options.language === 'en' && options.translateToChinese) {
+            // cp75.1: respect settings.translation.target_language. Was
+            // hardcoded 'zh' before — user picks zh-CN / ja / ko in
+            // PTranslate had no effect on import flow.
+            let targetLang = 'zh-TW';
+            try {
+                const { storageService: store } = await import('./storageService');
+                const settings = await store.getAppSettings();
+                if (settings?.translation?.target_language) {
+                    targetLang = settings.translation.target_language;
+                }
+            } catch {
+                // best effort
+            }
             emit({
                 stage: 'translating',
                 message: `翻譯 ${cues.length} 段字幕…`,
@@ -169,7 +182,7 @@ export const subtitleImportService = {
                 const text = cues[i].text;
                 if (!text) continue;
                 try {
-                    const tr = await translateRough(text, 'en', 'zh', /* useCache */ true);
+                    const tr = await translateRough(text, 'en', targetLang, /* useCache */ true);
                     translations[i] = tr.translated_text || '';
                 } catch (err) {
                     console.warn(`[subtitleImport] segment translate failed (${i}):`, err);
@@ -197,6 +210,7 @@ export const subtitleImportService = {
                 // Pasted captions came from a human-written source on the
                 // course platform — treat as fine rather than rough.
                 type: 'fine',
+                source: 'imported',
                 confidence: undefined,
                 created_at: nowIso,
             };

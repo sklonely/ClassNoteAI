@@ -1,0 +1,212 @@
+/* ============================================================
+ * H18Rail · v0.7.0 Phase 6.1
+ *
+ * 對應 docs/design/h18-deep/h18-parts.jsx L106-161 (H18Rail).
+ * 62px 寬 vertical icon rail，左主導覽。
+ * ============================================================ */
+
+.rail {
+    width: 62px;
+    background: var(--h18-rail);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 8px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-right: 1px solid var(--h18-border);
+    flex-shrink: 0;
+    font-family: var(--h18-font-sans);
+}
+
+.item {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    color: var(--h18-text-mid);
+    background: transparent;
+    border: 1px solid var(--h18-border-soft);
+    font-size: 15px;
+    transition: background 120ms var(--h18-ease-spring),
+                color 120ms var(--h18-ease-spring),
+                border-color 120ms;
+    flex-shrink: 0;
+}
+
+.item:hover {
+    color: var(--h18-text);
+    background: var(--h18-surface2);
+}
+
+.itemActive {
+    color: var(--h18-invert-ink);
+    background: var(--h18-invert);
+    border-color: transparent;
+}
+
+.itemActive:hover {
+    color: var(--h18-invert-ink);
+    background: var(--h18-invert);
+}
+
+.divider {
+    width: 60%;
+    height: 1px;
+    background: var(--h18-border);
+    margin: 4px 0;
+    flex-shrink: 0;
+}
+
+.spacer {
+    flex: 1;
+    min-height: 0;
+}
+
+/* Course chip — 漸層背景 */
+.courseChip {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: box-shadow 120ms var(--h18-ease-spring);
+    flex-shrink: 0;
+    font-family: var(--h18-font-sans);
+}
+
+.courseChipActive {
+    box-shadow:
+        0 0 0 2.5px var(--h18-rail),
+        0 0 0 4.5px var(--h18-accent);
+}
+
+.courseBadge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 999px;
+    background: var(--h18-dot);
+    color: #fff;
+    font-weight: 800;
+    border: 1.5px solid var(--h18-rail);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    line-height: 1.2;
+}
+
+/* Soft divider between real courses and virtual (Canvas) chips */
+.dividerSoft {
+    height: 1px;
+    width: 28px;
+    background: linear-gradient(
+        to right,
+        transparent,
+        var(--h18-border),
+        transparent
+    );
+    margin: 4px auto;
+    flex-shrink: 0;
+}
+
+/* Virtual (Canvas) course chip — un-paired, dashed/ghost style */
+.virtualChip {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    border: 1.5px dashed color-mix(in srgb, var(--h18-text) 30%, transparent);
+    background: transparent;
+    color: var(--h18-text-mid);
+    font-size: 11px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    position: relative;
+    transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.virtualChip:hover {
+    border-color: var(--h18-accent);
+    color: var(--h18-accent);
+    background: color-mix(in srgb, var(--h18-accent) 8%, transparent);
+}
+
+.virtualBadge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    background: var(--h18-accent);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    display: grid;
+    place-items: center;
+    border: 1.5px solid var(--h18-rail);
+    font-family: var(--h18-font-mono);
+}
+
+/* + add course chip */
+.addChip {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    border: 1.5px dashed var(--h18-border);
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-faint);
+    font-size: 20px;
+    font-weight: 300;
+    cursor: pointer;
+    background: transparent;
+    transition: border-color 120ms, color 120ms;
+    flex-shrink: 0;
+}
+
+.addChip:hover,
+.addChipActive {
+    border-color: var(--h18-accent);
+    color: var(--h18-accent);
+}
+
+/* Profile avatar (👤) */
+.avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 16px;
+    margin-top: 4px;
+    background: #c48a2c;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: box-shadow 120ms var(--h18-ease-spring);
+    font-family: var(--h18-font-sans);
+}
+
+.avatarActive {
+    box-shadow:
+        0 0 0 2.5px var(--h18-rail),
+        0 0 0 4.5px #c48a2c;
+}

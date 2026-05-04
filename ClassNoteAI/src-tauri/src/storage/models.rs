@@ -11,6 +11,11 @@ pub struct Course {
     pub description: Option<String>,
     pub keywords: Option<String>,                 // 全域關鍵詞
     pub syllabus_info: Option<serde_json::Value>, // 結構化課程大綱
+    /// v0.7.x: Canvas LMS course id (per-user pairing result).
+    /// String of digits like `"2042524"` (no `course_` prefix).
+    /// `None` when the course hasn't been paired with a Canvas course.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_course_id: Option<String>,
     pub is_deleted: bool,                         // Soft Delete
     pub created_at: String,
     pub updated_at: String,
@@ -32,6 +37,7 @@ impl Course {
             description,
             keywords,
             syllabus_info,
+            canvas_course_id: None,
             is_deleted: false,
             created_at: now.clone(),
             updated_at: now,
@@ -66,6 +72,10 @@ impl TryFrom<&Row<'_>> for Course {
             updated_at: row.get(7)?,
             is_deleted: row.get(8).unwrap_or(false), // Handle case where it might be missing during migration? No, query will fail if column count mismatch.
                                                      // But strict index is safer.
+            // v0.7.x: canvas_course_id (index 9). Defensive default to None
+            // for SELECT queries that don't include the column or for rows
+            // pre-dating the migration.
+            canvas_course_id: row.get::<_, Option<String>>(9).unwrap_or(None),
         })
     }
 }
@@ -140,6 +150,19 @@ impl TryFrom<&Row<'_>> for Lecture {
 }
 
 /// 字幕數據模型
+///
+/// Phase 7 cp74.1: two orthogonal classifications
+///   - `subtitle_type` (column "type"): tier — "rough" | "fine"
+///     `fine` rows carry an LLM-refined version of the same line; `rough`
+///     is the live ASR / Gemma output.
+///   - `source`: provenance — "live" | "imported" | "edited"
+///     "live" = produced by recordingSessionService stop pipeline,
+///     "imported" = subtitleImportService (SRT / VTT / plain text),
+///     "edited" = manual edit from the user (UI not built yet).
+///
+/// `fine_text` / `fine_translation` columns hold the LLM-refined English
+/// and Chinese versions of the same line WITHOUT overwriting the rough
+/// originals (per Phase 7 v3 audit feedback — keep both layers).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subtitle {
     pub id: String,
@@ -155,6 +178,24 @@ pub struct Subtitle {
     #[serde(default)]
     pub speaker_id: Option<String>,
     pub created_at: String,
+
+    // ─── Phase 7 cp74.1 (subtitle two-axis schema) ────────────────────
+    /// 'live' | 'imported' | 'edited'. Default 'live' for legacy rows.
+    #[serde(default = "default_subtitle_source")]
+    pub source: String,
+    /// LLM-refined English. None on rough-only rows.
+    #[serde(default)]
+    pub fine_text: Option<String>,
+    /// LLM-refined Chinese. None on rough-only rows.
+    #[serde(default)]
+    pub fine_translation: Option<String>,
+    /// Confidence of the fine-tier transcription, when available.
+    #[serde(default)]
+    pub fine_confidence: Option<f64>,
+}
+
+fn default_subtitle_source() -> String {
+    "live".to_string()
 }
 
 impl Subtitle {
@@ -177,6 +218,10 @@ impl Subtitle {
             speaker_role: None,
             speaker_id: None,
             created_at: Utc::now().to_rfc3339(),
+            source: default_subtitle_source(),
+            fine_text: None,
+            fine_translation: None,
+            fine_confidence: None,
         }
     }
 }
@@ -194,8 +239,15 @@ impl TryFrom<&Row<'_>> for Subtitle {
             subtitle_type: row.get(5)?,
             confidence: row.get(6)?,
             created_at: row.get(7)?,
-            speaker_role: row.get::<_, Option<String>>(8).unwrap_or(None),
-            speaker_id: row.get::<_, Option<String>>(9).unwrap_or(None),
+            source: row
+                .get::<_, Option<String>>(8)
+                .unwrap_or(None)
+                .unwrap_or_else(default_subtitle_source),
+            fine_text: row.get(9).unwrap_or(None),
+            fine_translation: row.get(10).unwrap_or(None),
+            fine_confidence: row.get(11).unwrap_or(None),
+            speaker_role: row.get::<_, Option<String>>(12).unwrap_or(None),
+            speaker_id: row.get::<_, Option<String>>(13).unwrap_or(None),
         })
     }
 }

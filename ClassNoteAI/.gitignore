@@ -72,3 +72,9 @@ src-tauri/vendor/
 # Claude Code / editor local state
 # ===================
 .claude/
+
+# dev-ephemeral.mjs runtime lock (port + pid) — recreated each run
+.dev-ephemeral.lock.json
+
+# Local CDP screenshot scratch + dev logs (mirrored into checkpoints/screenshots/ when worth keeping)
+tmp/

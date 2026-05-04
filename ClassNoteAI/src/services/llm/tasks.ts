@@ -13,6 +13,7 @@ import { readPreferredProviderId } from './providerState';
 import type { LLMMessage } from './types';
 import { LLMError } from './types';
 import { usageTracker, type UsageTask } from './usageTracker';
+import type { Section, QARecord, ActionItem } from '../../types';
 
 /**
  * Record token usage from a provider response so the UI can render
@@ -95,7 +96,7 @@ async function activeProviderAndModel(
   const provider = await resolveActiveProvider(await readPreferredProviderId());
   if (!provider) {
     throw new LLMError(
-      'No AI provider configured. Open Settings → AI 增強 to set one up.',
+      '尚未設定雲端 AI 提供商，請到「個人頁 → 雲端 AI 助理」設一個。',
       'auth'
     );
   }
@@ -113,6 +114,26 @@ export interface SummarizeParams {
   title?: string;
   /** Optional override of the model id exposed by the provider. */
   model?: string;
+  /**
+   * Optional `AbortSignal` for cancellation. When fired the streaming
+   * generator throws a `DOMException('Aborted', 'AbortError')` and the
+   * underlying fetch is cancelled (passed through to provider.complete /
+   * provider.stream → openai-compat fetch).
+   *
+   * TODO Sprint 3 W8 caller adoption: ReviewPage retry / regen 應 new
+   *   AbortController() on click cancel + pass `signal: ac.signal` 給
+   *   `summarizeStream`. Same for `chatStream` from the AI 助教 panel.
+   */
+  signal?: AbortSignal;
+}
+
+/** Throw the standard AbortError when a signal has fired. Centralises the
+ *  shape so callers (and tests) can branch on `err.name === 'AbortError'`
+ *  consistently. Mirrors what the WHATWG fetch / DOM spec emit on abort. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
 }
 
 /** Character threshold above which `summarize` switches from single-
@@ -140,6 +161,115 @@ const SECTION_OVERLAP_CHARS = 200;
  *  sections. Without a limiter we'd fire them all at once and the
  *  whole summarise would fail on the first section that 429s. */
 const MAP_PHASE_CONCURRENCY = 3;
+
+/** Per-section deadline. cp75.16 — added so a single hung map call
+ *  can't lock a concurrency slot indefinitely. 90s is conservative —
+ *  most 4000-char sections finish in 5-30s on a well-fed paid API,
+ *  and 90s is well past the point where any reasonable provider has
+ *  either streamed the answer or surfaced a transient error.
+ *
+ *  Hitting this timeout doesn't immediately fail the section: the
+ *  outer retry layer treats it as a transient error and retries
+ *  (with backoff). Only after `MAP_SECTION_MAX_RETRIES` exhausts do
+ *  we surface a `partial-failure`. */
+const MAP_SECTION_TIMEOUT_MS = 90_000;
+
+/** How many extra attempts a section gets after the first try.
+ *  Total attempts = 1 + MAP_SECTION_MAX_RETRIES. We retry on:
+ *    - timeouts (most common — slow provider, occasional GC pause)
+ *    - 429 / 5xx (rate limit / transient server)
+ *    - network errors (TypeError: Failed to fetch on Wi-Fi blip)
+ *  We do NOT retry on: AbortError (user cancelled), 4xx other than
+ *  429 (auth / quota / bad request — retrying won't help). */
+const MAP_SECTION_MAX_RETRIES = 2;
+
+/** Base delay before retry #1; retry #2 waits 2× this. Keeps total
+ *  per-section worst case at ≤ TIMEOUT × 3 + ~3s of backoff,
+ *  comfortably under what most users will tolerate. */
+const MAP_SECTION_RETRY_BASE_MS = 1_000;
+
+/** Classify an error from a map-phase section call as either:
+ *    - `'abort'`: user cancelled, must propagate (do NOT retry)
+ *    - `'transient'`: retry-eligible (timeout, network, 429, 5xx)
+ *    - `'fatal'`: 4xx auth/quota/bad-request — retrying won't help
+ *
+ *  cp75.16 — extracted as a pure function so the retry loop is
+ *  testable in isolation and so we never accidentally retry an
+ *  AbortError (which would burn the user's other sections after
+ *  they pressed cancel). */
+export function classifyMapSectionError(err: unknown): 'abort' | 'transient' | 'fatal' {
+  if (err instanceof DOMException && err.name === 'AbortError') return 'abort';
+  if (err instanceof Error && err.name === 'AbortError') return 'abort';
+
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+
+  // Per-section timeout we raise ourselves wears the 'TimeoutError'
+  // hat. Treat it as transient.
+  if (err instanceof Error && err.name === 'TimeoutError') return 'transient';
+  if (/timeout|timed out/i.test(msg)) return 'transient';
+
+  // Network failures. fetch() throws TypeError('Failed to fetch') on
+  // most browsers when offline / DNS hiccup / connection reset.
+  if (err instanceof TypeError && /failed to fetch|networkerror/i.test(msg)) {
+    return 'transient';
+  }
+  if (/network\s*error|connection\s*(reset|refused|aborted)|econn(reset|refused)/i.test(msg)) {
+    return 'transient';
+  }
+
+  // HTTP status codes — provider implementations typically embed
+  // the status in their error message.
+  if (/\b429\b|rate[\s_-]?limit/i.test(msg)) return 'transient';
+  if (/\b5\d\d\b|server\s*error|gateway|service\s*unavailable/i.test(msg)) {
+    return 'transient';
+  }
+
+  // 401 / 403 / 404 / 400 — retrying won't help.
+  return 'fatal';
+}
+
+/** Bounded async producer/consumer queue. Map-phase workers `push`
+ *  events as they arrive; the outer generator `await next()` drains
+ *  them in real time so the UI sees progress immediately rather than
+ *  after Promise.all settles. `close()` lets the consumer's loop end
+ *  cleanly when all producers are done.
+ *
+ *  cp75.16 — pulled in to support streaming map events. The previous
+ *  cp75.14 model (post-fan-in ordered yield) couldn't surface
+ *  per-token progress because workers can't `yield` from inside a
+ *  Promise. */
+class AsyncEventQueue<T> {
+  private buf: T[] = [];
+  private waiters: Array<(v: { value: T | undefined; done: boolean }) => void> = [];
+  private closed = false;
+
+  push(value: T): void {
+    if (this.closed) return;
+    if (this.waiters.length > 0) {
+      this.waiters.shift()!({ value, done: false });
+    } else {
+      this.buf.push(value);
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      this.waiters.shift()!({ value: undefined, done: true });
+    }
+  }
+
+  next(): Promise<{ value: T | undefined; done: boolean }> {
+    if (this.buf.length > 0) {
+      return Promise.resolve({ value: this.buf.shift()!, done: false });
+    }
+    if (this.closed) {
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+}
 
 /** Tiny promise-concurrency limiter. Kept inline because pulling in
  *  `p-limit` would add a dep we use in one place. */
@@ -223,14 +353,42 @@ export async function summarize(params: SummarizeParams): Promise<string> {
 
 /** Progress event shape for `summarizeStream`. Callers subscribe to
  *  `delta` for streaming markdown output; `phase` changes let the UI
- *  show "producing section 3/5" style progress. */
+ *  show "producing section 3/5" style progress.
+ *
+ *  W7 (Phase 7): when a per-section map call fails, the generator now
+ *  yields a `partial-failure` event in addition to the existing inline
+ *  placeholder. UI can use this to surface "1/6 段失敗" without parsing
+ *  the markdown body.
+ *
+ *  cp75.16: map phase is now streaming. Each per-section call emits
+ *  `map-section-delta` as tokens arrive so the UI can show smooth
+ *  progress instead of "frozen at 0%, then jumps to 50%". The
+ *  `map-section-done` event still fires once per section after its
+ *  stream closes. */
 export interface SummarizeStreamEvent {
-  phase: 'map-start' | 'map-section-done' | 'reduce-start' | 'reduce-delta' | 'done';
+  phase:
+    | 'map-start'
+    | 'map-section-delta'
+    | 'map-section-done'
+    | 'partial-failure'
+    | 'reduce-start'
+    | 'reduce-delta'
+    | 'done';
   /** Total number of map sections (emitted on map-start). */
   sectionCount?: number;
   /** 1-based index of the section just completed (map-section-done). */
   sectionIndex?: number;
-  /** Token delta to append to the running output (reduce-delta). */
+  /** 0-based index of the section that failed (partial-failure). */
+  failedSectionIndex?: number;
+  /** Human-readable error message for the failed section
+   *  (partial-failure). */
+  error?: string;
+  /** Token delta to append to the running output. Used by both
+   *  `reduce-delta` (assembling the final note) and `map-section-delta`
+   *  (per-section streaming during map phase — caller can drive a
+   *  smooth progress bar from byte counts but doesn't need to retain
+   *  the per-section text, since the map result is consumed by the
+   *  reducer not the user). */
   delta?: string;
   /** Full assembled text (emitted on done — useful for callers that
    *  only want the final string without accumulating deltas). */
@@ -250,9 +408,16 @@ export interface SummarizeStreamEvent {
 export async function* summarizeStream(
   params: SummarizeParams,
 ): AsyncGenerator<SummarizeStreamEvent, void, void> {
+  // Cancel-before-start: if the caller already aborted (e.g. user
+  // mashed cancel before the first network round-trip), surface that
+  // immediately rather than burning a model lookup.
+  throwIfAborted(params.signal);
+
   const { provider, model: defaultModel, providerId } = await activeProviderAndModel();
   const model = params.model ?? defaultModel;
   const system = buildSummarizeSystemPrompt(params.language);
+
+  throwIfAborted(params.signal);
 
   // Short path: single streaming call, no map step.
   if (params.content.length <= SUMMARIZE_MAP_REDUCE_THRESHOLD) {
@@ -275,7 +440,13 @@ export async function* summarizeStream(
       messages,
       temperature: 0.3,
       maxTokens: 4096,
+      signal: params.signal,
     })) {
+      // Mid-stream abort check: even if fetch's own AbortController
+      // cancels the underlying connection, a stream chunk that's
+      // already buffered may still be delivered to us by the SSE
+      // parser. Drop it on the floor and exit cleanly.
+      throwIfAborted(params.signal);
       if (chunk.delta) {
         fullText += chunk.delta;
         yield { phase: 'reduce-delta', delta: chunk.delta };
@@ -296,7 +467,28 @@ export async function* summarizeStream(
   // provider rate limits on long lectures (previously: unbounded
   // Promise.all would fire 25+ concurrent requests for a 2-hour class
   // and 429 on the first one to queue).
-  const sectionSummaries = await runWithConcurrency(sections, MAP_PHASE_CONCURRENCY, async (section, i) => {
+  //
+  // W7 (Phase 7): each per-section call is wrapped in try/catch and
+  // failures collapse to a placeholder + a `failures[]` entry. We yield
+  // a `partial-failure` event for each failed section AFTER the
+  // concurrency-limited fan-in completes — keeps `failedSectionIndex`
+  // ordering deterministic.
+  //
+  // cp75.16: each section is now streamed (not `complete()`). Per-token
+  // deltas are pushed onto `eventQueue` and yielded to the caller in
+  // real time so the UI shows smooth progress instead of "frozen at 5%
+  // → jump to 50% when fan-in completes". On top: each section call is
+  // bounded by `MAP_SECTION_TIMEOUT_MS` and retried up to
+  // `MAP_SECTION_MAX_RETRIES` times on transient failures (timeout,
+  // network blip, 429, 5xx). `map-section-done` is emitted per section
+  // in completion order; `partial-failure` is still batched at the end
+  // so its ordering matches `failedSectionIndex` ascending.
+  const failures: Array<{ index: number; error: string }> = [];
+  const eventQueue = new AsyncEventQueue<SummarizeStreamEvent>();
+
+  const fanInPromise = runWithConcurrency(sections, MAP_PHASE_CONCURRENCY, async (section, i) => {
+    throwIfAborted(params.signal);
+
     const sectionMessages: LLMMessage[] = [
       {
         role: 'system',
@@ -311,32 +503,138 @@ export async function* summarizeStream(
         content: `Section ${i + 1} of ${sections.length}:\n\n${section}`,
       },
     ];
-    try {
-      const res = await provider!.complete({
-        model,
-        messages: sectionMessages,
-        temperature: 0.2,
-        maxTokens: 1024,
-      });
-      trackUsage(providerId, model, 'summarize', res.usage);
-      return res.content;
-    } catch (err) {
-      // Section-level failures must NOT blow up the whole summarisation.
-      // Returning a placeholder lets the reduce step continue with
-      // whatever succeeded — better to have a slightly patchy summary
-      // than zero summary for the user.
-      console.warn(`[summarizeStream] Section ${i + 1} failed, continuing without it:`, err);
-      return `_[此段落摘要失敗：${err instanceof Error ? err.message : String(err)}]_`;
-    }
-  });
 
-  // Report progress after concurrent map fan-in completes. The earlier
-  // serial version emitted per-section progress; the concurrency-limited
-  // version can't easily preserve original order without extra
-  // bookkeeping, so we emit one batch-done event instead.
-  for (let i = 1; i <= sections.length; i++) {
-    yield { phase: 'map-section-done', sectionIndex: i, sectionCount: sections.length };
+    // Try with up to MAP_SECTION_MAX_RETRIES retries on transient
+    // failures. Total worst case: (1 + MAX_RETRIES) attempts × the
+    // timeout, plus exponential backoff between attempts.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+      throwIfAborted(params.signal);
+
+      // Inner controller hooked to outer signal + the per-section
+      // timeout. We abort it from BOTH paths so the underlying fetch
+      // is actually cancelled when the deadline fires (otherwise the
+      // sidecar keeps generating tokens we'll just throw away).
+      const innerAc = new AbortController();
+      const propagateAbort = () => innerAc.abort();
+      params.signal?.addEventListener('abort', propagateAbort, { once: true });
+      let timedOut = false;
+      const deadlineId = setTimeout(() => {
+        timedOut = true;
+        innerAc.abort();
+      }, MAP_SECTION_TIMEOUT_MS);
+
+      try {
+        let acc = '';
+        let usage: { inputTokens?: number; outputTokens?: number } | undefined;
+        for await (const chunk of provider!.stream({
+          model,
+          messages: sectionMessages,
+          temperature: 0.2,
+          maxTokens: 1024,
+          signal: innerAc.signal,
+        })) {
+          // If the OUTER signal aborted, propagate as AbortError —
+          // not a retry-eligible error.
+          throwIfAborted(params.signal);
+          if (chunk.delta) {
+            acc += chunk.delta;
+            eventQueue.push({
+              phase: 'map-section-delta',
+              delta: chunk.delta,
+              sectionIndex: i + 1,
+              sectionCount: sections.length,
+            });
+          }
+          if (chunk.done && chunk.usage) usage = chunk.usage;
+        }
+
+        // Success path. If the inner controller aborted but the outer
+        // signal didn't, that's a timeout that fired exactly as the
+        // stream closed — treat as retryable.
+        if (timedOut) {
+          const e = new Error(`section ${i + 1} timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+          e.name = 'TimeoutError';
+          throw e;
+        }
+        trackUsage(providerId, model, 'summarize', usage);
+        eventQueue.push({
+          phase: 'map-section-done',
+          sectionIndex: i + 1,
+          sectionCount: sections.length,
+        });
+        return acc;
+      } catch (err) {
+        // Outer-abort: propagate immediately, never retry.
+        if (params.signal?.aborted) throw err;
+        const kind = classifyMapSectionError(err);
+        if (kind === 'abort') throw err;
+
+        lastErr = err;
+        const last = attempt === MAP_SECTION_MAX_RETRIES;
+        if (kind === 'fatal' || last) {
+          // Surface as placeholder + failures[] entry. Map-phase
+          // failures must NOT blow up the whole summarisation —
+          // a partial summary is more useful than no summary.
+          const errMsg = err instanceof Error ? err.message : String(err);
+          console.warn(
+            `[summarizeStream] Section ${i + 1} failed after ${attempt + 1} attempt(s):`,
+            err,
+          );
+          failures.push({ index: i, error: errMsg });
+          eventQueue.push({
+            phase: 'map-section-done',
+            sectionIndex: i + 1,
+            sectionCount: sections.length,
+          });
+          return `_[此段摘要失敗 · ${errMsg}]_`;
+        }
+        // Transient + retries left: backoff then retry.
+        // 1s → 2s → 4s exponential backoff capped by MAX_RETRIES.
+        const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+        await new Promise<void>((r) => setTimeout(r, backoff));
+        // Fall through to next iteration.
+      } finally {
+        clearTimeout(deadlineId);
+        params.signal?.removeEventListener('abort', propagateAbort);
+      }
+    }
+    // Unreachable — the loop either returns or throws on the last
+    // iteration. TS needs an explicit throw.
+    throw lastErr ?? new Error(`Section ${i + 1}: unreachable retry exit`);
+  })
+    .finally(() => {
+      // No matter how the fan-in resolves (success / abort / unexpected),
+      // close the queue so the consumer loop below exits.
+      eventQueue.close();
+    });
+
+  // Drain the queue: yield each event the workers push as they push
+  // it, until the close() above unblocks `next()` with `done: true`.
+  while (true) {
+    const item = await eventQueue.next();
+    if (item.done) break;
+    yield item.value!;
   }
+  // fan-in must have finished by the time queue closes; await it to
+  // surface any propagated abort.
+  const sectionSummaries = await fanInPromise;
+
+  // Partial-failure events are still emitted post-fan-in so they're
+  // ordered by `failedSectionIndex` ascending — UI surfaces "段 N 失敗"
+  // in a stable order regardless of which sections happened to finish
+  // first under concurrency.
+  failures.sort((a, b) => a.index - b.index);
+  for (const failure of failures) {
+    yield {
+      phase: 'partial-failure',
+      failedSectionIndex: failure.index,
+      sectionCount: sections.length,
+      error: failure.error,
+    };
+  }
+
+  throwIfAborted(params.signal);
 
   // REDUCE phase — stitch section summaries into a coherent study note,
   // streamed so the UI can render tokens as they arrive.
@@ -375,7 +673,9 @@ export async function* summarizeStream(
       messages: reduceMessages,
       temperature: 0.3,
       maxTokens: 4096,
+      signal: params.signal,
     })) {
+      throwIfAborted(params.signal);
       if (chunk.delta) {
         fullText += chunk.delta;
         yield { phase: 'reduce-delta', delta: chunk.delta };
@@ -383,6 +683,11 @@ export async function* summarizeStream(
       if (chunk.done && chunk.usage) finalUsage = chunk.usage;
     }
   } catch (err) {
+    // Aborts win over the graceful-fallback path — a user who pressed
+    // cancel does not want us to dump 4000 chars of concatenated
+    // section summaries into their note.
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
+    if (err instanceof Error && err.name === 'AbortError') throw err;
     console.warn('[summarizeStream] Reduce failed, falling back to concatenated section summaries:', err);
     const header = params.language === 'zh'
       ? `> ⚠ 整合步驟失敗，以下為分段摘要直接串接（原因：${err instanceof Error ? err.message : String(err)}）\n\n`
@@ -433,30 +738,772 @@ export async function extractKeywords(text: string, max = 20): Promise<string[]>
     .slice(0, max);
 }
 
+// ─── Section segmentation (cp75.17) ──────────────────────────────────
+//
+// Distinct from `summarizeStream`'s `## headings` — the summary is a
+// *study-note* organisation (overview / key concepts / examples /
+// review questions); the section list is a *temporal* organisation
+// (presenter A → presenter B → instructor commentary → Q&A).
+//
+// Why a separate LLM pass instead of post-processing the summary:
+//   - Summary headings reflect the model's chosen pedagogical
+//     structure ("Overview", "Examples"), not the lecture's actual
+//     topical timeline.
+//   - The TOC needs timestamps mapped to where the topic *starts in
+//     the recording*, which the summary deliberately strips.
+//   - A general-purpose segmenter prompt produces stable output across
+//     lecture types (presentation vs. seminar vs. workshop).
+//
+// Single LLM call — modern high-tier models (Claude 4.x at 200K-1M,
+// Gemini 2.0 Pro at 2M, GPT-4.1 / GPT-5 at 128K-256K) comfortably fit
+// even a 4-hour lecture's timestamped transcript (~60K tokens). No
+// chunking needed — the segmenter benefits from a holistic view.
+
+export interface SegmentSectionsParams {
+  /** Timestamped transcript: lines like `[00:15] sentence text`.
+   *  Caller is responsible for assembling this from subtitle rows. */
+  transcript: string;
+  language: 'zh' | 'en';
+  /** Recorded duration in seconds — used to clamp model-emitted
+   *  timestamps that fell outside the actual range. */
+  durationSec: number;
+  signal?: AbortSignal;
+  /** Optional model override (defaults to high-tier flagship). */
+  model?: string;
+}
+
+/** Build the segmenter system prompt. Domain-neutral by design — does
+ *  NOT mention any specific lecture format (presentation / Q&A /
+ *  classroom), so the same prompt works for keynotes, classrooms,
+ *  podcasts, etc. */
+function buildSegmenterSystemPrompt(language: 'zh' | 'en'): string {
+  const langName = language === 'zh' ? '繁體中文' : 'English';
+  return (
+    `You are a lecture-transcript segmenter. Identify *topical* shift ` +
+    `points in the transcript and produce a navigable table-of-contents.\n\n` +
+    `Input: a transcript with [mm:ss] timestamp prefixes per line.\n\n` +
+    `Output: a JSON array. Each element MUST be an object with exactly:\n` +
+    `  - "timestamp": integer seconds where this topic begins. Parse it ` +
+    `from the [mm:ss] of the line that opens this section. DO NOT invent ` +
+    `times not in the transcript. The first section MUST have timestamp 0.\n` +
+    `  - "title": a short topic title (≤ 15 ${langName} characters / words). ` +
+    `No decorations like "Part 1", "第一段", "Section 3:". Just the topic.\n` +
+    `  - "summary": 1-2 sentences in ${langName} on what the section covers, ` +
+    `so a reader skimming the TOC can decide whether to jump in.\n\n` +
+    `Topic-shift signals (any one is enough — be CONSERVATIVE, prefer ` +
+    `fewer, larger sections over many tiny ones):\n` +
+    `  1. Speaker explicitly announces a transition: "next we'll", ` +
+    `"接下來", "我們現在開始", "let's move on", "第二部分".\n` +
+    `  2. Speaker role change: presenter handover, instructor takes over, ` +
+    `Q&A starts.\n` +
+    `  3. Domain leap: theory → implementation; history → current ` +
+    `application; topic A → topic B with no continuity.\n\n` +
+    `DO NOT:\n` +
+    `  - Split every minute. Target 3-10 sections regardless of duration.\n` +
+    `  - Use study-note categories like "Overview / Key Concepts / ` +
+    `Examples / Review" — that's the summary's job, NOT yours.\n` +
+    `  - Invent topics not actually discussed in the transcript.\n` +
+    `  - Output anything other than the JSON array — no markdown ` +
+    `fences, no preamble, no trailing commentary.\n\n` +
+    `Sections must be in chronological order. The transcript follows.`
+  );
+}
+
+/** Parse the model's raw output into a Section[]. Tolerant of:
+ *   - leading/trailing whitespace,
+ *   - markdown fences (```json … ```),
+ *   - a stray prefix or suffix the model bolted on despite instructions.
+ *  Throws if no array can be salvaged so the caller can fall back. */
+function parseSegmenterOutput(raw: string, durationSec: number): Section[] {
+  let txt = raw.trim();
+  // Strip markdown fence if present.
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(txt);
+  if (fenced) txt = fenced[1].trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(txt);
+  } catch {
+    // Last-resort: find the first balanced [...] in the response.
+    const m = /\[\s*\{[\s\S]*\}\s*\]/.exec(txt);
+    if (!m) throw new Error('segmentSections: model did not return parseable JSON');
+    parsed = JSON.parse(m[0]);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error('segmentSections: top-level value is not an array');
+  }
+
+  const out: Section[] = [];
+  for (const item of parsed) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const ts = typeof obj.timestamp === 'number' ? obj.timestamp : Number(obj.timestamp);
+    const title = typeof obj.title === 'string' ? obj.title.trim() : '';
+    const summary = typeof obj.summary === 'string' ? obj.summary.trim() : '';
+    if (!Number.isFinite(ts) || !title) continue;
+    out.push({
+      title: title.slice(0, 30),
+      content: summary.slice(0, 500),
+      // cp75.23 — `durationSec || ts` short-circuits when durationSec === 0
+      // (recovered lecture, mock test): the formula collapses to
+      // `Math.min(ts, ts) === ts`, so an over-large model-emitted timestamp
+      // is never clamped. Use an explicit ternary so the upper bound is
+      // always a real number — fall back to 0 (not ts) when duration is
+      // unknown so the clamp still produces a sane lower-bounded value.
+      timestamp: Math.max(0, Math.min(durationSec > 0 ? durationSec : 0, Math.round(ts))),
+    });
+  }
+  if (out.length === 0) {
+    throw new Error('segmentSections: no valid section objects in model output');
+  }
+  // Sort by timestamp ascending (defensive — model usually does this).
+  out.sort((a, b) => a.timestamp - b.timestamp);
+  // Force the first section to start at 0 if it doesn't (the model
+  // sometimes opens with "[01:24]" because it skipped a no-content
+  // intro; from a TOC standpoint we still want a section that maps to
+  // the start of the recording).
+  if (out[0].timestamp > 0) out[0].timestamp = 0;
+  return out;
+}
+
+/** Generate a navigable Section[] for a lecture's transcript via a
+ *  single high-tier LLM call. Uses the same per-call timeout + retry
+ *  envelope as the map-phase calls do (cp75.16) — segmentation is a
+ *  single point of failure for the TOC, so transient errors must not
+ *  leave the user with an empty left rail.
+ *
+ *  Throws on outright failure (auth / persistent transient / parse
+ *  error after retries) — caller should fall back to extracting
+ *  `## heading` lines from the summary markdown. */
+export async function segmentSections(params: SegmentSectionsParams): Promise<Section[]> {
+  throwIfAborted(params.signal);
+  if (!params.transcript.trim()) return [];
+
+  const { provider, model: defaultModel, providerId } = await activeProviderAndModel('high');
+  const model = params.model ?? defaultModel;
+
+  const messages: LLMMessage[] = [
+    { role: 'system', content: buildSegmenterSystemPrompt(params.language) },
+    { role: 'user', content: params.transcript },
+  ];
+
+  // Same retry envelope as the map phase (cp75.16): per-attempt
+  // timeout via inner AbortController, exponential backoff between
+  // attempts, abort propagated immediately.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+    throwIfAborted(params.signal);
+
+    const innerAc = new AbortController();
+    const propagateAbort = () => innerAc.abort();
+    params.signal?.addEventListener('abort', propagateAbort, { once: true });
+    let timedOut = false;
+    const deadlineId = setTimeout(() => {
+      timedOut = true;
+      innerAc.abort();
+    }, MAP_SECTION_TIMEOUT_MS);
+
+    try {
+      const res = await provider!.complete({
+        model,
+        messages,
+        temperature: 0.1,
+        maxTokens: 2048, // ~10-15 sections × 100 tokens each is plenty
+        jsonMode: true,
+        signal: innerAc.signal,
+      });
+      if (timedOut) {
+        const e = new Error(`segmentSections timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+        e.name = 'TimeoutError';
+        throw e;
+      }
+      trackUsage(providerId, model, 'summarize', res.usage);
+      return parseSegmenterOutput(res.content, params.durationSec);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      const kind = classifyMapSectionError(err);
+      if (kind === 'abort') throw err;
+      lastErr = err;
+      if (kind === 'fatal' || attempt === MAP_SECTION_MAX_RETRIES) {
+        throw err;
+      }
+      const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+      await new Promise<void>((r) => setTimeout(r, backoff));
+    } finally {
+      clearTimeout(deadlineId);
+      params.signal?.removeEventListener('abort', propagateAbort);
+    }
+  }
+  throw lastErr ?? new Error('segmentSections: unreachable retry exit');
+}
+
+// ─── Q&A generation (cp75.32) ────────────────────────────────────────
+//
+// Issue 4 from the v0.7.0-alpha.1 audit: `Note.qa_records` exists in the
+// schema and the Review page renders a "Q&A · N" badge + tab, but no
+// path actually populated it — `runBackgroundSummary` and the manual
+// `runSummary` always fell back to `existing?.qa_records ?? []`. The
+// badge was forever 0.
+//
+// generateQA fires the same time as summarise + segment (parallel,
+// `Promise.all`-style) so the user sees Q&A populated right when the
+// Review page first opens, no extra click required.
+//
+// Bloom's-Revised-Taxonomy distribution is part of the prompt because
+// research on spaced-repetition pedagogy shows mixing recall (50%) with
+// comprehend (30%) + apply/analyze (20%) produces better long-term
+// retention than pure recall flashcards. Tagging each question with its
+// Bloom level lets future UI filter / colour-code the deck.
+
+export interface GenerateQAParams {
+  /** Timestamped transcript: lines like `[00:15] sentence text`. */
+  transcript: string;
+  language: 'zh' | 'en';
+  signal?: AbortSignal;
+  /** Optional model override. Defaults to high-tier flagship. */
+  model?: string;
+  /** Soft cap on questions emitted by the model. Default 7. */
+  maxQuestions?: number;
+}
+
+function buildQASystemPrompt(language: 'zh' | 'en', maxQuestions: number): string {
+  const langName = language === 'zh' ? '繁體中文' : 'English';
+  return (
+    `You generate study questions from a lecture transcript using ` +
+    `Bloom's Revised Taxonomy. Each question must:\n` +
+    `1. Test ONE key concept actually discussed in the transcript ` +
+    `(no fluff like "when did the recording start").\n` +
+    `2. Have an answer extractable from / verifiable against the transcript.\n` +
+    `3. Be useful for active recall / spaced repetition study.\n` +
+    `4. Be tagged with a Bloom level: recall / comprehend / apply / ` +
+    `analyze / synthesize / evaluate.\n\n` +
+    `Distribute roughly: 50% recall, 30% comprehend, 15% apply, 5% analyze.\n` +
+    `Output ONLY a JSON object: {"questions": [{"question": "...", ` +
+    `"answer": "...", "timestamp": <integer seconds from [mm:ss] of the ` +
+    `line that discusses this concept>, "level": "recall"}, ...]}.\n` +
+    `No markdown fences, no preamble, no trailing commentary. ` +
+    `Both question and answer in ${langName}. ` +
+    `Target 5-${maxQuestions} questions total — fewer is fine if the ` +
+    `transcript is short or only covers one concept.`
+  );
+}
+
+const VALID_BLOOM_LEVELS: ReadonlyArray<NonNullable<QARecord['level']>> = [
+  'recall',
+  'comprehend',
+  'apply',
+  'analyze',
+  'synthesize',
+  'evaluate',
+];
+
+/** Tolerant parser. Accepts `{questions: [...]}` OR a bare array.
+ *  Returns [] (NOT throw) on unparseable input so a flaky model output
+ *  doesn't take down the whole background pipeline — Q&A is a value-add,
+ *  the summary + sections are the user's source of truth. */
+function parseQAOutput(raw: string): QARecord[] {
+  let txt = raw.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(txt);
+  if (fenced) txt = fenced[1].trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(txt);
+  } catch {
+    // Salvage: first balanced [...] OR first {questions: [...]} blob.
+    const arrMatch = /\[\s*\{[\s\S]*?\}\s*\]/.exec(txt);
+    const objMatch = /\{\s*"questions"\s*:[\s\S]*?\}\s*$/m.exec(txt);
+    const candidate = (objMatch ?? arrMatch)?.[0];
+    if (!candidate) return [];
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      return [];
+    }
+  }
+
+  let arr: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    arr = parsed;
+  } else if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { questions?: unknown }).questions)
+  ) {
+    arr = (parsed as { questions: unknown[] }).questions;
+  } else {
+    return [];
+  }
+
+  const out: QARecord[] = [];
+  for (const item of arr) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const question = typeof obj.question === 'string' ? obj.question.trim() : '';
+    const answer = typeof obj.answer === 'string' ? obj.answer.trim() : '';
+    if (!question || !answer) continue;
+    // timestamp default 0 — when the model omits it we still want the
+    // QA to surface; the badge cares about count, the renderer about
+    // text. A bad ts defaults to 0 rather than dropping the row.
+    const tsRaw =
+      typeof obj.timestamp === 'number'
+        ? obj.timestamp
+        : Number(obj.timestamp);
+    const timestamp = Number.isFinite(tsRaw) ? Math.max(0, Math.round(tsRaw)) : 0;
+
+    const levelRaw =
+      typeof obj.level === 'string'
+        ? (obj.level.toLowerCase() as QARecord['level'])
+        : undefined;
+    const level =
+      levelRaw && VALID_BLOOM_LEVELS.includes(levelRaw)
+        ? levelRaw
+        : undefined;
+
+    out.push({
+      question: question.slice(0, 300),
+      answer: answer.slice(0, 1000),
+      timestamp,
+      ...(level ? { level } : {}),
+    });
+  }
+  return out;
+}
+
+/** Generate Bloom's-Taxonomy-aware Q&A from a lecture transcript via a
+ *  single high-tier LLM call. Returns [] on empty input or on a model
+ *  output we can't salvage; throws only on persistent transient failures
+ *  or fatal auth errors (caller's `.catch()` should fall back to []). */
+export async function generateQA(params: GenerateQAParams): Promise<QARecord[]> {
+  throwIfAborted(params.signal);
+  if (!params.transcript.trim()) return [];
+
+  const maxQuestions = params.maxQuestions ?? 7;
+  const { provider, model: defaultModel, providerId } =
+    await activeProviderAndModel('high');
+  const model = params.model ?? defaultModel;
+
+  const messages: LLMMessage[] = [
+    { role: 'system', content: buildQASystemPrompt(params.language, maxQuestions) },
+    { role: 'user', content: params.transcript },
+  ];
+
+  // Same retry envelope as segmentSections (cp75.16): per-attempt
+  // timeout via inner AbortController, exponential backoff, abort
+  // propagated immediately.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+    throwIfAborted(params.signal);
+
+    const innerAc = new AbortController();
+    const propagateAbort = () => innerAc.abort();
+    params.signal?.addEventListener('abort', propagateAbort, { once: true });
+    let timedOut = false;
+    const deadlineId = setTimeout(() => {
+      timedOut = true;
+      innerAc.abort();
+    }, MAP_SECTION_TIMEOUT_MS);
+
+    try {
+      const res = await provider!.complete({
+        model,
+        messages,
+        temperature: 0.3,
+        maxTokens: 2048, // ~7 Q&A pairs × ~200 tokens each
+        jsonMode: true,
+        signal: innerAc.signal,
+      });
+      if (timedOut) {
+        const e = new Error(`generateQA timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+        e.name = 'TimeoutError';
+        throw e;
+      }
+      trackUsage(providerId, model, 'summarize', res.usage);
+      return parseQAOutput(res.content);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      const kind = classifyMapSectionError(err);
+      if (kind === 'abort') throw err;
+      lastErr = err;
+      if (kind === 'fatal' || attempt === MAP_SECTION_MAX_RETRIES) {
+        throw err;
+      }
+      const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+      await new Promise<void>((r) => setTimeout(r, backoff));
+    } finally {
+      clearTimeout(deadlineId);
+      params.signal?.removeEventListener('abort', propagateAbort);
+    }
+  }
+  throw lastErr ?? new Error('generateQA: unreachable retry exit');
+}
+
+// ─── Action-item extraction (cp75.32) ────────────────────────────────
+//
+// Companion to generateQA. The user explicitly called out wanting
+// homework / due-date capture: students' top recurring questions in
+// the AI 助教 are "今天作業是什麼？" / "什麼時候要交？" — both can be
+// answered by mining the transcript for explicit assignments.
+//
+// Action items differ from Q&A in two ways:
+//   1. Source-strict: must be something the lecturer EXPLICITLY assigned.
+//      A passing remark like "you might find it useful to read X" should
+//      NOT become an action item. The prompt enforces this.
+//   2. Optional structured deadline: ISO YYYY-MM-DD when the lecturer
+//      stated one, null otherwise. We do NOT auto-assume "next week"
+//      means 7d from the lecture date — the model may parse it if the
+//      lecture date is known, but we treat it as best-effort metadata.
+
+export interface ExtractActionItemsParams {
+  /** Timestamped transcript: lines like `[00:15] sentence text`. */
+  transcript: string;
+  language: 'zh' | 'en';
+  /** Recorded duration in seconds — used to clamp model-emitted
+   *  mentioned_at_timestamp values that fell outside the actual range. */
+  durationSec: number;
+  signal?: AbortSignal;
+  /** Optional model override. Defaults to high-tier flagship. */
+  model?: string;
+}
+
+function buildActionItemsSystemPrompt(language: 'zh' | 'en'): string {
+  const langName = language === 'zh' ? '繁體中文' : 'English';
+  return (
+    `You extract concrete TODO / homework / deadline items the lecturer ` +
+    `assigned to students from a lecture transcript.\n\n` +
+    `Each item must:\n` +
+    `1. Be something the lecturer EXPLICITLY asked students to do — ` +
+    `homework, problem sets, readings, project milestones, exam-prep ` +
+    `tasks. NOT casual background remarks ("you might find X useful") ` +
+    `and NOT instructor's own slides like "today's agenda".\n` +
+    `2. Be specific enough a student knows what to do (≤ 80 ${langName} ` +
+    `characters / words).\n` +
+    `3. Have due_date in ISO YYYY-MM-DD if the lecturer mentioned a ` +
+    `deadline (parse "next Wednesday" / "下週三" relative to the lecture ` +
+    `date if it can be inferred from context; otherwise null). NEVER ` +
+    `invent a deadline that wasn't stated.\n` +
+    `4. Have mentioned_at_timestamp = integer seconds parsed from the ` +
+    `[mm:ss] of the line where the assignment was given.\n\n` +
+    `If no clear assignments are mentioned, return {"items": []}.\n\n` +
+    `Output ONLY: {"items": [{"description": "...", ` +
+    `"due_date": "2026-05-06" | null, "mentioned_at_timestamp": 3500}, ...]}. ` +
+    `No markdown fences, no preamble. Description in ${langName}.`
+  );
+}
+
+/** Tolerant parser. Same defensive shape as parseQAOutput. */
+function parseActionItemsOutput(raw: string, durationSec: number): ActionItem[] {
+  let txt = raw.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```\s*$/m.exec(txt);
+  if (fenced) txt = fenced[1].trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(txt);
+  } catch {
+    const arrMatch = /\[\s*\{[\s\S]*?\}\s*\]/.exec(txt);
+    const objMatch = /\{\s*"items"\s*:[\s\S]*?\}\s*$/m.exec(txt);
+    const candidate = (objMatch ?? arrMatch)?.[0];
+    if (!candidate) return [];
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      return [];
+    }
+  }
+
+  let arr: unknown[] = [];
+  if (Array.isArray(parsed)) {
+    arr = parsed;
+  } else if (
+    parsed &&
+    typeof parsed === 'object' &&
+    Array.isArray((parsed as { items?: unknown }).items)
+  ) {
+    arr = (parsed as { items: unknown[] }).items;
+  } else {
+    return [];
+  }
+
+  const out: ActionItem[] = [];
+  for (const item of arr) {
+    if (typeof item !== 'object' || item === null) continue;
+    const obj = item as Record<string, unknown>;
+    const description =
+      typeof obj.description === 'string' ? obj.description.trim() : '';
+    if (!description) continue;
+
+    const tsRaw =
+      typeof obj.mentioned_at_timestamp === 'number'
+        ? obj.mentioned_at_timestamp
+        : Number(obj.mentioned_at_timestamp);
+    const tsClampedHigh = durationSec > 0 ? durationSec : Number.POSITIVE_INFINITY;
+    const mentioned_at_timestamp = Number.isFinite(tsRaw)
+      ? Math.max(0, Math.min(tsClampedHigh, Math.round(tsRaw)))
+      : 0;
+
+    let due_date: string | null | undefined;
+    if (obj.due_date == null) {
+      // Treat null and missing key alike — both surface as "no deadline".
+      due_date = null;
+    } else if (typeof obj.due_date === 'string') {
+      const trimmed = obj.due_date.trim();
+      // Only persist ISO-shaped dates. Anything else becomes null so
+      // downstream UI doesn't have to defend against "next Wednesday"
+      // strings the model stuffed through despite instructions.
+      due_date = /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
+    } else {
+      due_date = null;
+    }
+
+    out.push({
+      description: description.slice(0, 80),
+      due_date,
+      mentioned_at_timestamp,
+    });
+  }
+  return out;
+}
+
+/** Extract concrete action items the lecturer assigned to students.
+ *  Returns [] on empty input or unparseable model output (graceful
+ *  degradation — like generateQA, action items are value-add and must
+ *  not crash the background pipeline). */
+export async function extractActionItems(
+  params: ExtractActionItemsParams,
+): Promise<ActionItem[]> {
+  throwIfAborted(params.signal);
+  if (!params.transcript.trim()) return [];
+
+  const { provider, model: defaultModel, providerId } =
+    await activeProviderAndModel('high');
+  const model = params.model ?? defaultModel;
+
+  const messages: LLMMessage[] = [
+    { role: 'system', content: buildActionItemsSystemPrompt(params.language) },
+    { role: 'user', content: params.transcript },
+  ];
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= MAP_SECTION_MAX_RETRIES; attempt++) {
+    throwIfAborted(params.signal);
+
+    const innerAc = new AbortController();
+    const propagateAbort = () => innerAc.abort();
+    params.signal?.addEventListener('abort', propagateAbort, { once: true });
+    let timedOut = false;
+    const deadlineId = setTimeout(() => {
+      timedOut = true;
+      innerAc.abort();
+    }, MAP_SECTION_TIMEOUT_MS);
+
+    try {
+      const res = await provider!.complete({
+        model,
+        messages,
+        temperature: 0.1, // deterministic-ish; we want literal extraction not creativity
+        maxTokens: 1024, // typical lecture has ≤ 5 action items
+        jsonMode: true,
+        signal: innerAc.signal,
+      });
+      if (timedOut) {
+        const e = new Error(`extractActionItems timed out after ${MAP_SECTION_TIMEOUT_MS}ms`);
+        e.name = 'TimeoutError';
+        throw e;
+      }
+      trackUsage(providerId, model, 'summarize', res.usage);
+      return parseActionItemsOutput(res.content, params.durationSec);
+    } catch (err) {
+      if (params.signal?.aborted) throw err;
+      const kind = classifyMapSectionError(err);
+      if (kind === 'abort') throw err;
+      lastErr = err;
+      if (kind === 'fatal' || attempt === MAP_SECTION_MAX_RETRIES) {
+        throw err;
+      }
+      const backoff = MAP_SECTION_RETRY_BASE_MS * Math.pow(2, attempt);
+      await new Promise<void>((r) => setTimeout(r, backoff));
+    } finally {
+      clearTimeout(deadlineId);
+      params.signal?.removeEventListener('abort', propagateAbort);
+    }
+  }
+  throw lastErr ?? new Error('extractActionItems: unreachable retry exit');
+}
+
+// ─── Syllabus extraction ─────────────────────────────────────────────
+
+export interface TeachingPerson {
+  name: string;
+  email?: string;
+  office_hours?: string;
+}
+
 export interface SyllabusInfo {
   topic?: string;
+  /** 2–3 句話的課程簡介 (AI 生成)。 */
+  overview?: string;
+  /**
+   * 上課時間。為了 weekParse 能消費，**請用 24 小時 HH:MM-HH:MM 格式**
+   * 配合中文週幾（週一、週三）或英文縮寫（Mon, Wed），例如：
+   *   "週一、週三 14:00-15:50"
+   *   "Mon, Wed 14:00-15:50"
+   */
   time?: string;
-  instructor?: string;
-  office_hours?: string;
-  teaching_assistants?: string;
   location?: string;
+  /** 課程開始日期 (ISO YYYY-MM-DD)。AI 抓得到再填，不亂猜。 */
+  start_date?: string;
+  /** 課程結束日期 (ISO YYYY-MM-DD)。 */
+  end_date?: string;
+
+  // 老師（v0.7：結構化）
+  instructor?: string;            // 姓名（純字串，舊欄位；v0.7 仍填以維持顯示）
+  instructor_email?: string;
+  instructor_office_hours?: string;
+
+  // Legacy: 老師單一 OH 字串（v0.7 推薦用 instructor_office_hours）
+  office_hours?: string;
+
+  // 助教（v0.7：結構化）
+  teaching_assistants?: string;            // legacy 字串（v0.7 也填，逗號分隔姓名）
+  teaching_assistant_list?: TeachingPerson[];
+  ta_office_hours?: string;                // 助教共用 OH（個別 TA 沒指定時用）
+
   grading?: { item: string; percentage: string }[];
+  /**
+   * 每堂課的主題列表 (Lecture 1, Lecture 2, …)。
+   * v0.7 起以 *Lecture* (一次上課) 為單位，**不是「每週」** —
+   * 一週可能多堂或無堂。
+   *
+   * 規則（v0.7+）：
+   *   - 若大綱中有明確的 per-lecture 主題列表 → 抽進來。
+   *   - 若大綱只列「課程進度大綱」/「Course Calendar」/「Course Summary」
+   *     而那實際上是作業 / 月曆事件，**不要把它們當 lecture 主題**。
+   *   - 若沒有明確 lecture 主題，留空 — 後續可由前端從 start_date /
+   *     end_date / 上課頻率自動產生 "Lecture 1", "Lecture 2", ...
+   */
   schedule?: string[];
+}
+
+export interface ExtractSyllabusOptions {
+  targetLanguage?: 'zh' | 'en';
+  /**
+   * 已存在的 syllabus 內容（不含 metadata）。傳入後 AI 改成 merge 模式：
+   *   - 看得到既有欄位 → 不重複抽
+   *   - 只填缺的欄位
+   *   - 不覆寫 / 不無中生有
+   */
+  existing?: Partial<SyllabusInfo> & Record<string, unknown>;
 }
 
 export async function extractSyllabus(
   title: string,
   description: string | undefined,
-  targetLanguage: 'zh' | 'en' = 'zh'
+  optionsOrTargetLanguage: ExtractSyllabusOptions | 'zh' | 'en' = {},
 ): Promise<SyllabusInfo> {
+  // Backward-compat: older callers pass a target language string directly.
+  const options: ExtractSyllabusOptions =
+    typeof optionsOrTargetLanguage === 'string'
+      ? { targetLanguage: optionsOrTargetLanguage }
+      : optionsOrTargetLanguage;
+  const targetLanguage: 'zh' | 'en' = options.targetLanguage ?? 'zh';
+  const existing = options.existing && Object.keys(options.existing).length > 0
+    ? options.existing
+    : undefined;
   // Low tier: structured extraction into a fixed schema; mini models
   // handle this reliably and we keep the High pool available for
   // user-visible work.
   const { provider, model } = await activeProviderAndModel('low');
+
+  // v0.7 schema — see SyllabusInfo above. Structured TA list + separate
+  // instructor / TA office hours so the edit page can surface per-person
+  // info; explicitly retire the "weekly schedule" framing in favor of
+  // per-Lecture items.
+  //
+  // v0.7+ merge mode: when `existing` is provided, the prompt instructs
+  // the model to fill ONLY what's missing — never overwrite existing
+  // values, never invent new info. Re-runs are additive.
+  const isMerge = !!existing;
   const sys =
     targetLanguage === 'zh'
-      ? '從使用者提供的課程描述中抽取結構化資訊並回傳 JSON。欄位：topic, time, instructor, office_hours, teaching_assistants, location, grading（陣列，每項 {item, percentage}）, schedule（陣列，每項為一週進度字串）。找不到的欄位省略。'
-      : 'Extract structured syllabus info from the user\'s course description. Return JSON with fields: topic, time, instructor, office_hours, teaching_assistants, location, grading (array of {item, percentage}), schedule (array of week strings). Omit fields you can\'t determine.';
+      ? `從使用者提供的課程大綱抽取結構化資訊並回傳 JSON。
+
+JSON 欄位定義：
+- topic (string): 課程主題，一句話。
+- overview (string): 2-3 句話的課程簡介；總結這堂課要學什麼、適合哪些學生。
+- time (string): 上課時間。**請用 24 小時 HH:MM-HH:MM 格式 + 中文週幾或英文 Mon/Tue 縮寫**，例如 "週一、週三 14:00-15:50" 或 "Mon, Wed 14:00-15:50"。**不要用 12 小時 am/pm**。多天用「、」或「,」分隔。
+- location (string): 上課地點。
+- start_date (string, ISO YYYY-MM-DD): 學期/課程開始日期。**只有大綱明確寫到才填**，不要瞎猜。
+- end_date (string, ISO YYYY-MM-DD): 學期/課程結束日期。同上規則。
+- instructor (string): 授課老師姓名。
+- instructor_email (string): 授課老師 Email。
+- instructor_office_hours (string): 授課老師個人 office hours，e.g. "週四 14:00-16:00 / 工程館 502"。
+- teaching_assistant_list (array): 助教清單，每位 { name: string, email?: string, office_hours?: string }。即使只有姓名也填進來。
+- ta_office_hours (string): 助教**共用** office hours；只有個別助教沒寫自己的 OH 時才用這個。
+- grading (array): 評分組成，每項 { item: string, percentage: string }，e.g. {"item":"期中考","percentage":"30%"}。
+- schedule (array of string): **每堂課的主題清單**。
+
+關於 schedule（重要）：
+- 只有當大綱裡有**明確的 per-lecture 主題列表**時才填（例如「Lecture 1: HCI 簡介」/「W1: 什麼是 UI」）。
+- **不要**把這些當 lecture 主題：作業列表（Assignment 1, Project Part 2 …）、Canvas 的 Course Summary（那通常是月曆事件 / 作業 due date）、考試日期、活動。
+- 若 Week N 明確列了多個小主題，可以拆成多個 Lecture 條目；否則一週一條也行。
+- **大綱沒列 lecture 主題就不要填 schedule**。前端會用 start_date / end_date / 上課頻率自動產出 "Lecture 1, Lecture 2, ..." 占位。
+- **每條 entry 若大綱寫得出對應日期，請在開頭加 (MM/DD) 前綴**，例：'(04/15) Backpropagation' 或 '(04/15) 反向傳播'。沒對應日期就直接寫主題，不要瞎猜日期。前端會用這個前綴判斷哪些 lecture 已經過期 / 哪些還沒上。
+
+通則（最重要）：
+- 不要瞎猜、不要無中生有 — 大綱沒明說的東西**永遠別填**，欄位省略即可。
+- email / OH 抽不到就不要填。
+${
+  isMerge
+    ? `\n本次為「補缺模式」，下面是已經存在的欄位：
+${JSON.stringify(existing, null, 2)}
+
+規則：
+- 已經有非空值的欄位**完全不要動**（不要回傳該欄位）。
+- 只回傳目前是空 / 缺的欄位。
+- 如果原始大綱本來就沒寫到該欄位，**直接省略**，不要硬補。
+- 不要把已經有的內容「改寫得更好」— 使用者編輯過的東西要尊重。`
+    : ''
+}`
+      : `Extract structured syllabus info from the user's course description. Return JSON.
+
+Schema:
+- topic (string): One-line course theme.
+- overview (string): 2-3 sentence summary.
+- time (string): Class meeting time. **Use 24-hour HH:MM-HH:MM format with Chinese weekday (週一/週三) or English abbrev (Mon, Wed)**, e.g. "Mon, Wed 14:00-15:50". **No 12-hour am/pm**.
+- location (string).
+- start_date (ISO YYYY-MM-DD): Course start date. ONLY if explicitly stated; don't guess.
+- end_date (ISO YYYY-MM-DD): Course end date. Same rule.
+- instructor (string).
+- instructor_email (string).
+- instructor_office_hours (string).
+- teaching_assistant_list (array of { name, email?, office_hours? }).
+- ta_office_hours (string): SHARED TA OH only.
+- grading (array of { item, percentage }).
+- schedule (array of string): Per-LECTURE topic list.
+
+About schedule (IMPORTANT):
+- Fill ONLY when the syllabus explicitly lists per-lecture topics ("Lecture 1: …" / "W1: Intro to HCI").
+- DO NOT treat as lecture topics: assignment lists, Canvas "Course Summary" (which is usually due-dates), exam dates, course-meta events.
+- Leave empty when the syllabus has no per-lecture topic list — the frontend will auto-generate "Lecture 1, Lecture 2, ..." placeholders from start_date / end_date / meeting frequency.
+- **If the syllabus pairs each lecture with a specific date, prefix the entry with (MM/DD)**, e.g. '(04/15) Backpropagation'. Skip the prefix when the date isn't stated. The frontend uses this to mark past-but-not-recorded lectures.
+
+General rules (MOST IMPORTANT):
+- Don't guess. If the syllabus doesn't explicitly state something, OMIT the field. Never invent.
+- Don't fill emails / OH that aren't written.
+${
+  isMerge
+    ? `\nThis is a MERGE pass. Existing fields:
+${JSON.stringify(existing, null, 2)}
+
+Rules:
+- DO NOT modify fields that already have non-empty values — don't even include them in your response.
+- Return ONLY fields currently empty / missing.
+- If the source genuinely doesn't say, OMIT — don't backfill blindly.
+- Respect the user's edits.`
+    : ''
+}`;
 
   const res = await provider!.complete({
     model,
@@ -469,23 +1516,95 @@ export async function extractSyllabus(
     ],
     temperature: 0.1,
     jsonMode: true,
-    maxTokens: 2048,
+    maxTokens: 4096,
   });
   trackUsage(provider!.descriptor.id, model, 'syllabus', res.usage);
   try {
-    return JSON.parse(res.content) as SyllabusInfo;
+    const parsed = JSON.parse(res.content) as SyllabusInfo;
+    return normaliseSyllabus(parsed, existing as SyllabusInfo | undefined);
   } catch {
     return {};
   }
 }
 
-export async function chat(messages: LLMMessage[]): Promise<string> {
+/**
+ * Defensive post-processing on the raw AI JSON:
+ *   - in merge mode: existing non-empty values win over AI output
+ *     (defense-in-depth: the prompt already tells the model not to
+ *     return existing fields, but the model might re-emit them anyway)
+ *   - back-fill legacy `instructor` / `teaching_assistants` / `office_hours`
+ *     strings from the new structured fields, so existing displays
+ *     (CourseDetailPage etc.) that read the old shape keep working.
+ *   - drop empty TA list entries.
+ */
+function normaliseSyllabus(s: SyllabusInfo, existing?: SyllabusInfo): SyllabusInfo {
+  const out: SyllabusInfo = { ...s };
+
+  // ─── Merge guard ────────────────────────────────────────────
+  if (existing) {
+    function isFilled(v: unknown): boolean {
+      if (Array.isArray(v)) return v.length > 0;
+      if (typeof v === 'string') return v.trim().length > 0;
+      return v != null;
+    }
+    for (const [k, v] of Object.entries(existing)) {
+      if (isFilled(v)) {
+        // Force existing value to win — never let AI overwrite.
+        (out as Record<string, unknown>)[k] = v;
+      }
+    }
+  }
+
+  // ─── TA list cleanup ────────────────────────────────────────
+  if (Array.isArray(out.teaching_assistant_list)) {
+    const cleaned = out.teaching_assistant_list
+      .filter((t) => t && typeof t.name === 'string' && t.name.trim().length > 0)
+      .map((t) => ({
+        name: t.name.trim(),
+        email: typeof t.email === 'string' && t.email.trim() ? t.email.trim() : undefined,
+        office_hours:
+          typeof t.office_hours === 'string' && t.office_hours.trim()
+            ? t.office_hours.trim()
+            : undefined,
+      }));
+    out.teaching_assistant_list = cleaned.length > 0 ? cleaned : undefined;
+  }
+
+  // ─── Legacy back-fills ──────────────────────────────────────
+  // teaching_assistants (joined names) when only the structured list is set
+  if (!out.teaching_assistants && out.teaching_assistant_list) {
+    out.teaching_assistants = out.teaching_assistant_list
+      .map((t) => t.name)
+      .filter((n) => n && n.length > 0)
+      .join('、');
+    if (!out.teaching_assistants) delete out.teaching_assistants;
+  }
+
+  // office_hours <- instructor_office_hours
+  if (!out.office_hours && out.instructor_office_hours) {
+    out.office_hours = out.instructor_office_hours;
+  }
+
+  return out;
+}
+
+export async function chat(
+  messages: LLMMessage[],
+  options: { signal?: AbortSignal } = {},
+): Promise<string> {
+  // TODO Sprint 3 W8 caller adoption: callers (AI 助教 panel, etc.) 應
+  //   new AbortController() on mount + pass `signal: ac.signal` so a
+  //   user navigating away mid-request actually cancels HTTP, not just
+  //   hides the spinner.
+  throwIfAborted(options.signal);
   const { provider, model } = await activeProviderAndModel();
+  throwIfAborted(options.signal);
   const res = await provider!.complete({
     model,
     messages,
     temperature: 0.3,
     maxTokens: 2048,
+    signal: options.signal,
   });
   trackUsage(provider!.descriptor.id, model, 'chat', res.usage);
   return res.content;
@@ -621,16 +1740,29 @@ export async function refineTranscripts(batch: RoughSegment[]): Promise<FineRefi
   return [];
 }
 
-/** Stream a chat response token-by-token. Caller receives incremental deltas. */
-export async function* chatStream(messages: LLMMessage[]): AsyncGenerator<string, void, void> {
+/** Stream a chat response token-by-token. Caller receives incremental deltas.
+ *
+ * TODO Sprint 3 W8 caller adoption: ReviewPage retry / regen 應 new
+ *   AbortController() on click cancel + pass `signal: ac.signal` 給
+ *   `chatStream`. The AI 助教 chat panel should do the same on
+ *   navigation-away.
+ */
+export async function* chatStream(
+  messages: LLMMessage[],
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<string, void, void> {
+  throwIfAborted(options.signal);
   const { provider, model } = await activeProviderAndModel();
+  throwIfAborted(options.signal);
   let finalUsage: { inputTokens?: number; outputTokens?: number } | undefined;
   for await (const chunk of provider!.stream({
     model,
     messages,
     temperature: 0.3,
     maxTokens: 2048,
+    signal: options.signal,
   })) {
+    throwIfAborted(options.signal);
     if (chunk.delta) yield chunk.delta;
     if (chunk.done && chunk.usage) {
       finalUsage = chunk.usage;

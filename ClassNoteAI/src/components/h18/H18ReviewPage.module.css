@@ -1,0 +1,924 @@
+/* ============================================================
+ * H18ReviewPage · v0.7.0 Phase 6.4
+ * 對應 docs/design/h18-deep/h18-review-page.jsx L436-895.
+ * Layout: hero + 3-column body (TOC | transcript | tabs) + audio bar.
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+    font-family: var(--h18-font-sans);
+}
+
+/* Hero ────────────────────────────────────────────────────────── */
+.hero {
+    padding: 18px 28px 20px;
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    flex-shrink: 0;
+}
+
+.heroTopRow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+    color: var(--h18-text-mid);
+}
+
+.crumbBack {
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+}
+
+.crumbBack:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.crumbCourse {
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
+.crumbDivider {
+    color: var(--h18-text-faint);
+}
+
+.crumbExtra {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+}
+
+.audioToggle {
+    margin-left: auto;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: background 120ms, color 120ms;
+}
+
+.audioToggle:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.audioToggleActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-color: var(--h18-invert);
+}
+
+.audioToggleActive:hover {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.audioToggle:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* cp75.31 — top-level granular regenerate split-button cluster.
+   Sits in the heroTopRow next to .audioToggle. Vanilla CSS only,
+   no shadcn / Radix. */
+.regenWrap {
+    position: relative;
+    display: inline-flex;
+    align-items: stretch;
+    flex-shrink: 0;
+}
+
+.regenPrimary {
+    padding: 6px 10px 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: background 120ms, color 120ms;
+}
+
+.regenPrimary:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.regenPrimary:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.regenChevron {
+    padding: 6px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 0 6px 6px 0;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 120ms, color 120ms;
+}
+
+.regenChevron:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.regenChevron:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.regenMenu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 180px;
+    z-index: 30;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+
+.regenMenuItem {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--h18-text);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.regenMenuItem:hover {
+    background: var(--h18-row-hover);
+}
+
+.regenMenuItem:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.regenMenuItemHint {
+    margin-left: 6px;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.heroTitle {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    margin: 14px 0 0;
+    color: var(--h18-text);
+}
+
+/* Phase 7 S3c-2 (S8) — hero title + ✎ edit button row */
+.heroTitleRow {
+    display: flex;
+    align-items: center;
+    gap: var(--h18-space-3, 8px);
+}
+
+.heroEditBtn {
+    flex-shrink: 0;
+    margin-top: 14px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-md, 6px);
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: inherit;
+    transition: background var(--h18-duration-fast, 120ms) var(--h18-ease-out),
+        color var(--h18-duration-fast, 120ms) var(--h18-ease-out);
+}
+
+.heroEditBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.heroMeta {
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    margin-top: 4px;
+}
+
+/* 3-column body ─────────────────────────────────────────────────── */
+.body {
+    flex: 1;
+    display: grid;
+    grid-template-columns:
+        var(--toc-w, 220px)
+        5px
+        minmax(0, 1fr)
+        5px
+        var(--right-w, 420px);
+    background: var(--h18-border);
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* Splitter handles between columns */
+.splitter {
+    background: var(--h18-border);
+    cursor: col-resize;
+    position: relative;
+    transition: background 120ms ease;
+    touch-action: none;
+    user-select: none;
+}
+
+.splitter::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -3px;
+    right: -3px;
+    /* expand hit area for easier grabbing */
+}
+
+.splitter:hover {
+    background: var(--h18-accent);
+}
+
+.splitterActive {
+    background: var(--h18-accent);
+}
+
+/* TOC ─────────────────────────────────────────────────────────── */
+.toc {
+    background: var(--h18-surface2);
+    overflow: auto;
+    padding: 14px 16px;
+    min-width: 0;
+}
+
+.tocHead {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin-bottom: 10px;
+}
+
+.tocHeadGap {
+    margin-top: 20px;
+}
+
+.tocRow {
+    padding: 8px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-bottom: 2px;
+    background: transparent;
+    border: none;
+    width: 100%;
+    text-align: left;
+    color: inherit;
+    font-family: inherit;
+    transition: background 120ms;
+}
+
+.tocRow:hover {
+    background: var(--h18-row-hover);
+}
+
+.tocRowActive {
+    background: var(--h18-sel-bg);
+}
+
+.tocTime {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+.tocTitle {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--h18-text);
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.35;
+}
+
+.tocEmpty {
+    font-size: 11px;
+    color: var(--h18-text-dim);
+    line-height: 1.6;
+    padding: 10px 4px;
+}
+
+/* Transcript ─────────────────────────────────────────────────── */
+.transcript {
+    background: var(--h18-surface);
+    overflow: auto;
+    padding: 20px 28px;
+    min-width: 0;
+    color: var(--h18-text);
+}
+
+.transcriptControls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+    position: sticky;
+    top: -20px;
+    background: var(--h18-surface);
+    z-index: 2;
+    padding: 4px 28px 10px;
+    border-bottom: 1px solid var(--h18-border-soft);
+    margin-left: -28px;
+    margin-right: -28px;
+    flex-wrap: wrap;
+}
+
+.transcriptHead {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.toggleRow {
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.toggleBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.toggleBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.toggleBtn:not(.toggleBtnActive):hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.followBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.followBtnActive {
+    background: var(--h18-accent);
+    color: #fff;
+    border-color: var(--h18-accent);
+}
+
+.transcriptEmpty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--h18-text-dim);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+/* Para mode ─────────────────────────────────────────────────── */
+.para {
+    margin-bottom: 28px;
+    border-left: 3px solid var(--h18-accent);
+    padding-left: 16px;
+    transition: border-color 120ms;
+}
+
+.paraExam {
+    border-left-color: var(--h18-hot);
+}
+
+.paraHead {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.paraTime {
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-accent);
+    font-weight: 800;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+}
+
+.paraTime:hover {
+    text-decoration: underline;
+}
+
+.paraTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+}
+
+.paraCount {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.paraZh {
+    font-size: 15px;
+    line-height: 1.75;
+    color: var(--h18-text);
+    letter-spacing: -0.005em;
+    text-wrap: pretty;
+}
+
+.paraEn {
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--h18-text-dim);
+    margin-top: 8px;
+    font-style: italic;
+    text-wrap: pretty;
+}
+
+.paraEnSole {
+    font-size: 15px;
+    color: var(--h18-text);
+    font-style: normal;
+    line-height: 1.75;
+}
+
+.paraSubActive {
+    background: var(--h18-sel-bg);
+    border-radius: 3px;
+    padding: 1px 3px;
+    transition: background 200ms;
+}
+
+/* Sentence mode ─────────────────────────────────────────────── */
+.sent {
+    margin-bottom: 18px;
+    padding: 6px 0;
+    border-left: 3px solid transparent;
+    padding-left: 12px;
+    cursor: pointer;
+    transition: border-color 120ms, background 120ms;
+}
+
+.sent:hover {
+    background: var(--h18-row-hover);
+}
+
+.sentActive {
+    background: var(--h18-sel-bg);
+    border-left-color: var(--h18-accent);
+}
+
+.sentHead {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+
+.sentTime {
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-faint);
+}
+
+.sentZh {
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--h18-text);
+    letter-spacing: -0.005em;
+}
+
+.sentEn {
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--h18-text-dim);
+    margin-top: 4px;
+    font-style: italic;
+}
+
+/* Right tabs ─────────────────────────────────────────────────── */
+.right {
+    background: var(--h18-surface2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.tabRow {
+    display: flex;
+    border-bottom: 1px solid var(--h18-border);
+    flex-shrink: 0;
+}
+
+.tabBtn {
+    flex: 1;
+    padding: 10px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    background: transparent;
+    color: var(--h18-text-dim);
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.tabBtn:hover {
+    color: var(--h18-text);
+}
+
+.tabBtnActive {
+    color: var(--h18-text);
+    border-bottom-color: var(--h18-accent);
+}
+
+.tabPane {
+    flex: 1;
+    overflow: auto;
+    padding: 18px;
+}
+
+.tabHead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.tabHeadEyebrow {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+}
+
+.editBtn {
+    margin-left: auto;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    border: 1px solid var(--h18-border);
+    background: transparent;
+    color: var(--h18-text-mid);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.editBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.notesView {
+    flex: 1;
+    overflow: auto;
+}
+
+.notesUserView {
+    flex: 1;
+    overflow: auto;
+    padding: 14px 16px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    color: var(--h18-text);
+    font-family: var(--h18-font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.notesSeedBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--h18-chip-bg);
+    border: 1px dashed var(--h18-border-soft);
+    font-size: 11px;
+    color: var(--h18-text-mid);
+}
+
+.tabHeadStatus {
+    font-weight: 500;
+    color: var(--h18-text-faint);
+    text-transform: none;
+    letter-spacing: 0.04em;
+    font-size: 9px;
+}
+
+.notesEdit {
+    flex: 1;
+    min-height: 200px;
+    resize: none;
+    padding: 12px;
+    font-size: 12px;
+    line-height: 1.6;
+    font-family: var(--h18-font-mono);
+    background: var(--h18-bg);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    outline: none;
+    box-sizing: border-box;
+    width: 100%;
+}
+
+.notesEdit:focus {
+    border-color: var(--h18-accent);
+}
+
+.section {
+    margin-bottom: 20px;
+}
+
+.sectionTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.sectionTime {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.sectionTime:hover {
+    color: var(--h18-accent);
+    text-decoration: underline;
+}
+
+.sectionContent {
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--h18-text-mid);
+    white-space: pre-wrap;
+}
+
+.sectionBullets {
+    margin: 6px 0 6px 4px;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sectionBullet {
+    font-size: 12px;
+    color: var(--h18-text);
+    line-height: 1.55;
+    padding-left: 14px;
+    position: relative;
+}
+
+.sectionBullet::before {
+    content: '→';
+    position: absolute;
+    left: 0;
+    top: 0;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+}
+
+.summaryBox {
+    padding: 14px;
+    border-radius: 6px;
+    background: var(--h18-bg);
+    border: 1px solid var(--h18-border);
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--h18-text);
+    white-space: pre-wrap;
+}
+
+.qaRow {
+    padding: 10px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    margin-bottom: 8px;
+}
+
+.qaQuestion {
+    font-size: 11px;
+    color: var(--h18-accent);
+    font-weight: 800;
+    margin-bottom: 4px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+.qaAnswer {
+    font-size: 12px;
+    color: var(--h18-text);
+    line-height: 1.6;
+}
+
+.tabEmpty {
+    padding: 28px 14px;
+    text-align: center;
+    color: var(--h18-text-dim);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.tabEmptyTag {
+    margin-top: 8px;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-faint);
+    text-transform: uppercase;
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+}
+
+.notFound {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-dim);
+    padding: 40px;
+    text-align: center;
+}
+
+/* Course context strip (top of right pane) ─────────────────── */
+.ctxStrip {
+    flex-shrink: 0;
+    padding: 12px 14px;
+    background: var(--h18-surface2);
+    border-bottom: 1px solid var(--h18-border-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ctxRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+}
+
+.ctxItem {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+.ctxLabel {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+
+.ctxValue {
+    font-size: 11.5px;
+    color: var(--h18-text);
+    font-weight: 600;
+    line-height: 1.4;
+    word-break: break-word;
+    min-width: 0;
+}
+
+.ctxGrading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ctxGradingList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.ctxGradingChip {
+    font-size: 10px;
+    padding: 2px 7px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-mid);
+    border-radius: 999px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+

@@ -1,0 +1,277 @@
+/* ============================================================
+ * H18TopBar · v0.7.0 Phase 6.1
+ *
+ * 對應 docs/design/h18-deep/h18-parts.jsx L52-103.
+ * 取代舊 TopBar.tsx 的中央 nav 模式。Layout：
+ *   left:  WindowControls | divider | logo "C" | brand | meta
+ *   right: search ⌘K | 錄音 button | TaskIndicator
+ * ============================================================ */
+
+.bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--h18-border);
+    height: 46px;
+    box-sizing: border-box;
+    background: var(--h18-topbar);
+    color: var(--h18-text);
+    flex-shrink: 0;
+    font-family: var(--h18-font-sans);
+}
+
+.barDense {
+    height: 40px;
+    padding: 8px 14px;
+}
+
+.left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.divider {
+    width: 1px;
+    height: 14px;
+    background: var(--h18-border);
+    flex-shrink: 0;
+}
+
+.logoBadge {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    flex-shrink: 0;
+}
+
+.brand {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+    flex-shrink: 0;
+}
+
+.meta {
+    font-size: 11px;
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.metaDim {
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-sans);
+    letter-spacing: normal;
+}
+
+.inboxIndicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    cursor: pointer;
+    flex-shrink: 0;
+    font-weight: 600;
+    transition: background 120ms;
+}
+
+.inboxIndicator:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.center {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    min-width: 0;
+}
+
+.recIsland {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 11px 4px 9px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border-radius: 999px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    border: none;
+    box-shadow: 0 4px 12px color-mix(in srgb, var(--h18-dot) 30%, transparent);
+    transition: filter 120ms, transform 100ms;
+}
+
+.recIsland:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.recIslandDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 4px;
+    background: var(--h18-dot);
+    animation: recpulse 1.2s var(--h18-ease-spring) infinite;
+}
+
+@keyframes recpulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.recIslandShort {
+    font-weight: 800;
+    color: #fff;
+    background: var(--h18-dot);
+    padding: 1px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.06em;
+    font-size: 10px;
+}
+
+.recIslandLec {
+    color: var(--h18-invert-ink);
+    letter-spacing: 0.04em;
+}
+
+.recIslandTime {
+    color: color-mix(in srgb, var(--h18-invert-ink) 70%, transparent);
+    font-variant-numeric: tabular-nums;
+}
+
+.right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px 4px 8px;
+    height: 28px;
+    min-width: 220px;
+    border-radius: 7px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-surface2);
+    color: var(--h18-text-dim);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    transition: background 140ms, border-color 140ms;
+}
+
+.search:hover {
+    background: var(--h18-surface);
+    border-color: var(--h18-text-faint);
+    color: var(--h18-text-mid);
+}
+
+.searchIcon {
+    font-size: 13px;
+    opacity: 0.7;
+}
+
+.searchPlaceholder {
+    flex: 1;
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.searchKbd {
+    font-size: 10px;
+    padding: 1px 5px;
+    border: 1px solid var(--h18-border);
+    border-radius: 3px;
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-faint);
+    flex-shrink: 0;
+}
+
+.recordBtn {
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border: none;
+    border-radius: 999px;
+    background: #e8412e;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: filter 140ms, transform 100ms;
+}
+
+.recordBtn:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.recordBtn:active {
+    transform: translateY(0);
+}
+
+.recordBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    filter: none;
+}
+
+.recordDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 4px;
+    background: #fff;
+    flex-shrink: 0;
+}
+
+.themeBtn {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    transition: background 140ms, color 140ms, border-color 140ms;
+}
+
+.themeBtn:hover {
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    border-color: var(--h18-border-soft);
+}

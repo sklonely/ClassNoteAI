@@ -1,0 +1,152 @@
+/* ============================================================
+ * H18DeepApp · v0.7.0 Phase 6.1
+ *
+ * 對應 docs/design/h18-deep/h18-app.jsx (H18DeepApp + H18Layout).
+ *
+ * Root layout：
+ *   <root flex column h:100vh bg:h18-bg>
+ *     <H18TopBar />               flex-shrink:0
+ *     <H18Layout grid 62px 1fr>   flex:1
+ *       <H18Rail />
+ *       <main>                   各頁面
+ * ============================================================ */
+
+.root {
+    width: 100%;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-bg);
+    color: var(--h18-text);
+    overflow: hidden;
+    position: relative;
+    font-family: var(--h18-font-sans);
+}
+
+.layout {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 62px 1fr;
+    overflow: hidden;
+    background: var(--h18-border);
+    gap: 1px;
+    min-height: 0;
+}
+
+.main {
+    background: var(--h18-bg);
+    overflow: hidden;
+    position: relative;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Stub overlay for ⌘K search until P6.8 builds the real one */
+.stubOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    display: grid;
+    place-items: center;
+    background: rgba(20, 18, 14, 0.45);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.stubCard {
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 12px;
+    padding: 24px 32px;
+    box-shadow: var(--h18-shadow);
+    color: var(--h18-text-mid);
+    font-family: var(--h18-font-sans);
+    text-align: center;
+    max-width: 360px;
+}
+
+.stubKbd {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+/* AI dock fab — floating ⌘J trigger.
+ * Position 對應 prototype h18-app.jsx L405-415：右下角，但要避開頁面腳的內容
+ * (Preview keyboard hint footer / RecordingPage transport bar)。
+ *
+ * Default: bottom 80px (vs prototype 20px) — 留出空間給 Preview footer。
+ * Recording 模式：bottom 84px = transport (60-72px) + 12px gap，貼在 transport 上方。
+ *  (prototype 用 112，但 prototype transport 比較高；我們的 transport 只 ~60-72px。)
+ */
+.fab {
+    position: absolute;
+    right: 20px;
+    bottom: 80px;
+    z-index: 30;
+    width: 44px;
+    height: 44px;
+    border-radius: 22px;
+    cursor: pointer;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    font-size: 18px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    box-shadow: var(--h18-shadow);
+    display: grid;
+    place-items: center;
+    transition: transform 100ms var(--h18-ease-spring), filter 140ms,
+                bottom 200ms var(--h18-ease-spring);
+}
+
+.fabRecording {
+    bottom: 84px;
+}
+
+.fab:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.1);
+}
+
+/* Placeholder pages (留白) */
+.placeholder {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: var(--h18-text-dim);
+    background: var(--h18-bg);
+    text-align: center;
+}
+
+.placeholderEyebrow {
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin-bottom: 12px;
+}
+
+.placeholderTitle {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.018em;
+    margin: 0 0 8px;
+}
+
+.placeholderHint {
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    line-height: 1.6;
+    max-width: 360px;
+    margin: 0;
+}

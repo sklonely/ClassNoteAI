@@ -1,0 +1,114 @@
+/* ============================================================
+ * H18 Settings shared primitives · v0.7.0 Phase CP-2/3
+ *
+ * Card + SegmentedControl 全 panels 共用。改這個就改全部。
+ * ============================================================ */
+
+.card {
+  background: var(--h18-surface);
+  color: var(--h18-text);
+  border: 1px solid var(--h18-border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--h18-shadow);
+  margin-bottom: 16px;
+  font-family: var(--h18-font-sans);
+}
+
+.cardHeader {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--h18-border-soft);
+  background: var(--h18-surface2);
+}
+
+.cardTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.012em;
+  color: var(--h18-text);
+  margin: 0;
+}
+
+.cardTitle :global(svg) {
+  color: var(--h18-accent);
+  flex-shrink: 0;
+}
+
+.cardSubtitle {
+  font-size: 11px;
+  color: var(--h18-text-dim);
+  margin: 4px 0 0 0;
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+}
+
+.cardBody {
+  padding: 18px;
+}
+
+/* ─── SegmentedControl ───────────────────────────────────── */
+.segmented {
+  display: inline-flex;
+  width: 100%;
+  max-width: 480px;
+  padding: 3px;
+  background: var(--h18-surface2);
+  border: 1px solid var(--h18-border);
+  border-radius: 8px;
+  gap: 2px;
+}
+
+.segmentedBtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--h18-text-dim);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms var(--h18-ease-spring),
+              color 140ms var(--h18-ease-spring);
+}
+
+.segmentedBtn:hover {
+  color: var(--h18-text);
+}
+
+.segmentedBtnSelected {
+  background: var(--h18-surface);
+  color: var(--h18-text);
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+:root.dark .segmentedBtnSelected {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.segmentedBtnLabel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+
+.segmentedBtnHint {
+  font-size: 9px;
+  color: var(--h18-text-faint);
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+}
+
+.segmentedBtnSelected .segmentedBtnHint {
+  color: var(--h18-text-dim);
+}

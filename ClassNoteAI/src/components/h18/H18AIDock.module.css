@@ -1,0 +1,295 @@
+/* ============================================================
+ * H18AIDock · v0.7.0 Phase 6.6
+ * 對應 docs/design/h18-deep/h18-aidock-recording.jsx (AIDock).
+ * ============================================================ */
+
+.scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 900;
+    background: transparent;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: 30px;
+    pointer-events: auto;
+    font-family: var(--h18-font-sans);
+}
+
+.dock {
+    width: 620px;
+    max-width: calc(100% - 48px);
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    border-radius: 14px;
+    box-shadow: var(--h18-shadow);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    max-height: 70vh;
+    animation: aidockIn 200ms var(--h18-ease-spring);
+}
+
+@keyframes aidockIn {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.head {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--h18-border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.headIcon {
+    font-size: 14px;
+    color: var(--h18-accent);
+}
+
+.headTitle {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--h18-text);
+}
+
+.contextPill {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    padding: 2px 8px;
+    background: var(--h18-chip-bg);
+    border-radius: 4px;
+}
+
+.expandBtn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    font-size: 10px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.expandBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.kbdHint {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    white-space: nowrap;
+}
+
+.closeBtn {
+    background: transparent;
+    border: 1px solid var(--h18-border);
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-size: 11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    padding: 0;
+    font-family: inherit;
+}
+
+.closeBtn:hover {
+    background: var(--h18-row-hover);
+}
+
+.body {
+    flex: 1;
+    overflow: auto;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.msgUser {
+    align-self: flex-end;
+    max-width: 80%;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.msgAI {
+    align-self: flex-start;
+    max-width: 90%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: var(--h18-surface2);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border-soft);
+    font-size: 13px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.msgHint {
+    align-self: stretch;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px dashed var(--h18-border-soft);
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    line-height: 1.55;
+}
+
+.thinking {
+    display: inline-flex;
+    gap: 3px;
+    margin-right: 6px;
+}
+
+.thinkingDot {
+    width: 5px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--h18-text-dim);
+    animation: aidotPulse 1.2s infinite ease-in-out;
+}
+
+.thinkingDot:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.thinkingDot:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes aidotPulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.9; }
+}
+
+.quickQs {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+
+.quickQ {
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    border: 1px solid var(--h18-border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.quickQ:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.foot {
+    padding: 10px 14px;
+    border-top: 1px solid var(--h18-border);
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+    background: var(--h18-surface2);
+}
+
+.inputBox {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+}
+
+.inputBox:focus-within {
+    border-color: var(--h18-accent);
+}
+
+.inputIcon {
+    font-size: 12px;
+    color: var(--h18-text-dim);
+}
+
+.input {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--h18-text);
+    outline: none;
+    font-size: 13px;
+    font-family: inherit;
+    padding: 0;
+}
+
+.inputKbd {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.sendBtn {
+    padding: 0 14px;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    transition: filter 120ms;
+}
+
+.sendBtn:hover {
+    filter: brightness(1.05);
+}
+
+.sendBtn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    filter: none;
+}
+
+.cite {
+    font-size: 10px;
+    color: var(--h18-accent);
+    padding: 2px 7px;
+    border: 1px solid color-mix(in srgb, var(--h18-accent) 35%, transparent);
+    border-radius: 999px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 600;
+}
+
+.cites {
+    margin-top: 6px;
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}

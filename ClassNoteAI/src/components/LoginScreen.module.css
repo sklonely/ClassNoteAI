@@ -1,0 +1,151 @@
+/* ============================================================
+ * H18 LoginScreen · v0.7.0 Phase 2e
+ *
+ * 第一次冷啟動或登出後看到的頁面。整片用 H18 暖色 backdrop +
+ * 中央卡片。Dark/light 切換靠 :root.dark — 但 Login 通常在 theme
+ * 載入前出現，預設色就要 OK。
+ * ============================================================ */
+
+.root {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(ellipse at 50% 30%, rgba(232, 65, 46, 0.05), transparent 60%),
+    var(--h18-bg);
+  font-family: var(--h18-font-sans);
+  padding: 24px;
+}
+
+.card {
+  width: 100%;
+  max-width: 400px;
+  padding: 36px 32px 28px;
+  background: var(--h18-surface);
+  color: var(--h18-text);
+  border: 1px solid var(--h18-border);
+  border-radius: 14px;
+  box-shadow: var(--h18-shadow);
+  animation: cardIn 320ms var(--h18-ease-spring);
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 24px;
+  background: var(--h18-chip-bg);
+  color: var(--h18-accent);
+  display: grid;
+  place-items: center;
+  margin-bottom: 14px;
+  border: 1px solid var(--h18-border-soft);
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 800;
+  margin: 0 0 6px;
+  letter-spacing: -0.018em;
+  color: var(--h18-text);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--h18-text-mid);
+  margin: 0;
+}
+
+.field {
+  margin-bottom: 12px;
+}
+
+.input {
+  width: 100%;
+  padding: 11px 14px;
+  background: var(--h18-bg);
+  color: var(--h18-text);
+  border: 1px solid var(--h18-border);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  transition: border-color 140ms var(--h18-ease-spring),
+              box-shadow 140ms var(--h18-ease-spring);
+  box-sizing: border-box;
+}
+
+.input::placeholder {
+  color: var(--h18-text-faint);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--h18-accent);
+  box-shadow: 0 0 0 3px rgba(210, 74, 26, 0.13);
+}
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  background: rgba(232, 65, 46, 0.10);
+  color: var(--h18-hot);
+  border: 1px solid rgba(232, 65, 46, 0.25);
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--h18-invert);
+  color: var(--h18-invert-ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 140ms var(--h18-ease-spring),
+              transform 80ms var(--h18-ease-spring);
+}
+
+.btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.footnote {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--h18-text-faint);
+  font-family: var(--h18-font-mono);
+  letter-spacing: 0.04em;
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}

@@ -1,0 +1,139 @@
+/* ============================================================
+ * FloatingNotesPanel · v0.7.0
+ * ============================================================ */
+
+.panel {
+    position: fixed;
+    z-index: 80;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 12px;
+    box-shadow: var(--h18-shadow-lg, var(--h18-shadow));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: var(--h18-font-sans);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.header {
+    flex-shrink: 0;
+    height: 36px;
+    padding: 0 8px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--h18-surface2);
+    border-bottom: 1px solid var(--h18-border-soft);
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+}
+
+.header:active {
+    cursor: grabbing;
+}
+
+.headerIcon {
+    font-size: 13px;
+    color: var(--h18-accent);
+    font-weight: 700;
+}
+
+.headerTitle {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.005em;
+    flex-shrink: 0;
+}
+
+.headerLecture {
+    font-weight: 500;
+    color: var(--h18-text-mid);
+    font-size: 11px;
+}
+
+.headerStatus {
+    flex: 1;
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    text-align: right;
+    padding-right: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.headerStatusDirty {
+    color: var(--h18-accent);
+}
+
+.headerClose {
+    width: 22px;
+    height: 22px;
+    border-radius: 5px;
+    background: transparent;
+    border: none;
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-size: 12px;
+    display: grid;
+    place-items: center;
+}
+
+.headerClose:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.textarea {
+    flex: 1;
+    min-height: 0;
+    padding: 14px 16px;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--h18-text);
+    font-family: var(--h18-font-mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    letter-spacing: 0.005em;
+}
+
+.textarea::placeholder {
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-sans);
+    font-size: 12px;
+    line-height: 1.7;
+}
+
+.footer {
+    flex-shrink: 0;
+    height: 28px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: var(--h18-surface2);
+    border-top: 1px solid var(--h18-border-soft);
+}
+
+.footerHint {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.footerCount {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}

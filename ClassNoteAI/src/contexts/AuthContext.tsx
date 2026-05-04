@@ -1,11 +1,14 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { authService, User } from '../services/authService';
+import { recordingSessionService } from '../services/recordingSessionService';
+import { taskTrackerService } from '../services/taskTrackerService';
+import { clearAll as clearAllKeys } from '../services/llm/keyStore';
 
 interface AuthContextType {
     user: User | null;
     login: (username: string) => Promise<boolean>;
     register: (username: string) => Promise<void>;
-    logout: () => void;
+    logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -20,7 +23,116 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return unsubscribe;
     }, []);
 
+    /**
+     * cp75.4 — Shared cleanup sweep. Both `logout()` and `login()` call
+     * this so switching users doesn't carry singletons / API keys / inbox
+     * cache from the previous account into the next one.
+     *
+     * Steps (each wrapped in independent try/catch so partial failure
+     * doesn't block the auth transition):
+     *  1. recordingSessionService.reset() — bypass stop pipeline
+     *  2. taskTrackerService.cancelAll() — drop in-flight LLM tasks
+     *  3. clearAllKeys() — wipe llm.* API keys
+     *  4. __resetInboxCache() — drop in-memory snooze/done state
+     *
+     * Phase 7 R-1 (Sprint 1) originally only ran on logout. Cp75.4 audit
+     * caught: `setCurrentUser()` (used by cross-device sync) and direct
+     * `login()` calls were skipping all four steps, so the second user
+     * inherited keymapService overrides, keystore content (until clearAll),
+     * recording session, and the inbox cache from the first user.
+     */
+    const resetUserScopedState = async (label: string) => {
+        // cp75.7 — guard `recordingSessionService.reset()`: the JSDoc
+        // explicitly marks it TEST-ONLY because it bypasses the stop
+        // pipeline and leaks the AudioRecorder if a session is live.
+        // Auth transitions in the middle of a recording need to flush
+        // the recorder first; only then drop the singleton state.
+        try {
+            const state = recordingSessionService.getState();
+            if (state.status === 'recording' || state.status === 'paused') {
+                // Best-effort flush so the OS mic indicator doesn't stay
+                // on after logout. mustFinalizeSync() drains transcribe +
+                // saves subtitles; if it errors we still proceed to reset.
+                await recordingSessionService.mustFinalizeSync().catch((err) =>
+                    console.warn(
+                        `[AuthContext.${label}] mustFinalizeSync failed`,
+                        err,
+                    ),
+                );
+            }
+            recordingSessionService.reset();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] recording reset failed`, err);
+        }
+        try {
+            taskTrackerService.cancelAll();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] taskTracker cancelAll failed`, err);
+        }
+        // cp75.7 — only clear API keys on EXPLICIT LOGOUT, not on every
+        // state reset. Since cp75.3 keystore is per-user-scoped (key path
+        // includes userId segment), the next user can't read this user's
+        // keys anyway — clearing on every login was destroying the user's
+        // own keys when they came back. clearAll() also removes API keys
+        // belonging to OTHER accounts (sweep matches `llm.*` regardless),
+        // which means a single-user install loses all keys on every logout.
+        // Run only on logout, where the destructive intent is explicit.
+        if (label === 'logout') {
+            try {
+                await clearAllKeys();
+            } catch (err) {
+                console.warn(`[AuthContext.${label}] keyStore clear failed`, err);
+            }
+        }
+        try {
+            const { __resetInboxCache } = await import(
+                '../services/inboxStateService'
+            );
+            __resetInboxCache();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] inbox cache reset failed`, err);
+        }
+        // cp75.5 — clear keymapService overrides so next user doesn't
+        // inherit (and then accidentally persist) the previous user's
+        // custom keyboard bindings. App.tsx will hydrate() the new user's
+        // settings on next ready transition.
+        try {
+            const { keymapService } = await import('../services/keymapService');
+            keymapService.__reset();
+        } catch (err) {
+            console.warn(`[AuthContext.${label}] keymap reset failed`, err);
+        }
+        // cp75.5 — chatSessionService caches a userId at first init. Force
+        // it to re-read from authService so subsequent invokes target the
+        // correct account. (No-op when service hasn't been loaded yet.)
+        try {
+            const { chatSessionService } = await import(
+                '../services/chatSessionService'
+            );
+            (chatSessionService as { resetUserId?: () => void }).resetUserId?.();
+        } catch (err) {
+            console.warn(
+                `[AuthContext.${label}] chatSession resetUserId failed`,
+                err,
+            );
+        }
+        // cp75.5 — kick the global settings-changed event so any mounted
+        // useAppSettings consumers reload from the new user's namespace.
+        try {
+            window.dispatchEvent(new CustomEvent('classnote-settings-changed'));
+        } catch (err) {
+            console.warn(
+                `[AuthContext.${label}] settings-changed dispatch failed`,
+                err,
+            );
+        }
+    };
+
     const login = async (username: string) => {
+        // cp75.4: clear out any state left by a previous account before
+        // attaching the new user (covers the no-explicit-logout flow,
+        // e.g. switching users via UI without the logout button).
+        await resetUserScopedState('login');
         return authService.login(username);
     };
 
@@ -28,8 +140,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return authService.register(username);
     };
 
-    const logout = () => {
-        authService.logout();
+    const logout = async () => {
+        // Existing: clear auth principal. Wrap in try/catch — partial
+        // cleanup is better than refusing to log out at all (e.g. if
+        // localStorage write throws under quota / private mode).
+        try {
+            authService.logout();
+        } catch (err) {
+            console.warn('[AuthContext.logout] authService.logout failed', err);
+        }
+        await resetUserScopedState('logout');
     };
 
     return (

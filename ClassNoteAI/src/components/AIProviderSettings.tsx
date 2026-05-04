@@ -56,7 +56,14 @@ const HELP_LINKS: Record<string, { label: string; href: string }> = {
   },
 };
 
-const DEFAULT_PROVIDER_KEY = 'llm.defaultProvider';
+// cp75.4: default provider preference moved to per-user-scoped storage
+// (services/llm/defaultProvider.ts). Was 'llm.defaultProvider' shared
+// across users AND swept by keyStore.clearAll() on logout — both bugs.
+import {
+  getDefaultProvider as getDefaultProviderId,
+  setDefaultProvider as setDefaultProviderId,
+} from '../services/llm/defaultProvider';
+
 const UNOFFICIAL_ACK_KEY = 'llm.unofficialAcknowledged';
 
 function ackKey(providerId: string): string {
@@ -99,7 +106,7 @@ export default function AIProviderSettings({ forceProviderId }: AIProviderSettin
     // user's saved default, else the first already-configured one, else
     // the first in the catalog.
     if (forceProviderId) return forceProviderId;
-    const saved = localStorage.getItem(DEFAULT_PROVIDER_KEY);
+    const saved = getDefaultProviderId();
     const all = listProviders();
     if (saved && all.some((p) => p.id === saved)) return saved;
     // Pick first already-configured provider so users who upgrade from a
@@ -115,11 +122,7 @@ export default function AIProviderSettings({ forceProviderId }: AIProviderSettin
   const [pendingOAuthProvider, setPendingOAuthProvider] = useState<string | null>(null);
 
   useEffect(() => {
-    if (selectedProviderId) {
-      localStorage.setItem(DEFAULT_PROVIDER_KEY, selectedProviderId);
-    } else {
-      localStorage.removeItem(DEFAULT_PROVIDER_KEY);
-    }
+    setDefaultProviderId(selectedProviderId || null);
   }, [selectedProviderId]);
 
   const updateState = (id: string, patch: Partial<ProviderState>) => {

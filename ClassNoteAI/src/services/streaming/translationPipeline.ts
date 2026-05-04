@@ -62,20 +62,183 @@ class TranslationPipeline {
   private queue: TranslationJob[] = [];
   private processing = false;
 
+  /**
+   * cp75.25 P1-B: pause flag. When true, the drain loop refuses to
+   * dispatch new jobs from the queue — they accumulate (subject to the
+   * normal `maxQueueSize` cap) and resume picks them up on `resume()`.
+   *
+   * In-flight jobs are not aborted (we can't kill an HTTP request mid-
+   * call cleanly). Their results still emit on `subtitleStream`; the
+   * consumer (subtitleService) drops them by session_id mismatch when
+   * the user has moved to a new recording session.
+   */
+  private paused = false;
+  /**
+   * Promise that resolves when `resume()` is called. Lazily created on
+   * the first `pause()`; cleared on `resume()`. The drain loop awaits
+   * this when it sees `paused === true`.
+   */
+  private pauseGate: Promise<void> | null = null;
+  private pauseGateResolver: (() => void) | null = null;
+
+  /**
+   * Hard cap on queued (not in-flight) translation jobs. If the
+   * translator stalls (sidecar dies mid-lecture, llama-server hung) we
+   * could otherwise grow `queue` unboundedly with one job per sentence
+   * for the rest of the recording. 5000 is high enough that a healthy
+   * 2-3hr lecture never hits it (typical: 1500-2500 sentences) but low
+   * enough to bound memory at a few MB.
+   *
+   * `private static` rather than a `const` at module scope so tests can
+   * shrink it via {@link __setMaxQueueSizeForTest}.
+   */
+  private static DEFAULT_MAX_QUEUE_SIZE = 5_000;
+  private maxQueueSize: number = TranslationPipeline.DEFAULT_MAX_QUEUE_SIZE;
+
+  /**
+   * Counter of jobs we've dropped since the last `translation_backlog`
+   * event. Reset to 0 each emit. Used so the UI can show "X sentences
+   * lost" rather than re-firing per-job.
+   */
+  private droppedDueToBacklog = 0;
+  /** Wall-clock ms of last `translation_backlog` emit. Throttle = 1s. */
+  private lastBacklogEmit = 0;
+
   /** Push a sentence for async translation. Non-blocking. */
   enqueue(job: TranslationJob): void {
+    if (this.queue.length >= this.maxQueueSize) {
+      this.droppedDueToBacklog += 1;
+      const now = Date.now();
+      // 1s throttle — translator backlog tends to fire in bursts and
+      // we don't want to spam the listener (or the console) per job.
+      if (now - this.lastBacklogEmit > 1_000) {
+        this.lastBacklogEmit = now;
+        const dropped = this.droppedDueToBacklog;
+        this.droppedDueToBacklog = 0;
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+          window.dispatchEvent(
+            new CustomEvent('translation_backlog', {
+              detail: { dropped, queueSize: this.queue.length },
+            }),
+          );
+        }
+      }
+      return; // dropped — never enters the queue
+    }
     this.queue.push(job);
     this.emitStatus(job.sessionId);
     void this.drain();
   }
 
   /**
+   * Resolve once the queue is empty AND no job is currently in flight.
+   * Used by `recordingSessionService.stop()` so we don't flip the
+   * lecture to 'completed' before the final sentence's zh translation
+   * has come back from the translator.
+   *
+   * 50ms polling (per Phase 7 plan) — simpler than threading an
+   * event-emitter through the existing drain loop, and the latency
+   * budget for stop is several hundred ms anyway.
+   */
+  awaitDrain(): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (this.queue.length === 0 && !this.processing) {
+          resolve();
+          return;
+        }
+        setTimeout(check, 50);
+      };
+      check();
+    });
+  }
+
+  /** Test-only: read current queue length. */
+  getQueueLength(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * Test-only escape hatch — pass a number to shrink the cap (so unit
+   * tests don't have to push 5000+ jobs), or `null` to restore the
+   * production default. Prefixed with `__` to discourage callers from
+   * touching it outside tests.
+   *
+   * Also drops any queued (not in-flight) jobs and zeroes the backlog
+   * counters so a previous test's leftovers don't leak into the next.
+   * The currently in-flight job is not cancellable — the next call to
+   * `drain()` will see it through; tests that hold the translator with
+   * a never-resolving promise should accept that single in-flight job
+   * is effectively "lost" for the rest of the run (process will exit).
+   */
+  __setMaxQueueSizeForTest(size: number | null): void {
+    this.maxQueueSize = size ?? TranslationPipeline.DEFAULT_MAX_QUEUE_SIZE;
+    this.queue = [];
+    this.droppedDueToBacklog = 0;
+    this.lastBacklogEmit = 0;
+  }
+
+  /**
    * Reset between recording sessions. No durable state to clear today
    * (no rolling context yet) — kept for forward compatibility so callers
    * don't have to start tracking a new lifecycle when context lands.
+   *
+   * cp75.25: also clears any pending pause state and drops queued (not
+   * in-flight) jobs. Without the queue drop, a paused session whose
+   * drain loop is awaiting the pauseGate would resume into the new
+   * session and dispatch stale translations.
    */
   reset(): void {
-    // intentionally empty
+    this.queue = [];
+    if (this.paused) {
+      this.paused = false;
+      if (this.pauseGateResolver) {
+        this.pauseGateResolver();
+      }
+      this.pauseGate = null;
+      this.pauseGateResolver = null;
+    }
+  }
+
+  /**
+   * cp75.25 P1-B: stop dispatching new translations from the queue.
+   * Idempotent — calling pause() multiple times without an intervening
+   * resume() is a single pause (state stays true; the gate isn't
+   * re-created).
+   *
+   * In-flight jobs (the one currently awaiting `translateRough`) finish
+   * their HTTP roundtrip and emit on subtitleStream as normal. Pause
+   * only stops *new* dispatch off the head of the queue.
+   */
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.pauseGate = new Promise<void>((resolve) => {
+      this.pauseGateResolver = resolve;
+    });
+  }
+
+  /**
+   * cp75.25 P1-B: resume dispatch. Idempotent — calling resume()
+   * without a prior pause() is a no-op.
+   *
+   * Wakes any drain loop currently awaiting the pause gate; if the
+   * loop has already exited (queue went empty during pause), the next
+   * enqueue() kicks off a fresh drain.
+   */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.pauseGateResolver) {
+      this.pauseGateResolver();
+    }
+    this.pauseGate = null;
+    this.pauseGateResolver = null;
+  }
+
+  /** Test-only: read current pause state. */
+  isPaused(): boolean {
+    return this.paused;
   }
 
   private async drain(): Promise<void> {
@@ -83,6 +246,14 @@ class TranslationPipeline {
     this.processing = true;
     try {
       while (this.queue.length > 0) {
+        // cp75.25 P1-B: gate dispatch on pause state. We re-check
+        // queue length after waking because resume() may have been
+        // followed immediately by reset() / a new session that
+        // emptied the queue.
+        if (this.paused && this.pauseGate) {
+          await this.pauseGate;
+          if (this.queue.length === 0) break;
+        }
         const job = this.queue.shift()!;
         this.emitStatus(job.sessionId);
         await this.translateOne(job);
@@ -98,12 +269,33 @@ class TranslationPipeline {
     const RETRY_DELAY_MS = 500;
     let lastError: unknown = null;
 
+    // cp75.1: read source/target language from settings instead of
+    // hardcoding 'en' → 'zh'. Falls back to en → zh-TW to preserve the
+    // pre-cp75 default behaviour for users who never touched the
+    // PTranslate language pickers.
+    let sourceLang = 'en';
+    let targetLang = 'zh-TW';
+    try {
+      const { storageService } = await import('../storageService');
+      const settings = await storageService.getAppSettings();
+      const src = settings?.translation?.source_language;
+      const tgt = settings?.translation?.target_language;
+      // 'auto' source means "let ASR decide"; we still need a concrete
+      // code for the translator's prompt → fall back to 'en' since that's
+      // what the ASR pipeline emits today (Phase 8 will plumb the real
+      // detected language through).
+      if (src && src !== 'auto') sourceLang = src;
+      if (tgt) targetLang = tgt;
+    } catch {
+      // settings read failed — keep defaults
+    }
+
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const result = await translateRough(
           job.textEn,
-          'en',
-          'zh',
+          sourceLang,
+          targetLang,
           /* useCache */ true,
         );
         const latencyMs = performance.now() - start;

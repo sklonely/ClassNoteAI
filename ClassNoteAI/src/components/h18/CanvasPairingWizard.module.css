@@ -1,0 +1,420 @@
+/* ============================================================
+ * CanvasPairingWizard · v0.7.x
+ * ============================================================ */
+
+.scrim {
+    position: fixed;
+    inset: 0;
+    background: color-mix(in srgb, var(--h18-bg) 70%, transparent);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: grid;
+    place-items: center;
+    z-index: 100;
+    padding: 24px;
+    animation: scrimFade 120ms ease;
+}
+
+@keyframes scrimFade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.modal {
+    width: min(720px, 100%);
+    max-height: calc(100vh - 48px);
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 14px;
+    box-shadow: var(--h18-shadow-lg, var(--h18-shadow));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modalRise 160ms ease;
+    font-family: var(--h18-font-sans);
+}
+
+@keyframes modalRise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Header ─────────────────────────────────────────────── */
+.head {
+    flex-shrink: 0;
+    padding: 18px 22px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    border-bottom: 1px solid var(--h18-border-soft);
+}
+
+.eyebrow {
+    font-size: 9px;
+    color: var(--h18-text-faint);
+    letter-spacing: 0.2em;
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+}
+
+.title {
+    font-size: 17px;
+    font-weight: 800;
+    color: var(--h18-text);
+    margin: 4px 0 0;
+    letter-spacing: -0.01em;
+}
+
+.sub {
+    font-size: 12px;
+    color: var(--h18-text-mid);
+    margin-top: 6px;
+    line-height: 1.55;
+}
+
+.close {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid var(--h18-border-soft);
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    font-size: 13px;
+    display: grid;
+    place-items: center;
+    margin-left: auto;
+}
+
+.close:hover:not(:disabled) {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.close:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ─── Body ───────────────────────────────────────────────── */
+.body {
+    flex: 1;
+    overflow: auto;
+    padding: 14px 22px 18px;
+    min-height: 0;
+}
+
+.empty {
+    padding: 32px;
+    text-align: center;
+    color: var(--h18-text-dim);
+    font-size: 12px;
+}
+
+/* ─── Section ────────────────────────────────────────────── */
+.section {
+    margin-top: 10px;
+}
+
+.section:first-child {
+    margin-top: 0;
+}
+
+.sectionHead {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+    text-transform: uppercase;
+    margin: 16px 0 8px;
+}
+
+.sectionHeadMuted {
+    color: var(--h18-text-faint);
+}
+
+.sectionBody {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* ─── Row ────────────────────────────────────────────────── */
+.row {
+    border: 1px solid var(--h18-border-soft);
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    padding: 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    min-width: 0;
+    transition: border-color 120ms ease, background 120ms ease;
+}
+
+.rowDecided {
+    border-color: color-mix(in srgb, var(--h18-accent) 40%, var(--h18-border-soft));
+    background: color-mix(in srgb, var(--h18-accent) 5%, var(--h18-surface));
+}
+
+.rowDone {
+    background: var(--h18-surface);
+    opacity: 0.7;
+}
+
+.rowIgnored {
+    background: var(--h18-surface);
+    opacity: 0.65;
+}
+
+.rowMain {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.rowTitle {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--h18-text);
+    line-height: 1.4;
+    word-break: break-word;
+}
+
+.rowMeta {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.rowMeta strong {
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
+.donePill {
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 9px;
+    padding: 3px 8px;
+    background: color-mix(in srgb, var(--h18-accent) 18%, transparent);
+    color: var(--h18-accent);
+    border-radius: 4px;
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+    letter-spacing: 0.08em;
+}
+
+.unignoreBtn {
+    flex-shrink: 0;
+    align-self: center;
+    padding: 4px 10px;
+    font-size: 10.5px;
+    background: transparent;
+    border: 1px solid var(--h18-border);
+    color: var(--h18-text-mid);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.unignoreBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+/* ─── Row action area ────────────────────────────────────── */
+.rowAction {
+    flex-shrink: 0;
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+@media (max-width: 720px) {
+    .row {
+        flex-direction: column;
+    }
+    .rowAction {
+        width: 100%;
+    }
+}
+
+.actionTabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+}
+
+.actionTab {
+    padding: 6px 4px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    font-size: 10.5px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.02em;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    white-space: nowrap;
+}
+
+.actionTab:hover:not(:disabled) {
+    color: var(--h18-text);
+    border-color: var(--h18-text-dim);
+}
+
+.actionTab:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.actionTabActive {
+    background: var(--h18-accent);
+    color: #fff;
+    border-color: var(--h18-accent);
+}
+
+.actionTabActive:hover {
+    background: var(--h18-accent);
+    color: #fff;
+    border-color: var(--h18-accent);
+}
+
+.select,
+.input {
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: 6px;
+    border: 1px solid var(--h18-border);
+    background: var(--h18-bg);
+    color: var(--h18-text);
+    font-size: 12px;
+    font-family: var(--h18-font-sans);
+    outline: none;
+    box-sizing: border-box;
+}
+
+.select:focus,
+.input:focus {
+    border-color: var(--h18-accent);
+}
+
+.actionHint {
+    font-size: 10.5px;
+    color: var(--h18-text-faint);
+    line-height: 1.5;
+    padding: 2px 4px;
+}
+
+/* ─── Footer ─────────────────────────────────────────────── */
+.foot {
+    flex-shrink: 0;
+    padding: 12px 22px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-top: 1px solid var(--h18-border-soft);
+    background: var(--h18-surface2);
+}
+
+.footSummary {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+
+.footHint {
+    font-size: 11px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+}
+
+.errorText {
+    font-size: 11px;
+    color: var(--h18-hot);
+    margin-left: 4px;
+}
+
+.chip {
+    font-size: 10px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.chipAccent {
+    background: color-mix(in srgb, var(--h18-accent) 16%, transparent);
+    color: var(--h18-accent);
+}
+
+.chipMuted {
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-dim);
+}
+
+.footActions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.btnGhost {
+    padding: 7px 14px;
+    background: transparent;
+    border: 1px solid var(--h18-border);
+    color: var(--h18-text-mid);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: inherit;
+    letter-spacing: 0.04em;
+}
+
+.btnGhost:hover:not(:disabled) {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.btnGhost:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btnPrimary {
+    padding: 7px 18px;
+    background: var(--h18-accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    font-family: inherit;
+}
+
+.btnPrimary:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.btnPrimary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

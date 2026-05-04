@@ -1,0 +1,64 @@
+/* ============================================================
+ * DraggableAIFab · v0.7.0 H18
+ *
+ * 浮動 AI 助教 button，可拖拽、吸附左右邊緣。
+ * Position persisted to localStorage.
+ * ============================================================ */
+
+.fab {
+    position: absolute;
+    z-index: 30;
+    width: 44px;
+    height: 44px;
+    border-radius: 22px;
+    cursor: grab;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    font-size: 18px;
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    box-shadow: var(--h18-shadow);
+    display: grid;
+    place-items: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+}
+
+/* During drag: no transition, faster feedback. */
+.fabDragging {
+    cursor: grabbing;
+    transition: none !important;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+    transform: scale(1.05);
+}
+
+/* When idle (snapped): smooth spring-snap + hover */
+.fabIdle {
+    transition:
+        left 280ms var(--h18-ease-spring),
+        right 280ms var(--h18-ease-spring),
+        top 280ms var(--h18-ease-spring),
+        transform 100ms var(--h18-ease-spring),
+        filter 140ms,
+        box-shadow 200ms;
+}
+
+.fabIdle:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.1);
+}
+
+/* Snap-edge hint: subtle glow on the side it'll snap to during drag */
+.snapPreviewLeft {
+    box-shadow:
+        -3px 0 0 0 var(--h18-accent),
+        0 12px 28px rgba(0, 0, 0, 0.35);
+}
+
+.snapPreviewRight {
+    box-shadow:
+        3px 0 0 0 var(--h18-accent),
+        0 12px 28px rgba(0, 0, 0, 0.35);
+}

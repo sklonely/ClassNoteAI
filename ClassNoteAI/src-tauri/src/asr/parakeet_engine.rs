@@ -310,3 +310,31 @@ where
 {
     engine_lock().end_session(session_id, emit)
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// cp75.24 — test-only state seams for the variant-switch guard.
+//
+// `parakeet_load_model` (in lib.rs) refuses model swaps while a session
+// is live. The guard checks `has_session()`, which under the hood reads
+// `engine.active.is_some()`. Setting `active` from a test normally
+// requires `start_session`, which needs a real model loaded — too heavy
+// for a unit test (the `.gguf` file isn't available to CI test workers).
+//
+// These compiled-only-under-`cfg(test)` helpers let the lib.rs tests
+// flip the session flag directly and verify the guard's branch
+// behaviour without touching any inference machinery.
+// ─────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+pub fn _test_force_session_active(active: bool) {
+    let mut engine = engine_lock();
+    if active {
+        engine.active = Some(ActiveSession {
+            id: "__test_session__".to_string(),
+            started_at: Instant::now(),
+            pcm_buffer: Vec::new(),
+            samples_processed: 0,
+        });
+    } else {
+        engine.active = None;
+    }
+}

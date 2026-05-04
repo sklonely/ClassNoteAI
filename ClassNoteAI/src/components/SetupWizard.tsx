@@ -44,11 +44,38 @@ type WizardStep =
     | 'ai-provider'   // v0.5.2: pick GitHub Models vs ChatGPT (or skip)
     | 'ai-config'     // v0.5.2: configure the chosen provider (PAT / OAuth)
     | 'recording-consent'
+    | 'canvas-integration' // v0.7.x: optional Canvas LMS calendar integration
     | 'checking'
     | 'gpu-check'     // v0.6.1: detect NVIDIA/Vulkan/Metal + save preference
     | 'review'
     | 'installing'
     | 'complete';
+
+/**
+ * cp75.23 — extracted out of the inline IIFE in the JSX so tests can pin
+ * the contract. The list drives the dot indicator at the top of the
+ * wizard; `'ai-config'` is intentionally absent because the user
+ * experience is "one thing" (configure an LLM) split across two screens
+ * for viewport reasons (collapsed onto the `'ai-provider'` dot).
+ *
+ * Finding 6.2 fix: `'canvas-integration'` was missing here, so when the
+ * wizard rendered that step the indicator showed no active dot and the
+ * `done` colouring on later dots mis-aligned. Slotted between
+ * `'recording-consent'` and `'checking'` to match the runtime flow:
+ *   recording-consent → canvas-integration → checkRequirements()
+ *                                            └─ setStep('checking')
+ */
+export const SETUP_VISUAL_STEPS: WizardStep[] = [
+    'welcome',
+    'language',
+    'ai-provider',
+    'recording-consent',
+    'canvas-integration',
+    'checking',
+    'review',
+    'installing',
+    'complete',
+];
 
 interface DriverHint {
     severity: string;
@@ -94,6 +121,12 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     // v0.6.1: GPU backend detection state for the `gpu-check` step.
     const [gpuDetection, setGpuDetection] = useState<GpuDetection | null>(null);
 
+    // v0.7.x: Canvas Calendar RSS URL captured on the optional
+    // `canvas-integration` step. Saved into AppSettings on transition.
+    const [canvasCalendarRssDraft, setCanvasCalendarRssDraft] = useState('');
+    const [canvasIntegrationError, setCanvasIntegrationError] = useState<string | null>(null);
+    const [canvasIntegrationBusy, setCanvasIntegrationBusy] = useState(false);
+
     // Check requirements when entering checking step. v0.6.1: after
     // the env check we insert `gpu-check` so users see their hardware
     // story (CUDA / Vulkan / Metal / CPU) before committing to a
@@ -120,14 +153,14 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 /* detection unavailable — step still renders a CPU fallback notice */
             }
 
-            // If everything is already installed, skip past review
-            // but still show the GPU summary so the user knows what
-            // backend they're on.
-            if (setupStatus.is_complete) {
-                setStep('gpu-check');
-            } else {
-                setStep('gpu-check');
-            }
+            // cp75.23 — was dead conditional, intent was lost; collapsed.
+            // Both branches set `gpu-check`. The branching logic that
+            // routes "complete → skip review, incomplete → show review"
+            // already lives in continueFromGpuCheck (which inspects
+            // status.is_complete to decide between 'complete' and
+            // 'review'), so the gpu-check step is the correct shared
+            // landing pad regardless.
+            setStep('gpu-check');
         } catch (err) {
             setError(`環境檢查失敗: ${err}`);
             setStep('review');
@@ -586,12 +619,223 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                             return;
                         }
                         await consentService.acknowledgeRecordingConsent();
-                        await checkRequirements();
+                        setStep('canvas-integration');
                     }}
                 >
                     繼續 <ArrowRight className="w-5 h-5" />
                 </button>
             </div>
+        </div>
+    );
+
+    // v0.7.x: Render Canvas integration step (optional)
+    //
+    // cp75.26 P1-E — rollback the Canvas URL save when checkRequirements
+    // throws AFTER the save committed. Without rollback, the URL stays
+    // persisted but the wizard is stuck on the same step with no clear
+    // recovery (the user retries → second save layered on top, no signal
+    // that the previous attempt half-succeeded).
+    //
+    // Rollback strategy: snapshot the prior AppSettings BEFORE the save.
+    // On any post-save failure, write the snapshot back. We also surface
+    // a toast so the user sees something happened — the inline error box
+    // alone is easy to miss when the wizard transitions states quickly.
+    const saveCanvasCalendarRssAndContinue = async (skipped: boolean) => {
+        setCanvasIntegrationBusy(true);
+        setCanvasIntegrationError(null);
+
+        // Snapshot prior settings up-front so the catch path can rollback
+        // even if `storageService` lazy-import or `getAppSettings()` is
+        // the thing that throws. `null` is a valid snapshot (means: no
+        // settings existed before this attempt — rollback path will
+        // delete-by-saving-default if we ever need it; for now we just
+        // skip the rollback write in that branch since nothing was
+        // committed to overwrite).
+        let original: Awaited<
+            ReturnType<typeof import('../services/storageService').storageService.getAppSettings>
+        > | null = null;
+        let didSave = false;
+        let storageServiceRef:
+            | typeof import('../services/storageService').storageService
+            | null = null;
+
+        try {
+            if (!skipped && canvasCalendarRssDraft.trim()) {
+                // Save URL into AppSettings.integrations.canvas.calendar_rss
+                const { storageService } = await import('../services/storageService');
+                storageServiceRef = storageService;
+                original = await storageService.getAppSettings();
+
+                const cur = original || {
+                    server: { url: '', port: 0, enabled: false },
+                    audio: { sample_rate: 48000, chunk_duration: 5 },
+                    subtitle: {
+                        font_size: 16,
+                        font_color: '#fff',
+                        background_opacity: 0.6,
+                        position: 'bottom',
+                        display_mode: 'en',
+                    },
+                    theme: 'light',
+                };
+                const next = {
+                    ...cur,
+                    integrations: {
+                        ...(cur.integrations || {}),
+                        canvas: {
+                            ...(cur.integrations?.canvas || {}),
+                            calendar_rss: canvasCalendarRssDraft.trim(),
+                        },
+                    },
+                };
+                await storageService.saveAppSettings(next as any);
+                didSave = true;
+                window.dispatchEvent(new CustomEvent('classnote-settings-changed'));
+            }
+            await checkRequirements();
+        } catch (err) {
+            console.error('[SetupWizard] save canvas integration failed:', err);
+
+            // cp75.26 — rollback the URL save so the user can retry without
+            // leaving stale Canvas state in DB. Only attempt rollback if
+            // (a) we actually committed a save AND (b) we have a snapshot
+            // of prior settings (original !== null). Inner try/catch so a
+            // rollback failure doesn't mask the original error.
+            if (didSave && original && storageServiceRef) {
+                try {
+                    await storageServiceRef.saveAppSettings(original as any);
+                    window.dispatchEvent(
+                        new CustomEvent('classnote-settings-changed'),
+                    );
+                } catch (rollbackErr) {
+                    console.warn(
+                        '[SetupWizard] Canvas URL rollback failed:',
+                        rollbackErr,
+                    );
+                }
+            }
+
+            // Surface a toast on top of the inline error box. Lazy-import
+            // toastService to keep wizard cold-start light.
+            try {
+                const { toastService } = await import('../services/toastService');
+                toastService.error(
+                    '校曆 / RSS 整合驗證失敗，已還原設定',
+                    String((err as Error)?.message ?? err),
+                );
+            } catch {
+                /* toast unavailable — inline error is the fallback */
+            }
+
+            setCanvasIntegrationError(
+                (err as Error)?.message || '儲存失敗 — 請查看 console。',
+            );
+            setCanvasIntegrationBusy(false);
+        }
+    };
+
+    const renderCanvasIntegration = () => (
+        <div className="setup-step welcome-step">
+            <h2 className="setup-subtitle">整合 Canvas (可選)</h2>
+            <p className="setup-description">
+                如果學校用 Canvas LMS 上課，貼一條 Calendar RSS 進來，
+                ClassNote 會自動把作業到期、考試日期顯示在每堂課的提醒區。
+                <br />
+                這一步可以跳過，之後在「個人頁 → 整合」也能設定。
+            </p>
+
+            <div style={{ marginTop: 18, width: '100%', maxWidth: 480 }}>
+                <label
+                    style={{
+                        fontSize: 11,
+                        letterSpacing: '0.08em',
+                        fontWeight: 700,
+                        color: 'rgba(255,255,255,0.7)',
+                        fontFamily: 'monospace',
+                        textTransform: 'uppercase',
+                        display: 'block',
+                        marginBottom: 6,
+                    }}
+                >
+                    Calendar RSS URL (全域，per-user)
+                </label>
+                <input
+                    type="url"
+                    value={canvasCalendarRssDraft}
+                    onChange={(e) => setCanvasCalendarRssDraft(e.target.value)}
+                    placeholder="https://canvas.example.edu/feeds/calendars/user_xxx.ics"
+                    style={{
+                        width: '100%',
+                        padding: '10px 12px',
+                        borderRadius: 6,
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        background: 'rgba(0,0,0,0.3)',
+                        color: '#fff',
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                        outline: 'none',
+                        boxSizing: 'border-box',
+                    }}
+                />
+                <p
+                    style={{
+                        marginTop: 8,
+                        fontSize: 11,
+                        color: 'rgba(255,255,255,0.55)',
+                        lineHeight: 1.55,
+                    }}
+                >
+                    Canvas 取得方式：登入 Canvas → Calendar 頁面 → 右下角「Calendar Feed」點擊複製連結。
+                    這條 URL 含你帳號底下所有課程的事件，按一次抓就能幫所有課程建提醒。
+                </p>
+                {canvasIntegrationError && (
+                    <div
+                        style={{
+                            marginTop: 10,
+                            padding: '8px 12px',
+                            background: 'rgba(220, 38, 38, 0.15)',
+                            border: '1px solid rgba(220, 38, 38, 0.4)',
+                            borderRadius: 6,
+                            color: '#fca5a5',
+                            fontSize: 12,
+                        }}
+                    >
+                        ⚠ {canvasIntegrationError}
+                    </div>
+                )}
+            </div>
+
+            <div className="setup-actions" style={{ marginTop: 24 }}>
+                <button
+                    className="setup-button"
+                    onClick={() => saveCanvasCalendarRssAndContinue(true)}
+                    disabled={canvasIntegrationBusy}
+                >
+                    略過
+                </button>
+                <button
+                    className="setup-button primary"
+                    onClick={() => saveCanvasCalendarRssAndContinue(false)}
+                    disabled={canvasIntegrationBusy}
+                >
+                    {canvasIntegrationBusy
+                        ? '儲存中…'
+                        : canvasCalendarRssDraft.trim()
+                          ? '儲存並繼續'
+                          : '繼續 (空白)'}
+                    {!canvasIntegrationBusy && <ArrowRight className="w-5 h-5" />}
+                </button>
+            </div>
+
+            <p
+                style={{
+                    marginTop: 18,
+                    fontSize: 10.5,
+                    color: 'rgba(255,255,255,0.5)',
+                }}
+            >
+                跳過了？沒關係 — 之後到「個人頁 → 整合」可隨時設定 + 配對課程。
+            </p>
         </div>
     );
 
@@ -963,16 +1207,16 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
     return (
         <div className="setup-wizard">
             <div className="setup-container">
-                {/* Progress indicator — the two ai-* steps share a single
-                    dot since the user experience is "one thing" (configure
-                    an LLM) split across two screens for viewport reasons. */}
+                {/* Progress indicator — driven by SETUP_VISUAL_STEPS
+                    (cp75.23). The two ai-* steps share a single dot since
+                    the user experience is "one thing" (configure an LLM)
+                    split across two screens for viewport reasons. */}
                 {(() => {
-                    const visualSteps: WizardStep[] = ['welcome', 'language', 'ai-provider', 'recording-consent', 'checking', 'review', 'installing', 'complete'];
                     const normalisedStep: WizardStep = step === 'ai-config' ? 'ai-provider' : step;
-                    const currentIdx = visualSteps.indexOf(normalisedStep);
+                    const currentIdx = SETUP_VISUAL_STEPS.indexOf(normalisedStep);
                     return (
                         <div className="step-indicator">
-                            {visualSteps.map((s, i) => (
+                            {SETUP_VISUAL_STEPS.map((s, i) => (
                                 <div
                                     key={s}
                                     className={`step-dot ${s === normalisedStep ? 'active' : currentIdx > i ? 'done' : ''}`}
@@ -988,6 +1232,7 @@ export default function SetupWizard({ onComplete }: SetupWizardProps) {
                 {step === 'ai-provider' && renderAIProvider()}
                 {step === 'ai-config' && renderAIConfig()}
                 {step === 'recording-consent' && renderRecordingConsent()}
+                {step === 'canvas-integration' && renderCanvasIntegration()}
                 {step === 'checking' && renderChecking()}
                 {step === 'gpu-check' && renderGpuCheck()}
                 {step === 'review' && renderReview()}

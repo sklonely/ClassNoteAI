@@ -140,7 +140,14 @@ export class AudioRecorder {
 
         if (!this._deviceFallbackWarned) {
           this._deviceFallbackWarned = true;
-          toastService.warning('原本選擇的麥克風已不可用，已自動切換到系統預設麥克風。');
+          toastService.warning(
+            '原本選擇的麥克風已不可用，已自動切換到系統預設麥克風。',
+            undefined,
+            {
+              navRequest: { kind: 'profile', tab: 'audio' },
+              label: '改選麥克風',
+            },
+          );
         }
 
         try {

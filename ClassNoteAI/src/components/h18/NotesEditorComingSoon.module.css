@@ -1,0 +1,187 @@
+/* ============================================================
+ * NotesEditorComingSoon · v0.7.0
+ * 知識庫頁面 placeholder — blurred preview + Coming Soon overlay
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-bg);
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    font-family: var(--h18-font-sans);
+}
+
+/* Top bar — keep simple back nav so user can leave */
+.topbar {
+    flex-shrink: 0;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    position: relative;
+    z-index: 5;
+}
+
+.backBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.backBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.crumbCourse {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+}
+
+.crumbContext {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border: 1px solid var(--h18-border);
+    border-radius: 4px;
+}
+
+/* Main area — blurred preview behind overlay */
+.body {
+    flex: 1;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    position: relative;
+    min-height: 0;
+}
+
+/* The blurred preview = the original doc layout, but heavy blur + lower opacity */
+.blurredPreview {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    filter: blur(14px) saturate(1.1);
+    -webkit-filter: blur(14px) saturate(1.1);
+    opacity: 0.55;
+    transform: scale(1.05); /* hide blur edges */
+    pointer-events: none;
+    user-select: none;
+}
+
+.blurredPreview > * {
+    pointer-events: none;
+}
+
+/* Soft scrim on top of blur for legibility */
+.scrim {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--h18-bg) 30%, transparent) 0%,
+        color-mix(in srgb, var(--h18-bg) 65%, transparent) 50%,
+        color-mix(in srgb, var(--h18-bg) 80%, transparent) 100%
+    );
+    pointer-events: none;
+}
+
+/* Overlay card */
+.overlay {
+    position: relative;
+    z-index: 2;
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: 16px;
+    padding: 36px 44px;
+    box-shadow: var(--h18-shadow);
+    text-align: center;
+    max-width: 460px;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.32em;
+    color: var(--h18-accent);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin-bottom: 14px;
+}
+
+.title {
+    font-size: 36px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.02em;
+    margin: 0;
+    line-height: 1.05;
+    font-family: var(--h18-font-serif, var(--h18-font-sans));
+}
+
+.titleSub {
+    font-size: 14px;
+    color: var(--h18-text-mid);
+    margin-top: 6px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+}
+
+.body Text {
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    margin-top: 16px;
+    line-height: 1.7;
+}
+
+.descLine {
+    font-size: 13px;
+    color: var(--h18-text-mid);
+    margin-top: 16px;
+    line-height: 1.7;
+}
+
+.featurePills {
+    margin-top: 18px;
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.featurePill {
+    font-size: 11px;
+    padding: 4px 10px;
+    background: var(--h18-chip-bg);
+    color: var(--h18-text-mid);
+    border-radius: 999px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+}
+
+.versionTag {
+    margin-top: 18px;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+}

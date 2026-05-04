@@ -1,0 +1,280 @@
+/* ============================================================
+ * H18 ToastContainer · v0.7.0
+ *
+ * 右下角，AI fab (right:20 bottom:20 size:44) 之上 → bottom: 80
+ * 320px (card) 或 360px (typewriter) 寬，Stack 由上往下
+ * ============================================================ */
+
+.container {
+  position: fixed;
+  right: 20px;
+  bottom: 80px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  font-family: var(--h18-font-sans);
+}
+
+/* ─── Card (預設) 樣式 ─────────────────────────────────────── */
+.toastCard {
+  pointer-events: auto;
+  width: 320px;
+  background: var(--h18-surface);
+  border: 1px solid var(--h18-border);
+  border-radius: 8px;
+  box-shadow: var(--h18-shadow);
+  display: flex;
+  overflow: hidden;
+  position: relative;
+  animation: toastEnter 280ms var(--h18-ease-spring);
+}
+
+.stripe {
+  width: 3px;
+  flex-shrink: 0;
+}
+
+/* type-aware stripe / icon / bar 顏色 */
+.typeSuccess .stripe,
+.typeSuccess .iconCard,
+.typeSuccess .barFill { background: #1f7a4f; }
+.typeError .stripe,
+.typeError .iconCard,
+.typeError .barFill { background: #9e3a24; }
+.typeWarning .stripe,
+.typeWarning .iconCard,
+.typeWarning .barFill { background: var(--h18-hot); }
+.typeInfo .stripe,
+.typeInfo .iconCard,
+.typeInfo .barFill { background: var(--h18-text-mid); }
+
+.typeSuccess .iconCard { color: #1f7a4f; background: transparent; }
+.typeError .iconCard { color: #9e3a24; background: transparent; }
+.typeWarning .iconCard { color: var(--h18-hot); background: transparent; }
+.typeInfo .iconCard { color: var(--h18-text-mid); background: transparent; }
+
+:root.dark .typeSuccess .stripe,
+:root.dark .typeSuccess .barFill { background: #5bd49a; }
+:root.dark .typeError .stripe,
+:root.dark .typeError .barFill { background: #ff8b6b; }
+:root.dark .typeSuccess .iconCard { color: #5bd49a; }
+:root.dark .typeError .iconCard { color: #ff8b6b; }
+
+.bodyCard {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 12px 12px 14px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.iconCard {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin-top: 1px;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-family: var(--h18-font-mono);
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+}
+
+.message {
+  font-size: 13px;
+  color: var(--h18-text);
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+}
+
+.detail {
+  font-size: 11px;
+  color: var(--h18-text-dim);
+  margin-top: 3px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dismiss {
+  background: transparent;
+  border: none;
+  color: var(--h18-text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px;
+  margin: -2px -4px -2px 0;
+  line-height: 1;
+  flex-shrink: 0;
+  font-family: inherit;
+  transition: color 120ms;
+}
+
+.dismiss:hover {
+  color: var(--h18-text-mid);
+}
+
+/* ─── Countdown bar (兩 style 共用) ──────────────────────── */
+.bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--h18-border-soft);
+  overflow: hidden;
+}
+
+.barFill {
+  width: 100%;
+  height: 100%;
+  transform-origin: left;
+  opacity: 0.85;
+  animation: toastBar linear forwards;
+}
+
+.barSticky {
+  animation: none !important;
+  opacity: 0.35 !important;
+}
+
+@keyframes toastBar {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+/* ─── Typewriter style (復古 mono 終端機風) ────────────── */
+.toastTypewriter {
+  pointer-events: auto;
+  width: 360px;
+  background: var(--h18-surface2);
+  border: 1px solid var(--h18-border);
+  border-radius: 4px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6),
+              0 3px 10px rgba(0, 0, 0, 0.08);
+  font-family: var(--h18-font-mono);
+  padding: 10px 14px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  position: relative;
+  overflow: hidden;
+  animation: toastEnter 280ms var(--h18-ease-spring);
+}
+
+:root.dark .toastTypewriter {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04),
+              0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
+.iconTypewriter {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.typeSuccess .iconTypewriter { color: #1f7a4f; }
+.typeError .iconTypewriter { color: #9e3a24; }
+.typeWarning .iconTypewriter { color: var(--h18-hot); }
+.typeInfo .iconTypewriter { color: var(--h18-text-mid); }
+
+:root.dark .typeSuccess .iconTypewriter { color: #5bd49a; }
+:root.dark .typeError .iconTypewriter { color: #ff8b6b; }
+
+.bodyTypewriter {
+  flex: 1;
+  min-width: 0;
+}
+
+.lineTypewriter {
+  font-size: 12px;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.timestamp {
+  color: var(--h18-text-dim);
+  margin-right: 8px;
+}
+
+.messageTypewriter {
+  color: var(--h18-text);
+  font-weight: 600;
+}
+
+.detailTypewriter {
+  font-size: 11px;
+  color: var(--h18-text-dim);
+  margin-top: 3px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.detailArrow {
+  color: var(--h18-text-faint);
+  margin-right: 8px;
+}
+
+/* ─── Actionable (clickable) toast ─────────────────────────── */
+.toastCardActionable {
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.toastCardActionable:hover {
+  border-color: color-mix(in srgb, var(--h18-accent) 50%, var(--h18-border));
+  transform: translateX(-2px);
+}
+
+.toastCardActionable:focus-visible {
+  outline: 2px solid var(--h18-accent);
+  outline-offset: 2px;
+}
+
+.actionLine {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--h18-accent);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-family: var(--h18-font-mono);
+}
+
+.actionLabel {
+  white-space: nowrap;
+}
+
+.actionArrow {
+  font-size: 12px;
+  transition: transform 120ms ease;
+}
+
+.toastCardActionable:hover .actionArrow {
+  transform: translateX(3px);
+}
+
+/* ─── Entry animation ──────────────────────────────────────── */
+@keyframes toastEnter {
+  from { transform: translateX(20px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}

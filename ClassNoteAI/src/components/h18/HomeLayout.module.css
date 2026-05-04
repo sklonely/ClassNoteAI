@@ -1,0 +1,148 @@
+/* ============================================================
+ * HomeLayout · v0.7.0 Phase 6.2 — variant A
+ *
+ * 對應 docs/design/h18-deep/h18-app.jsx HomeLayout (variant A 預設)。
+ * 兩欄：
+ *   左欄 1fr (上 280px Calendar / 下 Inbox)
+ *   右欄 380px Preview
+ * ============================================================ */
+
+.home {
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    gap: 1px;
+    background: var(--h18-border);
+    overflow: hidden;
+    flex: 1;
+    min-height: 0;
+}
+
+.leftCol {
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-surface);
+    overflow: hidden;
+    min-height: 0;
+}
+
+.calendarSlot {
+    height: 280px;
+    padding: 12px;
+    border-bottom: 1px solid var(--h18-border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.calendarHead {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-family: var(--h18-font-sans);
+    flex-shrink: 0;
+}
+
+.calendarTitle {
+    font-size: 11px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+}
+
+.calendarSubtitle {
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+}
+
+.inboxSlot {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ─── Variant B: Inbox 滿版 + 右 Today/Preview ──────────────── */
+.homeB {
+    grid-template-columns: 1fr 420px;
+}
+
+.inboxFull {
+    background: var(--h18-surface);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+}
+
+.rightCol {
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-surface);
+    overflow: hidden;
+    min-height: 0;
+    min-width: 0;
+}
+
+.todaySlot {
+    height: 260px;
+    padding: 12px;
+    border-bottom: 1px solid var(--h18-border);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    min-height: 0;
+    box-sizing: border-box;
+}
+
+.previewSlot {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ─── Variant C: 大週曆 + 右 Inbox ───────────────────────── */
+.homeC {
+    grid-template-columns: 1fr 440px;
+}
+
+.bigCalSlot {
+    background: var(--h18-surface);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+    min-width: 0;
+    min-height: 0;
+}
+
+.bigCalHead {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+}
+
+.bigCalTitle {
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.02em;
+}
+
+.inboxSide {
+    background: var(--h18-surface);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+}

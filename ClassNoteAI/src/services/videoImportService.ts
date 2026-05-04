@@ -65,6 +65,7 @@ function subtitleFromEvent(
         timestamp: baseSec + event.audioStartSec,
         text_en: event.textEn,
         type: 'rough',
+        source: 'imported',
         confidence: undefined,
         speaker_role: event.speakerRole,
         speaker_id: event.speakerId,

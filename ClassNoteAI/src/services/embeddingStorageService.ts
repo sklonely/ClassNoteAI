@@ -114,8 +114,12 @@ class EmbeddingStorageService {
             try {
                 const records = JSON.parse(raw) as EmbeddingRecord[];
                 if (Array.isArray(records) && records.length) {
+                    // cp75.34 — userId for the Rust-side per-batch
+                    // lecture-ownership verify.
+                    const userId = authService.getUser()?.username || 'default_user';
                     await invoke('save_embeddings', {
                         inputs: records.map(toBackend),
+                        userId,
                     });
                 }
                 localStorage.removeItem(key);
@@ -137,7 +141,9 @@ class EmbeddingStorageService {
             pageNumber: chunk.pageNumber,
             createdAt: new Date().toISOString(),
         };
-        await invoke('save_embedding', { input: toBackend(record) });
+        // cp75.34 — userId for the Rust-side lecture-ownership verify.
+        const userId = authService.getUser()?.username || 'default_user';
+        await invoke('save_embedding', { input: toBackend(record), userId });
     }
 
     public async storeEmbeddings(chunks: TextChunk[], embeddings: number[][]): Promise<void> {
@@ -159,7 +165,10 @@ class EmbeddingStorageService {
                 createdAt: now,
             })
         );
-        await invoke('save_embeddings', { inputs });
+        // cp75.34 — userId for the Rust-side per-batch
+        // lecture-ownership verify.
+        const userId = authService.getUser()?.username || 'default_user';
+        await invoke('save_embeddings', { inputs, userId });
     }
 
     /**
@@ -193,7 +202,9 @@ class EmbeddingStorageService {
                 createdAt: now,
             })
         );
-        await invoke('replace_embeddings_for_lecture', { lectureId, inputs });
+        // cp75.34 — userId for the Rust-side lecture-ownership verify.
+        const userId = authService.getUser()?.username || 'default_user';
+        await invoke('replace_embeddings_for_lecture', { lectureId, inputs, userId });
     }
 
     public async getEmbeddingsByLecture(lectureId: string): Promise<EmbeddingRecord[]> {
@@ -258,7 +269,9 @@ class EmbeddingStorageService {
     }
 
     public async deleteByLecture(lectureId: string): Promise<void> {
-        await invoke('delete_embeddings_by_lecture', { lectureId });
+        // cp75.34 — userId for the Rust-side lecture-ownership verify.
+        const userId = authService.getUser()?.username || 'default_user';
+        await invoke('delete_embeddings_by_lecture', { lectureId, userId });
         localStorage.removeItem(`${LEGACY_PREFIX}${lectureId}`);
     }
 

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { offlineQueueService } from './offlineQueueService';
+import { offlineQueueService, _setAuthFacade } from './offlineQueueService';
 
 export interface User {
     username: string;
@@ -17,6 +17,13 @@ class AuthService {
     constructor() {
         this.loadUser();
         this.registerProcessors();
+        // cp75.34 — hand offlineQueueService a facade it can call back
+        // into for the current user_id. We use setter-injection (not
+        // a static import inside offlineQueueService) because that
+        // module is loaded BEFORE this constructor runs (it's at the
+        // top of authService's import list above), so the static
+        // binding wouldn't exist yet.
+        _setAuthFacade({ getUser: () => this.currentUser });
     }
 
     private registerProcessors(): void {
@@ -81,6 +88,20 @@ class AuthService {
 
     public getUser(): User | null {
         return this.currentUser;
+    }
+
+    /**
+     * Stable user-id segment for use as a localStorage / DB key prefix.
+     * Returns the logged-in username when available, falling back to
+     * `'default_user'` for the unauthenticated boot window. Service-level
+     * stores (inbox / exam marks / notes / AI history / keyStore) call
+     * this from non-React code paths where `useAuth()` isn't usable.
+     *
+     * cp75.3 (Phase 7 §8.4 V5) — wires actual multi-user isolation that
+     * the v8 schema migration prepared for in cp73.0.
+     */
+    public getUserIdSegment(): string {
+        return this.currentUser?.username || 'default_user';
     }
 
     public async register(username: string, serverUrl?: string): Promise<void> {

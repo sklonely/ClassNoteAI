@@ -15,6 +15,11 @@
     "core:window:allow-set-size",
     "core:window:allow-inner-size",
     "core:window:allow-scale-factor",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
     "opener:default",
     "dialog:default",
     "process:default",
@@ -35,30 +40,21 @@
     {
       "identifier": "http:allow-fetch",
       "allow": [
-        {
-          "url": "http://*"
-        },
-        {
-          "url": "https://*"
-        },
-        {
-          "url": "http://*:*"
-        },
-        {
-          "url": "https://*:*"
-        },
-        {
-          "url": "http://*:*/**"
-        },
-        {
-          "url": "https://*:*/**"
-        },
-        {
-          "url": "http://**"
-        },
-        {
-          "url": "https://**"
-        }
+        { "url": "https://api.anthropic.com/**" },
+        { "url": "https://api.openai.com/**" },
+        { "url": "https://auth.openai.com/**" },
+        { "url": "https://chatgpt.com/**" },
+        { "url": "https://generativelanguage.googleapis.com/**" },
+        { "url": "https://oauth2.googleapis.com/**" },
+        { "url": "https://api.groq.com/**" },
+        { "url": "https://api.deepseek.com/**" },
+        { "url": "https://models.github.ai/**" },
+        { "url": "https://github.com/sklonely/ClassNoteAI/**" },
+        { "url": "https://huggingface.co/**" },
+        { "url": "https://*.huggingface.co/**" },
+        { "url": "https://*.instructure.com/**" },
+        { "url": "http://localhost:*/**" },
+        { "url": "http://127.0.0.1:*/**" }
       ]
     }
   ]

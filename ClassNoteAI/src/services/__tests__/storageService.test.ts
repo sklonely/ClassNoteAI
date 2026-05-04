@@ -50,7 +50,11 @@ describe('StorageService', () => {
 
             await storageService.saveCourse(mockCourse);
 
-            expect(invoke).toHaveBeenCalledWith('save_course', { course: mockCourse });
+            // cp75.34 — userId tagged for the Rust-side ownership verify.
+            expect(invoke).toHaveBeenCalledWith('save_course', {
+                course: mockCourse,
+                userId: 'test_user',
+            });
         });
 
         it('should get course by id', async () => {
@@ -122,7 +126,10 @@ describe('StorageService', () => {
 
             await storageService.deleteCourse('course-1');
 
-            expect(invoke).toHaveBeenCalledWith('delete_course', { id: 'course-1' });
+            expect(invoke).toHaveBeenCalledWith('delete_course', {
+                id: 'course-1',
+                userId: 'test_user',
+            });
         });
     });
 
@@ -261,9 +268,11 @@ describe('StorageService', () => {
 
             await storageService.updateLectureStatus('lecture-1', 'completed');
 
+            // cp75.34 — userId tagged for the Rust-side ownership verify.
             expect(invoke).toHaveBeenCalledWith('update_lecture_status', {
                 id: 'lecture-1',
                 status: 'completed',
+                userId: 'test_user',
             });
         });
     });
@@ -286,7 +295,11 @@ describe('StorageService', () => {
 
             await storageService.saveSubtitle(mockSubtitle);
 
-            expect(invoke).toHaveBeenCalledWith('save_subtitle', { subtitle: mockSubtitle });
+            // cp75.21 — userId tagged for ownership verify on the Rust side.
+            expect(invoke).toHaveBeenCalledWith('save_subtitle', {
+                subtitle: mockSubtitle,
+                userId: 'test_user',
+            });
         });
 
         it('should get subtitles for lecture', async () => {
@@ -333,7 +346,23 @@ describe('StorageService', () => {
 
             await storageService.saveSubtitles(subtitles);
 
-            expect(invoke).toHaveBeenCalledWith('save_subtitles', { subtitles });
+            // cp75.21 — userId tagged for ownership verify on the Rust side.
+            expect(invoke).toHaveBeenCalledWith('save_subtitles', {
+                subtitles,
+                userId: 'test_user',
+            });
+        });
+
+        // ===== cp75.21 — Cross-user write protection on subtitles =====
+        it('deleteSubtitle passes userId from authService (cp75.21)', async () => {
+            setMockInvokeResult('delete_subtitle', undefined);
+
+            await storageService.deleteSubtitle('sub-1');
+
+            expect(invoke).toHaveBeenCalledWith('delete_subtitle', {
+                id: 'sub-1',
+                userId: 'test_user',
+            });
         });
     });
 
@@ -444,7 +473,12 @@ describe('StorageService', () => {
 
             await storageService.saveSetting('theme', 'dark');
 
-            expect(invoke).toHaveBeenCalledWith('save_setting', { key: 'theme', value: 'dark' });
+            // cp75.3: invoke now carries userId for per-user isolation.
+            expect(invoke).toHaveBeenCalledWith('save_setting', {
+                key: 'theme',
+                value: 'dark',
+                userId: 'test_user',
+            });
         });
 
         it('should get setting', async () => {
@@ -452,7 +486,10 @@ describe('StorageService', () => {
 
             const result = await storageService.getSetting('theme');
 
-            expect(invoke).toHaveBeenCalledWith('get_setting', { key: 'theme' });
+            expect(invoke).toHaveBeenCalledWith('get_setting', {
+                key: 'theme',
+                userId: 'test_user',
+            });
             expect(result).toBe('dark');
         });
 
@@ -478,7 +515,10 @@ describe('StorageService', () => {
 
             const result = await storageService.getAppSettings();
 
-            expect(invoke).toHaveBeenCalledWith('get_setting', { key: 'app_settings' });
+            expect(invoke).toHaveBeenCalledWith('get_setting', {
+                key: 'app_settings',
+                userId: 'test_user',
+            });
             expect(result?.ocr?.mode).toBe('off');
             expect(result?.experimental?.refineProvider).toBe('auto');
             expect('ollama' in ((result ?? {}) as Record<string, unknown>)).toBe(false);
@@ -504,7 +544,16 @@ describe('StorageService', () => {
                     ...baseAppSettings,
                     ocr: { mode: 'off' },
                     experimental: { refineProvider: 'auto' },
+                    // v0.7.0 H18: normalize 自動填 appearance default
+                    appearance: {
+                        themeMode: 'light',
+                        density: 'comfortable',
+                        fontSize: 'normal',
+                        layout: 'A',
+                        toastStyle: 'card',
+                    },
                 }),
+                userId: 'test_user',
             });
         });
     });

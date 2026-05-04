@@ -1,0 +1,50 @@
+/* ============================================================
+ * VideoPiP · v0.7.0 H18 token-pass
+ * 對應 docs/design/h18-deep/extras-video-pip.jsx
+ * ============================================================ */
+
+.shell {
+    position: absolute;
+    z-index: 30;
+    border-radius: 8px;
+    background: #000;
+    overflow: hidden;
+    border: 1px solid var(--h18-border);
+    box-shadow: var(--h18-shadow);
+    width: 360px;
+    font-family: var(--h18-font-sans);
+}
+
+:global(.dark) .shell {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 2px 0 3px;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0.6));
+    color: var(--h18-text-faint);
+    font-size: 10px;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.08em;
+    cursor: grab;
+    user-select: none;
+    transition: color 160ms;
+}
+
+.handle:hover {
+    color: var(--h18-invert-ink);
+}
+
+.handle:active {
+    cursor: grabbing;
+}
+
+.video {
+    width: 100%;
+    display: block;
+    background: #000;
+}

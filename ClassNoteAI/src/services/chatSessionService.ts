@@ -43,8 +43,24 @@ class ChatSessionService {
      */
     public async init(): Promise<void> {
         const user = authService.getUser();
-        this.userId = user?.username || 'default';
+        // cp75.7 — align with the rest of the codebase. Other stores
+        // (storageService.saveCourse, getUserIdSegment, settings keys)
+        // all default to 'default_user'. This service used to default
+        // to 'default' which created an inconsistent partition: chat
+        // sessions saved during the no-auth boot window vanished after
+        // login (queries filter by 'default_user').
+        this.userId = user?.username || 'default_user';
         await this.migrateFromLocalStorage();
+    }
+
+    /**
+     * cp75.5 — drop the cached userId so subsequent calls re-read from
+     * authService. Called by AuthContext.resetUserScopedState() on
+     * logout AND login so a user-switch in the same session doesn't
+     * keep targeting the previous account's chat history.
+     */
+    public resetUserId(): void {
+        this.userId = '';
     }
 
     /**
@@ -81,7 +97,7 @@ class ChatSessionService {
                     isDeleted: false,
                 });
 
-                // Save messages
+                // Save messages (cp75.21: pass userId for ownership verify)
                 for (const msg of session.messages) {
                     await invoke('save_chat_message', {
                         id: msg.id,
@@ -90,6 +106,7 @@ class ChatSessionService {
                         content: msg.content,
                         sources: msg.sources ? JSON.stringify(msg.sources) : null,
                         timestamp: msg.timestamp,
+                        userId: this.userId,
                     });
                 }
             }
@@ -274,7 +291,7 @@ class ChatSessionService {
     public async addMessage(sessionId: string, message: ChatMessage): Promise<void> {
         if (!this.userId) await this.init();
 
-        // Save message
+        // Save message (cp75.21: pass userId for ownership verify)
         await invoke('save_chat_message', {
             id: message.id,
             sessionId: sessionId,
@@ -282,6 +299,7 @@ class ChatSessionService {
             content: message.content,
             sources: message.sources ? JSON.stringify(message.sources) : null,
             timestamp: message.timestamp,
+            userId: this.userId,
         });
 
         // Update session's updatedAt and potentially title

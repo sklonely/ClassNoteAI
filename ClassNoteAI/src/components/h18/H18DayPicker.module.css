@@ -1,0 +1,117 @@
+/* ============================================================
+ * H18DayPicker · Phase 7 Sprint 3 (S3c-1)
+ *
+ * Day picker popover — 跟 H18 design tokens 對齊。z-index 用
+ * `--h18-z-popover` 蓋過 modal 自己的 z-modal（U5）。
+ *
+ * 只用 token、不 hardcode 顏色 / spacing / radius。
+ * ============================================================ */
+
+.picker {
+    background: var(--h18-surface);
+    border: 1px solid var(--h18-border);
+    border-radius: var(--h18-radius-lg);
+    padding: var(--h18-space-4);
+    box-shadow: var(--h18-shadow-md);
+    width: 280px;
+    z-index: var(--h18-z-popover);
+    font-family: var(--h18-font-sans);
+    color: var(--h18-text);
+}
+
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--h18-space-2) var(--h18-space-4);
+}
+
+.navBtn {
+    height: var(--h18-button-height);
+    width: var(--h18-button-height);
+    border: none;
+    background: transparent;
+    color: var(--h18-text-mid);
+    cursor: pointer;
+    border-radius: var(--h18-radius-md);
+    font-size: var(--h18-text-md);
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--h18-duration-fast) var(--h18-ease-out),
+        color var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.navBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.monthLabel {
+    font-family: var(--h18-font-sans);
+    font-size: var(--h18-text-md);
+    font-weight: 600;
+    color: var(--h18-text);
+}
+
+.weekHeader {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    margin-top: var(--h18-space-2);
+}
+
+.weekDay {
+    text-align: center;
+    font-size: var(--h18-text-xs);
+    font-family: var(--h18-font-mono);
+    color: var(--h18-text-dim);
+    padding: var(--h18-space-2) 0;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: var(--h18-space-1);
+}
+
+.day {
+    aspect-ratio: 1;
+    border: none;
+    background: transparent;
+    color: var(--h18-text);
+    border-radius: var(--h18-radius-md);
+    cursor: pointer;
+    font-family: var(--h18-font-sans);
+    font-size: var(--h18-text-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background var(--h18-duration-fast) var(--h18-ease-out),
+        color var(--h18-duration-fast) var(--h18-ease-out);
+}
+
+.day:hover:not(.disabled):not(.selected) {
+    background: var(--h18-row-hover);
+}
+
+.day.selected {
+    background: var(--h18-accent);
+    color: var(--h18-invert-ink);
+    font-weight: 600;
+}
+
+.day.today:not(.selected) {
+    background: var(--h18-today-bg);
+    color: var(--h18-today-text);
+    font-weight: 600;
+}
+
+.day.disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.empty {
+    aspect-ratio: 1;
+}

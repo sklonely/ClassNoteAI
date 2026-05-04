@@ -18,12 +18,83 @@ const COURSE_SYLLABUS_STATUS_KEY = '_classnote_status';
 const COURSE_SYLLABUS_SOURCE_KEY = '_classnote_source';
 const COURSE_SYLLABUS_UPDATED_AT_KEY = '_classnote_updated_at';
 const COURSE_SYLLABUS_ERROR_MESSAGE_KEY = '_classnote_error_message';
+/**
+ * v0.7：保存使用者最初貼進來的原始課綱文字 / PDF 描述。
+ * 後續「重新生成」永遠用這份，不用使用者編輯後的 description —
+ * 否則每次重跑都拿前次 AI 整理過的版本當輸入，原始細節會慢慢流失。
+ */
+const COURSE_SYLLABUS_RAW_DESCRIPTION_KEY = '_classnote_raw_description';
+
+/**
+ * v0.7：Canvas LMS course_id (per-user 配對結果)。
+ *
+ * 為何藏在 syllabus_info 裡而不是 Course 的 top-level column？
+ * 因為 Rust 端 `storage::Course` struct 還沒這欄位，serde 會把 unknown
+ * top-level field 默默丟掉 → 存進去等於沒存。
+ * 把它塞在 syllabus_info JSON blob (Rust 那邊型別是 serde_json::Value，
+ * 全 JSON 原樣 round-trip) 可以零 Rust 修改達到持久化。
+ *
+ * 前端讀寫一律走 storageService.{getCourse,listCourses,saveCourse}，這
+ * 些函式內部會做 pack/unpack，把 syllabus_info._classnote_canvas_course_id
+ * 跟 course.canvas_course_id 雙向同步，呼叫端看到的還是 top-level 欄位。
+ */
+const COURSE_SYLLABUS_CANVAS_COURSE_ID_KEY = '_classnote_canvas_course_id';
+
+/** Internal metadata keys — never displayed, never sent to AI. */
+const COURSE_SYLLABUS_META_KEYS: ReadonlySet<string> = new Set([
+  COURSE_SYLLABUS_STATUS_KEY,
+  COURSE_SYLLABUS_SOURCE_KEY,
+  COURSE_SYLLABUS_UPDATED_AT_KEY,
+  COURSE_SYLLABUS_ERROR_MESSAGE_KEY,
+  COURSE_SYLLABUS_RAW_DESCRIPTION_KEY,
+  COURSE_SYLLABUS_CANVAS_COURSE_ID_KEY,
+]);
+
+/** Strip metadata so the resulting object is the AI-relevant content only. */
+function stripSyllabusMeta(record: CourseSyllabusRecord | null): CourseSyllabusRecord {
+  if (!record) return {};
+  const out: CourseSyllabusRecord = {};
+  for (const [k, v] of Object.entries(record)) {
+    if (!COURSE_SYLLABUS_META_KEYS.has(k)) out[k] = v;
+  }
+  return out;
+}
+
+function getPreservedRawDescription(info: Course['syllabus_info']): string | undefined {
+  const record = toCourseSyllabusRecord(info);
+  const v = record?.[COURSE_SYLLABUS_RAW_DESCRIPTION_KEY];
+  return typeof v === 'string' && v.trim().length > 0 ? v : undefined;
+}
+
+/**
+ * Recover `canvas_course_id` from syllabus_info metadata. Defence-in-depth
+ * fallback for legacy rows that were saved before the Rust top-level column
+ * existed. The v0.7.x migration in `database.rs` auto-promotes those rows
+ * on first launch, so this is mostly inert; we keep it for imports / manual
+ * data juggling that bypass the Rust migration.
+ */
+function unpackCanvasCourseId(course: Course): Course {
+  if (course.canvas_course_id) return course;
+  const record = toCourseSyllabusRecord(course.syllabus_info);
+  const v = record?.[COURSE_SYLLABUS_CANVAS_COURSE_ID_KEY];
+  if (typeof v === 'string' && v.trim().length > 0) {
+    return { ...course, canvas_course_id: v.trim() };
+  }
+  return course;
+}
 const COURSE_SYLLABUS_CONTENT_KEYS = [
   'topic',
+  'overview',
   'time',
+  'start_date',
+  'end_date',
   'instructor',
+  'instructor_email',
+  'instructor_office_hours',
   'office_hours',
   'teaching_assistants',
+  'teaching_assistant_list',
+  'ta_office_hours',
   'location',
   'grading',
   'schedule',
@@ -52,10 +123,35 @@ function normalizeAppSettings(settings: AppSettings | (AppSettings & Record<stri
     };
   }
 
+  // v0.7.0 H18: 確保 appearance 物件存在且 5 個欄位都有 default。
+  // 舊 user 升級時 settings.appearance === undefined → 全填 default。
+  // 已有 appearance 但缺某欄位 → 補該欄位。已有的不蓋。
+  // legacy `theme` field 只在 appearance.themeMode 缺時 migrate 過去。
+  //
+  // cp75.4 — spread the existing object first so new appearance fields
+  // (recordingLayout, future additions) survive normalize. The previous
+  // version listed only 5 fields by name; H18RecordingPage was already
+  // writing settings.appearance.recordingLayout but every save round-
+  // tripped through normalize would silently drop it → user's layout
+  // toggle reverted to default A on every reload.
+  const existingAppearance = normalized.appearance ?? {};
+  normalized.appearance = {
+    ...existingAppearance,
+    themeMode: existingAppearance.themeMode ?? normalized.theme ?? 'light',
+    density: existingAppearance.density ?? 'comfortable',
+    fontSize: existingAppearance.fontSize ?? 'normal',
+    layout: existingAppearance.layout ?? 'A',
+    toastStyle: existingAppearance.toastStyle ?? 'card',
+  };
+
   delete normalized.ollama;
   delete normalized.sync;
   return normalized;
 }
+
+// Test-only export — 讓 vitest 直接驗 normalize 邏輯，不必走 Tauri invoke
+// path。命名加 ForTest 避免被當成 public API 誤用。
+export const normalizeAppSettingsForTest = normalizeAppSettings;
 
 function joinAppPath(baseDir: string, ...parts: string[]): string {
   const separator = baseDir.includes('\\') ? '\\' : '/';
@@ -89,10 +185,24 @@ function getCourseSyllabusSource(hasPdf: boolean, hasDescription: boolean): Cour
 function buildGeneratingCourseSyllabusInfo(
   existing: Course['syllabus_info'],
   source: CourseSyllabusSource,
+  rawDescriptionToPreserve?: string,
 ): CourseSyllabusRecord {
   const now = new Date().toISOString();
-  const preserved = hasCourseSyllabusContent(existing) ? { ...(toCourseSyllabusRecord(existing) ?? {}) } : {};
+  const existingRecord = toCourseSyllabusRecord(existing);
+  // Always preserve all existing fields (content + metadata) — we don't
+  // discard user-edited values just because the syllabus is regenerating.
+  const preserved: CourseSyllabusRecord = existingRecord ? { ...existingRecord } : {};
   delete preserved[COURSE_SYLLABUS_ERROR_MESSAGE_KEY];
+
+  // Lock in the raw description on first AI run so future regenerations
+  // operate on the original input, not a previously-cleaned version.
+  const alreadyPreservedRaw = preserved[COURSE_SYLLABUS_RAW_DESCRIPTION_KEY];
+  const hasPreservedRaw =
+    typeof alreadyPreservedRaw === 'string' && alreadyPreservedRaw.trim().length > 0;
+  if (!hasPreservedRaw && rawDescriptionToPreserve && rawDescriptionToPreserve.trim().length > 0) {
+    preserved[COURSE_SYLLABUS_RAW_DESCRIPTION_KEY] = rawDescriptionToPreserve;
+  }
+
   return {
     ...preserved,
     [COURSE_SYLLABUS_STATUS_KEY]: 'generating',
@@ -113,16 +223,47 @@ function buildFailedCourseSyllabusInfo(
   };
 }
 
+/**
+ * Build the ready-state syllabus record by merging AI output with the
+ * previously persisted record — important for regeneration (we don't
+ * overwrite user-edited fields) and for preserving the raw description
+ * metadata across saves.
+ *
+ * Merge rule per content field: if the existing value is non-empty
+ * (string with text, or non-empty array), keep it; otherwise take the
+ * AI output. Metadata keys (status / raw description / etc.) are
+ * always carried through from the existing record.
+ */
 function buildReadyCourseSyllabusInfo(
   info: Record<string, unknown>,
   source: CourseSyllabusSource,
+  existing?: Course['syllabus_info'],
 ): CourseSyllabusRecord {
-  return {
-    ...info,
-    [COURSE_SYLLABUS_STATUS_KEY]: 'ready',
-    [COURSE_SYLLABUS_SOURCE_KEY]: source,
-    [COURSE_SYLLABUS_UPDATED_AT_KEY]: new Date().toISOString(),
-  };
+  const existingRecord = toCourseSyllabusRecord(existing) ?? {};
+
+  function isFilled(v: unknown): boolean {
+    if (Array.isArray(v)) return v.length > 0;
+    if (typeof v === 'string') return v.trim().length > 0;
+    return v != null;
+  }
+
+  // Start from existing content (so user edits survive), then layer AI
+  // output ONLY where the existing field is empty.
+  const merged: CourseSyllabusRecord = { ...existingRecord };
+  for (const [k, v] of Object.entries(info)) {
+    if (COURSE_SYLLABUS_META_KEYS.has(k)) continue; // never let AI write metadata
+    if (!isFilled(merged[k])) {
+      merged[k] = v;
+    }
+  }
+
+  // Stamp with fresh metadata
+  merged[COURSE_SYLLABUS_STATUS_KEY] = 'ready';
+  merged[COURSE_SYLLABUS_SOURCE_KEY] = source;
+  merged[COURSE_SYLLABUS_UPDATED_AT_KEY] = new Date().toISOString();
+  delete merged[COURSE_SYLLABUS_ERROR_MESSAGE_KEY];
+
+  return merged;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -210,7 +351,12 @@ class StorageService {
     },
   ): Promise<void> {
     try {
-      const description = course.description?.trim() ?? '';
+      // Source-of-truth for AI input: prefer the locked-in raw description
+      // captured on the FIRST run, falling back to the current course
+      // description (only used on first run, before raw is locked).
+      const preservedRaw = getPreservedRawDescription(course.syllabus_info);
+      const description =
+        preservedRaw?.trim() ?? course.description?.trim() ?? '';
       let pdfData = options.pdfData ?? null;
       if (!pdfData) {
         pdfData = await this.getCourseSyllabusPdfData(course.id);
@@ -240,12 +386,18 @@ class StorageService {
         promptParts.push(`PDF syllabus content:\n${pdfText}`);
       }
 
+      // Hand the AI the existing (non-meta) syllabus content too — it
+      // uses this to (a) avoid overwriting user-edited fields and (b)
+      // focus on the ones still empty.
+      const existingForMerge = stripSyllabusMeta(
+        toCourseSyllabusRecord(course.syllabus_info),
+      );
+
       const syllabus = await withTimeout(
-        extractSyllabus(
-          course.title,
-          promptParts.join('\n\n'),
+        extractSyllabus(course.title, promptParts.join('\n\n'), {
           targetLanguage,
-        ),
+          existing: existingForMerge,
+        }),
         COURSE_SYLLABUS_TIMEOUT_MS,
         '課程大綱生成逾時（90 秒）',
       );
@@ -260,6 +412,7 @@ class StorageService {
         syllabus_info: buildReadyCourseSyllabusInfo(
           syllabus as Record<string, unknown>,
           getCourseSyllabusSource(hasPdf, hasDescription),
+          refreshedCourse.syllabus_info,
         ),
         updated_at: new Date().toISOString(),
       });
@@ -271,7 +424,26 @@ class StorageService {
         syllabus_info: buildFailedCourseSyllabusInfo(message, options.source),
         updated_at: new Date().toISOString(),
       });
-      toastService.error('課程大綱生成失敗', message);
+      // Best-effort: route fixable error toasts to the right settings tab.
+      // Most syllabus failures are AI-provider related — no key, expired
+      // OAuth, rate limit. Hot-link straight there. Otherwise jump into the
+      // course edit page so the user can press 「⟳ 重新生成」 again.
+      const isProviderIssue = /provider|AI 提供商|尚未設定|configured|auth|401|403/i.test(
+        message,
+      );
+      toastService.error(
+        '課程大綱生成失敗',
+        message,
+        isProviderIssue
+          ? {
+              navRequest: { kind: 'profile', tab: 'cloud' },
+              label: '前往 AI 設定',
+            }
+          : {
+              navRequest: { kind: 'course-edit', courseId: course.id },
+              label: '重新生成',
+            },
+      );
     }
   }
 
@@ -301,7 +473,13 @@ class StorageService {
     const courseToSave = shouldGenerate
       ? {
         ...course,
-        syllabus_info: buildGeneratingCourseSyllabusInfo(course.syllabus_info, source),
+        syllabus_info: buildGeneratingCourseSyllabusInfo(
+          course.syllabus_info,
+          source,
+          // First run only: lock in the user's original description so
+          // every future regeneration uses the same source text.
+          course.description ?? undefined,
+        ),
         updated_at: new Date().toISOString(),
       }
       : course;
@@ -327,26 +505,38 @@ class StorageService {
    */
   async saveCourse(course: Course): Promise<void> {
     const currentUser = authService.getUser()?.username || 'default_user';
-    // Ensure course belongs to current user and has is_deleted
+    // Rust schema now has a top-level canvas_course_id column (v0.7.x
+    // migration). We send the field directly; no need to pack it into
+    // syllabus_info anymore. Reads still tolerate the legacy stash via
+    // unpackCanvasCourseId() below.
     const courseToSave = {
       ...course,
       user_id: currentUser,
-      is_deleted: course.is_deleted ?? false
+      is_deleted: course.is_deleted ?? false,
     };
-    await invoke('save_course', { course: courseToSave });
-    // Broadcast so any open CourseDetailView / CourseListView that's
-    // already mounted can refetch. Used by background syllabus / summary
-    // tasks that complete after the user has already navigated away.
+    // cp75.34 — pass userId for the Rust-side ownership verify on update.
+    await invoke('save_course', { course: courseToSave, userId: currentUser });
+    // Broadcast so any open CourseDetailView / CourseListView / Home rail /
+    // Home calendar that's already mounted can refetch.
+    //   - `classnote-course-updated` (with detail.courseId) → page-level
+    //     listeners that only care about a specific course (e.g.
+    //     CourseEditPage waits for its own course to finish AI gen).
+    //   - `classnote-courses-changed` → list-level listeners that need
+    //     to re-pull the full course list (rail chips, weekly calendar,
+    //     home preview, global search index).
+    // Both are dispatched on every save so neither side gets stale.
     window.dispatchEvent(
       new CustomEvent('classnote-course-updated', { detail: { courseId: course.id } }),
     );
+    window.dispatchEvent(new CustomEvent('classnote-courses-changed'));
   }
 
   /**
    * 獲取科目
    */
   async getCourse(id: string): Promise<Course | null> {
-    return await invoke<Course | null>('get_course', { id });
+    const c = await invoke<Course | null>('get_course', { id });
+    return c ? unpackCanvasCourseId(c) : null;
   }
 
   /**
@@ -354,7 +544,8 @@ class StorageService {
    */
   async listCourses(): Promise<Course[]> {
     const currentUser = authService.getUser()?.username || 'default_user';
-    return await invoke<Course[]>('list_courses', { userId: currentUser });
+    const list = await invoke<Course[]>('list_courses', { userId: currentUser });
+    return list.map(unpackCanvasCourseId);
   }
 
   /**
@@ -403,10 +594,11 @@ class StorageService {
   }
 
   /**
-   * 刪除科目
+   * 刪除科目（cp75.6: 傳 userId 給 Rust 端做 ownership check）
    */
   async deleteCourse(id: string): Promise<void> {
-    await invoke('delete_course', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('delete_course', { id, userId });
   }
 
   /**
@@ -443,31 +635,35 @@ class StorageService {
   }
 
   /**
-   * 刪除課程
+   * 刪除課堂（cp75.6: 傳 userId 給 Rust 端做 ownership check）
    */
   async deleteLecture(id: string): Promise<void> {
-    await invoke('delete_lecture', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('delete_lecture', { id, userId });
   }
 
   /**
-   * 更新課程狀態
+   * 更新課程狀態（cp75.34: 傳 userId 給 Rust 端做 ownership check）
    */
   async updateLectureStatus(id: string, status: 'recording' | 'completed'): Promise<void> {
-    await invoke('update_lecture_status', { id, status });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('update_lecture_status', { id, status, userId });
   }
 
   /**
-   * 保存字幕
+   * 保存字幕（cp75.21: 傳 userId 給 Rust 端做 ownership check）
    */
   async saveSubtitle(subtitle: Subtitle): Promise<void> {
-    await invoke('save_subtitle', { subtitle });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_subtitle', { subtitle, userId });
   }
 
   /**
-   * 批量保存字幕
+   * 批量保存字幕（cp75.21: 傳 userId 給 Rust 端做 ownership check）
    */
   async saveSubtitles(subtitles: Subtitle[]): Promise<void> {
-    await invoke('save_subtitles', { subtitles });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_subtitles', { subtitles, userId });
   }
 
   /**
@@ -478,34 +674,65 @@ class StorageService {
   }
 
   /**
-   * 刪除單條字幕
+   * 刪除單條字幕（cp75.21: 傳 userId 給 Rust 端做 ownership check）
    */
   async deleteSubtitle(id: string): Promise<void> {
-    await invoke('delete_subtitle', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('delete_subtitle', { id, userId });
   }
 
   /**
    * 保存設置
+   *
+   * cp75.3: forwards the current user's id so the Rust side can scope
+   * the row to that user. Before this, the v8 schema migration added
+   * `settings.user_id` column but the SQL queries ignored it — every
+   * user shared one row per key. Now per-user.
    */
   async saveSetting(key: string, value: string): Promise<void> {
-    await invoke('save_setting', { key, value });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('save_setting', { key, value, userId });
   }
 
   /**
    * 獲取設置
+   *
+   * cp75.3: same as saveSetting — passes userId so the Rust side returns
+   * the row for the current user instead of any (which would silently
+   * leak account A's settings to account B).
    */
   async getSetting(key: string): Promise<string | null> {
-    return await invoke<string | null>('get_setting', { key });
+    const userId = authService.getUser()?.username || 'default_user';
+    return await invoke<string | null>('get_setting', { key, userId });
   }
 
   /**
-   * 獲取所有設置
+   * 獲取所有設置（only the current user's, not the global table dump）.
+   *
+   * cp75.4 fix — `get_all_settings` Tauri command returns the entire
+   * settings table. Since cp75.3 stores keys as `<userId>::<originalKey>`,
+   * raw SELECT returned every user's entries. Filter here so callers
+   * (notably `exportAllData`) only see the active user.
+   *
+   * Returns a `{ originalKey: value }` map (the userId prefix stripped).
    */
   async getAllSettings(): Promise<Record<string, string>> {
     const settings = await invoke<Array<{ key: string; value: string }>>('get_all_settings');
+    const userId = authService.getUser()?.username || 'default_user';
+    const scopedPrefix = `${userId}::`;
     const result: Record<string, string> = {};
     settings.forEach(({ key, value }) => {
-      result[key] = value;
+      // cp75.3 scoped keys: keep only this user's, strip the prefix.
+      if (key.startsWith(scopedPrefix)) {
+        result[key.slice(scopedPrefix.length)] = value;
+        return;
+      }
+      // Legacy bare keys (pre-cp75.3) are owned by 'default_user' per the
+      // v8 migration default. Surface them only when the active user IS
+      // default_user, otherwise they'd leak into another account's export.
+      if (!key.includes('::') && userId === 'default_user') {
+        result[key] = value;
+      }
     });
     return result;
   }
@@ -758,7 +985,9 @@ class StorageService {
     };
 
     try {
-      await invoke('save_note', { note: dbNote });
+      // cp75.34 — userId for the Rust-side lecture-ownership verify.
+      const userId = authService.getUser()?.username || 'default_user';
+      await invoke('save_note', { note: dbNote, userId });
       console.log('[StorageService] Note saved successfully');
     } catch (error) {
       console.error('[StorageService] Rust save_note failed:', error);
@@ -914,17 +1143,19 @@ class StorageService {
   }
 
   /**
-   * 還原已刪除的課程
+   * 還原已刪除的課程（cp75.6 ownership check）
    */
   async restoreCourse(id: string): Promise<void> {
-    await invoke('restore_course', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('restore_course', { id, userId });
   }
 
   /**
-   * 還原已刪除的課堂
+   * 還原已刪除的課堂（cp75.6 ownership check）
    */
   async restoreLecture(id: string): Promise<void> {
-    await invoke('restore_lecture', { id });
+    const userId = authService.getUser()?.username || 'default_user';
+    await invoke('restore_lecture', { id, userId });
   }
 
   /**

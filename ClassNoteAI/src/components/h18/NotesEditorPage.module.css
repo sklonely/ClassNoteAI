@@ -1,0 +1,551 @@
+/* ============================================================
+ * NotesEditorPage · v0.7.0 Phase 6.9 (UI only, no backend wire)
+ *
+ * 對應 docs/design/h18-deep/h18-notes-editor.jsx (NotesEditorPage)。
+ * Per user Q5 lock：頁面要做、功能不接 backend → 純展示 H18 視覺。
+ * ============================================================ */
+
+.page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-bg);
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    font-family: var(--h18-font-sans);
+}
+
+/* Top bar ─────────────────────────────────────────────────────── */
+.topbar {
+    flex-shrink: 0;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--h18-border);
+    background: var(--h18-surface);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.crumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.backBtn {
+    padding: 4px 10px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px solid var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+.backBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.crumbDocTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    letter-spacing: -0.01em;
+}
+
+.crumbContext {
+    font-size: 10px;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border: 1px solid var(--h18-border);
+    border-radius: 4px;
+}
+
+.modeRow {
+    margin-left: auto;
+    display: flex;
+    gap: 0;
+    border: 1px solid var(--h18-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.modeBtn {
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.modeBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.modeBtn:not(.modeBtnActive):hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.syncPill {
+    font-size: 10px;
+    color: var(--h18-accent);
+    font-family: var(--h18-font-mono);
+    padding: 2px 8px;
+    background: var(--h18-chip-bg);
+    border-radius: 4px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.syncDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--h18-accent);
+    animation: nepulse 1.4s var(--h18-ease-spring) infinite;
+}
+
+@keyframes nepulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* Body ────────────────────────────────────────────────────────── */
+.body {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Sidebar (page list) ─────────────────────────────────────────── */
+.sidebar {
+    width: 200px;
+    flex-shrink: 0;
+    background: var(--h18-surface2);
+    border-right: 1px solid var(--h18-border);
+    overflow: auto;
+    padding: 14px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sectionHead {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--h18-text-dim);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin: 4px 6px 6px;
+}
+
+.pageItem {
+    padding: 7px 10px;
+    border-radius: 5px;
+    background: transparent;
+    border: none;
+    border-left: 3px solid transparent;
+    text-align: left;
+    cursor: pointer;
+    font-family: inherit;
+    color: var(--h18-text-mid);
+    font-size: 12px;
+}
+
+.pageItem:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.pageItemActive {
+    background: var(--h18-sel-bg);
+    border-left-color: var(--h18-sel-border);
+    color: var(--h18-text);
+    font-weight: 700;
+}
+
+.pageItemMeta {
+    font-size: 9px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    font-weight: 400;
+    margin-top: 1px;
+}
+
+.newPageBtn {
+    margin-top: auto;
+    padding: 7px 10px;
+    font-size: 11px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: 1px dashed var(--h18-border);
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 600;
+}
+
+.newPageBtn:hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+    border-style: solid;
+}
+
+/* Doc pane (markdown article) ─────────────────────────────────── */
+.docPane {
+    flex: 1;
+    overflow: auto;
+    background: var(--h18-surface);
+    padding: 40px 64px 100px;
+    min-width: 0;
+}
+
+.docPaneSplit {
+    padding: 28px 36px 60px;
+}
+
+.docInner {
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.docContext {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--h18-text-dim);
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+}
+
+.docTitle {
+    margin: 6px 0 6px;
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--h18-text);
+    letter-spacing: -0.022em;
+    line-height: 1.2;
+}
+
+.docSub {
+    font-size: 12px;
+    color: var(--h18-text-dim);
+    margin-bottom: 22px;
+}
+
+.summaryCard {
+    padding: 14px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    border-left: 3px solid var(--h18-accent);
+    margin-bottom: 20px;
+}
+
+.summaryHead {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    color: var(--h18-accent);
+    font-weight: 800;
+    font-family: var(--h18-font-mono);
+    margin-bottom: 6px;
+}
+
+.summaryBody {
+    font-size: 13px;
+    color: var(--h18-text);
+    line-height: 1.7;
+}
+
+.docPara {
+    font-size: 14px;
+    color: var(--h18-text);
+    line-height: 1.85;
+    margin-bottom: 18px;
+    text-wrap: pretty;
+}
+
+.docCode {
+    background: var(--h18-surface2);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: var(--h18-font-mono);
+    font-size: 12px;
+    border: 1px solid var(--h18-border-soft);
+}
+
+.docHL {
+    background: var(--h18-sel-bg);
+    padding: 1px 4px;
+    border-radius: 3px;
+}
+
+.equationBox {
+    margin: 22px 0;
+    padding: 18px 24px;
+    border-radius: 10px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    text-align: center;
+    font-family: var(--h18-font-serif);
+    font-style: italic;
+    font-size: 18px;
+    color: var(--h18-text);
+    overflow: auto;
+}
+
+.equationLabel {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--h18-text-faint);
+    font-family: var(--h18-font-mono);
+    font-weight: 800;
+    margin-bottom: 8px;
+    font-style: normal;
+}
+
+.docSubHead {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--h18-text);
+    margin: 24px 0 8px;
+    letter-spacing: -0.01em;
+}
+
+.docList {
+    font-size: 14px;
+    color: var(--h18-text-mid);
+    line-height: 1.85;
+    padding-left: 22px;
+    margin: 0;
+}
+
+.recCallout {
+    margin-top: 24px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--h18-surface2);
+    border: 1px solid var(--h18-border-soft);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.recCalloutIcon {
+    color: var(--h18-hot);
+    font-size: 14px;
+}
+
+.recCalloutTime {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--h18-text-dim);
+    font-weight: 700;
+    font-family: var(--h18-font-mono);
+}
+
+.recCalloutQuote {
+    font-size: 13px;
+    color: var(--h18-text);
+    flex: 1;
+}
+
+.recCalloutBtn {
+    padding: 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.06em;
+}
+
+/* Canvas pane ─────────────────────────────────────────────────── */
+.canvasPane {
+    flex: 1;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    background: var(--h18-surface2);
+    overflow: hidden;
+    min-width: 0;
+}
+
+.canvasToolbar {
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 10px;
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    box-shadow: var(--h18-shadow);
+}
+
+.toolBtn {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    font-size: 13px;
+    background: transparent;
+    color: var(--h18-text-mid);
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    display: grid;
+    place-items: center;
+}
+
+.toolBtnActive {
+    background: var(--h18-invert);
+    color: var(--h18-invert-ink);
+}
+
+.toolBtn:not(.toolBtnActive):hover {
+    background: var(--h18-row-hover);
+    color: var(--h18-text);
+}
+
+.toolDivider {
+    width: 1px;
+    height: 20px;
+    background: var(--h18-border);
+    margin: 0 4px;
+}
+
+.colorDot {
+    width: 20px;
+    height: 20px;
+    border-radius: 10px;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+
+.colorDotActive {
+    box-shadow: 0 0 0 2px var(--h18-surface), 0 0 0 3.5px var(--h18-accent);
+}
+
+.weightBtn {
+    width: 22px;
+    height: 20px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+.weightBtnActive {
+    background: var(--h18-chip-bg);
+}
+
+.weightBar {
+    background: var(--h18-text);
+    border-radius: 999px;
+    width: 14px;
+}
+
+.canvasFabs {
+    position: absolute;
+    right: 14px;
+    top: 14px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.canvasFab {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    font-size: 14px;
+    background: var(--h18-surface);
+    color: var(--h18-text);
+    border: 1px solid var(--h18-border);
+    cursor: pointer;
+    box-shadow: var(--h18-shadow);
+    display: grid;
+    place-items: center;
+    font-family: inherit;
+}
+
+.canvasArea {
+    flex: 1;
+    overflow: auto;
+    position: relative;
+}
+
+.canvasGrid {
+    width: 100%;
+    height: 100%;
+    min-width: 1600px;
+    min-height: 1000px;
+    background-image: radial-gradient(var(--h18-text-faint) 0.9px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: 12px 12px;
+    position: relative;
+    display: grid;
+    place-items: center;
+    color: var(--h18-text-faint);
+    font-size: 12px;
+    text-align: center;
+    line-height: 1.6;
+}
+
+.canvasEmptyHint {
+    pointer-events: none;
+    max-width: 280px;
+}
+
+.canvasFooter {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--h18-surface);
+    border-top: 1px solid var(--h18-border);
+    font-size: 10px;
+    color: var(--h18-text-dim);
+    font-family: var(--h18-font-mono);
+    letter-spacing: 0.04em;
+    z-index: 5;
+}
+
+/* Split divider */
+.splitDivider {
+    width: 1px;
+    background: var(--h18-border);
+    flex-shrink: 0;
+}
