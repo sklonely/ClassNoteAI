@@ -40,15 +40,6 @@ function trackUsage(
   });
 }
 
-// cp75.4: pulled out into ./defaultProvider.ts — per-user scoped + no
-// longer clobbered by keyStore.clearAll(). Same source-of-truth used by
-// AIProviderSettings UI.
-import { getDefaultProvider } from './defaultProvider';
-
-function preferredProvider(): string | undefined {
-  return getDefaultProvider();
-}
-
 /**
  * Rate-limit tiers as enforced by GitHub Models (and informally by
  * other providers via their pricing). Tasks declare which tier they
