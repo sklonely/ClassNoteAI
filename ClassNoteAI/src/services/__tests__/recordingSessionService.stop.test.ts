@@ -633,11 +633,16 @@ describe('stop() · background summary', () => {
         ];
         await recordingSessionService.start('c', 'lecture-1');
         await recordingSessionService.stop();
-        // Wait for background to finish. cp75.17 — bumped 30 → 100ms
-        // because runBackgroundSummary now awaits getLecture +
-        // segmentSections (parallel) + dynamic import of llm/tasks
-        // before persisting; 30ms was on the edge under load.
-        await new Promise((r) => setTimeout(r, 100));
+        // Poll for background completion instead of fixed sleep.
+        // cp75.17 first bumped 30→100ms after adding async getLecture +
+        // segmentSections + dynamic llm/tasks import; v0.7.1 saw it still
+        // flake on Windows CI under parallel load. Poll up to 5s with
+        // 25ms steps so it stays fast on the happy path but doesn't
+        // false-fail under heavy CPU pressure.
+        const deadline = Date.now() + 5000;
+        while (storageMockState.saveNoteCalls.length === 0 && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 25));
+        }
         expect(storageMockState.saveNoteCalls.length).toBeGreaterThanOrEqual(1);
         const note = storageMockState.saveNoteCalls[0][0] as {
             lecture_id: string;
