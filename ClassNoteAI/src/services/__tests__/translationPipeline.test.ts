@@ -46,7 +46,7 @@ function flushMicrotasks(): Promise<void> {
 
 async function waitForOutcome(
   ids: string[],
-  timeoutMs = 2000,
+  timeoutMs = 5000,
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {

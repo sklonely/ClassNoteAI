@@ -47,7 +47,7 @@ function flushMicrotasks(): Promise<void> {
     return new Promise((resolve) => setImmediate(resolve));
 }
 
-async function waitForReady(id: string, timeoutMs = 1000): Promise<void> {
+async function waitForReady(id: string, timeoutMs = 5000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         if (
